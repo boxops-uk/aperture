@@ -1,10 +1,13 @@
+use std::fmt::Display;
+
 use crate::lens::{
     location::Location,
     query::{Pattern, PatternKind, Query, Statement},
     schema::{PredicateId, Schema},
 };
+use codespan_reporting::diagnostic::{Diagnostic, Label};
 use im::HashMap;
-use string_interner::DefaultSymbol as Symbol;
+use string_interner::{DefaultStringInterner, DefaultSymbol as Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TyVarId(usize);
@@ -59,16 +62,66 @@ pub struct TyChecker<FileId = ()> {
     env: Env,
     subst: Subst,
     undo_log: Vec<UndoEntry>,
-    pub diagnostics: Vec<(Location<FileId>, TyError)>,
+    errors: Vec<(Location<FileId>, TyError)>,
 }
 
-impl<FileId> TyChecker<FileId> {
+pub struct TyDisplay<'a> {
+    pub string_interner: &'a DefaultStringInterner,
+    pub schema: &'a Schema,
+    pub ty: Ty,
+}
+
+impl Display for TyDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.ty.clone() {
+            Ty::Error => write!(f, "Error"),
+            Ty::Never => write!(f, "Never"),
+            Ty::Int => write!(f, "Int"),
+            Ty::String => write!(f, "String"),
+            Ty::Var(TyVarId(id)) => write!(f, "{}", u32_to_base26(id as u32)),
+            Ty::Record { field_tys } => {
+                let fields = field_tys
+                    .iter()
+                    .map(|(name, ty)| {
+                        format!(
+                            "{}: {}",
+                            self.string_interner.resolve(*name).unwrap(),
+                            TyDisplay {
+                                string_interner: self.string_interner,
+                                schema: self.schema,
+                                ty: ty.clone(),
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "{{ {} }}", fields)
+            }
+            Ty::Fact { predicate_id } => {
+                let resolved = self
+                    .schema
+                    .get_predicate_ty(predicate_id)
+                    .and_then(|pred_ty| self.string_interner.resolve(pred_ty.name));
+
+                match resolved {
+                    Some(name) => write!(f, "{}", name),
+                    None => write!(f, "UnknownFact({})", predicate_id.0),
+                }
+            }
+        }
+    }
+}
+
+impl<FileId> TyChecker<FileId>
+where
+    FileId: Copy,
+{
     pub fn new() -> Self {
         Self {
             env: HashMap::new(),
             subst: vec![],
             undo_log: vec![],
-            diagnostics: vec![],
+            errors: vec![],
         }
     }
 
@@ -220,6 +273,67 @@ impl<FileId> TyChecker<FileId> {
             }),
         }
     }
+
+    pub fn diagnostics(
+        &self,
+        string_interner: &DefaultStringInterner,
+        schema: &Schema,
+    ) -> impl Iterator<Item = Diagnostic<FileId>> {
+        self.errors
+            .iter()
+            .map(|(location, error)| to_diagnostic(string_interner, schema, *location, error))
+    }
+}
+
+pub fn to_diagnostic<FileId>(
+    string_interner: &DefaultStringInterner,
+    schema: &Schema,
+    location: Location<FileId>,
+    error: &TyError,
+) -> Diagnostic<FileId> {
+    match error {
+        TyError::InfiniteTy { ty_var_id } => Diagnostic::error()
+            .with_message("infinite type")
+            .with_labels(vec![
+                Label::primary(location.file_id, location.span).with_message(format!(
+                    "type variable {} occurs inside its own type",
+                    u32_to_base26(ty_var_id.0 as u32)
+                )),
+            ]),
+        TyError::Mismatch { expected, got } => Diagnostic::error()
+            .with_message("type mismatch")
+            .with_labels(vec![
+                Label::primary(location.file_id, location.span).with_message(format!(
+                    "expected type {}, got {}",
+                    TyDisplay {
+                        string_interner,
+                        schema,
+                        ty: expected.clone(),
+                    },
+                    TyDisplay {
+                        string_interner,
+                        schema,
+                        ty: got.clone(),
+                    }
+                )),
+            ]),
+        TyError::UnknownPredicate { predicate_id } => Diagnostic::error()
+            .with_message("unknown predicate")
+            .with_labels(vec![
+                Label::primary(location.file_id, location.span).with_message(format!(
+                    "predicate with id {} is not defined in the schema",
+                    predicate_id.0
+                )),
+            ]),
+        TyError::UnknownField { field } => Diagnostic::error()
+            .with_message("unknown field")
+            .with_labels(vec![
+                Label::primary(location.file_id, location.span).with_message(format!(
+                    "field {} is not defined in the record type",
+                    string_interner.resolve(*field).unwrap()
+                )),
+            ]),
+    }
 }
 
 pub fn check_pattern(
@@ -247,7 +361,7 @@ pub fn check_pattern(
             // means the record is the key pattern for that predicate.
             Ty::Fact { predicate_id } => match schema.get_predicate_key_ty(*predicate_id) {
                 None => {
-                    ty_checker.diagnostics.push((
+                    ty_checker.errors.push((
                         pattern.location,
                         TyError::UnknownPredicate {
                             predicate_id: *predicate_id,
@@ -260,7 +374,7 @@ pub fn check_pattern(
                     if let Ty::Record { field_tys } = key_ty {
                         check_record(ty_checker, schema, field_patterns, &field_tys);
                     } else {
-                        ty_checker.diagnostics.push((
+                        ty_checker.errors.push((
                             pattern.location,
                             TyError::Mismatch {
                                 expected: expected_ty,
@@ -274,7 +388,7 @@ pub fn check_pattern(
             },
 
             _ => {
-                ty_checker.diagnostics.push((
+                ty_checker.errors.push((
                     pattern.location,
                     TyError::Mismatch {
                         expected: expected_ty,
@@ -295,7 +409,7 @@ pub fn check_pattern(
             if let Err(e) = ty_checker.unify(&inferred, &expected_ty) {
                 ty_checker.rollback(snapshot);
                 ty_checker.env = saved_env;
-                ty_checker.diagnostics.push((pattern.location, e));
+                ty_checker.errors.push((pattern.location, e));
             }
         }
     }
@@ -310,7 +424,7 @@ pub fn check_record(
     for (field_name, field_pattern) in field_patterns.iter() {
         match expected_tys.get(field_name) {
             None => {
-                ty_checker.diagnostics.push((
+                ty_checker.errors.push((
                     field_pattern.location,
                     TyError::UnknownField { field: *field_name },
                 ));
@@ -320,9 +434,9 @@ pub fn check_record(
                 // leave partial unification residue that pollutes sibling fields.
                 let snapshot = ty_checker.snapshot();
                 let saved_env = ty_checker.env.clone();
-                let diag_len = ty_checker.diagnostics.len();
+                let diag_len = ty_checker.errors.len();
                 check_pattern(ty_checker, schema, field_pattern, expected_ty);
-                if ty_checker.diagnostics.len() > diag_len {
+                if ty_checker.errors.len() > diag_len {
                     ty_checker.rollback(snapshot);
                     ty_checker.env = saved_env;
                 }
@@ -403,7 +517,7 @@ pub fn infer_pattern(ty_checker: &mut TyChecker, schema: &Schema, pattern: &Patt
             key_pattern,
         } => {
             let Some(key_ty) = schema.get_predicate_key_ty(*predicate_id) else {
-                ty_checker.diagnostics.push((
+                ty_checker.errors.push((
                     pattern.location,
                     TyError::UnknownPredicate {
                         predicate_id: *predicate_id,
@@ -412,15 +526,31 @@ pub fn infer_pattern(ty_checker: &mut TyChecker, schema: &Schema, pattern: &Patt
                 return Ty::Error;
             };
 
-            let key_ty = key_ty.clone();
-
-            if let Some(p) = key_pattern.first() {
-                check_pattern(ty_checker, schema, p, &key_ty);
-            }
+            check_pattern(ty_checker, schema, key_pattern, &key_ty);
 
             Ty::Fact {
                 predicate_id: *predicate_id,
             }
         }
     }
+}
+
+fn u32_to_base26(mut n: u32) -> String {
+    let mut buf = [0u8, 7];
+    let mut i = buf.len();
+
+    loop {
+        let rem = n % 26;
+        i -= 1;
+        buf[i] = b'a' + rem as u8;
+        n /= 26;
+
+        if n == 0 {
+            break;
+        }
+
+        n -= 1;
+    }
+
+    unsafe { String::from_utf8_unchecked(buf[i..].to_vec()) }
 }

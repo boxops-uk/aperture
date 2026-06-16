@@ -13,6 +13,12 @@ impl From<std::ops::Range<usize>> for Span {
     }
 }
 
+impl Into<std::ops::Range<usize>> for Span {
+    fn into(self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Location<FileId = ()> {
     pub file_id: FileId,
@@ -35,7 +41,10 @@ impl From<Span> for Location {
 }
 
 impl<FileId> Location<FileId> {
-    pub fn new(file_id: FileId, span: Span) -> Self {
-        Self { file_id, span }
+    pub fn new(file_id: FileId, span: impl Into<Span>) -> Self {
+        Self {
+            file_id,
+            span: span.into(),
+        }
     }
 }

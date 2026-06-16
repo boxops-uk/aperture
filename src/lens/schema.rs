@@ -1,9 +1,10 @@
+use im::HashMap;
 use string_interner::DefaultSymbol as Symbol;
 
 use crate::lens::ty::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PredicateId(usize);
+pub struct PredicateId(pub(crate) usize);
 
 #[derive(Debug)]
 pub struct PredicateTy {
@@ -17,6 +18,7 @@ pub struct PredicateTy {
 pub struct Schema {
     next_predicate_id: usize,
     predicate_tys: Vec<PredicateTy>,
+    predicate_name_to_id: HashMap<Symbol, PredicateId>,
 }
 
 impl Schema {
@@ -24,6 +26,7 @@ impl Schema {
         Self {
             next_predicate_id: 0,
             predicate_tys: vec![],
+            predicate_name_to_id: HashMap::new(),
         }
     }
 
@@ -51,6 +54,10 @@ impl Schema {
             .map(|predicate_ty| &predicate_ty.value_ty)
     }
 
+    pub fn get_predicate_id(&self, name: Symbol) -> Option<PredicateId> {
+        self.predicate_name_to_id.get(&name).copied()
+    }
+
     pub fn insert_predicate_ty(&mut self, name: Symbol, key_ty: Ty, value_ty: Ty) -> PredicateId {
         let predicate_id = self.next_predicate_id();
         let predicate_ty = PredicateTy {
@@ -60,6 +67,7 @@ impl Schema {
             value_ty,
         };
         self.predicate_tys.push(predicate_ty);
+        self.predicate_name_to_id.insert(name, predicate_id);
         predicate_id
     }
 }

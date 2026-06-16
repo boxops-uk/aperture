@@ -2,20 +2,20 @@ use crate::lens::{location::Location, schema::PredicateId};
 use im::HashMap;
 use string_interner::DefaultSymbol as Symbol;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Query<FileId = ()> {
     pub location: Location<FileId>,
     pub head: Pattern<FileId>,
     pub body: Box<[Statement<FileId>]>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pattern<FileId = ()> {
     pub location: Location<FileId>,
     pub kind: PatternKind<Pattern<FileId>, FileId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Statement<FileId = ()> {
     Bind {
         left: Pattern<FileId>,
@@ -24,7 +24,7 @@ pub enum Statement<FileId = ()> {
     ImplicitBind(Pattern<FileId>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PatternKind<T, FileId = ()> {
     Wildcard,
     Int(i64),
@@ -37,6 +37,6 @@ pub enum PatternKind<T, FileId = ()> {
     },
     Fact {
         predicate_id: PredicateId,
-        key_pattern: Box<[T]>,
+        key_pattern: Box<T>,
     },
 }
