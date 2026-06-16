@@ -1,4 +1,8 @@
-use crate::{PredicateId, lens::location::Location, lens::query::Pattern};
+use crate::lens::{
+    location::Location,
+    query::{Pattern, Query},
+    schema::PredicateId,
+};
 use im::HashMap;
 use string_interner::DefaultSymbol as Symbol;
 
@@ -240,6 +244,14 @@ pub fn check_record(
             }
         }
     }
+}
+
+pub fn infer_query(ty_checker: &mut TyChecker, query: &Query) -> Ty {
+    todo!()
+}
+
+pub fn infer_subquery(ty_checker: &mut TyChecker, subquery: &Query) -> Ty {
+    todo!()
 }
 
 pub fn infer_pattern(ty_checker: &mut TyChecker, pattern: &Pattern) -> Ty {

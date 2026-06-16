@@ -1,4 +1,4 @@
-use crate::{PredicateId, lens::location::Location};
+use crate::lens::{location::Location, schema::PredicateId};
 use im::HashMap;
 use string_interner::DefaultSymbol as Symbol;
 

@@ -1,6 +1,6 @@
 use string_interner::DefaultSymbol as Symbol;
 
-use crate::Ty;
+use crate::lens::ty::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PredicateId(usize);
