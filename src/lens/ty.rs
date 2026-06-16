@@ -1,7 +1,7 @@
 use crate::lens::{
     location::Location,
-    query::{Pattern, Query},
-    schema::PredicateId,
+    query::{Pattern, PatternKind, Query, Statement},
+    schema::{PredicateId, Schema},
 };
 use im::HashMap;
 use string_interner::DefaultSymbol as Symbol;
@@ -222,38 +222,205 @@ impl<FileId> TyChecker<FileId> {
     }
 }
 
-pub fn check_pattern(ty_checker: &mut TyChecker, pattern: &Pattern, expected_ty: &Ty) {
-    todo!()
+pub fn check_pattern(
+    ty_checker: &mut TyChecker,
+    schema: &Schema,
+    pattern: &Pattern,
+    expected_ty: &Ty,
+) {
+    let expected_ty = ty_checker.zonk(expected_ty);
+
+    // Silently succeed when the expected type is already poisoned to prevent cascading errors.
+    if expected_ty.has_error() {
+        return;
+    }
+
+    match &pattern.kind {
+        PatternKind::Wildcard => {}
+
+        PatternKind::Record { field_patterns } => match &expected_ty {
+            Ty::Record { field_tys } => {
+                check_record(ty_checker, schema, field_patterns, field_tys);
+            }
+
+            // Implicit predicate name: `{ field = ... }` where a Fact type is expected
+            // means the record is the key pattern for that predicate.
+            Ty::Fact { predicate_id } => match schema.get_predicate_key_ty(*predicate_id) {
+                None => {
+                    ty_checker.diagnostics.push((
+                        pattern.location,
+                        TyError::UnknownPredicate {
+                            predicate_id: *predicate_id,
+                        },
+                    ));
+                }
+                Some(key_ty) => {
+                    let key_ty = key_ty.clone();
+                    let key_ty = ty_checker.zonk(&key_ty);
+                    if let Ty::Record { field_tys } = key_ty {
+                        check_record(ty_checker, schema, field_patterns, &field_tys);
+                    } else {
+                        ty_checker.diagnostics.push((
+                            pattern.location,
+                            TyError::Mismatch {
+                                expected: expected_ty,
+                                got: Ty::Record {
+                                    field_tys: HashMap::new(),
+                                },
+                            },
+                        ));
+                    }
+                }
+            },
+
+            _ => {
+                ty_checker.diagnostics.push((
+                    pattern.location,
+                    TyError::Mismatch {
+                        expected: expected_ty,
+                        got: Ty::Record {
+                            field_tys: HashMap::new(),
+                        },
+                    },
+                ));
+            }
+        },
+
+        // For all other patterns: infer then unify.
+        // Snapshot subst and save env so a failed unification is fully undone.
+        _ => {
+            let snapshot = ty_checker.snapshot();
+            let saved_env = ty_checker.env.clone();
+            let inferred = infer_pattern(ty_checker, schema, pattern);
+            if let Err(e) = ty_checker.unify(&inferred, &expected_ty) {
+                ty_checker.rollback(snapshot);
+                ty_checker.env = saved_env;
+                ty_checker.diagnostics.push((pattern.location, e));
+            }
+        }
+    }
 }
 
 pub fn check_record(
     ty_checker: &mut TyChecker,
+    schema: &Schema,
     field_patterns: &HashMap<Symbol, Pattern>,
     expected_tys: &HashMap<Symbol, Ty>,
 ) {
     for (field_name, field_pattern) in field_patterns.iter() {
         match expected_tys.get(field_name) {
-            Some(expected_ty) => {
-                check_pattern(ty_checker, field_pattern, expected_ty);
-            }
             None => {
                 ty_checker.diagnostics.push((
                     field_pattern.location,
                     TyError::UnknownField { field: *field_name },
                 ));
             }
+            Some(expected_ty) => {
+                // Snapshot before each field so a failed field check doesn't
+                // leave partial unification residue that pollutes sibling fields.
+                let snapshot = ty_checker.snapshot();
+                let saved_env = ty_checker.env.clone();
+                let diag_len = ty_checker.diagnostics.len();
+                check_pattern(ty_checker, schema, field_pattern, expected_ty);
+                if ty_checker.diagnostics.len() > diag_len {
+                    ty_checker.rollback(snapshot);
+                    ty_checker.env = saved_env;
+                }
+            }
         }
     }
 }
 
-pub fn infer_query(ty_checker: &mut TyChecker, query: &Query) -> Ty {
-    todo!()
+pub fn infer_query(ty_checker: &mut TyChecker, schema: &Schema, query: &Query) -> Ty {
+    for statement in query.body.iter() {
+        check_statement(ty_checker, schema, statement);
+    }
+    infer_pattern(ty_checker, schema, &query.head)
 }
 
-pub fn infer_subquery(ty_checker: &mut TyChecker, subquery: &Query) -> Ty {
-    todo!()
+fn check_statement(ty_checker: &mut TyChecker, schema: &Schema, statement: &Statement) {
+    match statement {
+        Statement::Bind { left, right } => {
+            // Infer the left side first, then check the right against that type.
+            // This makes the "implicit predicate name" feature work naturally when
+            // the right side is a record and the left side resolves to a Fact type.
+            let left_ty = infer_pattern(ty_checker, schema, left);
+            check_pattern(ty_checker, schema, right, &left_ty);
+        }
+        // An implicit bind is like `pattern = _`: just process the pattern for
+        // its side effects (variable introduction, key-pattern checking).
+        Statement::ImplicitBind(pattern) => {
+            infer_pattern(ty_checker, schema, pattern);
+        }
+    }
 }
 
-pub fn infer_pattern(ty_checker: &mut TyChecker, pattern: &Pattern) -> Ty {
-    todo!()
+pub fn infer_subquery(ty_checker: &mut TyChecker, schema: &Schema, subquery: &Query) -> Ty {
+    // Variables introduced inside a subquery must not leak into the outer scope.
+    let saved_env = ty_checker.env.clone();
+    let result_ty = infer_query(ty_checker, schema, subquery);
+    ty_checker.env = saved_env;
+    result_ty
+}
+
+pub fn infer_pattern(ty_checker: &mut TyChecker, schema: &Schema, pattern: &Pattern) -> Ty {
+    match &pattern.kind {
+        PatternKind::Wildcard => ty_checker.fresh_ty_var(),
+        PatternKind::Int(_) => Ty::Int,
+        PatternKind::String(_) | PatternKind::StringPrefix(_) => Ty::String,
+
+        PatternKind::Var(symbol) => {
+            if let Some(&ty_var_id) = ty_checker.env.get(symbol) {
+                // Already bound — return the existing type variable.
+                Ty::Var(ty_var_id)
+            } else {
+                // Fresh introduction: allocate a type variable and commit the env
+                // binding unconditionally. The caller is responsible for snapshotting
+                // env if the introduction should be conditional on later success.
+                let id = ty_checker.fresh_ty_var_id();
+                ty_checker.env.insert(*symbol, id);
+                Ty::Var(id)
+            }
+        }
+
+        PatternKind::Subquery(query) => infer_subquery(ty_checker, schema, query),
+
+        PatternKind::Record { field_patterns } => {
+            let field_tys = field_patterns
+                .iter()
+                .map(|(field_name, field_pattern)| {
+                    (
+                        *field_name,
+                        infer_pattern(ty_checker, schema, field_pattern),
+                    )
+                })
+                .collect();
+            Ty::Record { field_tys }
+        }
+
+        PatternKind::Fact {
+            predicate_id,
+            key_pattern,
+        } => {
+            let Some(key_ty) = schema.get_predicate_key_ty(*predicate_id) else {
+                ty_checker.diagnostics.push((
+                    pattern.location,
+                    TyError::UnknownPredicate {
+                        predicate_id: *predicate_id,
+                    },
+                ));
+                return Ty::Error;
+            };
+
+            let key_ty = key_ty.clone();
+
+            if let Some(p) = key_pattern.first() {
+                check_pattern(ty_checker, schema, p, &key_ty);
+            }
+
+            Ty::Fact {
+                predicate_id: *predicate_id,
+            }
+        }
+    }
 }
