@@ -1,0 +1,36 @@
+token Whitespace;
+token Where='where' Never='never';
+token UId='<uid>' LId='<lid>';
+token Wildcard='_';
+token Nat='<nat>';
+token String='<string>';
+token DotDot='..';
+token Dot='.' Eq='=' Semi=';' Comma=',' Minus='-' LPar='(' RPar=')' LBrace='{' RBrace='}';
+
+skip Whitespace;
+start root;
+
+root: query;
+
+query: pattern 'where' stmt_list;
+
+stmt_list: stmt (';' [stmt])*;
+
+stmt: pattern ('=' pattern @bind_stmt | @implicit_bind_stmt);
+
+pattern:
+  '_' @wildcard_apattern
+| UId @var_apattern
+| Nat @nat_apattern
+| '-' Nat @int_apattern
+| String ('..' @string_prefix_apattern | @string_apattern)
+| '{' [field_list] '}' @anon_record_apattern
+| fact_pattern @fact_apattern
+| '(' query ')' @subquery_apattern
+;
+
+fact_pattern: (LId '.')+ UId [pattern];
+
+field_list: field (',' field)*;
+
+field: LId '=' pattern;
