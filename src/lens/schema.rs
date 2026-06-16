@@ -1,0 +1,65 @@
+use string_interner::DefaultSymbol as Symbol;
+
+use crate::Ty;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PredicateId(usize);
+
+#[derive(Debug)]
+pub struct PredicateTy {
+    pub id: PredicateId,
+    pub name: Symbol,
+    pub key_ty: Ty,
+    pub value_ty: Ty,
+}
+
+#[derive(Debug)]
+pub struct Schema {
+    next_predicate_id: usize,
+    predicate_tys: Vec<PredicateTy>,
+}
+
+impl Schema {
+    pub fn new() -> Self {
+        Self {
+            next_predicate_id: 0,
+            predicate_tys: vec![],
+        }
+    }
+
+    fn next_predicate_id(&mut self) -> PredicateId {
+        let id = self.next_predicate_id;
+        self.next_predicate_id += 1;
+        PredicateId(id)
+    }
+
+    pub fn predicate_tys(&self) -> impl Iterator<Item = &PredicateTy> {
+        self.predicate_tys.iter()
+    }
+
+    pub fn get_predicate_ty(&self, PredicateId(i): PredicateId) -> Option<&PredicateTy> {
+        self.predicate_tys.get(i)
+    }
+
+    pub fn get_predicate_key_ty(&self, predicate_id: PredicateId) -> Option<&Ty> {
+        self.get_predicate_ty(predicate_id)
+            .map(|predicate_ty| &predicate_ty.key_ty)
+    }
+
+    pub fn get_predicate_value_ty(&self, predicate_id: PredicateId) -> Option<&Ty> {
+        self.get_predicate_ty(predicate_id)
+            .map(|predicate_ty| &predicate_ty.value_ty)
+    }
+
+    pub fn insert_predicate_ty(&mut self, name: Symbol, key_ty: Ty, value_ty: Ty) -> PredicateId {
+        let predicate_id = self.next_predicate_id();
+        let predicate_ty = PredicateTy {
+            id: predicate_id,
+            name,
+            key_ty,
+            value_ty,
+        };
+        self.predicate_tys.push(predicate_ty);
+        predicate_id
+    }
+}

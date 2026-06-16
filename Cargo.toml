@@ -1,0 +1,9 @@
+[package]
+name = "aperture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+codespan-reporting = "0.13.1"
+im = "15.1.0"
+string-interner = "0.20.0"
