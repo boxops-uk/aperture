@@ -167,7 +167,7 @@ fn main() -> rustyline::Result<()> {
         }
 
         if !diagnostics.is_empty() {
-            return Ok(());
+            continue;
         }
 
         let cst_node = CstNode::new(&cst);
