@@ -80,6 +80,10 @@ impl Display for TyDisplay<'_> {
             Ty::String => write!(f, "String"),
             Ty::Var(TyVarId(id)) => write!(f, "{}", u32_to_base26(id as u32)),
             Ty::Record { field_tys } => {
+                if field_tys.is_empty() {
+                    return write!(f, "{{}}");
+                }
+
                 let fields = field_tys
                     .iter()
                     .map(|(name, ty)| {

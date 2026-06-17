@@ -9,6 +9,7 @@ pub struct PredicateId(pub(crate) usize);
 #[derive(Debug)]
 pub struct PredicateTy {
     pub id: PredicateId,
+    pub namespace: Box<[Symbol]>,
     pub name: Symbol,
     pub key_ty: Ty,
     pub value_ty: Ty,
@@ -18,7 +19,7 @@ pub struct PredicateTy {
 pub struct Schema {
     next_predicate_id: usize,
     predicate_tys: Vec<PredicateTy>,
-    predicate_name_to_id: HashMap<Symbol, PredicateId>,
+    predicate_ids: HashMap<Box<[Symbol]>, HashMap<Symbol, PredicateId>>,
 }
 
 impl Schema {
@@ -26,7 +27,7 @@ impl Schema {
         Self {
             next_predicate_id: 0,
             predicate_tys: vec![],
-            predicate_name_to_id: HashMap::new(),
+            predicate_ids: HashMap::new(),
         }
     }
 
@@ -54,20 +55,45 @@ impl Schema {
             .map(|predicate_ty| &predicate_ty.value_ty)
     }
 
-    pub fn get_predicate_id(&self, name: Symbol) -> Option<PredicateId> {
-        self.predicate_name_to_id.get(&name).copied()
+    pub fn get_predicate_id(&self, namespace: &[Symbol], name: Symbol) -> Option<PredicateId> {
+        self.predicate_ids.get(namespace)?.get(&name).copied()
     }
 
-    pub fn insert_predicate_ty(&mut self, name: Symbol, key_ty: Ty, value_ty: Ty) -> PredicateId {
+    pub fn predicates_in_namespace(
+        &self,
+        namespace: &[Symbol],
+    ) -> impl Iterator<Item = (Symbol, PredicateId)> + '_ {
+        self.predicate_ids
+            .get(namespace)
+            .into_iter()
+            .flat_map(|inner| inner.iter().map(|(&name, &id)| (name, id)))
+    }
+
+    pub fn insert_predicate_ty(
+        &mut self,
+        namespace: Box<[Symbol]>,
+        name: Symbol,
+        key_ty: Ty,
+        value_ty: Ty,
+    ) -> PredicateId {
         let predicate_id = self.next_predicate_id();
         let predicate_ty = PredicateTy {
             id: predicate_id,
+            namespace: namespace.clone(),
             name,
             key_ty,
             value_ty,
         };
         self.predicate_tys.push(predicate_ty);
-        self.predicate_name_to_id.insert(name, predicate_id);
+
+        let mut inner = self
+            .predicate_ids
+            .get(&namespace)
+            .cloned()
+            .unwrap_or_default();
+        inner.insert(name, predicate_id);
+        self.predicate_ids.insert(namespace, inner);
+
         predicate_id
     }
 }

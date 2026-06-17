@@ -7,6 +7,7 @@ edition = "2024"
 codespan-reporting = "0.13.1"
 im = "15.1.0"
 logos = "0.16.1"
+rustyline = "18.0.0"
 string-interner = "0.20.0"
 
 [build-dependencies]

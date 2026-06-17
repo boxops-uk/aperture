@@ -23,6 +23,7 @@ impl LexerError {
 #[logos(error = LexerError)]
 pub enum Token {
     EOF,
+    #[regex(r"([ \t\n\f]|\\\n)+")]
     Whitespace,
     #[token("where")]
     Where,
