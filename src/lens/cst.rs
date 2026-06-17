@@ -73,15 +73,17 @@ impl<'s> CstNode<'s> {
         }
     }
 
-    pub fn cata<R>(&self, f: &impl Fn(CstKind<'s, R>) -> R) -> R {
-        f(self.kind().map(|child| child.cata(f)))
+    pub fn cata<R>(&self, f: &mut impl FnMut(CstKind<'s, R>) -> R) -> R {
+        let kind = self.kind().map(|child| child.cata(f));
+        f(kind)
     }
 
-    pub fn para<R>(&self, f: &impl Fn(CstKind<'s, (CstNode<'s>, R)>) -> R) -> R {
-        f(self.kind().map(|child| {
+    pub fn para<R>(&self, f: &mut impl FnMut(CstKind<'s, (CstNode<'s>, R)>) -> R) -> R {
+        let kind = self.kind().map(|child| {
             let r = child.para(f);
             (child, r)
-        }))
+        });
+        f(kind)
     }
 
     pub fn span(&self) -> Span {

@@ -1,8 +1,11 @@
+pub(crate) mod lexer;
+pub(crate) mod parser;
+
 pub mod cst;
-pub mod lexer;
+pub mod diag;
 pub mod location;
 pub mod lower;
-pub mod parser;
+pub mod parse;
 pub mod query;
 pub mod schema;
 pub mod ty;

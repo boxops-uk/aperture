@@ -1,6 +1,5 @@
 use super::lexer::{Token, tokenize};
 
-// TODO: change if codespan_reporting is not used
 use codespan_reporting::diagnostic::Label;
 pub type Diagnostic = codespan_reporting::diagnostic::Diagnostic<()>;
 
@@ -8,7 +7,7 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 impl<'a> ParserCallbacks<'a> for Parser<'a> {
     type Diagnostic = Diagnostic;
-    type Context = (); // TODO: add context information to the parser if required
+    type Context = ();
 
     fn create_tokens(_context: &mut Self::Context, source: &'a str, diags: &mut Vec<Self::Diagnostic>) -> (Vec<Token>, Vec<Span>) {
         tokenize(source, diags)

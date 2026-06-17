@@ -1,13 +1,11 @@
 use std::borrow::Cow;
-use std::cell::RefCell;
 
 use aperture::lens::{
-    cst::CstNode,
-    lexer::{self, Token},
-    lower::Lowering,
-    parser::Parser,
+    diag::Diag,
+    lower::LensLowering,
+    parse::{LensParser, Token, tokenize},
     schema::Schema,
-    ty::{Ty, TyChecker, TyDisplay, infer_query},
+    ty::{Ty, LensTyChecker, TyDisplay, infer_query},
 };
 use codespan_reporting::{
     files::SimpleFile,
@@ -33,15 +31,14 @@ struct LensHighlighter;
 
 impl Highlighter for LensHighlighter {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        let mut diagnostics = Vec::new();
-        let (tokens, spans) = lexer::tokenize(line, &mut diagnostics);
+        let (tokens, spans) = tokenize(line);
 
         let mut out = String::with_capacity(line.len() + 16);
         let mut last = 0;
 
         for (token, span) in tokens.iter().zip(spans.iter()) {
-            let start = span.start as usize;
-            let end = span.end as usize;
+            let start = span.start;
+            let end = span.end;
 
             if start > last {
                 out.push_str(&line[last..start]);
@@ -114,11 +111,11 @@ impl Helper for LensHelper {}
 
 fn main() -> rustyline::Result<()> {
     loop {
+        let mut strings = StringInterner::default();
         let mut schema = Schema::new();
-        let strings = RefCell::new(StringInterner::default());
 
-        let test_ns = strings.borrow_mut().get_or_intern("test");
-        let foo_sym = strings.borrow_mut().get_or_intern("Foo");
+        let test_ns = strings.get_or_intern("test");
+        let foo_sym = strings.get_or_intern("Foo");
 
         let id = schema.insert_predicate_ty(
             vec![test_ns].into_boxed_slice(),
@@ -127,9 +124,9 @@ fn main() -> rustyline::Result<()> {
             Ty::Never,
         );
 
-        let baa_sym = strings.borrow_mut().get_or_intern("Baa");
-        let x_sym = strings.borrow_mut().get_or_intern("x");
-        let y_sym = strings.borrow_mut().get_or_intern("y");
+        let baa_sym = strings.get_or_intern("Baa");
+        let x_sym = strings.get_or_intern("x");
+        let y_sym = strings.get_or_intern("y");
 
         schema.insert_predicate_ty(
             vec![test_ns].into_boxed_slice(),
@@ -154,43 +151,57 @@ fn main() -> rustyline::Result<()> {
             Err(err) => return Err(err),
         };
 
-        let mut diagnostics = vec![];
-        let parser = Parser::new(input.trim(), &mut diagnostics);
-        let cst = parser.parse(&mut diagnostics);
-
         let writer = StandardStream::stderr(ColorChoice::Auto);
         let config = Config::default();
         let file = SimpleFile::new("<stdin>", &input);
 
-        for diagnostic in diagnostics.iter() {
-            term::emit_to_write_style(&mut writer.lock(), &config, &file, diagnostic).unwrap();
-        }
+        let mut diags: Vec<Diag> = vec![];
 
-        if !diagnostics.is_empty() {
+        let mut parser = LensParser::parse(input.trim());
+        parser.drain_into(&mut diags);
+
+        if !diags.is_empty() {
+            render_diags(&diags, &strings, &schema, &writer, &config, &file);
             continue;
         }
 
-        let cst_node = CstNode::new(&cst);
-        let lowering = Lowering::new(&strings, &schema, ());
-        let query = lowering.lower(&cst_node);
+        let mut lowering = LensLowering::new(&mut strings, &schema, ());
+        let query = lowering.lower(&parser.cst());
+        lowering.drain_into(&mut diags);
 
-        let mut ty_checker: TyChecker = TyChecker::new();
+        if !diags.is_empty() {
+            render_diags(&diags, &strings, &schema, &writer, &config, &file);
+            continue;
+        }
 
+        let mut ty_checker = LensTyChecker::new();
         let inferred_ty = infer_query(&mut ty_checker, &schema, &query);
-
         let query_ty = ty_checker.zonk(&inferred_ty);
+        ty_checker.drain_into(&mut diags);
 
         println!(
             "{}",
             TyDisplay {
-                string_interner: &strings.borrow(),
+                string_interner: &strings,
                 schema: &schema,
                 ty: query_ty,
             }
         );
 
-        for diagnostic in ty_checker.diagnostics(&strings.borrow(), &schema) {
-            term::emit_to_write_style(&mut writer.lock(), &config, &file, &diagnostic).unwrap();
-        }
+        render_diags(&diags, &strings, &schema, &writer, &config, &file);
+    }
+}
+
+fn render_diags(
+    diags: &[Diag],
+    strings: &StringInterner,
+    schema: &Schema,
+    writer: &StandardStream,
+    config: &Config,
+    file: &SimpleFile<&str, &String>,
+) {
+    for diag in diags {
+        term::emit_to_write_style(&mut writer.lock(), config, file, &diag.render(strings, schema))
+            .unwrap();
     }
 }

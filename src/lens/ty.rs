@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use crate::lens::{
+    diag::{Diag, IntoDiagnostic},
     location::Location,
     query::{Pattern, PatternKind, Query, Statement},
     schema::{PredicateId, Schema},
@@ -58,7 +59,7 @@ pub enum TyError {
 }
 
 #[derive(Debug)]
-pub struct TyChecker<FileId = ()> {
+pub struct LensTyChecker<FileId = ()> {
     env: Env,
     subst: Subst,
     undo_log: Vec<UndoEntry>,
@@ -116,7 +117,7 @@ impl Display for TyDisplay<'_> {
     }
 }
 
-impl<FileId> TyChecker<FileId>
+impl<FileId> LensTyChecker<FileId>
 where
     FileId: Copy,
 {
@@ -278,70 +279,69 @@ where
         }
     }
 
-    pub fn diagnostics(
-        &self,
-        string_interner: &DefaultStringInterner,
-        schema: &Schema,
-    ) -> impl Iterator<Item = Diagnostic<FileId>> {
-        self.errors
-            .iter()
-            .map(|(location, error)| to_diagnostic(string_interner, schema, *location, error))
+    pub fn drain_into(&mut self, diags: &mut Vec<Diag<FileId>>)
+    where
+        FileId: 'static,
+    {
+        diags.extend(
+            self.errors
+                .drain(..)
+                .map(|(location, error)| Diag::unrendered(location, error)),
+        );
     }
 }
 
-pub fn to_diagnostic<FileId>(
-    string_interner: &DefaultStringInterner,
-    schema: &Schema,
-    location: Location<FileId>,
-    error: &TyError,
-) -> Diagnostic<FileId> {
-    match error {
-        TyError::InfiniteTy { ty_var_id } => Diagnostic::error()
-            .with_message("infinite type")
-            .with_labels(vec![
-                Label::primary(location.file_id, location.span).with_message(format!(
-                    "type variable {} occurs inside its own type",
-                    u32_to_base26(ty_var_id.0 as u32)
-                )),
-            ]),
-        TyError::Mismatch { expected, got } => Diagnostic::error()
-            .with_message("type mismatch")
-            .with_labels(vec![
-                Label::primary(location.file_id, location.span).with_message(format!(
-                    "expected type {}, got {}",
-                    TyDisplay {
-                        string_interner,
-                        schema,
-                        ty: expected.clone(),
-                    },
-                    TyDisplay {
-                        string_interner,
-                        schema,
-                        ty: got.clone(),
-                    }
-                )),
-            ]),
-        TyError::UnknownPredicate { predicate_id } => Diagnostic::error()
-            .with_message("unknown predicate")
-            .with_labels(vec![
-                Label::primary(location.file_id, location.span).with_message(format!(
-                    "predicate with id {} is not defined in the schema",
-                    predicate_id.0
-                )),
-            ]),
-        TyError::UnknownField { field } => Diagnostic::error()
-            .with_message("unknown field")
-            .with_labels(vec![
-                Label::primary(location.file_id, location.span).with_message(format!(
-                    "field {} is not defined in the record type",
-                    string_interner.resolve(*field).unwrap()
-                )),
-            ]),
+impl<FileId: Copy> IntoDiagnostic<FileId> for TyError {
+    fn into_diagnostic(
+        &self,
+        location: Location<FileId>,
+        string_interner: &DefaultStringInterner,
+        schema: &Schema,
+    ) -> Diagnostic<FileId> {
+        match self {
+            TyError::InfiniteTy { ty_var_id } => Diagnostic::error()
+                .with_message("infinite type")
+                .with_labels(vec![Label::primary(location.file_id, location.span)
+                    .with_message(format!(
+                        "type variable {} occurs inside its own type",
+                        u32_to_base26(ty_var_id.0 as u32)
+                    ))]),
+            TyError::Mismatch { expected, got } => Diagnostic::error()
+                .with_message("type mismatch")
+                .with_labels(vec![Label::primary(location.file_id, location.span)
+                    .with_message(format!(
+                        "expected type {}, got {}",
+                        TyDisplay {
+                            string_interner,
+                            schema,
+                            ty: expected.clone(),
+                        },
+                        TyDisplay {
+                            string_interner,
+                            schema,
+                            ty: got.clone(),
+                        }
+                    ))]),
+            TyError::UnknownPredicate { predicate_id } => Diagnostic::error()
+                .with_message("unknown predicate")
+                .with_labels(vec![Label::primary(location.file_id, location.span)
+                    .with_message(format!(
+                        "predicate with id {} is not defined in the schema",
+                        predicate_id.0
+                    ))]),
+            TyError::UnknownField { field } => Diagnostic::error()
+                .with_message("unknown field")
+                .with_labels(vec![Label::primary(location.file_id, location.span)
+                    .with_message(format!(
+                        "field {} is not defined in the record type",
+                        string_interner.resolve(*field).unwrap()
+                    ))]),
+        }
     }
 }
 
 pub fn check_pattern(
-    ty_checker: &mut TyChecker,
+    ty_checker: &mut LensTyChecker,
     schema: &Schema,
     pattern: &Pattern,
     expected_ty: &Ty,
@@ -432,7 +432,7 @@ pub fn check_pattern(
 }
 
 pub fn check_record(
-    ty_checker: &mut TyChecker,
+    ty_checker: &mut LensTyChecker,
     schema: &Schema,
     field_patterns: &HashMap<Symbol, Pattern>,
     expected_tys: &HashMap<Symbol, Ty>,
@@ -461,14 +461,14 @@ pub fn check_record(
     }
 }
 
-pub fn infer_query(ty_checker: &mut TyChecker, schema: &Schema, query: &Query) -> Ty {
+pub fn infer_query(ty_checker: &mut LensTyChecker, schema: &Schema, query: &Query) -> Ty {
     for statement in query.body.iter() {
         check_statement(ty_checker, schema, statement);
     }
     infer_pattern(ty_checker, schema, &query.head)
 }
 
-fn check_statement(ty_checker: &mut TyChecker, schema: &Schema, statement: &Statement) {
+fn check_statement(ty_checker: &mut LensTyChecker, schema: &Schema, statement: &Statement) {
     match statement {
         Statement::Bind { left, right } => {
             // Infer the left side first, then check the right against that type.
@@ -485,7 +485,7 @@ fn check_statement(ty_checker: &mut TyChecker, schema: &Schema, statement: &Stat
     }
 }
 
-pub fn infer_subquery(ty_checker: &mut TyChecker, schema: &Schema, subquery: &Query) -> Ty {
+pub fn infer_subquery(ty_checker: &mut LensTyChecker, schema: &Schema, subquery: &Query) -> Ty {
     // Variables introduced inside a subquery must not leak into the outer scope.
     let saved_env = ty_checker.env.clone();
     let result_ty = infer_query(ty_checker, schema, subquery);
@@ -493,7 +493,7 @@ pub fn infer_subquery(ty_checker: &mut TyChecker, schema: &Schema, subquery: &Qu
     result_ty
 }
 
-pub fn infer_pattern(ty_checker: &mut TyChecker, schema: &Schema, pattern: &Pattern) -> Ty {
+pub fn infer_pattern(ty_checker: &mut LensTyChecker, schema: &Schema, pattern: &Pattern) -> Ty {
     match &pattern.kind {
         PatternKind::Wildcard => ty_checker.fresh_ty_var(),
         PatternKind::Int(_) => Ty::Int,
@@ -512,6 +512,8 @@ pub fn infer_pattern(ty_checker: &mut TyChecker, schema: &Schema, pattern: &Patt
                 Ty::Var(id)
             }
         }
+
+        PatternKind::Error => Ty::Error,
 
         PatternKind::Subquery(query) => infer_subquery(ty_checker, schema, query),
 

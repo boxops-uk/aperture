@@ -1,10 +1,12 @@
 use im::HashMap;
-use std::cell::RefCell;
 use string_interner::DefaultStringInterner as StringInterner;
 use string_interner::DefaultSymbol as Symbol;
 
+use codespan_reporting::diagnostic::{Diagnostic, Label};
+
 use crate::lens::cst::CstKind;
 use crate::lens::cst::CstNode;
+use crate::lens::diag::{Diag, IntoDiagnostic};
 use crate::lens::lexer::Token;
 use crate::lens::location::Location;
 use crate::lens::parser::Rule;
@@ -12,6 +14,43 @@ use crate::lens::query::PatternKind;
 use crate::lens::query::{Pattern, Query, Statement};
 use crate::lens::schema::PredicateId;
 use crate::lens::schema::Schema;
+
+#[derive(Debug)]
+pub enum LowerError {
+    UnknownPredicate {
+        namespace: Box<[Symbol]>,
+        name: Symbol,
+    },
+}
+
+impl<FileId: Copy> IntoDiagnostic<FileId> for LowerError {
+    fn into_diagnostic(
+        &self,
+        location: Location<FileId>,
+        interner: &StringInterner,
+        _schema: &Schema,
+    ) -> Diagnostic<FileId> {
+        match self {
+            LowerError::UnknownPredicate { namespace, name } => {
+                let name_str = interner.resolve(*name).unwrap_or("?");
+                let full_name = if namespace.is_empty() {
+                    name_str.to_owned()
+                } else {
+                    let ns = namespace
+                        .iter()
+                        .map(|s| interner.resolve(*s).unwrap_or("?"))
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    format!("{}::{}", ns, name_str)
+                };
+                Diagnostic::error()
+                    .with_message(format!("unknown predicate '{}'", full_name))
+                    .with_labels(vec![Label::primary(location.file_id, location.span)
+                        .with_message(format!("'{}' is not defined in the schema", full_name))])
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Lowered<FileId> {
@@ -30,43 +69,57 @@ pub enum Lowered<FileId> {
     Nat(u32),
     Str(Symbol),
     Trivia,
+    Error,
 }
 
-pub struct Lowering<'a, FileId> {
-    interner: &'a RefCell<StringInterner>,
+pub struct LensLowering<'a, FileId> {
+    interner: &'a mut StringInterner,
     schema: &'a Schema,
     file_id: FileId,
+    errors: Vec<Diag<FileId>>,
 }
 
-impl<'a, FileId> Lowering<'a, FileId>
+impl<'a, FileId> LensLowering<'a, FileId>
 where
-    FileId: Copy + std::fmt::Debug,
+    FileId: Copy + std::fmt::Debug + 'static,
 {
-    pub fn new(interner: &'a RefCell<StringInterner>, schema: &'a Schema, file_id: FileId) -> Self {
+    pub fn new(interner: &'a mut StringInterner, schema: &'a Schema, file_id: FileId) -> Self {
         Self {
             interner,
             schema,
             file_id,
+            errors: vec![],
         }
     }
 
-    pub fn lower<'s>(&self, cst: &'s CstNode<'s>) -> Query<FileId> {
-        let Lowered::Query(q) = cst.para(&|kind| self.algebra(kind)) else {
+
+    pub fn lower<'s>(&mut self, cst: &'s CstNode<'s>) -> Query<FileId> {
+        let Lowered::Query(q) = cst.para(&mut |kind| self.algebra(kind)) else {
             unreachable!()
         };
-
         q
     }
 
-    fn intern<'s>(&self, s: &'s str) -> Symbol {
-        self.interner.borrow_mut().get_or_intern(s)
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
+    pub fn drain_into(&mut self, diags: &mut Vec<Diag<FileId>>) {
+        diags.extend(self.errors.drain(..));
+    }
+
+    fn intern(&mut self, s: &str) -> Symbol {
+        self.interner.get_or_intern(s)
     }
 
     fn loc(&self, span: super::parser::Span) -> Location<FileId> {
         Location::new(self.file_id, span)
     }
 
-    fn algebra<'s>(&self, kind: CstKind<'s, (CstNode<'s>, Lowered<FileId>)>) -> Lowered<FileId> {
+    fn algebra<'s>(
+        &mut self,
+        kind: CstKind<'s, (CstNode<'s>, Lowered<FileId>)>,
+    ) -> Lowered<FileId> {
         match kind {
             CstKind::Rule {
                 rule: Rule::Root,
@@ -269,16 +322,28 @@ where
                 span,
                 children,
             } => {
-                let (predicate_id, key_pattern) = children
-                    .into_iter()
-                    .find_map(|(_, l)| match l {
+                let mut intermediate = None;
+                let mut has_lower_error = false;
+                for (_, l) in children {
+                    match l {
                         Lowered::IntermediateFact {
                             predicate_id,
                             key_pattern,
-                        } => Some((predicate_id, key_pattern)),
-                        _ => None,
-                    })
-                    .expect("fact apattern has an intermediate fact");
+                        } => intermediate = Some((predicate_id, key_pattern)),
+                        Lowered::Error => has_lower_error = true,
+                        _ => {}
+                    }
+                }
+
+                if has_lower_error && intermediate.is_none() {
+                    return Lowered::Pattern(Pattern {
+                        location: self.loc(span),
+                        kind: PatternKind::Error,
+                    });
+                }
+
+                let (predicate_id, key_pattern) =
+                    intermediate.expect("fact apattern has an intermediate fact");
 
                 let key_pattern = key_pattern.unwrap_or_else(|| {
                     Box::new(Pattern {
@@ -318,8 +383,8 @@ where
 
             CstKind::Rule {
                 rule: Rule::FactPattern,
+                span,
                 children,
-                ..
             } => {
                 let mut namespace = vec![];
                 let mut name = None;
@@ -333,13 +398,20 @@ where
                     }
                 }
                 let name = name.expect("fact pattern has a name");
+                let namespace: Box<[Symbol]> = namespace.into();
 
-                Lowered::IntermediateFact {
-                    predicate_id: self
-                        .schema
-                        .get_predicate_id(&namespace, name)
-                        .expect("fact pattern has a valid predicate"),
-                    key_pattern,
+                match self.schema.get_predicate_id(&namespace, name) {
+                    Some(predicate_id) => Lowered::IntermediateFact {
+                        predicate_id,
+                        key_pattern,
+                    },
+                    None => {
+                        self.errors.push(Diag::unrendered(
+                            self.loc(span),
+                            LowerError::UnknownPredicate { namespace, name },
+                        ));
+                        Lowered::Error
+                    }
                 }
             }
 

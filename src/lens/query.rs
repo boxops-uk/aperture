@@ -39,4 +39,5 @@ pub enum PatternKind<T, FileId = ()> {
         predicate_id: PredicateId,
         key_pattern: Box<T>,
     },
+    Error,
 }
