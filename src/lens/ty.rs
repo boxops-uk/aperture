@@ -272,8 +272,8 @@ where
             }
 
             (a, b) => Err(TyError::Mismatch {
-                expected: a,
-                got: b,
+                expected: b,
+                got: a,
             }),
         }
     }

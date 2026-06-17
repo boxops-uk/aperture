@@ -29,7 +29,7 @@ pattern:
 | '(' query ')' @subquery_apattern
 ;
 
-fact_pattern: (LId '.')+ UId [pattern];
+fact_pattern: (LId '.')+ UId pattern;
 
 field_list: field (',' field)*;
 
