@@ -4,8 +4,9 @@ use aperture::lens::{
     diag::Diag,
     lower::LensLowering,
     parse::{LensParser, Token, tokenize},
+    query::NodeIdGen,
     schema::Schema,
-    ty::{Ty, LensTyChecker, TyDisplay, infer_query},
+    ty::{LensTyChecker, Ty, TyDisplay, infer_query},
 };
 use codespan_reporting::{
     files::SimpleFile,
@@ -165,7 +166,8 @@ fn main() -> rustyline::Result<()> {
             continue;
         }
 
-        let mut lowering = LensLowering::new(&mut strings, &schema, ());
+        let mut node_id_gen = NodeIdGen::default();
+        let mut lowering = LensLowering::new(&mut node_id_gen, &mut strings, &schema, ());
         let query = lowering.lower(&parser.cst());
         lowering.drain_into(&mut diags);
 
@@ -175,16 +177,15 @@ fn main() -> rustyline::Result<()> {
         }
 
         let mut ty_checker = LensTyChecker::new();
-        let inferred_ty = infer_query(&mut ty_checker, &schema, &query);
-        let query_ty = ty_checker.zonk(&inferred_ty);
+        let ty = infer_query(&mut ty_checker, &schema, &query);
         ty_checker.drain_into(&mut diags);
 
         println!(
             "{}",
             TyDisplay {
-                string_interner: &strings,
+                ty: ty_checker.zonk(&ty),
                 schema: &schema,
-                ty: query_ty,
+                string_interner: &strings
             }
         );
 
@@ -201,7 +202,12 @@ fn render_diags(
     file: &SimpleFile<&str, &String>,
 ) {
     for diag in diags {
-        term::emit_to_write_style(&mut writer.lock(), config, file, &diag.render(strings, schema))
-            .unwrap();
+        term::emit_to_write_style(
+            &mut writer.lock(),
+            config,
+            file,
+            &diag.render(strings, schema),
+        )
+        .unwrap();
     }
 }

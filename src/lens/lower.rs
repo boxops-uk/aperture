@@ -10,6 +10,7 @@ use crate::lens::diag::{Diag, IntoDiagnostic};
 use crate::lens::lexer::Token;
 use crate::lens::location::Location;
 use crate::lens::parser::Rule;
+use crate::lens::query::NodeIdGen;
 use crate::lens::query::PatternKind;
 use crate::lens::query::{Pattern, Query, Statement};
 use crate::lens::schema::PredicateId;
@@ -45,8 +46,10 @@ impl<FileId: Copy> IntoDiagnostic<FileId> for LowerError {
                 };
                 Diagnostic::error()
                     .with_message(format!("unknown predicate '{}'", full_name))
-                    .with_labels(vec![Label::primary(location.file_id, location.span)
-                        .with_message(format!("'{}' is not defined in the schema", full_name))])
+                    .with_labels(vec![
+                        Label::primary(location.file_id, location.span)
+                            .with_message(format!("'{}' is not defined in the schema", full_name)),
+                    ])
             }
         }
     }
@@ -73,6 +76,7 @@ pub enum Lowered<FileId> {
 }
 
 pub struct LensLowering<'a, FileId> {
+    node_id_gen: &'a mut NodeIdGen,
     interner: &'a mut StringInterner,
     schema: &'a Schema,
     file_id: FileId,
@@ -83,15 +87,20 @@ impl<'a, FileId> LensLowering<'a, FileId>
 where
     FileId: Copy + std::fmt::Debug + 'static,
 {
-    pub fn new(interner: &'a mut StringInterner, schema: &'a Schema, file_id: FileId) -> Self {
+    pub fn new(
+        node_id_gen: &'a mut NodeIdGen,
+        interner: &'a mut StringInterner,
+        schema: &'a Schema,
+        file_id: FileId,
+    ) -> Self {
         Self {
+            node_id_gen,
             interner,
             schema,
             file_id,
             errors: vec![],
         }
     }
-
 
     pub fn lower<'s>(&mut self, cst: &'s CstNode<'s>) -> Query<FileId> {
         let Lowered::Query(q) = cst.para(&mut |kind| self.algebra(kind)) else {
@@ -114,6 +123,18 @@ where
 
     fn loc(&self, span: super::parser::Span) -> Location<FileId> {
         Location::new(self.file_id, span)
+    }
+
+    fn pattern(
+        &mut self,
+        span: super::parser::Span,
+        kind: PatternKind<Pattern<FileId>, FileId>,
+    ) -> Pattern<FileId> {
+        Pattern {
+            id: self.node_id_gen.next(),
+            location: self.loc(span),
+            kind,
+        }
     }
 
     fn algebra<'s>(
@@ -204,10 +225,7 @@ where
                 rule: Rule::WildcardApattern,
                 span,
                 ..
-            } => Lowered::Pattern(Pattern {
-                location: self.loc(span),
-                kind: PatternKind::Wildcard,
-            }),
+            } => Lowered::Pattern(self.pattern(span, PatternKind::Wildcard)),
 
             CstKind::Rule {
                 rule: Rule::VarApattern,
@@ -221,10 +239,7 @@ where
                         _ => None,
                     })
                     .expect("var apattern has a uid");
-                Lowered::Pattern(Pattern {
-                    location: self.loc(span),
-                    kind: PatternKind::Var(sym),
-                })
+                Lowered::Pattern(self.pattern(span, PatternKind::Var(sym)))
             }
 
             CstKind::Rule {
@@ -239,10 +254,7 @@ where
                         _ => None,
                     })
                     .expect("nat apattern has a nat");
-                Lowered::Pattern(Pattern {
-                    location: self.loc(span),
-                    kind: PatternKind::Int(n.into()),
-                })
+                Lowered::Pattern(self.pattern(span, PatternKind::Int(n.into())))
             }
 
             CstKind::Rule {
@@ -257,10 +269,7 @@ where
                         _ => None,
                     })
                     .expect("int apattern has a nat");
-                Lowered::Pattern(Pattern {
-                    location: self.loc(span),
-                    kind: PatternKind::Int(-(n as i64)),
-                })
+                Lowered::Pattern(self.pattern(span, PatternKind::Int(-(n as i64))))
             }
 
             CstKind::Rule {
@@ -275,10 +284,7 @@ where
                         _ => None,
                     })
                     .expect("string apattern has a str");
-                Lowered::Pattern(Pattern {
-                    location: self.loc(span),
-                    kind: PatternKind::String(s),
-                })
+                Lowered::Pattern(self.pattern(span, PatternKind::String(s)))
             }
 
             CstKind::Rule {
@@ -293,10 +299,7 @@ where
                         _ => None,
                     })
                     .expect("string prefix apattern has a str");
-                Lowered::Pattern(Pattern {
-                    location: self.loc(span),
-                    kind: PatternKind::StringPrefix(s),
-                })
+                Lowered::Pattern(self.pattern(span, PatternKind::StringPrefix(s)))
             }
 
             CstKind::Rule {
@@ -311,10 +314,7 @@ where
                         _ => None,
                     })
                     .unwrap_or_default();
-                Lowered::Pattern(Pattern {
-                    location: self.loc(span),
-                    kind: PatternKind::Record { field_patterns },
-                })
+                Lowered::Pattern(self.pattern(span, PatternKind::Record { field_patterns }))
             }
 
             CstKind::Rule {
@@ -336,31 +336,28 @@ where
                 }
 
                 if has_lower_error && intermediate.is_none() {
-                    return Lowered::Pattern(Pattern {
-                        location: self.loc(span),
-                        kind: PatternKind::Error,
-                    });
+                    return Lowered::Pattern(self.pattern(span, PatternKind::Error));
                 }
 
                 let (predicate_id, key_pattern) =
                     intermediate.expect("fact apattern has an intermediate fact");
 
                 let key_pattern = key_pattern.unwrap_or_else(|| {
-                    Box::new(Pattern {
-                        location: self.loc(span.clone()),
-                        kind: PatternKind::Record {
+                    Box::new(self.pattern(
+                        span.clone(),
+                        PatternKind::Record {
                             field_patterns: HashMap::new(),
                         },
-                    })
+                    ))
                 });
 
-                Lowered::Pattern(Pattern {
-                    location: self.loc(span),
-                    kind: PatternKind::Fact {
+                Lowered::Pattern(self.pattern(
+                    span,
+                    PatternKind::Fact {
                         predicate_id,
                         key_pattern,
                     },
-                })
+                ))
             }
 
             CstKind::Rule {
@@ -375,10 +372,7 @@ where
                         _ => None,
                     })
                     .expect("subquery apattern has a query");
-                Lowered::Pattern(Pattern {
-                    location: self.loc(span),
-                    kind: PatternKind::Subquery(Box::new(q)),
-                })
+                Lowered::Pattern(self.pattern(span, PatternKind::Subquery(Box::new(q))))
             }
 
             CstKind::Rule {

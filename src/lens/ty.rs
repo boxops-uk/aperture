@@ -3,7 +3,7 @@ use std::fmt::Display;
 use crate::lens::{
     diag::{Diag, IntoDiagnostic},
     location::Location,
-    query::{Pattern, PatternKind, Query, Statement},
+    query::{NodeId, Pattern, PatternKind, Query, Statement},
     schema::{PredicateId, Schema},
 };
 use codespan_reporting::diagnostic::{Diagnostic, Label};
@@ -37,11 +37,18 @@ impl Ty {
 
 type Env = HashMap<Symbol, TyVarId>;
 type Subst = Vec<Option<Ty>>;
+type PatternTys = HashMap<NodeId, Ty>;
 
 #[derive(Debug)]
-struct UndoEntry {
-    ty_var_id: TyVarId,
-    prev: Option<Ty>,
+enum UndoEntry {
+    Subst {
+        ty_var_id: TyVarId,
+        prev: Option<Ty>,
+    },
+    PatternTy {
+        pattern_id: NodeId,
+        prev: Option<Ty>,
+    },
 }
 
 #[derive(Debug)]
@@ -62,6 +69,7 @@ pub enum TyError {
 pub struct LensTyChecker<FileId = ()> {
     env: Env,
     subst: Subst,
+    pattern_tys: PatternTys,
     undo_log: Vec<UndoEntry>,
     errors: Vec<(Location<FileId>, TyError)>,
 }
@@ -125,6 +133,7 @@ where
         Self {
             env: HashMap::new(),
             subst: vec![],
+            pattern_tys: HashMap::new(),
             undo_log: vec![],
             errors: vec![],
         }
@@ -149,8 +158,19 @@ where
 
     pub fn rollback(&mut self, snapshot: Snapshot) {
         while self.undo_log.len() > snapshot.undo_log_len {
-            let undo_entry = self.undo_log.pop().unwrap();
-            self.subst[undo_entry.ty_var_id.0] = undo_entry.prev;
+            match self.undo_log.pop().unwrap() {
+                UndoEntry::Subst { ty_var_id, prev } => {
+                    self.subst[ty_var_id.0] = prev;
+                }
+                UndoEntry::PatternTy { pattern_id, prev } => match prev {
+                    Some(ty) => {
+                        self.pattern_tys.insert(pattern_id, ty);
+                    }
+                    None => {
+                        self.pattern_tys.remove(&pattern_id);
+                    }
+                },
+            }
         }
 
         self.subst.truncate(snapshot.subst_len);
@@ -167,11 +187,21 @@ where
 
     fn set_var_ty(&mut self, id: TyVarId, ty: Ty) {
         let prev = self.get_var_ty(id);
-        self.undo_log.push(UndoEntry {
+        self.undo_log.push(UndoEntry::Subst {
             ty_var_id: id,
             prev,
         });
         self.subst[id.0] = Some(ty);
+    }
+
+    fn record_pattern_ty(&mut self, pattern_id: NodeId, ty: Ty) {
+        let prev = self.pattern_tys.insert(pattern_id, ty);
+        self.undo_log
+            .push(UndoEntry::PatternTy { pattern_id, prev });
+    }
+
+    pub fn get_pattern_ty(&self, pattern_id: NodeId) -> Option<&Ty> {
+        self.pattern_tys.get(&pattern_id)
     }
 
     pub fn zonk(&mut self, ty: &Ty) -> Ty {
@@ -279,6 +309,17 @@ where
         }
     }
 
+    pub fn zonk_pattern_tys(&mut self) -> HashMap<NodeId, Ty> {
+        let ids: Vec<NodeId> = self.pattern_tys.keys().copied().collect();
+        ids.into_iter()
+            .map(|id| {
+                let ty = self.pattern_tys[&id].clone();
+                let zonked = self.zonk(&ty);
+                (id, zonked)
+            })
+            .collect()
+    }
+
     pub fn drain_into(&mut self, diags: &mut Vec<Diag<FileId>>)
     where
         FileId: 'static,
@@ -301,15 +342,16 @@ impl<FileId: Copy> IntoDiagnostic<FileId> for TyError {
         match self {
             TyError::InfiniteTy { ty_var_id } => Diagnostic::error()
                 .with_message("infinite type")
-                .with_labels(vec![Label::primary(location.file_id, location.span)
-                    .with_message(format!(
+                .with_labels(vec![
+                    Label::primary(location.file_id, location.span).with_message(format!(
                         "type variable {} occurs inside its own type",
                         u32_to_base26(ty_var_id.0 as u32)
-                    ))]),
+                    )),
+                ]),
             TyError::Mismatch { expected, got } => Diagnostic::error()
                 .with_message("type mismatch")
-                .with_labels(vec![Label::primary(location.file_id, location.span)
-                    .with_message(format!(
+                .with_labels(vec![
+                    Label::primary(location.file_id, location.span).with_message(format!(
                         "expected type {}, got {}",
                         TyDisplay {
                             string_interner,
@@ -321,21 +363,24 @@ impl<FileId: Copy> IntoDiagnostic<FileId> for TyError {
                             schema,
                             ty: got.clone(),
                         }
-                    ))]),
+                    )),
+                ]),
             TyError::UnknownPredicate { predicate_id } => Diagnostic::error()
                 .with_message("unknown predicate")
-                .with_labels(vec![Label::primary(location.file_id, location.span)
-                    .with_message(format!(
+                .with_labels(vec![
+                    Label::primary(location.file_id, location.span).with_message(format!(
                         "predicate with id {} is not defined in the schema",
                         predicate_id.0
-                    ))]),
+                    )),
+                ]),
             TyError::UnknownField { field } => Diagnostic::error()
                 .with_message("unknown field")
-                .with_labels(vec![Label::primary(location.file_id, location.span)
-                    .with_message(format!(
+                .with_labels(vec![
+                    Label::primary(location.file_id, location.span).with_message(format!(
                         "field {} is not defined in the record type",
                         string_interner.resolve(*field).unwrap()
-                    ))]),
+                    )),
+                ]),
         }
     }
 }
@@ -354,11 +399,14 @@ pub fn check_pattern(
     }
 
     match &pattern.kind {
-        PatternKind::Wildcard => {}
+        PatternKind::Wildcard => {
+            ty_checker.record_pattern_ty(pattern.id, expected_ty.clone());
+        }
 
         PatternKind::Record { field_patterns } => match &expected_ty {
             Ty::Record { field_tys } => {
                 check_record(ty_checker, schema, field_patterns, field_tys);
+                ty_checker.record_pattern_ty(pattern.id, expected_ty.clone());
             }
 
             // Implicit predicate name: `{ field = ... }` where a Fact type is expected
@@ -377,6 +425,7 @@ pub fn check_pattern(
                     let key_ty = ty_checker.zonk(&key_ty);
                     if let Ty::Record { field_tys } = key_ty {
                         check_record(ty_checker, schema, field_patterns, &field_tys);
+                        ty_checker.record_pattern_ty(pattern.id, expected_ty.clone());
                     } else {
                         ty_checker.errors.push((
                             pattern.location,
@@ -392,6 +441,7 @@ pub fn check_pattern(
             },
 
             // Unbound type variable: infer the record type and unify to bind it.
+            // infer_pattern records the type; rollback undoes it on failure.
             Ty::Var(_) => {
                 let snapshot = ty_checker.snapshot();
                 let saved_env = ty_checker.env.clone();
@@ -418,6 +468,7 @@ pub fn check_pattern(
 
         // For all other patterns: infer then unify.
         // Snapshot subst and save env so a failed unification is fully undone.
+        // infer_pattern records the type; rollback undoes it on failure.
         _ => {
             let snapshot = ty_checker.snapshot();
             let saved_env = ty_checker.env.clone();
@@ -494,7 +545,7 @@ pub fn infer_subquery(ty_checker: &mut LensTyChecker, schema: &Schema, subquery:
 }
 
 pub fn infer_pattern(ty_checker: &mut LensTyChecker, schema: &Schema, pattern: &Pattern) -> Ty {
-    match &pattern.kind {
+    let ty = match &pattern.kind {
         PatternKind::Wildcard => ty_checker.fresh_ty_var(),
         PatternKind::Int(_) => Ty::Int,
         PatternKind::String(_) | PatternKind::StringPrefix(_) => Ty::String,
@@ -541,7 +592,9 @@ pub fn infer_pattern(ty_checker: &mut LensTyChecker, schema: &Schema, pattern: &
                         predicate_id: *predicate_id,
                     },
                 ));
-                return Ty::Error;
+                let err = Ty::Error;
+                ty_checker.record_pattern_ty(pattern.id, err.clone());
+                return err;
             };
 
             check_pattern(ty_checker, schema, key_pattern, &key_ty);
@@ -550,7 +603,9 @@ pub fn infer_pattern(ty_checker: &mut LensTyChecker, schema: &Schema, pattern: &
                 predicate_id: *predicate_id,
             }
         }
-    }
+    };
+    ty_checker.record_pattern_ty(pattern.id, ty.clone());
+    ty
 }
 
 fn u32_to_base26(mut n: u32) -> String {
