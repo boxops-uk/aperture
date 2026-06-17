@@ -391,6 +391,18 @@ pub fn check_pattern(
                 }
             },
 
+            // Unbound type variable: infer the record type and unify to bind it.
+            Ty::Var(_) => {
+                let snapshot = ty_checker.snapshot();
+                let saved_env = ty_checker.env.clone();
+                let inferred = infer_pattern(ty_checker, schema, pattern);
+                if let Err(e) = ty_checker.unify(&inferred, &expected_ty) {
+                    ty_checker.rollback(snapshot);
+                    ty_checker.env = saved_env;
+                    ty_checker.errors.push((pattern.location, e));
+                }
+            }
+
             _ => {
                 ty_checker.errors.push((
                     pattern.location,
