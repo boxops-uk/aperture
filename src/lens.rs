@@ -3,6 +3,7 @@ pub(crate) mod parser;
 
 pub mod cst;
 pub mod diag;
+pub mod hoist;
 pub mod location;
 pub mod lower;
 pub mod parse;

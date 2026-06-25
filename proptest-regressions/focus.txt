@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7ece34e457d9a1af80382ea32745578c884574b2311feca774965f58b9b58ca7 # shrinks to v = Record([Int(-1)]), nested = false
+cc e24420f021b1094efd7f99992ef7bb6cdefe9e6f4b1960ffd0149ebc64d12ca4 # shrinks to tuple = [Int(-1)]

@@ -4,11 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+byteview = "0.10.1"
 codespan-reporting = "0.13.1"
-im = "15.1.0"
+fjall = "3.1.5"
+im-rc = "15.1.0"
+itertools = "0.15.0"
+lasso = "0.7.3"
 logos = "0.16.1"
+proptest = "1.11.0"
 rustyline = "18.0.0"
 string-interner = "0.20.0"
+thiserror = "2.0.18"
+tinyvec = { version = "1.11.0", features = ["alloc"] }
 
 [build-dependencies]
 lelwel = "0.10"

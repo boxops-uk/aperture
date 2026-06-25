@@ -1,5 +1,5 @@
 use crate::lens::{location::Location, schema::PredicateId};
-use im::HashMap;
+use im_rc::HashMap;
 use string_interner::DefaultSymbol as Symbol;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

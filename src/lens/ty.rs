@@ -7,7 +7,7 @@ use crate::lens::{
     schema::{PredicateId, Schema},
 };
 use codespan_reporting::diagnostic::{Diagnostic, Label};
-use im::HashMap;
+use im_rc::HashMap;
 use string_interner::{DefaultStringInterner, DefaultSymbol as Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

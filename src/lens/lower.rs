@@ -1,4 +1,4 @@
-use im::HashMap;
+use im_rc::HashMap;
 use string_interner::DefaultStringInterner as StringInterner;
 use string_interner::DefaultSymbol as Symbol;
 
