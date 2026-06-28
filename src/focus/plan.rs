@@ -65,6 +65,12 @@ pub enum Project {
     Record(Box<[Project]>),
 }
 
+pub struct Plan {
+    pub nvars: usize,
+    pub body: Box<[Generator]>,
+    pub head: Project,
+}
+
 #[derive(Debug)]
 pub struct Entity {
     pub key: ByteView,

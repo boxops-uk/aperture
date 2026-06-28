@@ -15,6 +15,9 @@ pub enum StoreError {
 
     #[error("advance of closed frame")]
     AdvanceAfterClose,
+
+    #[error("resume key not found")]
+    BadResumeKey,
 }
 
 #[derive(Debug, Error)]

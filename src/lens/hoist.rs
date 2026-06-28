@@ -1,7 +1,7 @@
 use std::ops::Range;
 
-#[derive(Clone, Copy)]
-pub struct PredicateId(u32);
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PredicateId(pub(crate) u32);
 
 #[derive(Clone)]
 pub enum Value {

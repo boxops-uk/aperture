@@ -609,7 +609,7 @@ pub fn infer_pattern(ty_checker: &mut LensTyChecker, schema: &Schema, pattern: &
 }
 
 fn u32_to_base26(mut n: u32) -> String {
-    let mut buf = [0u8, 7];
+    let mut buf = [0u8; 7];
     let mut i = buf.len();
 
     loop {
