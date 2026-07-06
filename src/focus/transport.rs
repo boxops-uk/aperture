@@ -4,21 +4,21 @@ use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use crate::focus::{error::StoreCodecError, plan::FactId};
 
-const MARK_NULL: u8 = 0x00;
+pub const MARK_NULL: u8 = 0x00;
 
-const MARK_STRING: u8 = 0x21;
-const MARK_RECORD: u8 = 0x22;
+pub const MARK_STRING: u8 = 0x21;
+pub const MARK_RECORD: u8 = 0x22;
 
-const MARK_INT_NEG_MIN: u8 = 0x40;
-const MARK_INT_NEG_MAX: u8 = 0x47;
-const MARK_INT_ZERO: u8 = 0x48;
-const MARK_INT_POS_MIN: u8 = 0x49;
-const MARK_INT_POS_MAX: u8 = 0x50;
+pub const MARK_INT_NEG_MIN: u8 = 0x40;
+pub const MARK_INT_NEG_MAX: u8 = 0x47;
+pub const MARK_INT_ZERO: u8 = 0x48;
+pub const MARK_INT_POS_MIN: u8 = 0x49;
+pub const MARK_INT_POS_MAX: u8 = 0x50;
 
-const MARK_TERM: u8 = 0x00;
-const MARK_ESCAPE: u8 = 0xFF;
+pub const MARK_TERM: u8 = 0x00;
+pub const MARK_ESCAPE: u8 = 0xFF;
 
-const NULL: u8 = 0x00;
+pub const NULL: u8 = 0x00;
 
 #[inline]
 pub fn int_width(mag: u64) -> usize {

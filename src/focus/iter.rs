@@ -9,8 +9,8 @@ use crate::focus::{
     plan::{
         FactId, FactStore, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
     },
-    schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateTy},
-    transport::{Value, get_i64, get_str, get_u64, skip, strinc},
+    schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateTy, Symbol},
+    transport::{MARK_RECORD, MARK_TERM, Value, get_i64, get_str, get_u64, skip, strinc},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,7 +149,7 @@ impl<S: FactStore> StackFrame<S> {
             .get_mut(var.0)
             .ok_or(StoreError::AddressOutOfBounds(var))?
             .get(key, idx)
-            .map_err(|e| StoreError::MalformedKey(e))
+            .map_err(|e| StoreError::DecodeError(e))
     }
 
     pub fn build_prefix(
@@ -234,7 +234,7 @@ impl<S: FactStore> StackFrame<S> {
         for residual in residuals.iter() {
             let span = row_field_offsets
                 .get(&register.bytes, residual.field_idx)
-                .map_err(StoreError::MalformedKey)?;
+                .map_err(StoreError::DecodeError)?;
             let field = &register.bytes[span];
 
             let ok = match &residual.op {
@@ -303,7 +303,7 @@ fn project<S: FactStore>(
             let mut offsets = FieldOffsets::new();
             let span = offsets
                 .get(&key, *field_idx)
-                .map_err(StoreError::MalformedKey)?;
+                .map_err(StoreError::DecodeError)?;
             let field = &key[span];
             decode_typed(interner, field, ty)
         }
@@ -324,7 +324,6 @@ fn project<S: FactStore>(
             }
             Ok(Value::Record(out.into_boxed_slice()))
         }
-        _ => todo!(),
     }
 }
 
@@ -347,7 +346,50 @@ fn decode_typed(
             Ok(Value::FactRef(FactId(id)))
         }
         PredicateTy::Record(fields) => {
-            todo!()
+            let first = bytes
+                .first()
+                .ok_or(StoreError::DecodeError(StoreCodecError::UnexpectedEof))?;
+
+            if *first != MARK_RECORD {
+                return Err(StoreError::DecodeError(StoreCodecError::UnexpectedMark(
+                    *first,
+                )));
+            }
+
+            let end = bytes
+                .len()
+                .checked_sub(1)
+                .ok_or(StoreError::DecodeError(StoreCodecError::UnexpectedEof))?;
+
+            if end < 1 || bytes[end] != MARK_TERM {
+                return Err(StoreError::DecodeError(StoreCodecError::UnexpectedEof));
+            }
+
+            let mut at: usize = 1;
+            let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
+
+            for (name, field_ty) in fields.iter() {
+                if at >= end {
+                    return Err(StoreError::DecodeError(StoreCodecError::BadRecord));
+                }
+
+                let field_end = skip(bytes, at, true)?;
+                let value = decode_typed(interner, &bytes[at..field_end], field_ty)?;
+                let symbol = Symbol::Schema(*name);
+                let field_name = interner
+                    .try_resolve(symbol)
+                    .ok_or(StoreError::UnknownSymbol(symbol))?
+                    .to_owned();
+
+                out.push((field_name, value));
+                at = field_end;
+            }
+
+            if at != end {
+                return Err(StoreError::DecodeError(StoreCodecError::BadRecord));
+            }
+
+            Ok(Value::Record(out.into_boxed_slice()))
         }
     }
 }

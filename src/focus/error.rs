@@ -5,8 +5,8 @@ use crate::focus::{iter::Address, schema::Symbol};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
-    #[error("malformed key: {0}")]
-    MalformedKey(#[from] StoreCodecError),
+    #[error("decode error: {0}")]
+    DecodeError(#[from] StoreCodecError),
 
     #[error("variable at address 0x{0:016x} used before it was bound")]
     UseBeforeBind(Address),
