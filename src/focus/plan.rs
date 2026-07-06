@@ -1,5 +1,5 @@
 use byteview::ByteView;
-use lasso::Spur;
+use serde::{Serialize, Serializer};
 
 use crate::focus::{
     error::StoreError,
@@ -10,6 +10,15 @@ use crate::focus::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FactId(pub u64);
+
+impl Serialize for FactId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(self.0)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VarId(pub u32);

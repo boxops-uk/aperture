@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use serde::{Serialize, Serializer, ser::SerializeMap};
+
 use crate::focus::{error::StoreCodecError, plan::FactId};
 
 const MARK_NULL: u8 = 0x00;
@@ -378,6 +380,28 @@ pub enum Value {
     Str(String),
     FactRef(FactId),
     Record(Box<[(String, Value)]>),
+}
+
+impl Serialize for Value {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Value::Int(n) => serializer.serialize_i64(*n),
+            Value::Str(s) => serializer.serialize_str(s),
+            Value::FactRef(id) => serializer.serialize_u64(id.0),
+            Value::Record(fields) => {
+                let mut map = serializer.serialize_map(Some(fields.len()))?;
+
+                for (key, value) in fields.iter() {
+                    map.serialize_entry(key, value)?;
+                }
+
+                map.end()
+            }
+        }
+    }
 }
 
 #[cfg(test)]

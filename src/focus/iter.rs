@@ -349,7 +349,6 @@ fn decode_typed(
         PredicateTy::Record(fields) => {
             todo!()
         }
-        _ => todo!(),
     }
 }
 
