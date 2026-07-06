@@ -1,4 +1,3 @@
-use lasso::Spur;
 use thiserror::Error;
 
 use crate::focus::{iter::Address, schema::Symbol};
