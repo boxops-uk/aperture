@@ -1,0 +1,180 @@
+use std::sync::{Arc, atomic::AtomicU64};
+
+use aperture::focus::{
+    error::StoreError,
+    exec::Executor,
+    plan::{
+        Access, Entity, FactId, FactStore, Generator, Plan, Project, ScalarTy, SeekKey,
+        SeekKeyPart, VarId,
+    },
+    schema::{Predicate, PredicateId, PredicateTy, Schema},
+    transport,
+};
+use byteview::ByteView;
+use fjall::{Database, Keyspace};
+use lasso::Rodeo;
+
+fn main() {
+    let mut schema_rodeo = Rodeo::new();
+
+    let edge_predicate = Predicate {
+        name: schema_rodeo.get_or_intern("Edge"),
+        key: PredicateTy::Record(Arc::from(vec![
+            (schema_rodeo.get_or_intern("from"), PredicateTy::Int),
+            (schema_rodeo.get_or_intern("to"), PredicateTy::Int),
+        ])),
+        value: None,
+    };
+
+    let has_name_predicate = Predicate {
+        name: schema_rodeo.get_or_intern("HasName"),
+        key: PredicateTy::Record(Arc::from(vec![
+            (schema_rodeo.get_or_intern("id"), PredicateTy::Int),
+            (schema_rodeo.get_or_intern("name"), PredicateTy::Str),
+        ])),
+        value: None,
+    };
+
+    let schema_reader = schema_rodeo.into_reader();
+
+    let schema = Schema::new(
+        schema_reader,
+        Arc::from(vec![edge_predicate, has_name_predicate]),
+    );
+
+    let (edge_predicate_id, _) = schema.find_position("Edge").unwrap();
+    let (has_name_predicate_id, _) = schema.find_position("HasName").unwrap();
+
+    print!("{:#?}", schema);
+
+    let plan = Plan {
+        nvars: 2,
+        body: vec![
+            Generator {
+                access: Access {
+                    predicate_id: edge_predicate_id,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                binds: Box::new([VarId(0)]),
+                residuals: Box::new([]),
+            },
+            Generator {
+                access: Access {
+                    predicate_id: has_name_predicate_id,
+                    seek_key: SeekKey::Composite(Box::new([
+                        SeekKeyPart::SlotField {
+                            var_id: VarId(0),
+                            field_idx: 0,
+                        },
+                        SeekKeyPart::Bytes(Box::new([])),
+                    ])),
+                },
+                binds: Box::new([VarId(1)]),
+                residuals: Box::new([]),
+            },
+        ]
+        .into_boxed_slice(),
+        head: Project::SlotField {
+            var_id: VarId(1),
+            field_idx: 1,
+            ty: ScalarTy::Str,
+        },
+    };
+
+    let mut store = MemStore::new();
+
+    let mut buf = vec![];
+    transport::put_i64(&mut buf, 1);
+    transport::put_i64(&mut buf, 2);
+    store.put(edge_predicate_id, buf.clone(), 1, vec![]);
+
+    buf.clear();
+    transport::put_i64(&mut buf, 1);
+    transport::put_i64(&mut buf, 3);
+    store.put(edge_predicate_id, buf.clone(), 2, vec![]);
+
+    buf.clear();
+    transport::put_i64(&mut buf, 2);
+    transport::put_i64(&mut buf, 3);
+    store.put(edge_predicate_id, buf.clone(), 3, vec![]);
+
+    buf.clear();
+    transport::put_i64(&mut buf, 1);
+    transport::put_str(&mut buf, "a");
+    store.put(has_name_predicate_id, buf.clone(), 4, vec![]);
+
+    buf.clear();
+    transport::put_i64(&mut buf, 2);
+    transport::put_str(&mut buf, "b");
+    store.put(has_name_predicate_id, buf.clone(), 5, vec![]);
+
+    buf.clear();
+    transport::put_i64(&mut buf, 3);
+    transport::put_str(&mut buf, "c");
+    store.put(has_name_predicate_id, buf.clone(), 6, vec![]);
+
+    let mut exec = Executor::new(Arc::new(store), Arc::new(plan));
+
+    let _ = exec.pump();
+    let _ = exec.pump();
+    let _ = exec.pump();
+    let _ = exec.pump();
+    let _ = exec.pump();
+}
+
+use std::collections::BTreeMap;
+
+pub struct MemStore {
+    keys: BTreeMap<Vec<u8>, u64>,
+    entities: BTreeMap<u64, (Vec<u8>, Vec<u8>)>,
+}
+
+impl MemStore {
+    pub fn new() -> Self {
+        MemStore {
+            keys: BTreeMap::new(),
+            entities: BTreeMap::new(),
+        }
+    }
+
+    pub fn put(&mut self, pred: PredicateId, fdb_key: Vec<u8>, fact_id: u64, value: Vec<u8>) {
+        let mut stored = pred.0.to_be_bytes().to_vec();
+        stored.extend_from_slice(&fdb_key);
+        self.keys.insert(stored, fact_id);
+        self.entities.insert(fact_id, (fdb_key, value));
+    }
+}
+
+pub struct MemScan {
+    rows: std::vec::IntoIter<(Vec<u8>, u64)>,
+}
+
+impl Iterator for MemScan {
+    type Item = Result<(ByteView, FactId), StoreError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.rows.next().map(|(k, v)| Ok((k.into(), FactId(v))))
+    }
+}
+
+impl FactStore for MemStore {
+    type Scan = MemScan;
+
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> MemScan {
+        let rows: Vec<_> = self
+            .keys
+            .range(lo.to_vec()..)
+            .take_while(|(k, _)| hi.map_or(true, |h| k.as_slice() < h))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        MemScan {
+            rows: rows.into_iter(),
+        }
+    }
+
+    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError> {
+        Ok(self.entities.get(&id.0).map(|(k, v)| Entity {
+            key: k.clone().into(),
+            value: v.clone().into(),
+        }))
+    }
+}

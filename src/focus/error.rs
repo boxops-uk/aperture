@@ -1,23 +1,30 @@
+use lasso::Spur;
 use thiserror::Error;
 
-use crate::focus::plan::VarId;
+use crate::focus::{iter::Address, schema::Symbol};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("malformed key: {0}")]
     MalformedKey(#[from] StoreCodecError),
 
-    #[error("var {0:?} used before it was bound")]
-    UseBeforeBind(VarId),
+    #[error("variable at address 0x{0:016x} used before it was bound")]
+    UseBeforeBind(Address),
 
-    #[error("var {var_id:?} index out of bounds (nvars={nvars})")]
-    BadSlotIndex { var_id: VarId, nvars: usize },
+    #[error("address 0x{0:016x} out of bounds")]
+    AddressOutOfBounds(Address),
 
     #[error("advance of closed frame")]
     AdvanceAfterClose,
 
     #[error("resume key not found")]
     BadResumeKey,
+
+    #[error("operation cancelled")]
+    Cancelled,
+
+    #[error("unknown symbol: {0:?}")]
+    UnknownSymbol(Symbol),
 }
 
 #[derive(Debug, Error)]

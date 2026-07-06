@@ -9,6 +9,84 @@ use crate::focus::{
     transport::{field_range, strinc},
 };
 
+// ── trace helpers ────────────────────────────────────────────────────────────
+
+const RST: &str = "\x1b[0m";
+const BOLD: &str = "\x1b[1m";
+const DIM: &str = "\x1b[2m";
+const RED: &str = "\x1b[31m";
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const BLUE: &str = "\x1b[34m";
+const CYAN: &str = "\x1b[36m";
+const MAGENTA: &str = "\x1b[35m";
+
+fn hex(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "(empty)".to_string();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+}
+
+fn fmt_slot(slot: &Slot) -> String {
+    match slot {
+        Slot::Fact { id, key } => {
+            let b = key.as_ref();
+            if b.len() >= PREDICATE_ID_SIZE {
+                let pred = u32::from_be_bytes(b[..PREDICATE_ID_SIZE].try_into().unwrap());
+                let payload = &b[PREDICATE_ID_SIZE..];
+                if payload.is_empty() {
+                    format!("fact#{} pred={pred}", id.0)
+                } else {
+                    format!("fact#{} pred={pred} │ {}", id.0, hex(payload))
+                }
+            } else {
+                format!("fact#{} {}", id.0, hex(b))
+            }
+        }
+        Slot::Value(v) => hex(v.as_ref()),
+    }
+}
+
+fn print_env_table(env: &Env) {
+    let slots = &env.slots;
+    if slots.is_empty() {
+        return;
+    }
+    let rows: Vec<(String, String)> = slots
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let label = format!("v{i}");
+            let value = match s {
+                None => "(unbound)".to_string(),
+                Some(slot) => fmt_slot(slot),
+            };
+            (label, value)
+        })
+        .collect();
+    let lw = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(3).max(3);
+    let vw = rows.iter().map(|(_, v)| v.len()).max().unwrap_or(5).max(5);
+    let top = format!("┌─{:─<lw$}─┬─{:─<vw$}─┐", "", "");
+    let mid = format!("├─{:─<lw$}─┼─{:─<vw$}─┤", "", "");
+    let bot = format!("└─{:─<lw$}─┴─{:─<vw$}─┘", "", "");
+    eprintln!("  {DIM}{top}{RST}");
+    eprintln!(
+        "  {DIM}│{RST} {BOLD}{:<lw$}{RST} {DIM}│{RST} {BOLD}{:<vw$}{RST} {DIM}│{RST}",
+        "var", "bytes"
+    );
+    eprintln!("  {DIM}{mid}{RST}");
+    for (label, value) in &rows {
+        eprintln!(
+            "  {DIM}│{RST} {:<lw$} {DIM}│{RST} {:<vw$} {DIM}│{RST}",
+            label, value
+        );
+    }
+    eprintln!("  {DIM}{bot}{RST}");
+}
+
+// ── slot / env ───────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub enum Slot {
     Fact { id: FactId, key: ByteView },
@@ -59,6 +137,8 @@ impl Env {
             .ok_or(StoreError::UseBeforeBind(var_id))
     }
 }
+
+// ── frame ────────────────────────────────────────────────────────────────────
 
 pub struct Frame<S: Store> {
     cursor: Option<S::Scan>,
@@ -114,7 +194,12 @@ impl<S: Store> Frame<S> {
         Ok(())
     }
 
-    fn next(&mut self, generator: &Generator, env: &Env) -> Result<Option<Slot>, StoreError> {
+    fn next(
+        &mut self,
+        generator: &Generator,
+        env: &Env,
+        trace: bool,
+    ) -> Result<Option<Slot>, StoreError> {
         let cursor = self.cursor.as_mut().ok_or(StoreError::AdvanceAfterClose)?;
 
         for row in cursor {
@@ -123,7 +208,12 @@ impl<S: Store> Frame<S> {
                 id: fact_id,
                 key: full_key,
             };
-            if check_residuals(&generator.residuals, &slot, env)? {
+
+            if trace {
+                eprintln!("    {DIM}scan{RST}  {}", fmt_slot(&slot));
+            }
+
+            if check_residuals(&generator.residuals, &slot, env, trace)? {
                 self.current = Some(slot.clone());
                 return Ok(Some(slot));
             }
@@ -133,32 +223,61 @@ impl<S: Store> Frame<S> {
     }
 }
 
-fn check_residuals(residuals: &[Residual], slot: &Slot, env: &Env) -> Result<bool, StoreError> {
-    for residual in residuals {
+// ── residuals ────────────────────────────────────────────────────────────────
+
+fn check_residuals(
+    residuals: &[Residual],
+    slot: &Slot,
+    env: &Env,
+    trace: bool,
+) -> Result<bool, StoreError> {
+    for (i, residual) in residuals.iter().enumerate() {
         let field = slot.field(residual.field_idx)?;
 
-        match &residual.op {
-            ResidualOp::EqConst(const_bytes) => {
-                if field.as_ref() != const_bytes.as_ref() {
-                    return Ok(false);
-                }
-            }
-            ResidualOp::Prefix(prefix_bytes) => {
-                if !field.as_ref().starts_with(prefix_bytes.as_ref()) {
-                    return Ok(false);
-                }
-            }
+        let (pass, op_label) = match &residual.op {
+            ResidualOp::EqConst(const_bytes) => (
+                field.as_ref() == const_bytes.as_ref(),
+                format!("EqConst({})", hex(const_bytes)),
+            ),
+            ResidualOp::Prefix(prefix_bytes) => (
+                field.as_ref().starts_with(prefix_bytes.as_ref()),
+                format!("Prefix({})", hex(prefix_bytes)),
+            ),
             ResidualOp::EqSlotField { var_id, field_idx } => {
                 let other_field = env.get(*var_id)?.field(*field_idx)?;
-                if field.as_ref() != other_field.as_ref() {
-                    return Ok(false);
-                }
+                (
+                    field.as_ref() == other_field.as_ref(),
+                    format!("EqSlotField(v{}.field[{}])", var_id.0, field_idx),
+                )
             }
+        };
+
+        if trace {
+            let mark = if pass {
+                format!("{GREEN}✓{RST}")
+            } else {
+                format!("{YELLOW}✗{RST}")
+            };
+            eprintln!(
+                "    {DIM}residual[{i}]{RST} field[{}]={} {} {mark}",
+                residual.field_idx,
+                hex(field.as_ref()),
+                op_label,
+            );
+            if !pass {
+                eprintln!("    {YELLOW}→ SKIP{RST}");
+            }
+        }
+
+        if !pass {
+            return Ok(false);
         }
     }
 
     Ok(true)
 }
+
+// ── executor ─────────────────────────────────────────────────────────────────
 
 pub struct Resume {
     keys: Vec<Slot>,
@@ -179,6 +298,7 @@ pub struct Executor<S: Store> {
     level: usize,
     started: bool,
     done: bool,
+    trace: bool,
 }
 
 impl<S: Store> Executor<S> {
@@ -186,6 +306,7 @@ impl<S: Store> Executor<S> {
         let n = plan.body.len();
         let env = Env::new(plan.nvars);
         let frames = (0..n).map(|_| Frame::closed()).collect();
+        let trace = std::env::var("APERTURE_PUMP_TRACE").is_ok();
         Self {
             store,
             plan,
@@ -194,14 +315,30 @@ impl<S: Store> Executor<S> {
             level: 0,
             started: false,
             done: false,
+            trace,
         }
     }
 
     fn bind(&mut self, level: usize, slot: Slot) {
+        if self.trace {
+            let vars: Vec<String> = self.plan.body[level]
+                .binds
+                .iter()
+                .map(|v| format!("v{}", v.0))
+                .collect();
+            eprintln!(
+                "  [{level}] {MAGENTA}BIND{RST}   {} ← {}",
+                vars.join(", "),
+                fmt_slot(&slot),
+            );
+        }
         for var_id in self.plan.body[level].binds.iter() {
             self.env.slots[var_id.0 as usize] = Some(slot.clone());
         }
         self.frames[level].current = Some(slot);
+        if self.trace {
+            print_env_table(&self.env);
+        }
     }
 
     pub fn pump(&mut self) -> Result<Step, StoreError> {
@@ -211,9 +348,28 @@ impl<S: Store> Executor<S> {
 
         self.started = true;
 
+        if self.trace {
+            eprintln!(
+                "{BOLD}{CYAN}━━━ pump(){RST} level={} generators={} nvars={}",
+                self.level,
+                self.plan.body.len(),
+                self.plan.nvars,
+            );
+        }
+
         loop {
             if self.frames[self.level].cursor.is_none() {
                 let generator = &self.plan.body[self.level];
+
+                if self.trace {
+                    let prefix = Frame::<S>::build_prefix(generator, &self.env)?;
+                    eprintln!(
+                        "  [{level}] {BLUE}OPEN{RST}   pred={} prefix=[{}]",
+                        generator.access.predicate_id.0,
+                        hex(&prefix),
+                        level = self.level,
+                    );
+                }
 
                 let prefix_open = {
                     let store = &*self.store;
@@ -227,28 +383,65 @@ impl<S: Store> Executor<S> {
             let next = {
                 let generator = &self.plan.body[self.level];
                 let env = &self.env;
-                self.frames[self.level].next(generator, env)?
+                self.frames[self.level].next(generator, env, self.trace)?
             };
 
             match next {
                 Some(slot) => {
+                    if self.trace {
+                        eprintln!(
+                            "  [{level}] {GREEN}MATCH{RST}  {}",
+                            fmt_slot(&slot),
+                            level = self.level,
+                        );
+                    }
+
                     self.bind(self.level, slot);
 
                     if self.level == self.plan.body.len() - 1 {
+                        if self.trace {
+                            eprintln!("  [{level}] {BOLD}{GREEN}YIELD{RST}", level = self.level);
+                            eprintln!();
+                        }
                         return Ok(Step::Continue);
                     }
 
+                    if self.trace {
+                        eprintln!(
+                            "  [{level}→{next_level}] {CYAN}ADVANCE{RST}",
+                            level = self.level,
+                            next_level = self.level + 1,
+                        );
+                    }
                     self.level += 1;
                 }
                 None => {
+                    if self.trace {
+                        eprintln!(
+                            "  [{level}] {RED}EXHAUSTED{RST}",
+                            level = self.level,
+                        );
+                    }
+
                     self.frames[self.level].cursor = None;
                     self.frames[self.level].current = None;
 
                     if self.level == 0 {
+                        if self.trace {
+                            eprintln!("  {BOLD}{RED}DONE{RST}");
+                            eprintln!();
+                        }
                         self.done = true;
                         return Ok(Step::Done);
                     }
 
+                    if self.trace {
+                        eprintln!(
+                            "  [{prev_level}←{level}] {RED}BACKTRACK{RST}",
+                            prev_level = self.level - 1,
+                            level = self.level,
+                        );
+                    }
                     self.level -= 1;
                 }
             }
@@ -316,7 +509,7 @@ impl<S: Store> Executor<S> {
             let slot = {
                 let generator = &executor.plan.body[level];
                 let env = &executor.env;
-                executor.frames[level].next(generator, env)?
+                executor.frames[level].next(generator, env, false)?
             };
 
             match slot {

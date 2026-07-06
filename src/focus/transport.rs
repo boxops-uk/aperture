@@ -372,21 +372,12 @@ pub fn strinc(prefix: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-pub fn field_range(key: &[u8], idx: usize) -> Result<std::ops::Range<usize>, StoreCodecError> {
-    let mut at = 0;
-    for _ in 0..idx {
-        at = skip(key, at, false)?;
-    }
-    let end = skip(key, at, false)?;
-    Ok(at..end)
-}
-
 #[derive(Debug, Clone)]
-pub enum OutValue {
+pub enum Value {
     Int(i64),
     Str(String),
-    FactId(FactId),
-    Record(Box<[OutValue]>),
+    FactRef(FactId),
+    Record(Box<[(String, Value)]>),
 }
 
 #[cfg(test)]

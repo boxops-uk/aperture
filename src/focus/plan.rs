@@ -1,18 +1,18 @@
 use byteview::ByteView;
+use lasso::Spur;
 
-use crate::focus::{error::StoreError, schema::PredicateId, transport::OutValue};
+use crate::focus::{
+    error::StoreError,
+    iter::Address,
+    schema::{PredicateId, PredicateTy, Symbol},
+    transport::Value,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FactId(pub(crate) u64);
+pub struct FactId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VarId(pub(crate) u32);
-
-#[derive(Debug, Clone, Copy)]
-pub enum ScalarTy {
-    Int,
-    Str,
-}
+pub struct VarId(pub u32);
 
 #[derive(Debug)]
 pub enum SeekKey {
@@ -23,7 +23,7 @@ pub enum SeekKey {
 #[derive(Debug)]
 pub enum SeekKeyPart {
     Bytes(Box<[u8]>),
-    SlotField { var_id: VarId, field_idx: usize },
+    RegisterField { address: Address, field_idx: usize },
 }
 
 #[derive(Debug)]
@@ -36,7 +36,7 @@ pub struct Access {
 pub enum ResidualOp {
     EqConst(Box<[u8]>),
     Prefix(Box<[u8]>),
-    EqSlotField { var_id: VarId, field_idx: usize },
+    EqRegisterField { address: Address, field_idx: usize },
 }
 
 #[derive(Debug)]
@@ -48,21 +48,24 @@ pub struct Residual {
 #[derive(Debug)]
 pub struct Generator {
     pub access: Access,
-    pub binds: Box<[VarId]>,
+    pub binds: Box<[Address]>,
     pub residuals: Box<[Residual]>,
 }
 
 #[derive(Debug)]
 pub enum Project {
-    Lit(OutValue),
-    SlotField {
-        var_id: VarId,
+    Lit(Value),
+    RegisterField {
+        address: Address,
         field_idx: usize,
-        ty: ScalarTy,
+        ty: PredicateTy,
     },
-    FactId(VarId),
-    Value(VarId),
-    Record(Box<[Project]>),
+    FactRef(Address),
+    Value {
+        address: Address,
+        ty: PredicateTy,
+    },
+    Record(Box<[(Symbol, Project)]>),
 }
 
 pub struct Plan {
@@ -77,7 +80,7 @@ pub struct Entity {
     pub value: ByteView,
 }
 
-pub trait Store {
+pub trait FactStore {
     type Scan: Iterator<Item = Result<(ByteView, FactId), StoreError>>;
 
     fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Self::Scan;

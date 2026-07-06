@@ -8,7 +8,7 @@
 
 pub mod emit;
 pub mod error;
-pub mod exec;
+pub mod iter;
 pub mod plan;
 pub mod schema;
 pub mod transport;

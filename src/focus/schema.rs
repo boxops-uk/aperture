@@ -1,11 +1,10 @@
-use std::fmt;
 use std::sync::Arc;
 
 use itertools::Itertools;
 use lasso::{Rodeo, RodeoReader, Spur};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PredicateId(pub(crate) u32);
+pub struct PredicateId(pub u32);
 
 pub const PREDICATE_ID_SIZE: usize = std::mem::size_of::<u32>();
 
@@ -189,86 +188,5 @@ impl Schema {
                 inner,
             },
         ))
-    }
-}
-
-struct PredicateTyDebug<'a> {
-    interner: &'a SchemaInterner,
-    ty: &'a PredicateTy,
-}
-
-impl fmt::Debug for PredicateTyDebug<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.ty {
-            PredicateTy::Int => write!(f, "int"),
-            PredicateTy::Str => write!(f, "str"),
-            PredicateTy::Fact(id) => write!(f, "fact({})", id.0),
-            PredicateTy::Record(fields) => {
-                let mut ds = f.debug_struct("");
-                for (spur, ty) in fields.iter() {
-                    let name = self.interner.0.try_resolve(spur).unwrap_or("<unknown>");
-                    ds.field(
-                        name,
-                        &PredicateTyDebug {
-                            interner: self.interner,
-                            ty,
-                        },
-                    );
-                }
-                ds.finish()
-            }
-        }
-    }
-}
-
-struct PredicateDebug<'a> {
-    interner: &'a SchemaInterner,
-    predicate: &'a Predicate,
-}
-
-impl fmt::Debug for PredicateDebug<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut s = f.debug_struct("");
-
-        s.field(
-            "key",
-            &PredicateTyDebug {
-                interner: self.interner,
-                ty: &self.predicate.key,
-            },
-        );
-
-        if let Some(value) = &self.predicate.value {
-            s.field(
-                "value",
-                &PredicateTyDebug {
-                    interner: self.interner,
-                    ty: value,
-                },
-            );
-        }
-
-        s.finish()
-    }
-}
-
-impl fmt::Debug for Schema {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut ds = f.debug_struct("Schema");
-        for predicate in self.predicates.iter() {
-            let name = self
-                .interner
-                .0
-                .try_resolve(&predicate.name)
-                .unwrap_or("<unknown>");
-            ds.field(
-                name,
-                &PredicateDebug {
-                    interner: &self.interner,
-                    predicate,
-                },
-            );
-        }
-        ds.finish()
     }
 }

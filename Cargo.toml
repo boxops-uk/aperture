@@ -17,6 +17,10 @@ rustyline = "18.0.0"
 string-interner = "0.20.0"
 thiserror = "2.0.18"
 tinyvec = { version = "1.11.0", features = ["alloc"] }
+tokio = "1.52.3"
+tokio-util = "0.7.18"
+tracing = { version = "0.1.44", features = ["release_max_level_info"] }
+tracing-subscriber = "0.3.23"
 
 [build-dependencies]
 lelwel = "0.10"
