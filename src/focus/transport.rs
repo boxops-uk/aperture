@@ -930,7 +930,7 @@ pub(crate) mod tests {
     use crate::focus::schema::{PredicateId, SchemaInterner};
 
     use super::*;
-    use lasso::{Rodeo, Spur};
+    use lasso::Rodeo;
     use proptest::prelude::*;
     use std::{cmp::Ordering, sync::Arc};
 
