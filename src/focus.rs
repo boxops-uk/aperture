@@ -4,6 +4,9 @@ pub mod plan;
 pub mod schema;
 pub mod transport;
 
+pub(crate) mod lexer;
+pub(crate) mod parser;
+
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // pub struct PredicateId(u32);
 

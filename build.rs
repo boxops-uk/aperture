@@ -1,3 +1,3 @@
 fn main() {
-    lelwel::build("src/lens/grammar.llw");
+    lelwel::build("src/focus/grammar.llw");
 }
