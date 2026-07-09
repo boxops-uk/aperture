@@ -20,9 +20,6 @@ impl Serialize for FactId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VarId(pub u32);
-
 #[derive(Debug)]
 pub enum SeekKey {
     Prefix(Box<[u8]>),

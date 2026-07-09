@@ -9,8 +9,8 @@ use crate::focus::{
     plan::{
         FactId, FactStore, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
     },
-    schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateTy, Symbol},
-    transport::{MARK_RECORD, MARK_TERM, Value, get_i64, get_str, get_u64, skip, strinc},
+    schema::{LocalInterner, PREDICATE_ID_SIZE},
+    transport::{Value, decode_typed, skip, strinc},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,7 +292,9 @@ fn project<S: FactStore>(
 ) -> Result<Value, StoreError> {
     match p {
         Project::Lit(v) => Ok(v.clone()),
+
         Project::FactRef(address) => Ok(Value::FactRef(state.get(*address)?.fact_id)),
+
         Project::RegisterField {
             address,
             field_idx,
@@ -300,93 +302,35 @@ fn project<S: FactStore>(
         } => {
             let reg = state.get(*address)?;
             let key = reg.key();
+
             let mut offsets = FieldOffsets::new();
+
             let span = offsets
                 .get(&key, *field_idx)
                 .map_err(StoreError::DecodeError)?;
+
             let field = &key[span];
+
             decode_typed(interner, field, ty)
         }
+
         Project::Value { address, ty } => {
             let reg = state.get(*address)?;
             decode_typed(interner, &reg.bytes, ty)
         }
+
         Project::Record(fields) => {
             let mut out = Vec::with_capacity(fields.len());
+
             for (field_name, field_proj) in fields.iter() {
-                out.push((
-                    interner
-                        .try_resolve(*field_name)
-                        .ok_or(StoreError::UnknownSymbol(*field_name))?
-                        .to_owned(),
-                    project(interner, field_proj, state, store)?,
-                ));
-            }
-            Ok(Value::Record(out.into_boxed_slice()))
-        }
-    }
-}
-
-fn decode_typed(
-    interner: &LocalInterner,
-    bytes: &[u8],
-    ty: &PredicateTy,
-) -> Result<Value, StoreError> {
-    match ty {
-        PredicateTy::Int => {
-            let (i, _) = get_i64(bytes)?;
-            Ok(Value::Int(i))
-        }
-        PredicateTy::Str => {
-            let (s, _) = get_str(bytes)?;
-            Ok(Value::Str(s.into()))
-        }
-        PredicateTy::Fact(_) => {
-            let (id, _) = get_u64(bytes)?;
-            Ok(Value::FactRef(FactId(id)))
-        }
-        PredicateTy::Record(fields) => {
-            let first = bytes
-                .first()
-                .ok_or(StoreError::DecodeError(StoreCodecError::UnexpectedEof))?;
-
-            if *first != MARK_RECORD {
-                return Err(StoreError::DecodeError(StoreCodecError::UnexpectedMark(
-                    *first,
-                )));
-            }
-
-            let end = bytes
-                .len()
-                .checked_sub(1)
-                .ok_or(StoreError::DecodeError(StoreCodecError::UnexpectedEof))?;
-
-            if end < 1 || bytes[end] != MARK_TERM {
-                return Err(StoreError::DecodeError(StoreCodecError::UnexpectedEof));
-            }
-
-            let mut at: usize = 1;
-            let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
-
-            for (name, field_ty) in fields.iter() {
-                if at >= end {
-                    return Err(StoreError::DecodeError(StoreCodecError::BadRecord));
-                }
-
-                let field_end = skip(bytes, at, true)?;
-                let value = decode_typed(interner, &bytes[at..field_end], field_ty)?;
-                let symbol = Symbol::Schema(*name);
                 let field_name = interner
-                    .try_resolve(symbol)
-                    .ok_or(StoreError::UnknownSymbol(symbol))?
+                    .try_resolve(*field_name)
+                    .ok_or(StoreError::UnknownSymbol(*field_name))?
                     .to_owned();
 
-                out.push((field_name, value));
-                at = field_end;
-            }
+                let value = project(interner, field_proj, state, store)?;
 
-            if at != end {
-                return Err(StoreError::DecodeError(StoreCodecError::BadRecord));
+                out.push((field_name, value));
             }
 
             Ok(Value::Record(out.into_boxed_slice()))

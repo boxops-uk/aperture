@@ -1,12 +1,3 @@
-// use std::{fmt, marker::PhantomData, mem::ManuallyDrop};
-
-// use byteview::ByteView;
-// use lasso::{Rodeo, RodeoReader, Spur};
-// use std::{ops::Range, sync::Arc};
-// use thiserror::Error;
-// use tinyvec::TinyVec;
-
-pub mod emit;
 pub mod error;
 pub mod iter;
 pub mod plan;
