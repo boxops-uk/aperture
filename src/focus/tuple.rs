@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use crate::focus::{
-    error::{StoreCodecError, StoreError},
+    error::{ApertureError, StoreCodecError},
     plan::FactId,
     schema::{LocalInterner, PredicateTy, Symbol},
 };
@@ -747,7 +747,7 @@ pub fn decode_typed(
     interner: &LocalInterner,
     bytes: &[u8],
     ty: &PredicateTy,
-) -> Result<Value, StoreError> {
+) -> Result<Value, ApertureError> {
     let mut dec = TupleDecoder::new(bytes);
 
     let value = decode_typed_at(interner, &mut dec, ty)?;
@@ -759,7 +759,7 @@ pub fn decode_typed(
             .copied()
             .ok_or(StoreCodecError::UnexpectedEof)?;
 
-        return Err(StoreError::DecodeError(StoreCodecError::UnexpectedMark(
+        return Err(ApertureError::DecodeError(StoreCodecError::UnexpectedMark(
             mark,
         )));
     }
@@ -771,27 +771,27 @@ pub fn decode_record_typed<'b>(
     interner: &LocalInterner,
     dec: &mut TupleDecoder<'b>,
     fields: &[(Symbol, PredicateTy)],
-) -> Result<Value, StoreError> {
+) -> Result<Value, ApertureError> {
     dec.record(|dec| {
         let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
 
         for (name, field_ty) in fields.iter() {
             if dec.is_record_end()? {
-                return Err(StoreError::DecodeError(StoreCodecError::BadRecord));
+                return Err(ApertureError::DecodeError(StoreCodecError::BadRecord));
             }
 
             let value = decode_typed_at(interner, dec, field_ty)?;
 
             let field_name = interner
                 .try_resolve(*name)
-                .ok_or(StoreError::UnknownSymbol(*name))?
+                .ok_or(ApertureError::UnknownSymbol(*name))?
                 .to_owned();
 
             out.push((field_name, value));
         }
 
         if !dec.is_record_end()? {
-            return Err(StoreError::DecodeError(StoreCodecError::BadRecord));
+            return Err(ApertureError::DecodeError(StoreCodecError::BadRecord));
         }
 
         Ok(Value::Record(out.into_boxed_slice()))
@@ -802,7 +802,7 @@ pub fn decode_typed_at<'b>(
     interner: &LocalInterner,
     dec: &mut TupleDecoder<'b>,
     ty: &PredicateTy,
-) -> Result<Value, StoreError> {
+) -> Result<Value, ApertureError> {
     match ty {
         PredicateTy::Int => {
             let i = dec.take_i64()?;
@@ -824,7 +824,7 @@ pub fn decode_typed_at<'b>(
 
             for (name, field_ty) in fields.iter() {
                 if dec.is_record_end()? {
-                    return Err(StoreError::DecodeError(StoreCodecError::BadRecord));
+                    return Err(ApertureError::DecodeError(StoreCodecError::BadRecord));
                 }
 
                 let value = decode_typed_at(interner, dec, field_ty)?;
@@ -832,14 +832,14 @@ pub fn decode_typed_at<'b>(
                 let symbol = Symbol::Schema(*name);
                 let field_name = interner
                     .try_resolve(symbol)
-                    .ok_or(StoreError::UnknownSymbol(symbol))?
+                    .ok_or(ApertureError::UnknownSymbol(symbol))?
                     .to_owned();
 
                 out.push((field_name, value));
             }
 
             if !dec.is_record_end()? {
-                return Err(StoreError::DecodeError(StoreCodecError::BadRecord));
+                return Err(ApertureError::DecodeError(StoreCodecError::BadRecord));
             }
 
             Ok(Value::Record(out.into_boxed_slice()))

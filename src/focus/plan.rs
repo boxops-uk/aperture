@@ -2,10 +2,10 @@ use byteview::ByteView;
 use serde::{Serialize, Serializer};
 
 use crate::focus::{
-    error::StoreError,
+    error::ApertureError,
     iter::Address,
     schema::{PredicateId, PredicateTy, Symbol},
-    transport::Value,
+    tuple::Value,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,9 +87,9 @@ pub struct Entity {
 }
 
 pub trait FactStore {
-    type Scan: Iterator<Item = Result<(ByteView, FactId), StoreError>>;
+    type Scan: Iterator<Item = Result<(ByteView, FactId), ApertureError>>;
 
     fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Self::Scan;
 
-    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError>;
+    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError>;
 }

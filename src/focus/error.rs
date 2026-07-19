@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::focus::{iter::Address, schema::Symbol};
 
 #[derive(Debug, Error)]
-pub enum StoreError {
+pub enum ApertureError {
     #[error("decode error: {0}")]
     DecodeError(#[from] StoreCodecError),
 

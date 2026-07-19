@@ -1,22 +1,18 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use aperture::focus::{
-    error::StoreError,
+    error::{ApertureError, StoreCodecError},
     iter::{Address, Executor, Iteratee, Stream},
     plan::{Access, Entity, FactId, FactStore, Generator, Plan, Project, SeekKey, SeekKeyPart},
     schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema},
-    transport::{MARK_RECORD, MARK_TERM, Value, put_str},
+    tuple::{MARK_RECORD, TupleEncode, TupleEncoder, Value, encode_tuple, put_str},
 };
 use byteview::ByteView;
 use lasso::Rodeo;
 use tokio_util::sync::CancellationToken;
 
-// --- In-memory FactStore ---
-
 struct MemStore {
-    // full_key (predicate_id_bytes | encoded_fields) -> fact_id
     index: BTreeMap<Vec<u8>, u64>,
-    // fact_id -> (key_fields, value_bytes)
     by_id: BTreeMap<u64, (Vec<u8>, Vec<u8>)>,
 }
 
@@ -47,7 +43,7 @@ struct MemScan {
 }
 
 impl Iterator for MemScan {
-    type Item = Result<(ByteView, FactId), StoreError>;
+    type Item = Result<(ByteView, FactId), ApertureError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.rows.next().map(|(k, id)| Ok((k.into(), FactId(id))))
@@ -75,7 +71,7 @@ impl FactStore for MemStore {
         }
     }
 
-    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError> {
+    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
         Ok(self.by_id.get(&id.0).map(|(k, v)| Entity {
             key: k.clone().into(),
             value: v.clone().into(),
@@ -83,17 +79,30 @@ impl FactStore for MemStore {
     }
 }
 
-// --- Schema, facts, plan, execution ---
+struct FileFact(String);
 
-fn main() {
-    // Build the schema, inspired by Meta's Glean code-intelligence schema.
-    //
-    // Predicate 0: src.File   — key = Str (file path)
-    // Predicate 1: src.Function — key = Record { file_path: Str, name: Str }
-    //
-    // Ordering file_path before name in the record key allows a prefix scan on
-    // the function index to efficiently find all functions inside a given file.
+impl TupleEncode for FileFact {
+    fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
+        enc.put_str(&self.0)
+    }
+}
 
+struct FunctionFact {
+    file_path: String,
+    name: String,
+}
+
+impl TupleEncode for FunctionFact {
+    fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
+        enc.record(|enc| {
+            enc.put_str(&self.file_path)?;
+            enc.put_str(&self.name)?;
+            Ok(())
+        })
+    }
+}
+
+fn main() -> Result<(), StoreCodecError> {
     let mut rodeo = Rodeo::new();
     let fn_file_path_spur = rodeo.get_or_intern("file_path");
     let fn_name_spur = rodeo.get_or_intern("name");
@@ -123,18 +132,16 @@ fn main() {
     let (src_file_id, _) = schema.find_position("src.File").unwrap();
     let (src_fn_id, _) = schema.find_position("src.Function").unwrap();
 
-    // Write facts into the in-memory store.
     let mut store = MemStore::new();
     let mut next_id = 1u64;
 
     for path in ["src/main.rs", "src/lib.rs", "src/utils.rs"] {
-        let mut key = vec![];
-        put_str(&mut key, path);
+        let fact = FileFact(path.to_string());
+        let key = encode_tuple(&fact)?;
         store.insert(src_file_id, key, next_id, vec![]);
         next_id += 1;
     }
 
-    // Function key encoding: MARK_RECORD | put_str(file_path) | put_str(name) | MARK_TERM
     for (file_path, name) in [
         ("src/main.rs", "main"),
         ("src/main.rs", "setup"),
@@ -143,28 +150,14 @@ fn main() {
         ("src/lib.rs", "execute"),
         ("src/utils.rs", "helper"),
     ] {
-        let mut key = vec![];
-        key.push(MARK_RECORD);
-        put_str(&mut key, file_path);
-        put_str(&mut key, name);
-        key.push(MARK_TERM);
+        let fact = FunctionFact {
+            file_path: file_path.to_string(),
+            name: name.to_string(),
+        };
+        let key = encode_tuple(&fact)?;
         store.insert(src_fn_id, key, next_id, vec![]);
         next_id += 1;
     }
-
-    // Manually construct a query plan:
-    //
-    //   "Find all functions defined in src/main.rs"
-    //
-    // Generator 0 — scan src.File with seek prefix = put_str("src/main.rs").
-    //   Matches exactly the one file fact for src/main.rs; binds it to register 0.
-    //
-    // Generator 1 — scan src.Function with a composite seek key built from:
-    //   MARK_RECORD | field 0 of register 0 (= the encoded file-path string)
-    //   This prefix covers all function records whose first key field is "src/main.rs".
-    //   Binds the matched function fact to register 1.
-    //
-    // Head — decode register 1's key as a Record and emit it.
 
     let mut file_seek = vec![];
     put_str(&mut file_seek, "src/main.rs");
@@ -227,4 +220,6 @@ fn main() {
     };
 
     println!("{}", serde_json::to_string_pretty(&values).unwrap());
+
+    Ok(())
 }

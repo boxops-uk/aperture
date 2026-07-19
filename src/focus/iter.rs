@@ -5,12 +5,12 @@ use tinyvec::ArrayVec;
 use tokio_util::sync::CancellationToken;
 
 use crate::focus::{
-    error::{StoreCodecError, StoreError},
+    error::{ApertureError, StoreCodecError},
     plan::{
         FactId, FactStore, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
     },
     schema::{LocalInterner, PREDICATE_ID_SIZE},
-    transport::{Value, decode_typed, skip, strinc},
+    tuple::{Value, decode_typed, skip, strinc},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,12 +58,12 @@ impl MachineState {
         }
     }
 
-    pub fn get(&self, address: Address) -> Result<&Register, StoreError> {
+    pub fn get(&self, address: Address) -> Result<&Register, ApertureError> {
         self.registers
             .get(address.0 as usize)
-            .ok_or(StoreError::AddressOutOfBounds(address))?
+            .ok_or(ApertureError::AddressOutOfBounds(address))?
             .as_ref()
-            .ok_or(StoreError::UseBeforeBind(address))
+            .ok_or(ApertureError::UseBeforeBind(address))
     }
 }
 
@@ -127,7 +127,7 @@ impl<S: FactStore> StackFrame<S> {
         generator: &Generator,
         state: &MachineState,
         resume_at: Option<&[u8]>,
-    ) -> Result<(), StoreError> {
+    ) -> Result<(), ApertureError> {
         let prefix = self.build_prefix(state, generator)?;
         let hi = strinc(&prefix);
         let lo = resume_at.unwrap_or(&prefix);
@@ -144,19 +144,19 @@ impl<S: FactStore> StackFrame<S> {
         key: &ByteView,
         var: Address,
         idx: usize,
-    ) -> Result<Range<usize>, StoreError> {
+    ) -> Result<Range<usize>, ApertureError> {
         field_offsets
             .get_mut(var.0)
-            .ok_or(StoreError::AddressOutOfBounds(var))?
+            .ok_or(ApertureError::AddressOutOfBounds(var))?
             .get(key, idx)
-            .map_err(|e| StoreError::DecodeError(e))
+            .map_err(|e| ApertureError::DecodeError(e))
     }
 
     pub fn build_prefix(
         &mut self,
         state: &MachineState,
         generator: &Generator,
-    ) -> Result<Vec<u8>, StoreError> {
+    ) -> Result<Vec<u8>, ApertureError> {
         let mut prefix = generator.access.predicate_id.0.to_be_bytes().to_vec();
 
         match &generator.access.seek_key {
@@ -190,15 +190,15 @@ impl<S: FactStore> StackFrame<S> {
         state: &MachineState,
         generator: &Generator,
         cancellation_token: &CancellationToken,
-    ) -> Result<Option<Register>, StoreError> {
-        let scan = self.scan.as_mut().ok_or(StoreError::AdvanceAfterClose)?;
+    ) -> Result<Option<Register>, ApertureError> {
+        let scan = self.scan.as_mut().ok_or(ApertureError::AdvanceAfterClose)?;
         let mut since_check: usize = 0;
 
         for row in scan {
             since_check += 1;
             if since_check == CANCELLATION_STRIDE {
                 if cancellation_token.is_cancelled() {
-                    return Err(StoreError::Cancelled);
+                    return Err(ApertureError::Cancelled);
                 }
                 since_check = 0;
             }
@@ -228,13 +228,13 @@ impl<S: FactStore> StackFrame<S> {
         state: &MachineState,
         residuals: &[Residual],
         register: &Register,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<bool, ApertureError> {
         let mut row_field_offsets = FieldOffsets::new();
 
         for residual in residuals.iter() {
             let span = row_field_offsets
                 .get(&register.bytes, residual.field_idx)
-                .map_err(StoreError::DecodeError)?;
+                .map_err(ApertureError::DecodeError)?;
             let field = &register.bytes[span];
 
             let ok = match &residual.op {
@@ -279,7 +279,7 @@ pub struct Row<'a, S: FactStore> {
 }
 
 impl<'a, S: FactStore> Row<'a, S> {
-    pub fn to_value(&self, interner: &LocalInterner) -> Result<Value, StoreError> {
+    pub fn to_value(&self, interner: &LocalInterner) -> Result<Value, ApertureError> {
         project(interner, &self.plan.head, self.state, self.store)
     }
 }
@@ -289,7 +289,7 @@ fn project<S: FactStore>(
     p: &Project,
     state: &MachineState,
     store: &S,
-) -> Result<Value, StoreError> {
+) -> Result<Value, ApertureError> {
     match p {
         Project::Lit(v) => Ok(v.clone()),
 
@@ -307,7 +307,7 @@ fn project<S: FactStore>(
 
             let span = offsets
                 .get(&key, *field_idx)
-                .map_err(StoreError::DecodeError)?;
+                .map_err(ApertureError::DecodeError)?;
 
             let field = &key[span];
 
@@ -325,7 +325,7 @@ fn project<S: FactStore>(
             for (field_name, field_proj) in fields.iter() {
                 let field_name = interner
                     .try_resolve(*field_name)
-                    .ok_or(StoreError::UnknownSymbol(*field_name))?
+                    .ok_or(ApertureError::UnknownSymbol(*field_name))?
                     .to_owned();
 
                 let value = project(interner, field_proj, state, store)?;
@@ -375,7 +375,7 @@ impl<S: FactStore> Executor<S> {
         )
     }
 
-    pub fn resume(store: S, plan: Plan, cursor: Cursor) -> Result<Self, StoreError> {
+    pub fn resume(store: S, plan: Plan, cursor: Cursor) -> Result<Self, ApertureError> {
         let mut ex = Executor::new(store, plan);
 
         if cursor.0.is_empty() {
@@ -392,10 +392,10 @@ impl<S: FactStore> Executor<S> {
 
             let row = frame
                 .next(&ex.state, generator, &cancel)?
-                .ok_or(StoreError::BadResumeKey)?;
+                .ok_or(ApertureError::BadResumeKey)?;
 
             if row.fact_id != saved.fact_id {
-                return Err(StoreError::BadResumeKey);
+                return Err(ApertureError::BadResumeKey);
             }
 
             for var_address in generator.binds.iter() {
@@ -411,9 +411,9 @@ impl<S: FactStore> Executor<S> {
     pub fn enumerate<A>(
         &mut self,
         init: A,
-        mut step: impl FnMut(A, Row<'_, S>) -> Result<Stream<A>, StoreError>,
+        mut step: impl FnMut(A, Row<'_, S>) -> Result<Stream<A>, ApertureError>,
         cancellation_token: &CancellationToken,
-    ) -> Result<Iteratee<A>, StoreError> {
+    ) -> Result<Iteratee<A>, ApertureError> {
         let mut acc = init;
 
         loop {
@@ -451,7 +451,7 @@ impl<S: FactStore> Executor<S> {
                             .state
                             .registers
                             .get_mut(var_address.0)
-                            .ok_or(StoreError::AddressOutOfBounds(*var_address))?;
+                            .ok_or(ApertureError::AddressOutOfBounds(*var_address))?;
                         *slot = Some(register.clone());
                     }
                     frame.current = Some(register);

@@ -2,7 +2,8 @@ pub mod error;
 pub mod iter;
 pub mod plan;
 pub mod schema;
-pub mod transport;
+pub mod syntax;
+pub mod tuple;
 
 pub(crate) mod lexer;
 pub(crate) mod parser;
