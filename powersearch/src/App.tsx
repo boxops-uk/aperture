@@ -22,7 +22,7 @@ export default function App() {
     <SearchRoot
       searchAlgebra={toIR} // fold -> your backend IR
       rootEmpty={MATCH_NONE} // the ONE identity, applied once at the root
-      rootOp="allOf" // top-level connective
+      rootOp="All of" // top-level connective
       debounceMs={1000}
       onDebouncedChange={(ir: IR, meta, _signal) => {
         if (meta.isPartial) {

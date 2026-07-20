@@ -31,19 +31,19 @@ const DateControl: LeafControl<{ date: string }> = ({ value, onChange }) => (
 export const registry = defineOperators({
   Title: leaf({
     schema: stringValue,
-    predicates: ["is", "contains"],
+    predicates: ["is", "contains", "starts with", "ends with"],
     defaultPredicate: "contains",
     defaultValue: "",
     Control: StringControl,
   }),
   "Last modified": leaf({
     schema: dateValue,
-    predicates: ["after", "before", "on"],
+    predicates: ["after", "before", "on", "on or before", "on or after"],
     defaultPredicate: "after",
     Control: DateControl,
   }),
-  anyOf: branch(),
-  allOf: branch(),
+  "Any of": branch(),
+  "All of": branch(),
 });
 
 export type Reg = typeof registry;

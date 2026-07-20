@@ -202,17 +202,6 @@
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.bt-op--anyOf {
-  background: #ddf4ff;
-  border-color: #b6e3ff;
-  color: #0969da;
-}
-.bt-op--allOf {
-  background: #dafbe1;
-  border-color: #aceebb;
-  color: #1a7f37;
 }
 /* Nested search bar: same shell chrome as the root (border + small padding),
    just tighter, so a branch's own bar reads as clearly separate from its

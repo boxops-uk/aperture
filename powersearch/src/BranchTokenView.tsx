@@ -34,7 +34,7 @@ export function BranchTokenView({ qid }: { qid: Qid }) {
 
   return (
     <span className="bt-token" data-qid={qid}>
-      <span className={`lt-chip bt-op bt-op--${node.op}`}>{node.op}</span>
+      <span className={`lt-chip bt-op`}>{node.op}</span>
       <span className="bt-editor">
         <LexicalExtensionComposer extension={extension} />
       </span>
