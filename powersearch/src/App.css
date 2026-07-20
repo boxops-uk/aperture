@@ -23,7 +23,7 @@
 .lt-shell {
   border: 1px solid #d0d7de;
   border-radius: 4px;
-  padding: 4px 2px;
+  padding: 4px 4px;
   background: #fff;
   font:
     13px/1.5 ui-sans-serif,
@@ -49,10 +49,15 @@
 }
 
 /* --- leaf token (rendered by the decorator) --- */
+/* Margin, not padding: the host span is contenteditable="false" (Lexical
+   marks decorators that way), so padding is dead space for the browser's
+   caret hit-testing — a click there lands on the non-editable node, not the
+   paragraph. Margin sits in the paragraph's own editable flow, so it's a
+   real, clickable gap to place the cursor before/after the token. */
 .lt-host {
   display: inline-flex;
-  padding-left: 2px;
-  padding-right: 2px;
+  margin-left: 2px;
+  margin-right: 2px;
 }
 /* A token is a sequence of separately-chipped parts (op / predicate / value /
    delete), not one pill — align-items: stretch equalizes their heights to
@@ -91,10 +96,6 @@
   border-style: dashed;
   border-color: #d1242f;
   background: #fff8f8;
-}
-.lt-op {
-  font-weight: 600;
-  color: #57606a;
 }
 /* select trigger/input live inside a .lt-chip wrapper now, so they should
    blend into the chip's own border/background instead of drawing their own. */
@@ -198,11 +199,6 @@
   padding: 4px;
   background: #fbfcfd;
 }
-.bt-op {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-}
 /* Nested search bar: same shell chrome as the root (border + small padding),
    just tighter, so a branch's own bar reads as clearly separate from its
    parent's. Square, not rounded — it's the middle segment of the op/editor/
@@ -215,7 +211,4 @@
   border-radius: 0;
   padding: 4px 6px;
   background: #fff;
-}
-.lt-opt--branch {
-  font-weight: 600;
 }

@@ -25,7 +25,7 @@ export class BranchTokenNode extends DecoratorNode<JSX.Element> {
     return true;
   }
   decorate(): JSX.Element {
-    return <BranchTokenView qid={this.getQid()} />;
+    return <BranchTokenView qid={this.getQid()} hostKey={this.getKey()} />;
   }
 }
 

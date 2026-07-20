@@ -5,13 +5,20 @@ import type { Qid } from "./query";
 import { useSearchRuntime, useNode, useDispatch } from "./SearchContext";
 import { leafKeywordsOf, branchKeywordsOf } from "./operators";
 import { buildBranchExtension } from "./EditorExtension";
+import type { NodeKey } from "lexical";
 
 // A branch token = group chrome + a NESTED editor for this branch's own children.
 // The nested editor is linked to the parent via $getParentEditor (from the
 // surrounding composer context). Because the parent's reconcile keeps this
 // token's NodeKey stable, this editor is built once and won't remount on sibling
 // edits (verified headless).
-export function BranchTokenView({ qid }: { qid: Qid }) {
+export function BranchTokenView({
+  qid,
+  hostKey,
+}: {
+  qid: Qid;
+  hostKey: NodeKey;
+}) {
   const [parentEditor] = useLexicalComposerContext();
   const { store, registry } = useSearchRuntime();
   const node = useNode(qid);
@@ -25,7 +32,7 @@ export function BranchTokenView({ qid }: { qid: Qid }) {
         qid,
         leafKeywordsOf(registry),
         branchKeywordsOf(registry),
-        { $getParentEditor: () => parentEditor },
+        { editor: parentEditor, hostKey },
       ),
     [store, registry, qid, parentEditor],
   );
@@ -43,7 +50,7 @@ export function BranchTokenView({ qid }: { qid: Qid }) {
         title="remove group"
         onClick={() => dispatch({ type: "removeSubtree", qid })}
       >
-        ×
+        x
       </button>
     </span>
   );

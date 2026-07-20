@@ -1,4 +1,9 @@
-import { defineExtension, configExtension, type LexicalEditor } from "lexical";
+import {
+  defineExtension,
+  configExtension,
+  KEY_ENTER_COMMAND,
+  COMMAND_PRIORITY_LOW,
+} from "lexical";
 import { AutoFocusExtension, NestedEditorExtension } from "@lexical/extension";
 import { PlainTextExtension } from "@lexical/plain-text";
 import { ReactExtension } from "@lexical/react/ReactExtension";
@@ -10,10 +15,22 @@ import { LeafTokenNode } from "./LeafTokenNode";
 import { BranchTokenNode } from "./BranchTokenNode";
 import { createStoreBridgeExtension } from "./storeBridge";
 import { makeTypeaheadDecorator } from "./typeahead";
+import { FocusNavExtension, type ParentLink } from "./nav";
 
-export interface NestedParent {
-  $getParentEditor: () => LexicalEditor;
-}
+const disableMultilineExtension = defineExtension({
+  name: "disable-multiline",
+  namespace: "tokenized-search",
+  register(editor) {
+    return editor.registerCommand(
+      KEY_ENTER_COMMAND,
+      (e) => {
+        e?.preventDefault();
+        return true;
+      },
+      COMMAND_PRIORITY_LOW,
+    );
+  },
+});
 
 /**
  * ONE editor recipe for every branch level. The root editor calls it with no
@@ -29,7 +46,7 @@ export function buildBranchExtension<R extends Registry>(
   branchQid: Qid,
   leafKeywords: readonly LeafKeys<R>[],
   branchKeywords: readonly BranchKeys<R>[],
-  parent?: NestedParent,
+  parent?: ParentLink,
 ) {
   const TypeaheadMenu = makeTypeaheadDecorator(
     store,
@@ -51,14 +68,18 @@ export function buildBranchExtension<R extends Registry>(
         ),
         decorators: [<TypeaheadMenu key="typeahead" />],
       }),
+      disableMultilineExtension,
       ...(parent
         ? [
             configExtension(NestedEditorExtension, {
-              $getParentEditor: parent.$getParentEditor,
+              $getParentEditor: () => parent.editor,
               inheritEditableFromParent: true,
             }),
+            configExtension(FocusNavExtension, {
+              parent,
+            }),
           ]
-        : [AutoFocusExtension]), // autofocus the root only (avoid nested focus fights)
+        : [AutoFocusExtension, FocusNavExtension]), // autofocus the root only (avoid nested focus fights)
     ],
   });
 }
