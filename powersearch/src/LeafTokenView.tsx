@@ -2,6 +2,7 @@ import type { FC } from "react";
 import type { Qid } from "./query";
 import type { LeafDef } from "./operators";
 import { useNode, useDispatch, useRegistry } from "./SearchContext";
+import { PredicateMenu } from "./PredicateMenu";
 
 type AnyControl = FC<{ value: unknown; onChange: (v: unknown) => void }>;
 
@@ -23,25 +24,24 @@ export function LeafTokenView({ qid }: { qid: Qid }) {
       className={`lt-token${partial ? " lt-token--partial" : ""}`}
       data-qid={qid}
     >
-      <span className="lt-op">{node.op}</span>
-      <select
-        value={node.predicate}
-        onChange={(e) =>
-          dispatch({ type: "setPredicate", qid, predicate: e.target.value })
-        }
-      >
-        {def.predicates.map((p) => (
-          <option key={p} value={p}>
-            {p}
-          </option>
-        ))}
-      </select>
-      <Control
-        value={node.value}
-        onChange={(v) => dispatch({ type: "setValue", qid, value: v })}
-      />
+      <span className="lt-chip lt-op">{node.op}</span>
+      <span className="lt-chip lt-predicate">
+        <PredicateMenu
+          value={node.predicate}
+          predicates={def.predicates}
+          onChange={(predicate) =>
+            dispatch({ type: "setPredicate", qid, predicate })
+          }
+        />
+      </span>
+      <span className="lt-chip lt-value">
+        <Control
+          value={node.value}
+          onChange={(v) => dispatch({ type: "setValue", qid, value: v })}
+        />
+      </span>
       <button
-        className="lt-x"
+        className="lt-chip lt-x"
         title="remove"
         onClick={() => dispatch({ type: "removeSubtree", qid })}
       >

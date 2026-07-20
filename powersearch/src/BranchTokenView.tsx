@@ -34,19 +34,17 @@ export function BranchTokenView({ qid }: { qid: Qid }) {
 
   return (
     <span className="bt-token" data-qid={qid}>
-      <span className="bt-head">
-        <span className={`bt-op bt-op--${node.op}`}>{node.op}</span>
-        <button
-          className="bt-x"
-          title="remove group"
-          onClick={() => dispatch({ type: "removeSubtree", qid })}
-        >
-          x
-        </button>
-      </span>
+      <span className={`lt-chip bt-op bt-op--${node.op}`}>{node.op}</span>
       <span className="bt-editor">
         <LexicalExtensionComposer extension={extension} />
       </span>
+      <button
+        className="lt-chip lt-x"
+        title="remove group"
+        onClick={() => dispatch({ type: "removeSubtree", qid })}
+      >
+        ×
+      </button>
     </span>
   );
 }

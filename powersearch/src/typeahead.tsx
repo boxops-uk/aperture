@@ -116,7 +116,6 @@ export function makeTypeaheadDecorator<R extends Registry>(
                         selectOptionAndCleanUp(o);
                       }}
                     >
-                      {(o as OpOption).kind === "branch" ? "⊞ " : "+ "}
                       {(o as OpOption).keyword}
                     </li>
                   ))}

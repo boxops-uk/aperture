@@ -1,8 +1,29 @@
+:root {
+  --focus-ring: #0969da;
+}
+
+/* Shared focus treatment: border tints to the focus color and a 2px outline
+   sits just outside it. Applied to every focusable surface (editor shells,
+   chip selects/inputs, delete buttons) so focus reads the same everywhere. */
+.lt-shell:focus-within,
+.bt-editor:focus-within,
+.lt-predicate:focus-within,
+.lt-value:focus-within,
+.lt-x:focus-visible {
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.lt-shell p {
+  margin: 0;
+}
+
 /* --- the editor surface (contentEditable) --- */
 .lt-shell {
   border: 1px solid #d0d7de;
-  border-radius: 8px;
-  padding: 6px 8px;
+  border-radius: 4px;
+  padding: 4px 2px;
   background: #fff;
   font:
     13px/1.5 ui-sans-serif,
@@ -14,6 +35,11 @@
   min-height: 24px;
   display: flex;
   flex-wrap: wrap;
+  /* center, not stretch: a branch token on the same line can be taller than
+     a plain leaf chip (it holds a nested editor), and stretching every
+     sibling to match it would inflate plain leaf chips. Height-matching is
+     scoped to within a token (.lt-token, .bt-token below), not across the
+     whole row. */
   align-items: center;
   gap: 6px;
 }
@@ -25,40 +51,94 @@
 /* --- leaf token (rendered by the decorator) --- */
 .lt-host {
   display: inline-flex;
+  padding-left: 2px;
+  padding-right: 2px;
 }
+/* A token is a sequence of separately-chipped parts (op / predicate / value /
+   delete), not one pill — align-items: stretch equalizes their heights to
+   whichever part is tallest, so they always share the same height. */
 .lt-token {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: #f6f8fa;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  padding: 3px 6px;
+  align-items: stretch;
+  gap: 4px;
   user-select: none;
 }
-.lt-token--partial {
+.lt-chip {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-radius: 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  line-height: 1;
+}
+/* Chips within one operator (.lt-token, .bt-token) read as one grouped pill:
+   only the group's outer edges round, so the seam between chips stays square
+   and adjacent operators stay visually distinct from each other. */
+.lt-token > .lt-chip:first-child,
+.bt-token > .lt-chip:first-child {
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+.lt-token > .lt-chip:last-child,
+.bt-token > .lt-chip:last-child {
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+.lt-token--partial .lt-chip {
   border-style: dashed;
   border-color: #d1242f;
   background: #fff8f8;
 }
 .lt-op {
-  font-size: 11px;
   font-weight: 600;
   color: #57606a;
 }
-.lt-token select,
-.lt-token input {
+/* select trigger/input live inside a .lt-chip wrapper now, so they should
+   blend into the chip's own border/background instead of drawing their own. */
+.lt-chip .lt-select-trigger,
+.lt-chip input {
   font: inherit;
-  padding: 1px 4px;
-  border: 1px solid #d0d7de;
-  border-radius: 4px;
-}
-.lt-x {
+  color: inherit;
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
   border: 0;
   background: transparent;
+  outline: none;
+  height: 100%;
+}
+.lt-select-trigger {
+  cursor: pointer;
+}
+.lt-select {
+  position: relative;
+  display: inline-flex;
+  height: 100%;
+}
+/* Positions .lt-typeahead as this control's own popup instead of a
+   Lexical-portaled one, so the predicate list gets the exact same look
+   (rounding, hover/selected color) that a native <select> popup can't take. */
+.lt-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  margin: 0;
+  z-index: 20;
+}
+.lt-x {
   color: #d1242f;
   cursor: pointer;
-  padding: 0 2px;
+  outline: none;
+}
+.lt-x:hover {
+  background: #fff0f0;
+  border-color: #d1242f;
+}
+.lt-token--partial .lt-x:hover {
+  background: #ffebe9;
 }
 
 /* --- typeahead menu (portaled to the plugin's anchor) --- */
@@ -77,7 +157,7 @@
     sans-serif;
 }
 .lt-typeahead li {
-  padding: 4px 8px;
+  padding: 4px;
   border-radius: 5px;
   cursor: pointer;
 }
@@ -105,51 +185,47 @@
 /* --- branch token (nested group) --- */
 .bt-host {
   display: inline-flex;
+  margin-left: 4px;
+  margin-right: 4px;
 }
 .bt-token {
   display: inline-flex;
-  flex-direction: column;
+  align-items: stretch;
   gap: 4px;
   vertical-align: top;
   border: 1px solid #d0d7de;
   border-radius: 8px;
-  padding: 6px;
+  padding: 4px;
   background: #fbfcfd;
-}
-.bt-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 .bt-op {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: 999px;
 }
 .bt-op--anyOf {
   background: #ddf4ff;
+  border-color: #b6e3ff;
   color: #0969da;
 }
 .bt-op--allOf {
   background: #dafbe1;
+  border-color: #aceebb;
   color: #1a7f37;
 }
-.bt-x {
-  border: 0;
-  background: transparent;
-  color: #d1242f;
-  cursor: pointer;
-  padding: 0 4px;
-}
+/* Nested search bar: same shell chrome as the root (border + small padding),
+   just tighter, so a branch's own bar reads as clearly separate from its
+   parent's. Square, not rounded — it's the middle segment of the op/editor/
+   delete row, between the two outer .lt-chips that carry the group's rounded
+   corners. */
 .bt-editor {
   display: block;
   min-width: 160px;
-  padding: 2px 6px;
-  border-left: 2px solid #eaeef2;
-  margin-left: 2px;
+  border: 1px solid #d0d7de;
+  border-radius: 0;
+  padding: 4px 6px;
+  background: #fff;
 }
 .lt-opt--branch {
   font-weight: 600;
