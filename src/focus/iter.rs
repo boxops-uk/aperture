@@ -229,13 +229,14 @@ impl<S: FactStore> StackFrame<S> {
         residuals: &[Residual],
         register: &Register,
     ) -> Result<bool, ApertureError> {
+        let key = register.key();
         let mut row_field_offsets = FieldOffsets::new();
 
         for residual in residuals.iter() {
             let span = row_field_offsets
-                .get(&register.bytes, residual.field_idx)
+                .get(&key, residual.field_idx)
                 .map_err(ApertureError::DecodeError)?;
-            let field = &register.bytes[span];
+            let field = &key[span];
 
             let ok = match &residual.op {
                 ResidualOp::EqConst(const_bytes) => field == const_bytes.as_ref(),
@@ -245,13 +246,14 @@ impl<S: FactStore> StackFrame<S> {
                     field_idx,
                 } => {
                     let other = state.get(*var_address)?;
+                    let other_key = other.key();
                     let other_span = Self::get_field_span(
                         frame_field_offsets,
-                        &other.bytes,
+                        &other_key,
                         *var_address,
                         *field_idx,
                     )?;
-                    field == &other.bytes[other_span]
+                    field == &other_key[other_span]
                 }
             };
             if !ok {
@@ -467,5 +469,80 @@ impl<S: FactStore> Executor<S> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::focus::{
+        mem_store::MemStore,
+        plan::{Access, Generator, Plan, Project, Residual, ResidualOp, SeekKey},
+        schema::{LocalInterner, PredicateId, PredicateTy, SchemaInterner},
+        tuple::{Value, put_str},
+    };
+    use lasso::Rodeo;
+    use tokio_util::sync::CancellationToken;
+
+    fn enc_str(s: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        put_str(&mut b, s);
+        b
+    }
+
+    fn run(store: MemStore, plan: Plan) -> Vec<Value> {
+        let interner = LocalInterner::new(SchemaInterner::new(Rodeo::new().into_reader()));
+        let cancel = CancellationToken::new();
+        let mut ex = Executor::new(store, plan);
+
+        let out = ex
+            .enumerate(
+                Vec::<Value>::new(),
+                |mut acc, row| {
+                    acc.push(row.to_value(&interner)?);
+                    Ok(Stream::Continue(acc))
+                },
+                &cancel,
+            )
+            .expect("query failed");
+
+        match out {
+            Iteratee::Done(v) | Iteratee::Suspended(v, _) => v,
+        }
+    }
+
+    // A residual on a key field is evaluated against the field's value (the
+    // stripped key, predicate-id prefix removed), consistently with seek splices
+    // and projection — so it filters on the field, not on the prefix bytes.
+    #[test]
+    fn residual_eq_const_on_key_field_filters_correctly() {
+        let pred = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert(pred, enc_str("alpha"), 1);
+        store.insert(pred, enc_str("beta"), 2);
+        store.insert(pred, enc_str("gamma"), 3);
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([Generator {
+                access: Access {
+                    predicate_id: pred,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                binds: Box::new([Address::new(0)]),
+                residuals: Box::new([Residual {
+                    field_idx: 0,
+                    op: ResidualOp::EqConst(enc_str("beta").into_boxed_slice()),
+                }]),
+            }]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                field_idx: 0,
+                ty: PredicateTy::Str,
+            },
+        };
+
+        assert_eq!(run(store, plan), vec![Value::Str("beta".to_string())]);
     }
 }

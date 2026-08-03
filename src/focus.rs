@@ -8,6 +8,9 @@ pub mod tuple;
 pub(crate) mod lexer;
 pub(crate) mod parser;
 
+#[cfg(test)]
+pub(crate) mod mem_store;
+
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // pub struct PredicateId(u32);
 
