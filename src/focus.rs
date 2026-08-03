@@ -2,6 +2,7 @@ pub mod error;
 pub mod iter;
 pub mod plan;
 pub mod schema;
+pub mod store;
 pub mod syntax;
 pub mod tuple;
 
