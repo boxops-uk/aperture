@@ -29,18 +29,22 @@ different thing; don't conflate them.
 The engine spine exists in `src/focus/`:
 
 - **Codec** (`tuple.rs`) — heavily property-tested: order-preservation, round-trip, and
-  skip are covered ([I1](docs/invariants.md#i1), [I2](docs/invariants.md#i2) green). **Gap:**
-  no golden marker-table test yet, so [I3](docs/invariants.md#i3) is *not* guarded — Phase 0
-  closes it.
-- **Executor + resume** (`iter.rs`, `plan.rs`) — implemented, but **one** test between them;
-  [I4](docs/invariants.md#i4)–[I9](docs/invariants.md#i9) are essentially unverified.
+  skip are covered, and the golden marker table now pins the on-disk values
+  ([I1](docs/invariants.md#i1), [I2](docs/invariants.md#i2), [I3](docs/invariants.md#i3)
+  green). Named `arb_*` strategies live in `tuple::proptest`.
+- **Executor + resume** (`iter.rs`, `plan.rs`) — implemented and now guarded: a happy-path
+  battery over hand-built plans, mechanical NFR guards, and the tier-3 resume battery
+  (`exec::resume_equals_uninterrupted`) over schema-first `(plan, store)` pairs from
+  `plan::proptest`. [I4](docs/invariants.md#i4)–[I7](docs/invariants.md#i7),
+  [I9](docs/invariants.md#i9) green on `MemStore`; [I8](docs/invariants.md#i8) needs fjall
+  (Phase 1), which also re-runs the resume battery against the real store.
 - **Front end** (grammar, typecheck, flatten) — exists only in the disconnected `src/lens/`
   (not compiled); to be re-implemented into `focus`, then deleted file-by-file.
 - **Unbuilt:** the fjall store impl, ingestion, schema parsing, the wire protocol, and the
-  operational layer.
+  operational layer. `src/focus/store.rs` and `schema.rs` hold those phases' guards, written
+  up front and `#[ignore]`d.
 
-Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the design docs; the
-one correction this revision makes is I3's status (above).
+Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the design docs.
 
 ---
 
@@ -55,7 +59,7 @@ one correction this revision makes is I3's status (above).
 
 Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends on 1 (store + atomic put_fact).
               Derived-*and-stored* persistence (part of 6) integrates operationally with 7 + 9 (ops-I8 phased derivation).
-Gates:        Codec I1–I2 green now; I3 golden test in Phase 0.   I8/I11/I12 green at Phase 1.   I13 at Phase 8.
+Gates:        Codec I1–I3 green.  Executor I4–I7, I9 green on MemStore.  I8/I11/I12 at Phase 1.  I10/I13 at Phase 8.
               FactRef marker — resolved (own marker 0x51, already in the codec); no longer gates ingestion.
 ```
 
@@ -113,14 +117,18 @@ themselves in the [registry](docs/invariants.md).
   `arb_*` strategies; **write `codec::marker_table_golden`** pinning every marker's value.
 - **0e. Write the deferred guards as ignored-pending** — I8/I11/I12 (pending Phase 1),
   I10/I13 (pending Phase 8): real test bodies, `#[ignore = "Ixx — pending Phase N"]`.
-- **0f. Fold in discovered latent fixes** with regression tests (residual walks the stripped
-  key — done; audit `Project::Value`).
+- **0f. Fold in discovered latent fixes** with regression tests. Found and fixed: the residual
+  walked the unstripped key; `Project::Value` decoded the register instead of the entity; the
+  fact-ref field used the wrong marker; and `StackFrame::open` built its seek prefix from
+  field offsets cached against the *previous* outer row (stale spans ⇒ wrong join results —
+  caught by the 0c generator, pinned by
+  `exec::seek_splice_rereads_field_when_outer_row_width_changes`).
 
 **Acceptance:**
-- [ ] The §3 guard matrix exists; `cargo test -- --ignored --list` shows every pending guard tagged with its phase.
-- [ ] I3 golden marker test written and green; I1–I2 still green.
-- [ ] On-`MemStore` executor guards green: I4 (every cut point, 1-/2-/3-level), I5, I6, I7, I9.
-- [ ] Codec `arb_*` strategies are importable by other modules.
+- [x] The §3 guard matrix exists; `cargo test -- --ignored --list` shows every pending guard tagged with its phase.
+- [x] I3 golden marker test written and green; I1–I2 still green.
+- [x] On-`MemStore` executor guards green: I4 (every cut point, 1-/2-/3-level), I5, I6, I7, I9.
+- [x] Codec `arb_*` strategies are importable by other modules.
 
 ---
 

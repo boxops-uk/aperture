@@ -23,10 +23,10 @@ green. See [testing](testing.md).
 | [I1](#i1) | Key encoding is order-preserving. | `codec::order_preservation` + round-trip | [ch2](02-tuple-codec.md) | ✅ green |
 | [I2](#i2) | Encoding is self-delimiting; `skip` needs no schema. | `codec::skip_exactness` | [ch2](02-tuple-codec.md) | ✅ green |
 | [I3](#i3) | The marker table is frozen on disk. | `codec::marker_table_golden` | [ch2](02-tuple-codec.md) | ✅ green |
-| [I4](#i4) | Resume == uninterrupted run. | `exec::resume_equals_uninterrupted` | [ch5](05-resume.md) | Phase 0 (MemStore) → Phase 1 (fjall) |
+| [I4](#i4) | Resume == uninterrupted run. | `exec::resume_equals_uninterrupted` | [ch5](05-resume.md) | ✅ green on `MemStore` → fjall re-run in Phase 1 |
 | [I5](#i5) | Register holds the whole row; fields decode lazily. | `exec::bind_is_refcount_not_decode` | [ch4](04-executor.md) | ✅ green |
 | [I6](#i6) | Values never enter the scan hot loop. | `exec::no_value_fetch_in_scan` | [ch3](03-storage-model.md)/[ch4](04-executor.md) | ✅ green |
-| [I7](#i7) | The executor is a defunctionalised state machine. | structural + resume battery | [ch4](04-executor.md) | Phase 0 — happy-path green; resume battery pending |
+| [I7](#i7) | The executor is a defunctionalised state machine. | structural + resume battery | [ch4](04-executor.md) | ✅ green — resume battery in place |
 | [I8](#i8) | Immutable snapshot per query; released at suspend. | `store::snapshot_released_at_suspend` | [ch5](05-resume.md) | Phase 1 (needs fjall) |
 | [I9](#i9) | Hot path is allocation-free per row. | `exec::scan_is_alloc_free_per_row` | [ch4](04-executor.md) | ✅ green |
 | [I10](#i10) | Union discriminants are stable and append-only. | `schema::discriminants_append_only` | [ch6](06-types-and-schema.md) | Phase 8 (with unions) |
