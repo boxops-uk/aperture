@@ -131,8 +131,12 @@ walked on demand and *not* cached — the cache never heap-spills. This is part 
 > at escape boundaries — suspend (detach `ByteView` → owned bytes) and string/bytes
 > projection.
 >
-> *Guard:* `exec::scan_is_alloc_free_per_row` — an allocation-counting global allocator
-> asserts zero allocations across a multi-row scan step (excluding escape boundaries).
+> *Guard:* `exec::scan_is_alloc_free_per_row` — the `allocation-counter` dev-dependency's
+> global allocator (thread-local counters, so it survives the parallel harness) asserts that
+> scanning N and 2N rows allocates the same **count and bytes**, excluding escape boundaries.
+> Bytes matter on their own: a single buffer sized by the row count is one allocation either
+> way. A positive control in the test proves the allocator is actually linked, so a broken
+> dev-dependency can't make the guard pass vacuously.
 
 ---
 

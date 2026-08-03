@@ -39,7 +39,7 @@ module, not per-test boilerplate:
 | I5 — lazy field decode | a decode-counting probe: binding N vars ⇒ 0 field decodes |
 | I6 — no value in scan | a `FactStore` spy that fails if `point()` is called during a key-only query |
 | I8 — snapshot released | a drop-probe on the fjall iterator; asserts nothing survives a suspend |
-| I9 — alloc-free hot path | an allocation-counting global allocator; asserts 0 allocs per scan step |
+| I9 — alloc-free hot path | the `allocation-counter` dev-dependency; N vs 2N rows must match on alloc count *and* bytes |
 
 An NFR with no mechanical guard is an aspiration, not an acceptance criterion.
 

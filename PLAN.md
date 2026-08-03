@@ -106,7 +106,7 @@ themselves in the [registry](docs/invariants.md).
 **Tasks (each ends green):**
 - **0a. Shared test machinery.** Promote `focus::mem_store` (started) + a schema/fixture
   builder into support modules tests import. Add the **NFR guard machinery**: an
-  allocation-counting allocator (I9), a `FactStore` spy that fails on unexpected `point()`
+  `allocation-counter` dev-dependency (I9), a `FactStore` spy that fails on unexpected `point()`
   (I6), a decode-counter probe (I5). ([testing](docs/testing.md#nfr-guards-are-mechanical-not-eyeballed).)
 - **0b. Executor happy-path battery** over hand-built plans (1-/2-/3-level joins, seeks,
   key-field residuals, record/scalar heads); model = "run to completion, collect rows."

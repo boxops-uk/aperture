@@ -31,5 +31,13 @@ tokio-util = "0.7.18"
 tracing = { version = "0.1.44", features = ["release_max_level_info"] }
 tracing-subscriber = "0.3.23"
 
+[dev-dependencies]
+# Allocation-counting global allocator for the I9 hot-path guard
+# (`exec::scan_is_alloc_free_per_row`). Its counters are thread-local, so it
+# survives the parallel test harness; it installs its own `#[global_allocator]`
+# unconditionally, so keeping it a dev-dependency is what confines the counting
+# allocator to test binaries.
+allocation-counter = "0.8.1"
+
 [build-dependencies]
 lelwel = "0.10"

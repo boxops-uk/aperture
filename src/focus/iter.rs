@@ -495,7 +495,6 @@ impl<S: FactStore> Executor<S> {
 mod tests {
     use super::*;
     use crate::focus::{
-        alloc_probe::count_allocs,
         fixtures::{
             FrozenStore, PointSpy, collect_rows, compose, count_rows, i64_field, interner_with,
             run_with_suspends, str_field,
@@ -1510,8 +1509,24 @@ mod tests {
     // amount: the difference is only the per-row scan work, so equal counts mean
     // zero allocations per row. Non-row-scaling costs (frame open, executor
     // setup) are constant and cancel.
+    //
+    // Bytes are asserted alongside counts: a single buffer sized by the row count
+    // (materialising the result set — the anti-pattern I9 exists to forbid) is one
+    // allocation either way, and only the volume gives it away.
     #[test]
     fn scan_is_alloc_free_per_row() {
+        // The counting allocator ships inside `allocation-counter` and is only
+        // linked because it is a dev-dependency. If that wiring ever breaks,
+        // `measure` reports zeroes and every comparison below holds vacuously —
+        // so prove the probe sees a known allocation first.
+        let control = allocation_counter::measure(|| {
+            std::hint::black_box(Vec::<u8>::with_capacity(4096));
+        });
+        assert!(
+            control.count_total > 0 && control.bytes_total >= 4096,
+            "counting allocator is not installed; the I9 guard would pass vacuously: {control:?}"
+        );
+
         let p = PredicateId(0);
 
         let store_n = FrozenStore::from_keys(p, (0..64u64).map(|i| (i64_field(i as i64), i)));
@@ -1523,14 +1538,22 @@ mod tests {
             head: Project::FactRef(Address::new(0)),
         };
 
-        let (n1, allocs_n) = count_allocs(|| count_rows(store_n, plan(0)).unwrap());
-        let (n2, allocs_2n) = count_allocs(|| count_rows(store_2n, plan(0)).unwrap());
+        let mut n1 = 0;
+        let mut n2 = 0;
+        let info_n = allocation_counter::measure(|| n1 = count_rows(store_n, plan(0)).unwrap());
+        let info_2n = allocation_counter::measure(|| n2 = count_rows(store_2n, plan(0)).unwrap());
 
         assert_eq!(n1, 64);
         assert_eq!(n2, 128);
+        let (allocs_n, allocs_2n) = (info_n.count_total, info_2n.count_total);
         assert_eq!(
             allocs_n, allocs_2n,
             "hot path is not alloc-free per row: {allocs_n} allocs for 64 rows vs {allocs_2n} for 128"
+        );
+        let (bytes_n, bytes_2n) = (info_n.bytes_total, info_2n.bytes_total);
+        assert_eq!(
+            bytes_n, bytes_2n,
+            "hot path allocates per row by volume: {bytes_n} bytes for 64 rows vs {bytes_2n} for 128"
         );
     }
 }

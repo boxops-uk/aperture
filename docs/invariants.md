@@ -102,7 +102,8 @@ fjall iterators pin a read snapshot; drop the executor at suspend to release it.
 Reused scratch buffers; `ByteView` clones are refcount bumps; field-offset caches are inline
 `ArrayVec<[usize;16]>` that never heap-spill. Copy out only at escape boundaries (suspend,
 string/bytes projection). *Why & how:* [chapter 4](04-executor.md#field-offset-cache-i9).
-*Guard:* `exec::scan_is_alloc_free_per_row` (allocation-counting allocator).
+*Guard:* `exec::scan_is_alloc_free_per_row` (`allocation-counter`, a dev-dependency; counts
+and bytes both compared).
 
 <a id="i10"></a>
 ### I10 — Union alternative discriminants are stable and append-only
