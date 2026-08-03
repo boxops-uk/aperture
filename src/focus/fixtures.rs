@@ -4,9 +4,12 @@
 //! Test machinery, not a product backend. Lives in a support module so tests
 //! import these rather than redefining helpers inline (see `docs/testing.md`).
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use byteview::ByteView;
@@ -15,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::focus::{
     error::ApertureError,
-    iter::{Executor, Iteratee, Stream},
+    iter::{Cursor, Executor, Iteratee, Stream},
     plan::{Entity, FactId, FactStore, Plan},
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId, SchemaInterner},
     tuple::{Value, put_i64, put_str},
@@ -95,6 +98,80 @@ pub fn count_rows<S: FactStore>(store: S, plan: Plan) -> Result<usize, ApertureE
     Ok(match out {
         Iteratee::Done(n) | Iteratee::Suspended(n, _) => n,
     })
+}
+
+/// A resume must make progress, so the round-trip count is bounded by the row
+/// count. This cap turns a non-advancing resume into a test failure rather than a
+/// hang.
+const MAX_SUSPENDS: usize = 4096;
+
+/// Run `plan` against `store`, **suspending after every row index in `schedule`**
+/// (1-based, counted across the whole run), rebuilding the executor from a
+/// bytes-only [`Cursor`] at each resume.
+///
+/// `mk` must return an equivalent `(store, plan)` pair on every call: the
+/// executor consumes both, and a resume is handed a *fresh* pair plus the cursor
+/// — which is exactly what the wire path does when an idle portal wakes up. The
+/// cursor carries no iterator and no snapshot, so nothing else crosses the gap.
+///
+/// Returns the projected rows and the number of suspend/resume round-trips
+/// actually taken, so a test can assert its schedule wasn't vacuous.
+///
+/// This is the system-under-test half of the [I4] battery; [`collect_rows`] is
+/// the model.
+///
+/// [I4]: ../../../docs/invariants.md
+pub fn run_with_suspends<S: FactStore>(
+    mut mk: impl FnMut() -> (S, Plan),
+    interner: &LocalInterner,
+    schedule: &BTreeSet<usize>,
+) -> Result<(Vec<Value>, usize), ApertureError> {
+    let cancel = CancellationToken::new();
+
+    let mut rows = Vec::new();
+    let mut emitted = 0usize;
+    let mut suspends = 0usize;
+    let mut cursor: Option<Cursor> = None;
+
+    loop {
+        let (store, plan) = mk();
+
+        let mut ex = match cursor.take() {
+            None => Executor::new(store, plan),
+            Some(cursor) => Executor::resume(store, plan, cursor)?,
+        };
+
+        let out = ex.enumerate(
+            (rows, emitted),
+            |(mut rows, n), row| {
+                rows.push(row.to_value(interner)?);
+                let n = n + 1;
+
+                if schedule.contains(&n) {
+                    Ok(Stream::Suspend((rows, n)))
+                } else {
+                    Ok(Stream::Continue((rows, n)))
+                }
+            },
+            &cancel,
+        )?;
+
+        match out {
+            Iteratee::Done((rows, _)) => return Ok((rows, suspends)),
+            Iteratee::Suspended((emitted_rows, n), suspended_at) => {
+                rows = emitted_rows;
+                emitted = n;
+                cursor = Some(suspended_at);
+                suspends += 1;
+
+                assert!(
+                    suspends <= MAX_SUSPENDS,
+                    "resume made no progress: {suspends} round-trips for {} row(s)",
+                    rows.len()
+                );
+            }
+        }
+    }
 }
 
 /// A `FactStore` wrapper that counts `point()` calls, for the I6 guard

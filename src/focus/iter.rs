@@ -498,16 +498,18 @@ mod tests {
         alloc_probe::count_allocs,
         fixtures::{
             FrozenStore, PointSpy, collect_rows, compose, count_rows, i64_field, interner_with,
-            str_field,
+            run_with_suspends, str_field,
         },
         mem_store::MemStore,
         plan::{
             Access, FactId, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+            proptest::{arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
         schema::{PredicateId, PredicateTy},
         tuple::{Value, decode_probe},
     };
-    use std::sync::atomic::Ordering;
+    use ::proptest::prelude::*;
+    use std::{collections::BTreeSet, sync::atomic::Ordering};
 
     /// Run a plan whose head projects only scalars (no record field names to
     /// resolve). Record-head tests call [`collect_rows`] with their own interner.
@@ -1053,6 +1055,331 @@ mod tests {
         };
 
         assert_eq!(run(store, plan), Vec::<Value>::new());
+    }
+
+    // ---- Resume battery (0c) ----------------------------------------------
+    //
+    // I4 — resume == uninterrupted run. The model is `collect_rows` ("run to
+    // completion, collect rows"); the system under test is `run_with_suspends`,
+    // which rebuilds the executor from a bytes-only `Cursor` at each cut point.
+    // These cases pin the 1-/2-/3-level shapes at *every* cut point
+    // deterministically; the schema-first generator drives the same property
+    // over generated `(plan, store)` pairs.
+
+    /// Assert resume == uninterrupted for **every** cut point of `mk`'s run:
+    /// suspending once after row `k` for each `k` in turn, then suspending after
+    /// every row at once. `expected_rows` pins the run's size so the property
+    /// can't pass by exercising nothing.
+    fn assert_resume_equals_uninterrupted(
+        mut mk: impl FnMut() -> (MemStore, Plan),
+        interner: &LocalInterner,
+        expected_rows: usize,
+    ) {
+        let (store, plan) = mk();
+        let model = collect_rows(store, plan, interner).unwrap();
+
+        assert_eq!(
+            model.len(),
+            expected_rows,
+            "model produced {} row(s), expected {expected_rows}",
+            model.len()
+        );
+
+        for k in 1..=model.len() {
+            let schedule = BTreeSet::from([k]);
+            let (rows, suspends) = run_with_suspends(&mut mk, interner, &schedule).unwrap();
+
+            assert_eq!(suspends, 1, "schedule {{{k}}} never suspended");
+            assert_eq!(rows, model, "suspending after row {k} changed the run");
+        }
+
+        // The maximal schedule: a suspend/resume round-trip at every row.
+        let every: BTreeSet<usize> = (1..=model.len()).collect();
+        let (rows, suspends) = run_with_suspends(&mut mk, interner, &every).unwrap();
+
+        assert_eq!(suspends, model.len(), "expected one suspend per row");
+        assert_eq!(rows, model, "suspending after every row changed the run");
+    }
+
+    /// 1 level: a full scan of one predicate, scalar head.
+    fn one_level_scan() -> (MemStore, Plan) {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        for (i, v) in [30i64, 10, 20].into_iter().enumerate() {
+            store.insert(p, i64_field(v), i as u64 + 1);
+        }
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                field_idx: 0,
+                ty: PredicateTy::Int,
+            },
+        };
+
+        (store, plan)
+    }
+
+    /// 2 levels: Person(a) → Knows(a, b) by seek splice. Person 3 has no `Knows`
+    /// row, so the inner scan is empty there and the machine backtracks — a
+    /// cut point either side of that boundary must still resume exactly.
+    fn two_level_seek_join(interner: &LocalInterner) -> (MemStore, Plan) {
+        let person = PredicateId(0);
+        let knows = PredicateId(1);
+
+        let mut store = MemStore::new();
+        for id in [1i64, 2, 3] {
+            store.insert(person, i64_field(id), id as u64);
+        }
+        store.insert(knows, compose(&[&i64_field(1), &i64_field(2)]), 10);
+        store.insert(knows, compose(&[&i64_field(1), &i64_field(3)]), 11);
+        store.insert(knows, compose(&[&i64_field(2), &i64_field(3)]), 12);
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                scan_all(person, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: knows,
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                            address: Address::new(0),
+                            field_idx: 0,
+                        }])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([]),
+                },
+            ]),
+            head: Project::Record(Box::new([
+                (
+                    interner.get("a").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(0),
+                        field_idx: 0,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+                (
+                    interner.get("b").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(1),
+                        field_idx: 1,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+            ])),
+        };
+
+        (store, plan)
+    }
+
+    /// 3 levels: Person(a) → Knows(a, b) → Knows(b, c), over a `Knows` relation
+    /// with a cycle so several `a` values fan out to more than one row — the run
+    /// crosses join cross-product boundaries repeatedly.
+    fn three_level_seek_join(interner: &LocalInterner) -> (MemStore, Plan) {
+        let person = PredicateId(0);
+        let knows = PredicateId(1);
+
+        let mut store = MemStore::new();
+        for id in [1i64, 2, 3] {
+            store.insert(person, i64_field(id), id as u64);
+        }
+        for (i, (from, to)) in [(1i64, 2i64), (1, 3), (2, 3), (3, 1)]
+            .into_iter()
+            .enumerate()
+        {
+            store.insert(
+                knows,
+                compose(&[&i64_field(from), &i64_field(to)]),
+                10 + i as u64,
+            );
+        }
+
+        let seek_on = |reg: usize, field_idx: usize| {
+            SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                address: Address::new(reg),
+                field_idx,
+            }]))
+        };
+
+        let plan = Plan {
+            nvars: 3,
+            body: Box::new([
+                scan_all(person, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: knows,
+                        seek_key: seek_on(0, 0),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([]),
+                },
+                Generator {
+                    access: Access {
+                        predicate_id: knows,
+                        seek_key: seek_on(1, 1),
+                    },
+                    binds: Box::new([Address::new(2)]),
+                    residuals: Box::new([]),
+                },
+            ]),
+            head: Project::Record(Box::new([
+                (
+                    interner.get("a").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(0),
+                        field_idx: 0,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+                (
+                    interner.get("b").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(1),
+                        field_idx: 1,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+                (
+                    interner.get("c").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(2),
+                        field_idx: 1,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+            ])),
+        };
+
+        (store, plan)
+    }
+
+    /// 2 levels joined by a cross-loop `EqRegisterField` residual rather than a
+    /// seek: resume must restore the outer binding well enough for the *residual*
+    /// to keep filtering identically, not just for the scan range to be right.
+    fn two_level_residual_join(interner: &LocalInterner) -> (MemStore, Plan) {
+        let r = PredicateId(0);
+
+        let mut store = MemStore::new();
+        for (i, (x, y)) in [(1i64, 2i64), (2, 3), (3, 1)].into_iter().enumerate() {
+            store.insert(r, compose(&[&i64_field(x), &i64_field(y)]), i as u64 + 1);
+        }
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                scan_all(r, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: r,
+                        seek_key: SeekKey::Prefix(Box::new([])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([Residual {
+                        field_idx: 0,
+                        op: ResidualOp::EqRegisterField {
+                            address: Address::new(0),
+                            field_idx: 1,
+                        },
+                    }]),
+                },
+            ]),
+            head: Project::Record(Box::new([
+                (
+                    interner.get("a").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(0),
+                        field_idx: 0,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+                (
+                    interner.get("b").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(1),
+                        field_idx: 1,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+            ])),
+        };
+
+        (store, plan)
+    }
+
+    #[test]
+    fn resume_equals_uninterrupted_one_level() {
+        assert_resume_equals_uninterrupted(one_level_scan, &interner_with(&[]), 3);
+    }
+
+    #[test]
+    fn resume_equals_uninterrupted_two_level_seek() {
+        let interner = interner_with(&["a", "b"]);
+        assert_resume_equals_uninterrupted(|| two_level_seek_join(&interner), &interner, 3);
+    }
+
+    #[test]
+    fn resume_equals_uninterrupted_three_level_seek() {
+        let interner = interner_with(&["a", "b", "c"]);
+        assert_resume_equals_uninterrupted(|| three_level_seek_join(&interner), &interner, 5);
+    }
+
+    #[test]
+    fn resume_equals_uninterrupted_cross_loop_residual() {
+        let interner = interner_with(&["a", "b"]);
+        assert_resume_equals_uninterrupted(|| two_level_residual_join(&interner), &interner, 3);
+    }
+
+    proptest! {
+        // This is the executor's headline gate, and a case is cheap (the whole
+        // battery runs in well under a second), so take four times the default.
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+
+        // I4 — resume == uninterrupted run. **The executor's headline acceptance
+        // gate.** Over schema-first `(plan, store)` pairs (1-/2-/3-level, seeks,
+        // constant and cross-loop residuals): the row sequence is invariant under
+        // suspension at every single cut point, under a generated interruption
+        // schedule, and under suspending after every row — no duplicates, no
+        // skips, including across join cross-product boundaries.
+        #[test]
+        fn resume_equals_uninterrupted(
+            spec in arb_plan_and_store(),
+            schedule in arb_interruption_schedule(),
+        ) {
+            let interner = spec.interner();
+            let mut mk = || spec.build(&interner);
+
+            let (store, plan) = mk();
+            let model = collect_rows(store, plan, &interner).unwrap();
+
+            // Every single cut point.
+            for k in 1..=model.len() {
+                let cut = BTreeSet::from([k]);
+                let (rows, suspends) = run_with_suspends(&mut mk, &interner, &cut).unwrap();
+
+                assert_eq!(suspends, 1, "schedule {{{k}}} never suspended");
+                assert_eq!(
+                    rows, model,
+                    "suspending after row {k} of {} changed the run ({} level(s))",
+                    model.len(),
+                    spec.levels()
+                );
+            }
+
+            // The generated schedule, then the maximal one (suspend at every row).
+            let every: BTreeSet<usize> = (1..=model.len()).collect();
+
+            for cuts in [cut_points(&schedule, model.len()), every] {
+                let (rows, suspends) = run_with_suspends(&mut mk, &interner, &cuts).unwrap();
+
+                assert_eq!(suspends, cuts.len(), "expected one suspend per scheduled row");
+                assert_eq!(rows, model, "schedule {cuts:?} changed the run");
+            }
+        }
     }
 
     // ---- NFR guards (0a) --------------------------------------------------
