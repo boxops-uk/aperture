@@ -17,6 +17,15 @@ pub mod mem_store;
 #[cfg(any(test, feature = "proptest"))]
 pub mod fixtures;
 
+// Allocation-counting global allocator for the I9 hot-path guard. Test-only — a
+// counting allocator must never ship.
+#[cfg(test)]
+pub(crate) mod alloc_probe;
+
+#[cfg(test)]
+#[global_allocator]
+static ALLOC_PROBE: alloc_probe::CountingAlloc = alloc_probe::CountingAlloc;
+
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // pub struct PredicateId(u32);
 

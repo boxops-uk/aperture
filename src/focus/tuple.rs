@@ -743,6 +743,34 @@ where
     }
 }
 
+/// Decode-counting probe for the I5 guard (`exec::bind_is_refcount_not_decode`).
+///
+/// Every typed field decode bumps a thread-local counter; the guard asserts that
+/// binding variables triggers zero decodes — decoding happens only at read
+/// sites (projection), never at bind time. See `docs/testing.md`.
+#[cfg(any(test, feature = "proptest"))]
+pub mod decode_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DECODES: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Reset the decode counter to zero.
+    pub fn reset() {
+        DECODES.with(|c| c.set(0));
+    }
+
+    /// Number of typed field decodes since the last [`reset`].
+    pub fn count() -> u64 {
+        DECODES.with(Cell::get)
+    }
+
+    pub(crate) fn bump() {
+        DECODES.with(|c| c.set(c.get() + 1));
+    }
+}
+
 pub fn decode_typed(
     interner: &LocalInterner,
     bytes: &[u8],
@@ -803,6 +831,10 @@ pub fn decode_typed_at<'b>(
     dec: &mut TupleDecoder<'b>,
     ty: &PredicateTy,
 ) -> Result<Value, ApertureError> {
+    // I5 probe: this is the single funnel for typed field/value decoding.
+    #[cfg(any(test, feature = "proptest"))]
+    decode_probe::bump();
+
     match ty {
         PredicateTy::Int => {
             let i = dec.take_i64()?;

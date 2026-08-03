@@ -488,14 +488,19 @@ impl<S: FactStore> Executor<S> {
 mod tests {
     use super::*;
     use crate::focus::{
-        fixtures::{collect_rows, compose, i64_field, interner_with, str_field},
+        alloc_probe::count_allocs,
+        fixtures::{
+            FrozenStore, PointSpy, collect_rows, compose, count_rows, i64_field, interner_with,
+            str_field,
+        },
         mem_store::MemStore,
         plan::{
             Access, FactId, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
         },
         schema::{PredicateId, PredicateTy},
-        tuple::Value,
+        tuple::{Value, decode_probe},
     };
+    use std::sync::atomic::Ordering;
 
     /// Run a plan whose head projects only scalars (no record field names to
     /// resolve). Record-head tests call [`collect_rows`] with their own interner.
@@ -932,5 +937,157 @@ mod tests {
         };
 
         assert_eq!(run(store, plan), Vec::<Value>::new());
+    }
+
+    // ---- NFR guards (0a) --------------------------------------------------
+    //
+    // Non-functional invariants are tested mechanically, not eyeballed: a
+    // decode counter (I5), a `point()` spy (I6), and an allocation-counting
+    // allocator (I9). See `docs/testing.md`.
+
+    // I5 — a register holds the whole row; fields decode lazily. Binding N
+    // variables is N refcount bumps and *zero* field decodes; decoding happens
+    // only at a read site (projection).
+    #[test]
+    fn bind_is_refcount_not_decode() {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert(p, compose(&[&i64_field(1), &i64_field(2)]), 1);
+        store.insert(p, compose(&[&i64_field(3), &i64_field(4)]), 2);
+
+        // Three variables bind to each whole row; no residuals; no projection.
+        let bind_plan = Plan {
+            nvars: 3,
+            body: Box::new([Generator {
+                access: Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                binds: Box::new([Address::new(0), Address::new(1), Address::new(2)]),
+                residuals: Box::new([]),
+            }]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        decode_probe::reset();
+        let n = count_rows(store, bind_plan).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(
+            decode_probe::count(),
+            0,
+            "binding decoded {} field(s); binding must be refcount-only (I5)",
+            decode_probe::count()
+        );
+
+        // Positive control: projecting a key field *does* decode.
+        let mut store2 = MemStore::new();
+        store2.insert(p, compose(&[&i64_field(1), &i64_field(2)]), 1);
+        let proj_plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                field_idx: 1,
+                ty: PredicateTy::Int,
+            },
+        };
+
+        decode_probe::reset();
+        let rows = collect_rows(store2, proj_plan, &interner_with(&[])).unwrap();
+        assert_eq!(rows, vec![Value::Int(2)]);
+        assert!(
+            decode_probe::count() > 0,
+            "projecting a field must decode (I5 positive control)"
+        );
+    }
+
+    // I6 — values never enter the scan hot loop. A key-only query (scan +
+    // key-field residual + key-field projection) never fetches from `entities`.
+    #[test]
+    fn no_value_fetch_in_scan() {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert_valued(p, i64_field(1), 1, i64_field(100));
+        store.insert_valued(p, i64_field(2), 2, i64_field(200));
+
+        let (spy, calls) = PointSpy::new(store);
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([Generator {
+                access: Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                binds: Box::new([Address::new(0)]),
+                residuals: Box::new([Residual {
+                    field_idx: 0,
+                    op: ResidualOp::EqConst(i64_field(2).into_boxed_slice()),
+                }]),
+            }]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                field_idx: 0,
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let rows = collect_rows(spy, plan, &interner_with(&[])).unwrap();
+        assert_eq!(rows, vec![Value::Int(2)]);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "point() (value fetch) called during a key-only query (I6)"
+        );
+
+        // Positive control: a `Value` head fetches from `entities` via point().
+        let mut store2 = MemStore::new();
+        store2.insert_valued(p, i64_field(1), 1, i64_field(100));
+        let (spy2, calls2) = PointSpy::new(store2);
+        let value_plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::Value {
+                address: Address::new(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let rows2 = collect_rows(spy2, value_plan, &interner_with(&[])).unwrap();
+        assert_eq!(rows2, vec![Value::Int(100)]);
+        assert!(
+            calls2.load(Ordering::Relaxed) > 0,
+            "a Value head must fetch via point() (I6 positive control)"
+        );
+    }
+
+    // I9 — the hot path is allocation-free per row. Scanning N rows and 2N rows
+    // (over the alloc-free `FrozenStore`, without projecting) allocates the same
+    // amount: the difference is only the per-row scan work, so equal counts mean
+    // zero allocations per row. Non-row-scaling costs (frame open, executor
+    // setup) are constant and cancel.
+    #[test]
+    fn scan_is_alloc_free_per_row() {
+        let p = PredicateId(0);
+
+        let store_n = FrozenStore::from_keys(p, (0..64u64).map(|i| (i64_field(i as i64), i)));
+        let store_2n = FrozenStore::from_keys(p, (0..128u64).map(|i| (i64_field(i as i64), i)));
+
+        let plan = |bind| Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, bind)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let (n1, allocs_n) = count_allocs(|| count_rows(store_n, plan(0)).unwrap());
+        let (n2, allocs_2n) = count_allocs(|| count_rows(store_2n, plan(0)).unwrap());
+
+        assert_eq!(n1, 64);
+        assert_eq!(n2, 128);
+        assert_eq!(
+            allocs_n, allocs_2n,
+            "hot path is not alloc-free per row: {allocs_n} allocs for 64 rows vs {allocs_2n} for 128"
+        );
     }
 }
