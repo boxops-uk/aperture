@@ -925,14 +925,285 @@ impl Serialize for Value {
     }
 }
 
+/// Composable `proptest` strategies and oracles for the tuple codec.
+///
+/// Named `arb_*` strategies mirror the value/type tree so other domains'
+/// generators (e.g. the schema-first `(plan, store)` generator) can build on
+/// them, and the independent oracles (`cmp_typed`, `encode_typed_for_test`) are
+/// shared test machinery rather than per-test boilerplate. See
+/// [`docs/testing.md`](../../../docs/testing.md).
+#[cfg(any(test, feature = "proptest"))]
+pub mod proptest {
+    use super::*;
+    use crate::focus::schema::{PredicateId, PredicateTy, SchemaInterner};
+    use ::proptest::prelude::*;
+    use lasso::Rodeo;
+    use std::{cmp::Ordering, sync::Arc};
+
+    /// A codec type, parallel to [`PredicateTy`] but interner-free so it shrinks
+    /// cleanly — field names are materialised (interned) only when a fixture is
+    /// built.
+    #[derive(Debug, Clone)]
+    pub enum TySpec {
+        Int,
+        Str,
+        Fact(PredicateId),
+        Record(Vec<(String, TySpec)>),
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct TypedValueSpec {
+        pub ty: TySpec,
+        pub value: Value,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct TypedPairSpec {
+        pub ty: TySpec,
+        pub a: Value,
+        pub b: Value,
+    }
+
+    /// A materialised [`TypedValueSpec`]: the interner that resolves the record
+    /// field names, plus the realised [`PredicateTy`] and value.
+    pub struct TypedValueFixture {
+        pub interner: LocalInterner,
+        pub ty: PredicateTy,
+        pub value: Value,
+    }
+
+    pub struct TypedPairFixture {
+        pub interner: LocalInterner,
+        pub ty: PredicateTy,
+        pub a: Value,
+        pub b: Value,
+    }
+
+    pub fn materialize_ty_spec(ty: &TySpec, rodeo: &mut Rodeo) -> PredicateTy {
+        match ty {
+            TySpec::Int => PredicateTy::Int,
+
+            TySpec::Str => PredicateTy::Str,
+
+            TySpec::Fact(id) => PredicateTy::Fact(*id),
+
+            TySpec::Record(fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|(name, field_ty)| {
+                        let spur = rodeo.get_or_intern(name);
+                        let field_ty = materialize_ty_spec(field_ty, rodeo);
+                        (spur, field_ty)
+                    })
+                    .collect::<Vec<_>>();
+
+                PredicateTy::Record(Arc::from(fields.into_boxed_slice()))
+            }
+        }
+    }
+
+    pub fn materialize_value_fixture(spec: TypedValueSpec) -> TypedValueFixture {
+        let mut rodeo = Rodeo::new();
+
+        let ty = materialize_ty_spec(&spec.ty, &mut rodeo);
+
+        let reader = rodeo.into_reader();
+        let schema_interner = SchemaInterner::new(reader);
+        let interner = LocalInterner::new(schema_interner);
+
+        TypedValueFixture {
+            interner,
+            ty,
+            value: spec.value,
+        }
+    }
+
+    pub fn materialize_pair_fixture(spec: TypedPairSpec) -> TypedPairFixture {
+        let mut rodeo = Rodeo::new();
+
+        let ty = materialize_ty_spec(&spec.ty, &mut rodeo);
+
+        let reader = rodeo.into_reader();
+        let schema_interner = SchemaInterner::new(reader);
+        let interner = LocalInterner::new(schema_interner);
+
+        TypedPairFixture {
+            interner,
+            ty,
+            a: spec.a,
+            b: spec.b,
+        }
+    }
+
+    /// Encode a value against its type using the storage encoder — the encoder
+    /// the read path decodes; used to build stores and to drive round-trip
+    /// properties.
+    pub fn encode_typed_for_test(
+        ty: &PredicateTy,
+        value: &Value,
+    ) -> Result<Vec<u8>, StoreCodecError> {
+        let mut out = Vec::new();
+        let mut enc = TupleEncoder::new(&mut out);
+
+        encode_typed_at_for_test(&mut enc, ty, value)?;
+
+        Ok(out)
+    }
+
+    pub fn encode_typed_at_for_test(
+        enc: &mut TupleEncoder<'_>,
+        ty: &PredicateTy,
+        value: &Value,
+    ) -> Result<(), StoreCodecError> {
+        match (ty, value) {
+            (PredicateTy::Int, Value::Int(i)) => enc.put_i64(*i),
+
+            (PredicateTy::Str, Value::Str(s)) => enc.put_str(s),
+
+            (PredicateTy::Fact(_), Value::FactRef(id)) => enc.put_u64(id.0),
+
+            (PredicateTy::Record(field_tys), Value::Record(field_values)) => {
+                if field_tys.len() != field_values.len() {
+                    return Err(StoreCodecError::BadRecord);
+                }
+
+                enc.record(|enc| {
+                    for ((_, field_ty), (_, field_value)) in
+                        field_tys.iter().zip(field_values.iter())
+                    {
+                        encode_typed_at_for_test(enc, field_ty, field_value)?;
+                    }
+
+                    Ok(())
+                })
+            }
+
+            _ => Err(StoreCodecError::BadRecord),
+        }
+    }
+
+    /// The independent order oracle: compares two values field-by-field per the
+    /// type, *not* by reusing the code under test. Order-preservation is proved
+    /// by matching encoded-byte ordering against this.
+    pub fn cmp_typed(ty: &PredicateTy, a: &Value, b: &Value) -> Ordering {
+        match (ty, a, b) {
+            (PredicateTy::Int, Value::Int(a), Value::Int(b)) => a.cmp(b),
+
+            (PredicateTy::Str, Value::Str(a), Value::Str(b)) => a.cmp(b),
+
+            (PredicateTy::Fact(_), Value::FactRef(a), Value::FactRef(b)) => a.0.cmp(&b.0),
+
+            (PredicateTy::Record(field_tys), Value::Record(a_fields), Value::Record(b_fields)) => {
+                assert_eq!(field_tys.len(), a_fields.len());
+                assert_eq!(field_tys.len(), b_fields.len());
+
+                for (((_, field_ty), (_, a_value)), (_, b_value)) in
+                    field_tys.iter().zip(a_fields.iter()).zip(b_fields.iter())
+                {
+                    let ord = cmp_typed(field_ty, a_value, b_value);
+
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                }
+
+                Ordering::Equal
+            }
+
+            _ => panic!("schema/value mismatch: ty={ty:?}, a={a:?}, b={b:?}"),
+        }
+    }
+
+    fn field_name(i: usize) -> String {
+        format!("field_{i}")
+    }
+
+    /// A pair of values sharing one schema, drawn together so ordering/round-trip
+    /// properties can compare `a` against `b`. Injects the known integer/string
+    /// edges explicitly rather than trusting random draws to hit them, and
+    /// recurses into records with an explicit depth/size bound.
+    pub fn arb_typed_pair() -> impl Strategy<Value = TypedPairSpec> {
+        let arb_i64 = prop_oneof![
+            Just(i64::MIN),
+            Just(-1i64),
+            Just(0i64),
+            Just(1i64),
+            Just(i64::MAX),
+            any::<i64>(),
+        ];
+        let arb_str = prop_oneof![
+            Just(String::new()),
+            Just("\0".to_string()),
+            Just("\0\0".to_string()),
+            any::<String>(),
+        ];
+
+        let leaf = prop_oneof![
+            (arb_i64.clone(), arb_i64).prop_map(|(a, b)| TypedPairSpec {
+                ty: TySpec::Int,
+                a: Value::Int(a),
+                b: Value::Int(b),
+            }),
+            (arb_str.clone(), arb_str).prop_map(|(a, b)| TypedPairSpec {
+                ty: TySpec::Str,
+                a: Value::Str(a),
+                b: Value::Str(b),
+            }),
+            (any::<u64>(), any::<u64>()).prop_map(|(a, b)| TypedPairSpec {
+                ty: TySpec::Fact(PredicateId(0)),
+                a: Value::FactRef(FactId(a)),
+                b: Value::FactRef(FactId(b)),
+            }),
+        ];
+
+        leaf.prop_recursive(
+            5,  // max depth
+            64, // max total generated nodes
+            4,  // max fields per record
+            |inner| {
+                prop::collection::vec(inner, 0..=4).prop_map(|children| {
+                    let mut field_tys = Vec::with_capacity(children.len());
+                    let mut a_fields = Vec::with_capacity(children.len());
+                    let mut b_fields = Vec::with_capacity(children.len());
+
+                    for (i, child) in children.into_iter().enumerate() {
+                        let name = field_name(i);
+
+                        field_tys.push((name.clone(), child.ty));
+                        a_fields.push((name.clone(), child.a));
+                        b_fields.push((name, child.b));
+                    }
+
+                    TypedPairSpec {
+                        ty: TySpec::Record(field_tys),
+                        a: Value::Record(a_fields.into_boxed_slice()),
+                        b: Value::Record(b_fields.into_boxed_slice()),
+                    }
+                })
+            },
+        )
+    }
+
+    /// A single typed value (the `a` half of a pair).
+    pub fn arb_typed_value() -> impl Strategy<Value = TypedValueSpec> {
+        arb_typed_pair().prop_map(|pair| TypedValueSpec {
+            ty: pair.ty,
+            value: pair.a,
+        })
+    }
+
+    /// A bare value with its schema discarded — for consumers that only need a
+    /// well-formed [`Value`].
+    pub fn arb_value() -> impl Strategy<Value = Value> {
+        arb_typed_value().prop_map(|spec| spec.value)
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::focus::schema::{PredicateId, SchemaInterner};
-
+    use super::proptest::*;
     use super::*;
-    use lasso::Rodeo;
-    use proptest::prelude::*;
-    use std::{cmp::Ordering, sync::Arc};
+    use ::proptest::prelude::*;
 
     #[test]
     fn test_i64_rejects_positive_overflow() {
@@ -1091,13 +1362,8 @@ pub(crate) mod tests {
         let depth = MAX_RECORD_DEPTH + 1;
         let mut buf = Vec::new();
 
-        for _ in 0..depth {
-            buf.push(MARK_RECORD);
-        }
-
-        for _ in 0..depth {
-            buf.push(MARK_TERM);
-        }
+        buf.extend(std::iter::repeat_n(MARK_RECORD, depth));
+        buf.extend(std::iter::repeat_n(MARK_TERM, depth));
 
         let end = skip(&buf, 0, false);
 
@@ -1425,222 +1691,95 @@ pub(crate) mod tests {
         assert_eq!(strinc(&[0xfe, 0xff, 0xff]), Some(vec![0xff]));
     }
 
-    #[derive(Debug, Clone)]
-    enum TySpec {
-        Int,
-        Str,
-        Fact(PredicateId),
-        Record(Vec<(String, TySpec)>),
-    }
+    // I3 — the marker table is frozen on disk. A marker byte is the MSB of a
+    // value's sort key, so its value *and* its position in the ordering are
+    // semantic: renumbering one is an on-disk migration, not a refactor. This
+    // golden test pins every marker's byte, the marker ordering, and
+    // representative encodings — so any renumber or layout change breaks loudly
+    // here instead of silently corrupting existing stores.
+    #[test]
+    fn marker_table_golden() {
+        // The frozen table. These exact bytes live on disk.
+        assert_eq!(MARK_NULL, 0x00);
+        assert_eq!(MARK_STRING, 0x21);
+        assert_eq!(MARK_RECORD, 0x22);
+        assert_eq!(MARK_INT_NEG_MIN, 0x40);
+        assert_eq!(MARK_INT_NEG_MAX, 0x47);
+        assert_eq!(MARK_INT_ZERO, 0x48);
+        assert_eq!(MARK_INT_POS_MIN, 0x49);
+        assert_eq!(MARK_INT_POS_MAX, 0x50);
+        assert_eq!(MARK_FACT_REF, 0x51);
+        assert_eq!(MARK_TERM, 0x00);
+        assert_eq!(MARK_ESCAPE, 0xFF);
+        assert_eq!(NULL, 0x00);
 
-    #[derive(Debug, Clone)]
-    struct TypedValueSpec {
-        ty: TySpec,
-        value: Value,
-    }
-
-    #[derive(Debug, Clone)]
-    struct TypedPairSpec {
-        ty: TySpec,
-        a: Value,
-        b: Value,
-    }
-
-    struct TypedValueFixture {
-        interner: LocalInterner,
-        ty: PredicateTy,
-        value: Value,
-    }
-
-    struct TypedPairFixture {
-        interner: LocalInterner,
-        ty: PredicateTy,
-        a: Value,
-        b: Value,
-    }
-
-    fn materialize_ty_spec(ty: &TySpec, rodeo: &mut Rodeo) -> PredicateTy {
-        match ty {
-            TySpec::Int => PredicateTy::Int,
-
-            TySpec::Str => PredicateTy::Str,
-
-            TySpec::Fact(id) => PredicateTy::Fact(*id),
-
-            TySpec::Record(fields) => {
-                let fields = fields
-                    .iter()
-                    .map(|(name, field_ty)| {
-                        let spur = rodeo.get_or_intern(name);
-                        let field_ty = materialize_ty_spec(field_ty, rodeo);
-                        (spur, field_ty)
-                    })
-                    .collect::<Vec<_>>();
-
-                PredicateTy::Record(Arc::from(fields.into_boxed_slice()))
-            }
-        }
-    }
-
-    fn materialize_value_fixture(spec: TypedValueSpec) -> TypedValueFixture {
-        let mut rodeo = Rodeo::new();
-
-        let ty = materialize_ty_spec(&spec.ty, &mut rodeo);
-
-        let reader = rodeo.into_reader();
-        let schema_interner = SchemaInterner::new(reader);
-        let interner = LocalInterner::new(schema_interner);
-
-        TypedValueFixture {
-            interner,
-            ty,
-            value: spec.value,
-        }
-    }
-
-    fn materialize_pair_fixture(spec: TypedPairSpec) -> TypedPairFixture {
-        let mut rodeo = Rodeo::new();
-
-        let ty = materialize_ty_spec(&spec.ty, &mut rodeo);
-
-        let reader = rodeo.into_reader();
-        let schema_interner = SchemaInterner::new(reader);
-        let interner = LocalInterner::new(schema_interner);
-
-        TypedPairFixture {
-            interner,
-            ty,
-            a: spec.a,
-            b: spec.b,
-        }
-    }
-
-    fn encode_typed_for_test(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodecError> {
-        let mut out = Vec::new();
-        let mut enc = TupleEncoder::new(&mut out);
-
-        encode_typed_at_for_test(&mut enc, ty, value)?;
-
-        Ok(out)
-    }
-
-    fn encode_typed_at_for_test(
-        enc: &mut TupleEncoder<'_>,
-        ty: &PredicateTy,
-        value: &Value,
-    ) -> Result<(), StoreCodecError> {
-        match (ty, value) {
-            (PredicateTy::Int, Value::Int(i)) => enc.put_i64(*i),
-
-            (PredicateTy::Str, Value::Str(s)) => enc.put_str(s),
-
-            (PredicateTy::Fact(_), Value::FactRef(id)) => enc.put_u64(id.0),
-
-            (PredicateTy::Record(field_tys), Value::Record(field_values)) => {
-                if field_tys.len() != field_values.len() {
-                    return Err(StoreCodecError::BadRecord);
-                }
-
-                enc.record(|enc| {
-                    for ((_, field_ty), (_, field_value)) in
-                        field_tys.iter().zip(field_values.iter())
-                    {
-                        encode_typed_at_for_test(enc, field_ty, field_value)?;
-                    }
-
-                    Ok(())
-                })
-            }
-
-            _ => Err(StoreCodecError::BadRecord),
-        }
-    }
-
-    fn cmp_typed(ty: &PredicateTy, a: &Value, b: &Value) -> Ordering {
-        match (ty, a, b) {
-            (PredicateTy::Int, Value::Int(a), Value::Int(b)) => a.cmp(b),
-
-            (PredicateTy::Str, Value::Str(a), Value::Str(b)) => a.cmp(b),
-
-            (PredicateTy::Fact(_), Value::FactRef(a), Value::FactRef(b)) => a.0.cmp(&b.0),
-
-            (PredicateTy::Record(field_tys), Value::Record(a_fields), Value::Record(b_fields)) => {
-                assert_eq!(field_tys.len(), a_fields.len());
-                assert_eq!(field_tys.len(), b_fields.len());
-
-                for (((_, field_ty), (_, a_value)), (_, b_value)) in
-                    field_tys.iter().zip(a_fields.iter()).zip(b_fields.iter())
-                {
-                    let ord = cmp_typed(field_ty, a_value, b_value);
-
-                    if ord != Ordering::Equal {
-                        return ord;
-                    }
-                }
-
-                Ordering::Equal
-            }
-
-            _ => panic!("schema/value mismatch: ty={ty:?}, a={a:?}, b={b:?}"),
-        }
-    }
-
-    fn field_name(i: usize) -> String {
-        format!("field_{i}")
-    }
-
-    fn arb_typed_pair_spec() -> impl Strategy<Value = TypedPairSpec> {
-        let leaf = prop_oneof![
-            (any::<i64>(), any::<i64>()).prop_map(|(a, b)| TypedPairSpec {
-                ty: TySpec::Int,
-                a: Value::Int(a),
-                b: Value::Int(b),
-            }),
-            (any::<String>(), any::<String>()).prop_map(|(a, b)| TypedPairSpec {
-                ty: TySpec::Str,
-                a: Value::Str(a),
-                b: Value::Str(b),
-            }),
-            (any::<u64>(), any::<u64>()).prop_map(|(a, b)| TypedPairSpec {
-                ty: TySpec::Fact(PredicateId(0)),
-                a: Value::FactRef(FactId(a)),
-                b: Value::FactRef(FactId(b)),
-            }),
+        // The ordering is semantic (memcmp of markers == sort order of the
+        // families): null < string < record < negatives < zero < positives <
+        // fact-refs, with the negative/positive width bands contiguous.
+        let ordered = [
+            MARK_NULL,
+            MARK_STRING,
+            MARK_RECORD,
+            MARK_INT_NEG_MIN,
+            MARK_INT_NEG_MAX,
+            MARK_INT_ZERO,
+            MARK_INT_POS_MIN,
+            MARK_INT_POS_MAX,
+            MARK_FACT_REF,
         ];
+        assert!(
+            ordered.windows(2).all(|w| w[0] < w[1]),
+            "marker ordering is not strictly increasing: {ordered:02x?}"
+        );
 
-        leaf.prop_recursive(
-            5,  // max depth
-            64, // max total generated nodes
-            4,  // max fields per record
-            |inner| {
-                prop::collection::vec(inner, 0..=4).prop_map(|children| {
-                    let mut field_tys = Vec::with_capacity(children.len());
-                    let mut a_fields = Vec::with_capacity(children.len());
-                    let mut b_fields = Vec::with_capacity(children.len());
+        // Golden encodings — exact on-disk bytes for representative values in
+        // each family, including the width-band extremes.
+        let i64_enc = |v: i64| {
+            let mut b = Vec::new();
+            put_i64(&mut b, v);
+            b
+        };
+        assert_eq!(i64_enc(0), [0x48]);
+        assert_eq!(i64_enc(1), [0x49, 0x01]);
+        assert_eq!(i64_enc(-1), [0x47, 0xFE]);
+        assert_eq!(i64_enc(256), [0x4A, 0x01, 0x00]);
+        assert_eq!(
+            i64_enc(i64::MAX),
+            [0x50, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+        );
+        assert_eq!(
+            i64_enc(i64::MIN),
+            [0x40, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+        );
 
-                    for (i, child) in children.into_iter().enumerate() {
-                        let name = field_name(i);
+        let str_enc = |s: &str| {
+            let mut b = Vec::new();
+            put_str(&mut b, s);
+            b
+        };
+        assert_eq!(str_enc(""), [0x21, 0x00]);
+        assert_eq!(str_enc("A"), [0x21, 0x41, 0x00]);
+        assert_eq!(str_enc("\0"), [0x21, 0x00, 0xFF, 0x00]);
+        assert_eq!(str_enc("a\0b"), [0x21, 0x61, 0x00, 0xFF, 0x62, 0x00]);
 
-                        field_tys.push((name.clone(), child.ty));
-                        a_fields.push((name.clone(), child.a));
-                        b_fields.push((name, child.b));
-                    }
+        // Records and fact-refs go through the encoder.
+        let mut empty_rec = Vec::new();
+        TupleEncoder::new(&mut empty_rec)
+            .record(|_| Ok(()))
+            .unwrap();
+        assert_eq!(empty_rec, [0x22, 0x00]);
 
-                    TypedPairSpec {
-                        ty: TySpec::Record(field_tys),
-                        a: Value::Record(a_fields.into_boxed_slice()),
-                        b: Value::Record(b_fields.into_boxed_slice()),
-                    }
-                })
-            },
-        )
-    }
+        let mut rec_of_zero = Vec::new();
+        TupleEncoder::new(&mut rec_of_zero)
+            .record(|enc| enc.put_i64(0))
+            .unwrap();
+        assert_eq!(rec_of_zero, [0x22, 0x48, 0x00]);
 
-    fn arb_typed_value_spec() -> impl Strategy<Value = TypedValueSpec> {
-        arb_typed_pair_spec().prop_map(|pair| TypedValueSpec {
-            ty: pair.ty,
-            value: pair.a,
-        })
+        let mut fact_ref = Vec::new();
+        TupleEncoder::new(&mut fact_ref)
+            .put_fact_id(FactId(1))
+            .unwrap();
+        assert_eq!(fact_ref, [0x51, 0, 0, 0, 0, 0, 0, 0, 1]);
     }
 
     proptest! {
@@ -1748,7 +1887,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn test_typed_value_roundtrip(spec in arb_typed_value_spec()) {
+        fn test_typed_value_roundtrip(spec in arb_typed_value()) {
             let fixture = materialize_value_fixture(spec);
 
             let bytes = encode_typed_for_test(&fixture.ty, &fixture.value).unwrap();
@@ -1763,7 +1902,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn test_typed_value_order_matches_encoded_order(spec in arb_typed_pair_spec()) {
+        fn test_typed_value_order_matches_encoded_order(spec in arb_typed_pair()) {
             let fixture = materialize_pair_fixture(spec);
 
             let encoded_a = encode_typed_for_test(&fixture.ty, &fixture.a).unwrap();
@@ -1790,7 +1929,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn test_value_ord_matches_typed_order_for_same_schema(spec in arb_typed_pair_spec()) {
+        fn test_value_ord_matches_typed_order_for_same_schema(spec in arb_typed_pair()) {
             let fixture = materialize_pair_fixture(spec);
 
             let expected = cmp_typed(&fixture.ty, &fixture.a, &fixture.b);
@@ -1810,7 +1949,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn test_roundtrip_preserves_value_and_ordering(spec in arb_typed_pair_spec()) {
+        fn test_roundtrip_preserves_value_and_ordering(spec in arb_typed_pair()) {
             let fixture = materialize_pair_fixture(spec);
 
             let encoded_a = encode_typed_for_test(&fixture.ty, &fixture.a).unwrap();

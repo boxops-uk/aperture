@@ -3,6 +3,13 @@ name = "aperture"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Exposes the per-domain `proptest` support modules (named `arb_*` strategies,
+# shared fixtures) to consumers outside `cfg(test)` — integration tests and, later,
+# the workspace crates. Under `cargo test` the modules are active via `cfg(test)`
+# regardless; this feature is for everything that isn't the crate's own unit tests.
+proptest = []
+
 [dependencies]
 byteview = "0.10.1"
 codespan-reporting = "0.13.1"

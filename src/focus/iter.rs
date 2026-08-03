@@ -60,7 +60,7 @@ impl MachineState {
 
     pub fn get(&self, address: Address) -> Result<&Register, ApertureError> {
         self.registers
-            .get(address.0 as usize)
+            .get(address.0)
             .ok_or(ApertureError::AddressOutOfBounds(address))?
             .as_ref()
             .ok_or(ApertureError::UseBeforeBind(address))
@@ -71,6 +71,12 @@ const FIELD_OFFSETS_CAPACITY: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct FieldOffsets(ArrayVec<[usize; FIELD_OFFSETS_CAPACITY]>);
+
+impl Default for FieldOffsets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl FieldOffsets {
     pub fn new() -> Self {
@@ -91,7 +97,7 @@ impl FieldOffsets {
         let mut i = self.0.len();
         let mut start = if i == 0 { 0 } else { self.0[i - 1] };
         loop {
-            let end = skip(&key, start, false)?;
+            let end = skip(key, start, false)?;
             if i < FIELD_OFFSETS_CAPACITY {
                 self.0.push(end);
             }
@@ -149,7 +155,7 @@ impl<S: FactStore> StackFrame<S> {
             .get_mut(var.0)
             .ok_or(ApertureError::AddressOutOfBounds(var))?
             .get(key, idx)
-            .map_err(|e| ApertureError::DecodeError(e))
+            .map_err(ApertureError::DecodeError)
     }
 
     pub fn build_prefix(
@@ -317,8 +323,14 @@ fn project<S: FactStore>(
         }
 
         Project::Value { address, ty } => {
+            // The value lives in the `entities` CF, not in the register (which
+            // holds `predicate_id ++ key`). Fetch it by fact id — the one place
+            // a value is read (I6) — and decode the value bytes.
             let reg = state.get(*address)?;
-            decode_typed(interner, &reg.bytes, ty)
+            let entity = store
+                .point(reg.fact_id)?
+                .ok_or(ApertureError::DanglingFactId(reg.fact_id))?;
+            decode_typed(interner, &entity.value, ty)
         }
 
         Project::Record(fields) => {
@@ -479,7 +491,7 @@ mod tests {
         mem_store::MemStore,
         plan::{Access, Generator, Plan, Project, Residual, ResidualOp, SeekKey},
         schema::{LocalInterner, PredicateId, PredicateTy, SchemaInterner},
-        tuple::{Value, put_str},
+        tuple::{Value, put_i64, put_str},
     };
     use lasso::Rodeo;
     use tokio_util::sync::CancellationToken;
@@ -544,5 +556,38 @@ mod tests {
         };
 
         assert_eq!(run(store, plan), vec![Value::Str("beta".to_string())]);
+    }
+
+    // `Project::Value` reads the fact's value from the `entities` CF (via a
+    // point lookup by fact id), not the key bytes held in the register. Here the
+    // key is a string ("alpha") and the value is an integer (42); projecting the
+    // value must yield the integer. Regression for the latent bug where
+    // `Project::Value` decoded `reg.bytes` (predicate_id ++ key) as the value.
+    #[test]
+    fn project_value_decodes_entity_value_not_register_key() {
+        let pred = PredicateId(0);
+
+        let mut store = MemStore::new();
+        let mut value_bytes = Vec::new();
+        put_i64(&mut value_bytes, 42);
+        store.insert_valued(pred, enc_str("alpha"), 1, value_bytes);
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([Generator {
+                access: Access {
+                    predicate_id: pred,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                binds: Box::new([Address::new(0)]),
+                residuals: Box::new([]),
+            }]),
+            head: Project::Value {
+                address: Address::new(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        assert_eq!(run(store, plan), vec![Value::Int(42)]);
     }
 }

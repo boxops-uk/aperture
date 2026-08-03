@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::focus::{iter::Address, schema::Symbol};
+use crate::focus::{iter::Address, plan::FactId, schema::Symbol};
 
 #[derive(Debug, Error)]
 pub enum ApertureError {
@@ -18,6 +18,9 @@ pub enum ApertureError {
 
     #[error("resume key not found")]
     BadResumeKey,
+
+    #[error("dangling fact id {0:?}: key present but no entity in the `entities` column family")]
+    DanglingFactId(FactId),
 
     #[error("operation cancelled")]
     Cancelled,

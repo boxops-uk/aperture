@@ -48,11 +48,15 @@ pub enum FlatAccess {
     Fetch(PredicateId, FactSource),
 }
 
+// Front-end scaffolding not yet wired into the pipeline (Phases 2–4); the
+// fields are read once flatten/lowering lands.
+#[allow(dead_code)]
 pub struct FlatStmt {
     out: Option<Address>,
     access: FlatAccess,
 }
 
+#[allow(dead_code)]
 pub struct FlatPlan {
     nvars: u32,
     body: Box<[FlatStmt]>,
@@ -87,11 +91,13 @@ pub struct Query<T> {
     head: T,
 }
 
+#[allow(dead_code)]
 pub struct Ast {
     query: Query<NodeId>,
     store: SyntaxTree<ExprKind<NodeId>>,
 }
 
+#[allow(dead_code)]
 pub struct SyntaxTree<K: Recursive> {
     kinds: Vec<K>,
     spans: Vec<Span>,
@@ -171,11 +177,7 @@ impl Recursive for Query<NodeId> {
 
     fn map<R, F: FnMut(NodeId) -> R>(&self, mut f: F) -> Self::Base<R> {
         Query {
-            body: self
-                .body
-                .iter()
-                .map(|stmt| stmt.map(|node_id| f(node_id)))
-                .collect(),
+            body: self.body.iter().map(|stmt| stmt.map(&mut f)).collect(),
             head: f(self.head),
         }
     }
