@@ -134,13 +134,20 @@ impl<S: FactStore> StackFrame<S> {
         state: &MachineState,
         resume_at: Option<&[u8]>,
     ) -> Result<(), ApertureError> {
+        // The field-offset caches hold offsets into whichever row each register
+        // held when they were filled. Re-opening this level means an outer
+        // register has advanced, so they must be cleared *before* `build_prefix`
+        // reads them: a stale span silently truncates or overruns the spliced
+        // field, giving a wrong seek prefix (wrong join results) or an
+        // out-of-range slice.
+        self.field_offsets.iter_mut().for_each(|fo| fo.clear());
+
         let prefix = self.build_prefix(state, generator)?;
         let hi = strinc(&prefix);
         let lo = resume_at.unwrap_or(&prefix);
 
         self.scan = Some(store.scan(lo, hi.as_deref()));
         self.current = None;
-        self.field_offsets.iter_mut().for_each(|fo| fo.clear());
 
         Ok(())
     }
@@ -740,6 +747,115 @@ mod tests {
                 record(&[("a", Value::Int(1)), ("b", Value::Int(2))]),
                 record(&[("a", Value::Int(1)), ("b", Value::Int(3))]),
                 record(&[("a", Value::Int(2)), ("b", Value::Int(3))]),
+            ]
+        );
+    }
+
+    // A level's field-offset cache is keyed by register and holds offsets into
+    // whichever row that register held when it was filled. Re-opening the level
+    // must not read it: the outer register has advanced, and the *cached* row's
+    // field widths need not match the current one's.
+    //
+    // The trap needs a residual as well as a seek on the same register — the
+    // residual fills the cache while scanning, and the next `open` then builds its
+    // seek prefix from it. The outer keys have deliberately different byte widths
+    // ("a", "abc", "b"), so a stale offset truncates the spliced field: seeking
+    // "abc" with the width of "a" widens the range to every "ab…" row, and the
+    // inner rows here are chosen so the residual can't filter the intruder back
+    // out — `("ab", 3)` satisfies it just as `("abc", 3)` does. With equal-width
+    // keys, or without the extra row, the bug is invisible.
+    #[test]
+    fn seek_splice_rereads_field_when_outer_row_width_changes() {
+        let outer = PredicateId(0);
+        let inner = PredicateId(1);
+
+        let mut store = MemStore::new();
+        for (i, (s, n)) in [("a", 1i64), ("abc", 3), ("b", 4)].into_iter().enumerate() {
+            store.insert(
+                outer,
+                compose(&[&str_field(s), &i64_field(n)]),
+                i as u64 + 1,
+            );
+        }
+        for (i, (s, n)) in [("a", 1i64), ("ab", 3), ("abc", 3), ("b", 4)]
+            .into_iter()
+            .enumerate()
+        {
+            store.insert(
+                inner,
+                compose(&[&str_field(s), &i64_field(n)]),
+                10 + i as u64,
+            );
+        }
+
+        let interner = interner_with(&["a", "b", "c"]);
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                scan_all(outer, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: inner,
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                            address: Address::new(0),
+                            field_idx: 0,
+                        }])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    // Fills this frame's offset cache for register 0 mid-scan.
+                    residuals: Box::new([Residual {
+                        field_idx: 1,
+                        op: ResidualOp::EqRegisterField {
+                            address: Address::new(0),
+                            field_idx: 1,
+                        },
+                    }]),
+                },
+            ]),
+            head: Project::Record(Box::new([
+                (
+                    interner.get("a").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(0),
+                        field_idx: 0,
+                        ty: PredicateTy::Str,
+                    },
+                ),
+                (
+                    interner.get("b").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(1),
+                        field_idx: 0,
+                        ty: PredicateTy::Str,
+                    },
+                ),
+                (
+                    interner.get("c").unwrap(),
+                    Project::RegisterField {
+                        address: Address::new(1),
+                        field_idx: 1,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+            ])),
+        };
+
+        let str_row = |outer: &str, inner: &str, n: i64| {
+            record(&[
+                ("a", Value::Str(outer.to_string())),
+                ("b", Value::Str(inner.to_string())),
+                ("c", Value::Int(n)),
+            ])
+        };
+
+        let rows = collect_rows(store, plan, &interner).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                str_row("a", "a", 1),
+                str_row("abc", "abc", 3),
+                str_row("b", "b", 4),
             ]
         );
     }
