@@ -1,493 +1,502 @@
 # Aperture — build plan
 
-This is the living phase tree for getting Aperture working end-to-end and then to
-production. It complements `CLAUDE.md`: `CLAUDE.md` holds the invariants and working
-rules; this holds the _sequence_. Each task's definition of done is a **green test**
-(prefer a property — see `CLAUDE.md` §8). Every task must respect the §3 invariants.
+The living phase tree for taking *Aperture DB* and **focus** from prototype to production.
+This file owns the **sequence**; the *design* is ground truth in the [design book](README.md)
+and the [invariant registry](docs/invariants.md); the *working rules* live in
+[`CLAUDE.md`](CLAUDE.md). Each phase references the design rather than restating it.
 
-**How to use this tree.** The phase order and dependencies below are owned by the
-maintainer. When picking up a phase, the agent decomposes its next unstarted node into
-task-sized leaves _at pickup_ (early decomposition is always wrong), each leaf ending in
-a green test, ordered by dependency and de-risking. Keep diffs small and reviewable.
-Phases 1–2 are decomposed to task granularity here as a template; later phases are
-intentionally coarser and get decomposed when reached.
+**Definition of done, everywhere:** a task ends in a **green test** (prefer a property —
+[`docs/testing.md`](docs/testing.md)), and **every invariant a phase lists as "makes green"
+must have its [guard](docs/invariants.md) un-ignored and passing** before the phase is done.
 
-The spine already exists in prototype: the codec is heavily property-tested; the
-executor + resume + projection are implemented but **not yet** covered by the §8 property
-batteries — Phase 0 back-fills that. This plan is about turning that spine into a working
-end-to-end system with a real front end and storage, then hardening it.
+**How to use this tree.** Phase order and dependencies are owned by the maintainer. When
+picking up a phase, decompose its next unstarted node into task-sized leaves *at pickup*
+(early decomposition is always wrong), each ending green, ordered by dependency and
+de-risking. Keep diffs small and reviewable. Phases 0–4 are decomposed to task granularity
+as a template; later phases are coarser and get decomposed when reached.
+
+**Terminology.** "**Phase N**" is a build step in this plan. "**P0**" (used in the design
+docs) is the *product-scope milestone* — the first shippable feature set — and is a
+different thing; don't conflate them.
+
+**Per-phase template.** Each phase below has: **Goal · Depends on · Design of record
+(pointers — do not restate) · Invariants in scope · Tasks · Acceptance (checklist).**
+
+---
+
+## Current state, honestly
+
+The engine spine exists in `src/focus/`:
+
+- **Codec** (`tuple.rs`) — heavily property-tested: order-preservation, round-trip, and
+  skip are covered ([I1](docs/invariants.md#i1), [I2](docs/invariants.md#i2) green). **Gap:**
+  no golden marker-table test yet, so [I3](docs/invariants.md#i3) is *not* guarded — Phase 0
+  closes it.
+- **Executor + resume** (`iter.rs`, `plan.rs`) — implemented, but **one** test between them;
+  [I4](docs/invariants.md#i4)–[I9](docs/invariants.md#i9) are essentially unverified.
+- **Front end** (grammar, typecheck, flatten) — exists only in the disconnected `src/lens/`
+  (not compiled); to be re-implemented into `focus`, then deleted file-by-file.
+- **Unbuilt:** the fjall store impl, ingestion, schema parsing, the wire protocol, and the
+  operational layer.
+
+Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the design docs; the
+one correction this revision makes is I3's status (above).
+
+---
+
+## Dependency graph
+
+```
+0  guard matrix & harness ─┬─▶ 1  fjall store   (⇒ I8, I11, I12 green; resume battery re-run on fjall)
+                           │
+                           └─▶ 2  grammar ─▶ 3  driver ─▶ 4  flatten/reorder ─┬─▶ 5  REPL  (→ remote-only later)
+                                                                              ├─▶ 6  derived facts  (deliberate machine change; own resume battery)
+                                                                              └─▶ 7  ingestion ─▶ 8  schema ─▶ 9  operations
+
+Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends on 1 (store + atomic put_fact).
+              Derived-*and-stored* persistence (part of 6) integrates operationally with 7 + 9 (ops-I8 phased derivation).
+Gates:        Codec I1–I2 green now; I3 golden test in Phase 0.   I8/I11/I12 green at Phase 1.   I13 at Phase 8.
+              FactRef marker — resolved (own marker 0x51, already in the codec); no longer gates ingestion.
+```
+
+The **`Plan` IR is the fixed point** everything aims at ([chapter 4](docs/04-executor.md)):
+the front end (2–4) produces it, the executor (already built) consumes it, and the two
+halves progress independently while it's stable.
 
 ---
 
 ## Ordering principle
 
-Front-load the pieces where a subtle bug is catastrophic and hard to detect later
-(codec ordering, resume) — codec already has heavy test batteries; resume gets them in
-Phase 0. Then build the
-_front end_ (grammar → compiler → flatten/reorder) that produces the plan IR the
-executor already consumes, so the two halves meet in the middle. Then make it runnable
-(REPL), then make facts writable (ingestion), then remove the last hardcoded piece
-(schema parsing), then harden (operations). Derived facts weave in after flatten exists.
-
-The IR contract is the fixed point everything aims at: **the query-plan IR (`Plan`) is
-the lowering target.** The grammar/compiler/flatten phases exist to produce it; the
-executor already consumes it. Keep that contract stable and both halves can progress
-independently.
+Front-load the pieces where a subtle bug is catastrophic and hard to detect later (codec
+ordering, resume): codec has heavy batteries; resume gets them in Phase 0, then is
+re-validated against a *real snapshotting store* in Phase 1 — the only place
+[I8](docs/invariants.md#i8) is testable. Then build the front end (2–4) up to the `Plan` IR
+the executor already consumes, so the halves meet in the middle. Then run it by hand (REPL,
+5). Do the one invariant-critical **machine change** (derived facts, 6) while the machine is
+still small and the resume battery is fresh. Then make it writable (ingestion, 7), remove
+the last hardcoded piece (schema, 8), and harden (operations, 9).
 
 ---
 
-## Phase 0 — Back-fill: align the spine with the test strategy
+## Phase 0 — Invariant guard matrix + test harness
 
-**Goal.** Make the existing spine (codec, executor, resume, projection) actually meet
-`CLAUDE.md` §8 — because later phases' acceptance gates depend on that test infrastructure
-existing. Today only the codec is property-tested; the executor and resume have **no**
-tests, and the codec's generators are inline rather than the shared support-module shape
-§8 prescribes.
+**Goal.** Stand up the **full [invariant](docs/invariants.md) coverage ledger** and the
+shared test machinery every later acceptance gate depends on, and close the I3 gap.
 
-**Why first.** Resume is the second catastrophic-if-wrong subsystem (I4) and is currently
-unverified. Phase 3's own acceptance — "flattened plan run == expected rows over generated
-`(query, store)` pairs" — _requires_ the schema-first `(plan, store)` generator and the
-model-based oracle this phase builds. Build the harness before building on top of it.
+**Depends on:** nothing (foundation).
 
-**Tasks (decompose at pickup; each ends green):**
+**Design of record:** [testing methodology](docs/testing.md) (tiers, generator-first,
+schema-first `(plan, store)` generation, the coverage-ledger discipline); the invariants
+themselves in the [registry](docs/invariants.md).
 
-- **0a.** Shared test machinery: the in-memory `FactStore` (`focus::mem_store`) and a
-  small schema/fixture builder, in support modules tests import — not redefined inline
-  (promote to `cfg(any(test, feature = "proptest"))` when integration tests/benches need
-  them).
-- **0b.** Executor happy-path tests over hand-built plans (1-, 2-, 3-level joins, seeks,
-  key-field residuals, record/scalar heads); the model is "run to completion, collect
-  rows."
-- **0c.** Schema-first `(plan, store)` generator (valid-by-construction, §8) + the
-  interruption-schedule generator; the **resume == uninterrupted run** property at _every_
-  cut point for 1-/2-/3-level plans (I4). This is the phase's acceptance gate.
-- **0d.** Restructure the codec's inline generators into the §8 support-module shape
-  (named `arb_*` strategies) so Phase 1+ compose from them.
-- **0e.** Fold discovered latent fixes in with regression tests (residual walks the
-  stripped key — done; audit `Project::Value`, which today reads key bytes and stays
-  unfinished until Phase 5).
+**Invariants in scope:**
+- *makes green:* [I3](docs/invariants.md#i3) (`codec::marker_table_golden` — the missing
+  guard), [I5](docs/invariants.md#i5), [I6](docs/invariants.md#i6),
+  [I7](docs/invariants.md#i7), [I9](docs/invariants.md#i9) (on `MemStore`), and
+  [I4](docs/invariants.md#i4) (on `MemStore`; fjall in Phase 1).
+- *writes-but-ignores (pending later phases):* [I8](docs/invariants.md#i8),
+  [I11](docs/invariants.md#i11), [I12](docs/invariants.md#i12) (Phase 1);
+  [I10](docs/invariants.md#i10), [I13](docs/invariants.md#i13) (Phase 8).
+- *upholds:* [I1](docs/invariants.md#i1), [I2](docs/invariants.md#i2).
 
-**Acceptance:** the executor/resume property batteries of §8 exist and are green; the
-codec strategies are importable; the spine's "all tested" claim is true.
+**Tasks (each ends green):**
+- **0a. Shared test machinery.** Promote `focus::mem_store` (started) + a schema/fixture
+  builder into support modules tests import. Add the **NFR guard machinery**: an
+  allocation-counting allocator (I9), a `FactStore` spy that fails on unexpected `point()`
+  (I6), a decode-counter probe (I5). ([testing](docs/testing.md#nfr-guards-are-mechanical-not-eyeballed).)
+- **0b. Executor happy-path battery** over hand-built plans (1-/2-/3-level joins, seeks,
+  key-field residuals, record/scalar heads); model = "run to completion, collect rows."
+- **0c. Schema-first `(plan, store)` generator + resume battery** — valid-by-construction
+  generator + interruption-schedule generator; **resume == uninterrupted run** at every cut
+  point for 1-/2-/3-level plans. The headline gate ([I4](docs/invariants.md#i4)).
+- **0d. Codec support-module restructure + the I3 golden test.** Inline generators → named
+  `arb_*` strategies; **write `codec::marker_table_golden`** pinning every marker's value.
+- **0e. Write the deferred guards as ignored-pending** — I8/I11/I12 (pending Phase 1),
+  I10/I13 (pending Phase 8): real test bodies, `#[ignore = "Ixx — pending Phase N"]`.
+- **0f. Fold in discovered latent fixes** with regression tests (residual walks the stripped
+  key — done; audit `Project::Value`).
+
+**Acceptance:**
+- [ ] The §3 guard matrix exists; `cargo test -- --ignored --list` shows every pending guard tagged with its phase.
+- [ ] I3 golden marker test written and green; I1–I2 still green.
+- [ ] On-`MemStore` executor guards green: I4 (every cut point, 1-/2-/3-level), I5, I6, I7, I9.
+- [ ] Codec `arb_*` strategies are importable by other modules.
 
 ---
 
-## Phase 1 — Grammar: permissive-early, catch-in-compilation
+## Phase 1 — fjall store & the snapshot/identity guards
 
-**Goal.** Update the existing grammar so it parses the _full_ intended feature surface
-now, deferring "not-yet-implemented" to later compiler phases via clear diagnostics —
-so no grammar reshape is needed as features land. Reference the existing
-parse → façade → typecheck implementation; align it to the backend, since the plan IR
-is the lowering target.
+**Goal.** Implement the fjall `FactStore` behind the trait, plus the minimal atomic
+`put_fact` to *seed* a store for tests, and flip the guards that are structurally untestable
+on `MemStore` to green.
 
-**Why first.** The grammar is the widest one-way-ish door: reshaping it after downstream
-code depends on its tree shape is expensive. Getting it permissive-and-stable now lets
-every later phase add _meaning_ to constructs that already _parse_.
+**Depends on:** Phase 0 (the resume battery + schema-first `(plan, store)` generator it
+re-runs).
 
-**Design constraints (from prior work).**
+**Design of record:** [storage model](docs/03-storage-model.md) (two CFs, keyspace-per-
+predicate, FactId allocation, atomic write); [resume](docs/05-resume.md) (snapshot release);
+[operations §9/§10](docs/aperture-cli-design.md) (on-disk layout; the executor consumes a
+`(handle, snapshot)` — no connection assumption).
 
-- Permissive grammar, narrow later: parse union select (`.alt?`), disjunction (`|`),
-  negation (`!`), `pattern = pattern`, nested records, etc.; _reject_ the unimplemented
-  ones at typecheck/flatten with good errors, not at the grammar.
-- Known-resolved conflicts to preserve: qualified predicate names lexed as one `QId`
-  token (leading-lowercase disambiguates from `UId` access); dot binds tighter than
-  fact application (`test.Foo X.name` == `test.Foo (X.name)`), so `fact_pattern` is its
-  own `pattern` alternative; `..` string-prefix vs `.` access by maximal munch; `Nat`
-  underscore rule (`0|[1-9][0-9]*(_[0-9]+)*` or lex-permissive-then-validate).
-- Three tree layers stay: CST façade (untyped) → `SyntaxTree` store (typed, `NodeId`,
-  side-tables) → boxed ergonomic AST. Record fields sorted `Box<[(Symbol,T)]>` (not
-  `HashMap`) everywhere — reconcile the boxed AST to match.
+**Why here, not later.** The fjall impl and seeding `put_fact` depend only on the
+`FactStore` trait and the tuple codec — both exist. They do **not** need the front end: the
+resume/I8 battery runs on generated `(plan, store)` pairs (0c) populated via `put_fact`. So
+the soundest place is immediately after the harness that consumes it. This `put_fact` is the
+single-fact seeding primitive — the bulk pipeline (Phase 7) builds on the same primitives.
 
-**Tasks (decompose further at pickup; each ends green):**
+**Invariants in scope:**
+- *makes green:* [I8](docs/invariants.md#i8) (`store::snapshot_released_at_suspend`, drop-probe),
+  [I11](docs/invariants.md#i11) (`store::factid_unique_monotonic`),
+  [I12](docs/invariants.md#i12) (`store::no_half_present_facts`), and
+  [I4](docs/invariants.md#i4) **re-run against fjall**.
+- *upholds:* I1–I3.
 
-- **1a.** Audit the existing grammar/lexer against the target feature list; produce a
-  table of "parses / rejected-where / not-yet-representable." _Done:_ the table + a
+**Tasks:**
+- **1a.** fjall `FactStore` impl: one keyspace per predicate; `scan` (prefix range) + `point`.
+- **1b.** Atomic `put_fact`: monotonic `AtomicU64` FactId ([I11](docs/invariants.md#i11));
+  both CFs in one write batch ([I12](docs/invariants.md#i12)); un-ignore + green those guards.
+- **1c.** Snapshot discipline: drop the executor's iterator at suspend; un-ignore + green
+  the [I8](docs/invariants.md#i8) drop-probe.
+- **1d.** Re-run the entire Phase 0c resume battery against fjall.
+
+**Acceptance:**
+- [ ] Resume == uninterrupted run holds against the *real* store (not just `MemStore`).
+- [ ] I8, I11, I12 guards un-ignored and green.
+- [ ] Facts are never half-present; fact-ids are unique and monotonic (tested).
+- [ ] A held iterator does not survive a suspend (drop-probe green).
+
+---
+
+## Phase 2 — focus grammar: permissive-early, catch-in-compilation
+
+**Goal.** Bring the focus grammar in `src/focus/` up to the full intended feature surface,
+deferring "not-yet-implemented" to later phases via clear diagnostics — so no grammar
+reshape is needed as features land.
+
+**Depends on:** nothing engine-side (parallel with Phase 1). Uses `src/lens/` as the
+reference to **re-implement into `focus`** (against the `Plan` IR), then delete file-by-file.
+
+**Design of record:** [chapter 7](docs/07-compilation.md) (three tree layers; permissive-
+early principle). **Phase-specific — grammar/lexer conflict resolutions to preserve** (build
+detail, not in the book): `QId` qualified names (leading-lowercase disambiguates from `UId`
+access); dot-tighter-than-application (`test.Foo X.name` == `test.Foo (X.name)`, so
+`fact_pattern` is its own alternative); `..` vs `.` by maximal munch; the `Nat` underscore
+rule (`0|[1-9][0-9]*(_[0-9]+)*`, or lex-permissive-then-validate); the `never` keyword.
+
+**Invariants in scope:** *upholds:* [I10](docs/invariants.md#i10) (typecheck enforces stable
+discriminants at schema-load). No engine invariant made green here.
+
+**Tasks:**
+- **2a.** Audit the `focus` grammar/lexer vs the target feature list (using `lens` as
+  reference); table of "parses / rejected-where / not-yet-representable." *Done:* table + a
   failing test per gap.
-- **1b.** Lexer: land `QId`, the `Nat`-underscore rule, `..`/`.` munch, `never`.
-  _Done:_ lexer unit tests (incl. `E.from` ≠ qualname, `a.B.c` boundaries, `1__0`
-  rejected) pass.
-- **1c.** Grammar: dot-tighter-than-application (`fact_pattern` lifted); postfix
-  `.field` access chain; permissive `pattern = pattern`; nested record / union-select
-  (`?`) / disjunction (`|`) _surface_ syntax. _Done:_ parse tests over a corpus incl.
-  the deferred features; LL(1) build clean.
-- **1d.** Façade → `SyntaxTree` store lowering aligned; boxed AST reconciled
-  (sorted-slice record fields). _Done:_ round-trip/structure tests over the corpus.
-- **1e.** Typecheck updated to the backend's type model (`PredicateTy` incl.
-  `Fact`/`Record`; union alternatives with stable discriminants), emitting clear
-  "not yet implemented" diagnostics for deferred constructs. _Done:_ typecheck accepts
-  the P0 subset, rejects the rest with the intended messages (tested).
+- **2b.** Lexer: `QId`, `Nat`-underscore, `..`/`.` munch, `never`. *Done:* unit tests (incl.
+  `E.from` ≠ qualname, `a.B.c` boundaries, `1__0` rejected) pass.
+- **2c.** Grammar: dot-tighter-than-application; postfix `.field` chain; permissive
+  `pattern = pattern`; nested record / union-select (`?`) / disjunction (`|`) *surface*
+  syntax. *Done:* parse tests over a corpus incl. deferred features; parser build clean.
+- **2d.** Façade → `SyntaxTree` store lowering aligned; boxed AST reconciled (sorted-slice
+  record fields). *Done:* round-trip/structure tests; delete subsumed `lens` parse/lower files.
+- **2e.** Typecheck (re-implemented from `lens/ty.rs`) to the backend type model
+  (`PredicateTy` incl. `Fact`/`Record`; union discriminants stable), emitting "not yet
+  implemented" diagnostics for deferred constructs.
 
-**Acceptance for the phase:** the target-feature corpus parses; the P0 subset
-typechecks; every deferred construct produces a specific, tested diagnostic rather than
-a parse error or a panic.
+**Acceptance:**
+- [ ] The target-feature corpus parses in `focus` (incl. constructs deferred to later phases).
+- [ ] The implemented subset typechecks; every deferred construct yields a specific, tested diagnostic — never a parse error or panic.
+- [ ] Subsumed `lens` files deleted.
 
 ---
 
-## Phase 2 — Compilation driver: shared context, not hand-wired passes
+## Phase 3 — Compilation driver: shared context
 
-**Goal.** A single compilation abstraction the phases run through — carrying the shared
-plumbing (a **pooled diagnostic/error collection**, the **interners**, the schema, the
-`SyntaxTree` store + side-tables) — rather than each pass threading its own state. Not a
-demand-driven/incremental query engine; just the common context and the driver that
-sequences typecheck → flatten → plan.
+**Goal.** A single compilation context carrying the shared plumbing (a pooled diagnostics
+sink, the interners, the schema, the `SyntaxTree` store + side tables) so later phases are
+passes over shared state, not bolted-on functions. **Not** a `salsa`-style incremental engine.
 
-**Why here.** Phase 1 gives typed trees; this gives the plumbing later phases plug into,
-so flatten/reorder (Phase 3) are passes over a shared context with unified diagnostics and
-interning, not bolted-on functions each reinventing error handling.
+**Depends on:** Phase 2 (typed trees).
 
-**Design constraints.**
+**Design of record:** [chapter 7 — "The compilation driver"](docs/07-compilation.md#the-compilation-driver)
+(one keep-going diagnostics sink via `codespan-reporting`; two-tier interners; `NodeId` side
+tables; explicitly no memoization).
 
-- One **diagnostics sink** for the whole pipeline (parse/typecheck/flatten), drained once
-  and rendered via `codespan-reporting`; phases accumulate into it and keep going
-  (permissive-grammar-narrow-later needs multi-error reporting), not fail-fast.
-- Shared **interning**: the two-tier `SchemaInterner` (frozen, shared) + per-compilation
-  local `Rodeo` (`CLAUDE.md` §4) live on the context.
-- The `SyntaxTree` store's stable `NodeId` + side-tables (`Vec<Ty>`-by-`NodeId`) is how
-  typecheck annotates without mutating the tree — the context owns the store and the side
-  tables.
-- Output contract unchanged: the driver's terminal product is `plan(query) -> Plan` (the
-  executor's input); everything upstream serves that.
-- **Explicitly not now:** memoization / incremental recomputation / a `salsa`-style query
-  engine. The context is a plain threaded struct; incrementality is a later concern and
-  must not be designed-in speculatively.
+**Invariants in scope:** none made green (plumbing). *upholds:* the record-field-ordering
+convention across tree layers.
 
-**Tasks (decompose at pickup):**
+**Tasks:**
+- **3a.** Stand up the context (diagnostics + interners + store/side tables); thread it
+  through parse → typecheck. *Done:* typecheck reports multiple diagnostics in one pass (tested).
+- **3b.** The driver sequencing phases to `plan(query)` (a stub into Phase 4). *Done:*
+  end-to-end "text → typed → (stub) plan" for the implemented subset, all diagnostics through one sink.
 
-- **2a.** Stand up the compilation context (diagnostics sink + interners + store/side
-  tables) and thread it through the existing parse → typecheck path. _Done:_ typecheck
-  runs through the context and reports multiple diagnostics in one pass (tested).
-- **2b.** The driver that sequences the phases to `plan(query)` (a stub calling into
-  Phase 3). _Done:_ end-to-end "text → typed → (stub) plan" for the P0 subset, all
-  diagnostics surfaced through the one sink.
-
-**Acceptance:** one context carries diagnostics + interning + the typed store through the
-pipeline; asking for `plan(q)` runs typecheck → flatten in sequence over it; multi-error
-diagnostics render through `codespan-reporting` (tested).
+**Acceptance:**
+- [ ] One context carries diagnostics + interning + the typed store through the pipeline.
+- [ ] `plan(q)` runs typecheck → flatten in sequence; multi-error diagnostics render via `codespan-reporting` (tested).
 
 ---
 
-## Phase 3 — Flatten → reorder
+## Phase 4 — Flatten → reorder
 
-**Goal.** Lower the typed query to the flat plan IR: flatten nested generators into an
-ordered generator list, run sargeability to build seeks/residuals, and pass through a
-reorder step. **Reorder is initially a no-op** (identity endomorphism) — but structured
-so the planned algorithm drops in without reshaping.
+**Goal.** Lower the typed query to the flat `Plan`: flatten nested generators into an ordered
+generator list, run sargeability to build seeks/residuals, and pass through a reorder step
+that is **initially identity** — structured so the real algorithm drops in without reshaping.
 
-**Design constraints (from prior work — these are settled and must be honored).**
+**Depends on:** Phase 3 (the driver + context).
 
-- Flatten produces the ordered `[Generator]` + `head: Project` the executor consumes.
-  Disjunction survives flattening as a **node** (`FlatDisjunction`), never DNF-expanded
-  across sibling conjuncts; Glean's PLAN-B (distribute an `|` only _within_ a single
-  seek's pattern, bounded) is the one place duplication is allowed. Union select
-  (`.alt?`) lowers to a **match-against-bound-value** = `DiscriminantEq(n)` residual +
-  payload bind, _not_ a new generator.
-- **Correctness needs only a _safety_ check, not a topological sort, for generators:**
-  every variable used in a seek/residual/head must be _captured_ in some generator's
-  key pattern (capture-at-first-occurrence makes binding-before-use automatic in any
-  linear order). Reject unsafe (non-range-restricted) queries at compile time. Ordering
-  is a _performance_ choice (selectivity), which is why reorder can be identity in P0.
-- **Topological sort becomes required only with derived binds** (`Z = f(X,Y)` from
-  subqueries/primitives) — they consume vars, can't capture them, impose hard ordering
-  edges, and a cycle is a compile error. Keep the reorder step's interface able to take
-  a dependency DAG.
-- Sargeability is _order-dependent_ (a captured field can't seek — it's being bound), so
-  it runs over the chosen order; a captured field forces a fuller scan, a
-  bound-from-earlier field becomes a splice.
-- Reorder plan (note for when it's built, do **not** build now): **Kahn's-algorithm
-  topological sort** over the dependency graph, layered by an **antichain** of
-  independently-orderable statements, with a **selectivity heuristic** choosing within
-  each antichain (lookups/point-matches before prefix-matches before scans, à la
-  Glean's `Reorder`). Negations/conditionals move after their non-locals are bound.
-- Watch-items flagged in prior work: intra-row repeated variables
-  (`Edge{from=X,to=X}`) need a same-row `ResidualOp::EqField` (distinct from cross-slot
-  `EqSlotField`) or explicit rejection — decide P0 scope. `FieldPath` (not flat
-  `FieldIdx`) in plan types for nested-record access, depth-1 fast path only for now.
+**Design of record:** [chapter 7](docs/07-compilation.md) covers all the settled design —
+flatten, disjunction-stays-a-node (never DNF across conjuncts), union-select →
+`DiscriminantEq` residual, sargeability's order-dependence, the safety-vs-ordering split (why
+identity reorder is *correct*, not a stub), and the future Kahn + antichain + selectivity
+reorder (whose interface is built here). **Read it before this phase.**
 
-**Tasks (decompose at pickup):**
+**Invariants in scope:**
+- *makes green:* the end-to-end property **"flattened plan run == expected rows"** (tier-3,
+  schema-first) — this exercises [I4](docs/invariants.md#i4)–[I9](docs/invariants.md#i9) via
+  the produced plans.
+- *upholds:* I1–I9.
 
-- **3a.** Flatten the P0 subset (scans, joins, scalar/record heads) to `Plan`; safety
-  check (range-restriction) with clear rejection. _Done:_ text→plan for the P0 corpus,
-  and the executor runs the produced plans to the expected rows (differential vs
-  hand-built plans from prior tests).
-- **3b.** Sargeability over source order (seek vs residual vs splice). _Done:_ produced
-  plans use seeks where expected (tested against known-sargeable queries).
-- **3c.** Reorder step as identity, taking the interface a real reorderer will use
-  (dependency edges available, antichain structure representable). _Done:_ identity
-  reorder is a no-op verified by plan-equality; the interface compiles with a
-  `// TODO: Kahn + antichain + selectivity heuristic` seam.
-- **3d.** Decide + implement intra-row repeats (`EqField`) or reject them. _Done:_
-  either tested `EqField` semantics or a tested rejection diagnostic.
+**Phase-specific decision:** intra-row repeated variables (`Edge{from=X,to=X}`) need a
+same-row `ResidualOp::EqField` (distinct from cross-slot `EqRegisterField`) **or** explicit
+rejection ([open decisions](docs/open-decisions.md)) — task 4d. `FieldPath` (not flat
+`FieldIdx`) in plan types for nested-record access, depth-1 fast path only for now.
 
-**Acceptance:** `plan(q)` produces a runnable `Plan` for the P0 corpus, safety-checked;
-reorder is a verified identity with the real interface in place; the property
-"flattened plan run == expected rows" holds over generated (query, store) pairs
-(`CLAUDE.md` §8 tier-3, schema-first generation).
+**Tasks:**
+- **4a.** Flatten the implemented subset (scans, joins, scalar/record heads) to `Plan`;
+  safety check (range-restriction) with clear rejection. *Done:* text→plan for the corpus,
+  and the executor runs the produced plans to the expected rows (differential vs Phase 0's
+  hand-built plans).
+- **4b.** Sargeability over source order (seek vs residual vs splice). *Done:* produced plans
+  use seeks where expected (tested against known-sargeable queries).
+- **4c.** Reorder step as identity, taking the interface the real reorderer *and* Phase 6's
+  derived binds will use (dependency edges available, antichain representable). *Done:*
+  identity reorder verified by plan-equality; interface compiles with a
+  `// TODO: Kahn + antichain + selectivity` seam.
+- **4d.** Decide + implement intra-row repeats (`EqField`) or reject them (tested either way).
+
+**Acceptance:**
+- [ ] `plan(q)` produces a runnable `Plan` for the corpus, safety-checked (non-range-restricted queries rejected with a clear error).
+- [ ] Reorder is a verified identity with the real (DAG-taking) interface in place.
+- [ ] "flattened plan run == expected rows" holds over generated `(query, store)` pairs (tier-3).
+- [ ] Intra-row repeats are either supported (`EqField`) or rejected — tested.
 
 ---
 
-## Phase 4 — REPL: experiment by executing
+## Phase 5 — REPL: experiment by executing
 
-**Goal.** A simple interactive REPL to _run_ queries end-to-end (not just typecheck).
-Reference the existing `old_main` demo (logos lexer + rustyline + codespan-reporting for
-diagnostics) — but this time compile _and execute_ against a store, printing results.
+**Goal.** A simple interactive REPL to *run* queries end-to-end (parse → compile → plan →
+execute → project), for testing and demo. First moment the whole pipeline is exercised by a
+human — invaluable for integration gaps unit tests miss.
 
-**Why here.** First moment the whole pipeline (parse → compile → plan → execute →
-project) is exercised by a human. Invaluable for finding integration gaps the unit
-tests miss.
+**Depends on:** Phase 4 (a runnable `Plan` from text) + Phase 1 (a store to run against).
 
-**Design constraints.**
+**Design of record:** the iteratee/portal seam it drives is [chapter 5](docs/05-resume.md);
+the remote-first product shell is [operations §5](docs/aperture-cli-design.md).
 
-- Reuse the diagnostics stack (`codespan-reporting`) for typecheck/flatten rejections —
-  the permissive-grammar-narrow-later errors should render nicely here.
-- Execute against a store: for now the in-memory test `Store` seeded with fixtures
-  (fjall comes in Phase 5). Print projected `Value`s.
-- Drive the executor via `enumerate` to exhaustion (streaming/portal machinery not needed
-  in the REPL yet, but don't foreclose it).
+**Early now, remote-first later.** The Phase 5 REPL runs in-process against a fixture store
+for fast iteration. The *product* shell is remote-first — always speaks the wire protocol,
+the permanent wire exerciser. Treat Phase 5 as a scaffold: reuse its executor-driving and
+diagnostic rendering, but expect the interactive front to be re-pointed at the wire client in
+Phase 9; don't build in state a wire shell can't reproduce.
 
-**Tasks (decompose at pickup):** REPL loop + line editing + diagnostic rendering;
-seed an in-memory store with fixtures; run compiled plans and print rows; `:commands`
-(e.g. show flattened plan, show diagnostics) mirroring Glean's debug affordances.
-_Done per task:_ an integration test drives a query string through the REPL path and
-asserts the printed rows.
+**Invariants in scope:** none made green; *upholds* the full engine set by exercising it.
 
-**Acceptance:** typing a query returns rows (or a well-rendered diagnostic) against a
-fixture store, end-to-end, through the real compiler and executor.
+**Tasks:** REPL loop + line editing + diagnostic rendering (reuse `codespan-reporting`); seed
+a store with fixtures; run compiled plans via `enumerate` and print projected `Value`s;
+`:commands` (show flattened plan, show diagnostics). *Done per task:* an integration test
+drives a query string through the REPL path and asserts the printed rows.
 
----
-
-## Phase 5 — Transport codec + fact writing (ingestion)
-
-**Goal.** Write facts programmatically so the DB isn't hardcoded — a `Db`/ingestion path
-that encodes and stores facts, with an eye toward efficient _parallel_ ingestion.
-
-**Design constraints (from prior work — partial; see the flag below).**
-
-- A `Db` owns the keyspace + the two partition handles (`keys`, `entities`), `Arc`-shared.
-- `put_fact(pred, key, value)`: tuple-encode the key **and** the value (one storage
-  codec — see below), allocate a sequential `FactId`, write **both column families
-  atomically** (a write batch), so a fact is never half-present.
-- FactId allocation is a monotonic counter (an `AtomicU64` high-water mark) — this is
-  the seam that must be gotten right for parallel/concurrent ingestion.
-- **The encoder must agree byte-for-byte with the decoder** — the projector must read
-  back exactly what ingestion wrote, for both key and value. This is a hard invariant; a
-  drift here is silent corruption.
-- **Storage codec vs transport codec (settled — `CLAUDE.md` §7).** Both keys and values
-  are **tuple-encoded with the one storage codec** (order-preserving, self-delimiting) —
-  values too, so queries can eventually _match on values_; `Project::Value` is then
-  decode-not-copy-through. The **transport/wire codec is separate and applies only
-  post-yield** (to rows leaving the executor): a framed binary format (PSQL-inspired),
-  _not_ order-preserving, never touching stored bytes. It's FDB-_inspired_, not FDB — do
-  not call the storage codec "FDB". Both stored and wire forms must be efficiently
-  chunkable for file ingestion.
-
-**The parallel-ingestion pipeline (recovered from the operations design work — this is
-the design, not a placeholder).** The bulk path, used both embedded and server-side for
-file ingest:
-
-1. **Split input into chunks via a sync-marker scan** — do not serially parse from byte
-   zero. The fact-file format carries sync markers so a chunk boundary can be found
-   without parsing the whole prefix. (Human-authorable fact files use a one-fact-per-line
-   format with `|` (space-pipe-space) field separators and bare JSON values —
-   schema-guided self-delimiting parsing means the separator is only asserted at a known
-   cursor position after a complete value, never scanned for inside one. `memmap2` +
-   `rayon` for parallel chunk processing; `lexical` for fast numbers, `sonic-rs` for
-   SIMD record JSON.)
-2. **Workers in parallel:** wire/text-decode → storage-tuple-encode (order-preserving
-   key) → **sort** within the worker.
-3. **K-way merge across workers, per predicate.** At the merge frontier identical keys
-   are colocated, so: **dedup byte-identical facts silently; reject the batch on
-   same-key-different-value** (deterministic and order-independent — this is required by
-   the resume/immutability invariant I4). `--on-conflict=reject` is the default; any
-   override must be **commutative, never last-write-wins**.
-4. **Feed the sorted, deduped, conflict-free ascending stream to fjall's bulk
-   `ingest()`** — the unchecked-write fast path that needs no per-key reads _because the
-   merge already established the invariants_ (sorted, unique, conflict-free).
-   **One keyspace (partition) per predicate** ⇒ per-predicate ingests are independent
-   trees and may overlap/parallelize freely. This is what makes concurrency "fearless":
-   facts with different keys can't affect each other; only same-key-different-value
-   collides, and that's rejected at the merge frontier.
-
-- FactId allocation is a monotonic counter (`AtomicU64` high-water mark). Same-key
-  dedup/conflict happens at the _merge frontier_ on the encoded key, before ingest.
-- **The wire codec is the permanent exerciser:** the shell/REPL always speaks the wire
-  protocol even locally, and writes are _just another stream_ on a connection (a
-  deriver/tool interleaves read and write streams — no separate write sub-channel).
-- Schema validation on every ingest path against the DB's **embedded** schema; a fact
-  file's header fingerprint is checked for compatibility (subset containment) before
-  ingest (the canonical-schema fingerprint + containment check itself lands in Phase 6 —
-  until then ingestion validates against the still-hardcoded schema). Rendering to
-  JSON/text is **client-side only** — the server emits binary.
-
-**Tasks (decompose at pickup):** `Db` + per-predicate partition handles; the ingestion
-encoder (tuple-encode key + value) with a **round-trip property** against
-the read-path decoder; the fact-file format + sync-marker chunk splitter; the parallel
-decode→encode→sort→k-way-merge→bulk-`ingest()` pipeline with the dedup/reject-on-conflict
-rule; the framed wire protocol (CopyData-style fact blocks for writes). _Done per task:_
-ingest-then-query returns the ingested facts; encoder/decoder round-trip property holds
-(`CLAUDE.md` §8 tier-1); a **metamorphic property** that ingest is order-independent
-(shuffling input chunks yields the same DB or the same deterministic rejection — tier-2).
-
-**Acceptance:** facts can be written programmatically and from files in parallel, and
-queried back; the round-trip and order-independence properties are green;
-same-key-different-value is deterministically rejected regardless of chunking/worker
-interleaving.
+**Acceptance:**
+- [ ] Typing a focus query returns rows (or a well-rendered diagnostic) against a fixture store, end-to-end, through the real compiler and executor.
+- [ ] Diagnostics from typecheck/flatten render nicely (source spans).
 
 ---
 
-## Phase 6 — Schema parsing (new grammar)
+## Phase 6 — Derived facts (a deliberate machine change)
 
-**Goal.** Parse schemas so predicate/type definitions aren't hardcoded — a _separate_
-grammar (schema DSL) feeding the same type model the query compiler uses.
+**Goal.** Support derived predicates — `predicate P : … = KEY where <query>` — that compute
+facts from a query, plus `DerivedAndStored`. This is one of the **two sanctioned machine
+changes** (it promotes `Register` to a `Slot` sum type and touches resume), done here — while
+the machine is still small and the resume battery is fresh — rather than after ingestion and
+schema pile onto the current register shape.
 
-**Design constraints.**
+**Depends on:** Phase 4 (flatten + the DAG-taking reorder interface) and the resume battery
+(Phases 0/1). *Derived-and-stored persistence* additionally needs Phase 7 (a store to write
+to) and integrates operationally in Phase 9 (ops-I8 phased derivation).
 
-- New grammar, same discipline as Phase 1 (permissive-then-narrow; three tree layers if
-  it earns them). Produces the `PredicateTy`/schema structures the compiler already
-  consumes — the schema is the source of truth typecheck/flatten read.
-- **Imports/resolution (recovered decision):** _no project file that enumerates sources._
-  Resolve via a **`mod`-tree walk from a single entry file** (Go/Starlark-ish module
-  resolution), not an explicit source manifest. `create` walks the `mod` tree from the
-  schema root.
-- **Schema identity is filesystem-independent (recovered):** two schemas are equal iff
-  they're _compatible_, regardless of which file a predicate is declared in or in what
-  order. Compute a **canonical form** (order-independent) and a **fingerprint** over it;
-  compare/validate by fingerprint. **Embed the canonical schema + fingerprint in the DB
-  at creation** — the schema travels with the data, the DB is self-describing, and the
-  schema is fixed for the DB's lifetime (P0 has no in-place `evolves`).
-- **Evolution/compatibility (recovered):** define compatible vs breaking changes —
-  e.g. _adding a nullable field to a predicate is compatible_; compatibility is
-  **subset containment** checked at ingest (a fact file's fingerprint must be compatible
-  with the DB's embedded schema). Full in-place evolution is deferred; the fingerprint +
-  containment check is the P0 mechanism.
-- **Freeze the one-way-door invariants at schema-load** (`CLAUDE.md` §3): union
-  alternative discriminants explicit/stable/append-only (I10); marker/type ordering
-  frozen (I3); reject schema changes that would violate on-disk ordering.
-- Predicate/field naming rules align with the query grammar (`QId` shape; field names
-  lowercase; reserved words).
+**Design of record:** [chapter 7 — "Derived facts"](docs/07-compilation.md#derived-facts)
+(the `Slot` sum type; derived binds as not-a-loop-level, recomputed on resume; the hard
+topo-ordering they impose; the Glean mechanism) and [ops-I8](docs/invariants.md#ops-i8)
+(phased derivation, sealed snapshots).
 
-**Tasks (decompose at pickup):** schema lexer/parser; lower to the schema/type model;
-validate the freeze-invariants (stable discriminants, append-only alternatives); wire
+**Invariants in scope:**
+- *adds & makes green:* a **new invariant** — *derived binds are pure functions of the fact
+  bindings* — with its own tier-3 resume battery. **Add it to the
+  [registry](docs/invariants.md) and [chapter 7](docs/07-compilation.md) when this lands.**
+- *upholds:* [I4](docs/invariants.md#i4), [I5](docs/invariants.md#i5) (the `Register→Slot`
+  change must not regress the resume battery or the row-slot model).
+
+**Tasks:** promote `Register` → `Slot` (fact | computed-value); derived-bind plan step +
+flatten lowering (the topo-ordering case); recompute value-slots on resume; the new purity
+type/guard; `DerivedAndStored` gating (persistence deferred to integrate with Phase 7/9).
+
+**Acceptance:**
+- [ ] Derived predicates compile (flatten → plan with derived-bind steps) and execute (recomputed correctly) against a fixture/fjall store.
+- [ ] Resume is correct under the interruption-schedule generator — recompute-on-restore property green (tier-3), on top of Phase 0c's battery.
+- [ ] The `Register→Slot` change leaves all prior engine guards green.
+- [ ] The new purity invariant + guard are added to the registry and chapter 7.
+
+---
+
+## Phase 7 — Transport codec + fact writing (ingestion)
+
+**Goal.** Write facts programmatically and from files so the DB isn't hardcoded — a
+`Db`/ingestion path that encodes and stores facts, with efficient *parallel* ingestion.
+
+**Depends on:** Phase 1 (the store + atomic `put_fact` + FactId allocator).
+
+**Design of record:** the parallel decode→sort→k-way-merge→bulk-`ingest()` pipeline, the
+fact-file format + sync markers, and the wire COPY path are specified in
+[operations §5 & §8](docs/aperture-cli-design.md) (`ops-I5` one-write-funnel, `ops-I4`
+reproducibility). The storage-vs-transport codec split is
+[chapter 3](docs/03-storage-model.md#storage-codec-vs-transport-codec). **Read those; don't
+restate them.**
+
+**Invariants in scope:**
+- *strengthens (at scale):* [I11](docs/invariants.md#i11), [I12](docs/invariants.md#i12).
+- *upholds (relies on):* [ops-I4](docs/invariants.md#ops-i4) (reproducibility ⇒ conflict
+  handling is order-independent), [I13](docs/invariants.md#i13) (validate ingest against the
+  embedded schema — against the still-hardcoded schema until Phase 8).
+- **Note:** the [`FactRef` marker](docs/open-decisions.md) is already resolved (own marker
+  `0x51`), so writing fact-typed fields is unblocked — no pre-work here.
+
+**Phase-specific rules:** the encoder must agree **byte-for-byte** with the read-path decoder
+(the round-trip property is the guard); dedup byte-identical facts silently and **reject
+same-key-different-value** deterministically (`--on-conflict=reject` default; any override
+commutative, never LWW).
+
+**Tasks:** `Db` + per-predicate partition handles; the fact-file format + sync-marker chunk
+splitter; the parallel decode→encode→sort→k-way-merge→bulk-`ingest()` pipeline with the
+dedup/reject rule; the framed wire protocol (CopyData-style fact blocks). *Done per task:*
+ingest-then-query returns the ingested facts.
+
+**Acceptance:**
+- [ ] Facts are writable programmatically and from files in parallel, and queried back.
+- [ ] Encoder/decoder round-trip property green (tier-1).
+- [ ] Ingest is order-independent: shuffling input chunks yields the same DB *or* the same deterministic rejection (tier-2 metamorphic).
+- [ ] Same-key-different-value is deterministically rejected regardless of chunking/worker interleaving.
+
+---
+
+## Phase 8 — Schema parsing (new grammar)
+
+**Goal.** Parse schemas so predicate/type definitions aren't hardcoded — a separate schema
+DSL feeding the same type model the query compiler uses.
+
+**Depends on:** Phase 7 (ingest validates against a real, parsed schema) + Phase 2 (the
+permissive-then-narrow grammar discipline it reuses).
+
+**Design of record:** the type model + identity (canonical form, per-predicate + whole-schema
+fingerprints, subset-containment compatibility, embed-and-freeze) are
+[chapter 6](docs/06-types-and-schema.md); the schema *syntax*, Go-style import/`mod`-tree
+resolution, `schema_path` roots, and redeclaration errors are
+[operations §7](docs/aperture-cli-design.md).
+
+**Invariants in scope:**
+- *makes green:* [I13](docs/invariants.md#i13) (`schema::ingest_rejects_incompatible_schema`
+  + `schema::fingerprint_is_order_independent`); [I10](docs/invariants.md#i10)
+  (`schema::discriminants_append_only`) when unions are represented.
+- *upholds:* [I3](docs/invariants.md#i3) (reject schema changes that would violate on-disk marker ordering).
+
+**Tasks:** schema lexer/parser; lower to the schema/type model; canonical form +
+fingerprints; validate the freeze-invariants (stable discriminants, marker ordering); wire
 the query compiler to load schema from parsed input instead of hardcoded fixtures.
-_Done per task:_ parse a schema file and run a query against it end-to-end (test);
-invariant-violating schema edits are rejected (tested).
 
-**Acceptance:** schemas are loaded from source; queries run against parsed schemas; the
-stability invariants are enforced at load with tested rejections.
-
----
-
-## Phase 7 — Operations / production-ready
-
-**Goal.** The hardening pass: telemetry, cohesive error handling/reporting, and
-database/lifecycle management.
-
-**Scope (coarse — decompose when reached).**
-
-- **Telemetry:** query profiling (facts-searched-per-predicate, à la Glean's `:debug`),
-  metrics, tracing spans across the pipeline and the executor.
-- **Cohesive errors:** one error taxonomy end-to-end (parse/typecheck/flatten/store/
-  runtime), rendered consistently (codespan for source-level; structured for runtime);
-  no panics on data paths (`CLAUDE.md` §4).
-- **DB / lifecycle (recovered state machine):** a DB moves **Writable → Complete**.
-  `create` (needs a schema; embeds canonical schema + fingerprint). `write`/ingest only
-  on a Writable DB (refused on Complete). `finish` **seals** it: flush + sync everything
-  → compute content identity `hash(canonical schema, base facts)` → record in a sidecar →
-  atomically flip status to Complete as the final durable act; after finish, every
-  write-mode open is refused forever. Crash-mid-finish leaves Writable and `finish` is
-  re-runnable (idempotent-ish). DBs are **addressable by name and by fingerprint**;
-  arbitrary out-of-band tool edits set an `externally_modified` flag so identity honestly
-  becomes a random non-reproducible id. `query` opens read-only (embedded read-only
-  requires Complete + lock-free); `shell` is remote-first (always speaks the wire, the
-  permanent wire exerciser). CLI arg/config hierarchy: **CLI args > env > config file >
-  defaults** (clap + a layered config crate like figment/config-rs; XDG paths via
-  `directories`).
-- **Snapshot lifecycle:** the immutable-snapshot-per-query invariant I8; drop-at-suspend
-  to release; backup/restore; migration story for the frozen-on-disk marker &
-  discriminant tables.
-- **Wire protocol / connection layer** (if not landed with ingestion in Phase 5):
-  PSQL-inspired framed binary protocol with **stream-level multiplexing**
-  (`[stream_id:u32][len:u32][payload]`), read and write streams on one connection,
-  chunked `DataRow`s with fair writer interleaving (never buffer a full result set),
-  per-stream `Cancel` frames (Ctrl-C ≠ connection teardown), and the bounded-channel
-  sync↔async bridge with byte `Cursor` portals.
-- **fjall `Store` impl** behind the trait, with the resume battery re-run against it.
-  **Pull this earlier — right after Phase 3, not here.** I8 (drop-at-suspend releases the
-  read snapshot) is _untestable_ against the in-memory store (whose scan pins nothing), so
-  resume/I8 correctness is only actually validated against a real snapshotting store.
-
-**Acceptance:** operable as a real service — observable, diagnosable, with a defined
-lifecycle and migration story; the resume/streaming machinery runs against the real
-(fjall) store under the same property batteries.
+**Acceptance:**
+- [ ] Parse a schema file and run a query against it end-to-end (test).
+- [ ] Fingerprint order-independence green (tier-2: two source orderings → identical fingerprint).
+- [ ] Ingest rejects a fact file whose schema fingerprint isn't subset-compatible (I13).
+- [ ] Invariant-violating schema edits (renumbered discriminant, reordered marker) are rejected at load (I10/I3, tested).
 
 ---
 
-## Cross-cutting — Derived facts
+## Phase 9 — Operations / production-ready
 
-Woven in **after Phase 3 (flatten) exists**, since it's a flatten/compiler concern.
+**Goal.** The hardening pass: telemetry, cohesive error handling, the full database/lifecycle
++ connection layer, and the workspace restructure.
 
-**Goal.** Support derived predicates — `predicate P : ... = KEY where <query>` — that
-compute facts from a query rather than storing them raw, plus `DerivedAndStored`.
+**Depends on:** Phases 7–8 (a writable, schema-validated, queryable DB).
 
-**Design constraints (from prior work / Glean source read).**
+**Design of record:** [`docs/aperture-cli-design.md`](docs/aperture-cli-design.md) **in
+full** — CLI tree (§4), per-command requirements (§5), operational invariants
+`ops-I1`–`ops-I10` (§1), wire protocol (§6), on-disk layout (§9), workspace structure (§10).
 
-- A **derived bind** is a plan-step kind distinct from a generator: `Z = f(bound vars)`,
-  evaluated where its inputs are live, materializing a computed value into a register.
-  This requires promoting the register (`Register`, today a struct holding a fact row) to
-  a **sum type** — a `Slot` enum with fact and value variants — so a slot can hold a
-  non-fact binding. It is **not** a loop level — `enumerate` doesn't iterate it and the
-  resume token doesn't store it; it is _recomputed on restore_ (so resume must recompute
-  value-slots after rebinding the fact-slots).
-- **Invariant to lock (add to `CLAUDE.md` when built):** derived binds must be **pure
-  functions of the generator (fact) bindings** — that's what lets resume save only
-  generator positions and recompute the rest. The type for derived binds must
-  structurally forbid iteration/hidden state.
-- Mechanism mirrors Glean: `DerivedFactGenerator`; `Derive when query`; the temp-pid /
-  `captureKey` trick for capturing the derived key at codegen; `DerivedAndStored`
-  gating. Derived binds impose the **hard topological ordering** (Phase 3 note) — this
-  is _the_ case that makes topo-sort necessary; cycles are compile errors (or recursion,
-  out of scope).
-- Subquery flattening: a value-producing subquery becomes (its generators, hoisted) +
-  (a derived bind for its head); a fact-producing subquery's head is just an alias to an
-  existing `Fact` slot (no `Value` needed).
+**Invariants in scope:** *makes enforceable & tested:* `ops-I1`–`ops-I10`. *upholds under the
+real connection layer:* [I8](docs/invariants.md#i8) (drop-at-suspend, already guarded at
+Phase 1) now exercised through portals.
 
-**Acceptance:** derived predicates compile (flatten → plan with derived-bind steps),
-execute (recomputed correctly), and — critically — **resume correctly** (the
-recompute-on-restore property holds under the interruption-schedule generator,
-`CLAUDE.md` §8 tier-3).
+**Scope (coarse — decompose when reached):**
+- **DB / lifecycle** (`ops-I2`/`ops-I3`/`ops-I4`): `Writable → Complete` (+ `Broken`);
+  `create` embeds canonical schema + fingerprint (I13); ingest refused on Complete; `finish`
+  seals (flush + `SyncAll` → content-hash identity → atomic sidecar flip as the last durable
+  act); filesystem is the catalog (`ops-I7`); phased derivation via sealed snapshots (`ops-I8`).
+- **Connection layer / wire protocol** (if not landed in Phase 7): PSQL-inspired framed
+  binary protocol with stream multiplexing, chunked `DataRow`s with a fair per-connection
+  writer, per-stream `Cancel`, the bounded-channel sync↔async bridge with byte `Cursor`
+  portals ([chapter 5](docs/05-resume.md)), default-closed bind (`ops-I10`). The remote-first
+  `shell` (re-pointing the Phase 5 REPL) lands here.
+- **Telemetry:** query profiling (facts-searched-per-predicate), metrics, tracing spans.
+- **Cohesive errors:** one taxonomy end-to-end; no panics on data paths.
+- **Snapshot lifecycle & migration:** backup/restore; migration story for the frozen marker
+  (I3) & discriminant (I10) tables.
+- **CLI + config:** the §4 command tree; config hierarchy CLI > env > file > defaults (clap +
+  figment); XDG paths.
 
----
-
-## Deferred features (designed-for, additive — see `CLAUDE.md` §5)
-
-Not on the critical path; each is additive to a machine that shouldn't reshape:
-cross-fact navigation (`Access::Fetch` degenerate generator); order comparisons
-(`ResidualOp` arms); unions-as-data then the `FlatDisjunction` union-of-streams operator
-(with the per-branch discriminant added to `Cursor`); negation/`FlatConditional`;
-`pattern = pattern` full unification (easy half in flatten, reject the three hard cases);
-`FactRef` own marker; fetch memoization for repeated navigation.
+**Acceptance:**
+- [ ] Operable as a real service: observable, diagnosable, with the defined lifecycle and connection layer.
+- [ ] `ops-I1`–`ops-I10` enforced and tested (end-to-end `assert_cmd`/`trycmd`).
+- [ ] The resume/streaming machinery runs against fjall through the real connection layer under the same batteries.
+- [ ] The workspace restructure is complete (see cross-cutting note) with all batteries green.
 
 ---
 
-## Related prior design work (source threads)
+## Cross-cutting — workspace extraction
 
-Much of the detail above was recovered from earlier design conversations; pull these up
-if a phase needs more than this plan captures:
+The design's target layout ([operations §10](docs/aperture-cli-design.md)) is a Cargo
+**workspace** (`aperture-schema` / `-encoding` / `-store` / `-engine` / `-ingest` / `-wire` /
+`-client` / `-server` / `-cli`). Today it's a single `aperture` crate with the `focus`
+module. The load-bearing seam is **already honored** — the executor consumes a
+`(store handle, snapshot)` and assumes no connection — so the split is a *mechanical*
+extraction, not a redesign. Do it incrementally as the operational layer needs the
+boundaries: `-store`/`-encoding`/`-engine` fall out naturally at Phase 7 (ingestion needs a
+clean store/encoding boundary), `-wire`/`-client`/`-server`/`-cli` at Phase 9. Each extraction
+step's "green test" is: everything still compiles and all invariant batteries pass. Don't do
+a big-bang restructure ahead of need.
 
-- **Operations / CLI / lifecycle / parallel ingestion / schema identity** — the richest
-  operational source; produced an `aperture-cli-design.md`. Has the full Writable→Complete
-  lifecycle, the parallel decode→sort→k-way-merge→bulk-`ingest()` pipeline, the
-  `mod`-tree schema resolution, canonical-schema fingerprinting + subset-containment
-  compatibility, and the framed multiplexed wire protocol. **The primary reference for
-  Phases 5–7.**
-- **Fact-file format** — human-authorable one-fact-per-line `|`-separated bare-JSON
-  format, schema-guided self-delimiting parsing, `memmap2`/`rayon`/`lexical`/`sonic-rs`
-  chunked parsing. (Reference for Phase 5's file ingest.)
-- **VM / ISA design** — a fixed-width 64-bit instruction set with implicit register
-  banks, from rewriting Glean's C++ query VM. Relevant _if_ Aperture ever moves from the
-  native-Rust executor to a bytecode VM (currently a deliberate divergence — we implement
-  the abstract machine directly; see `CLAUDE.md` §5).
-- **Grammar / lexer / parser** — several threads: LL(1) conflict resolution (lelwel and
-  otherwise), resilient LL parsing (`MarkOpened`/`open_before`, green trees, recovery
-  sets), lexer performance, REPL syntax highlighting (`rustyline` `Highlighter`), and a
-  bidirectional lexer/generator theory thread (relevant to `CLAUDE.md` §8's
-  generator-first testing). References for Phases 1 and 4.
+---
+
+## Deferred features (additive — must not reshape the machine)
+
+Not on the critical path; each is additive: cross-fact navigation (`Access::Fetch`); order
+comparisons (`ResidualOp` arms); unions-as-data then the `FlatDisjunction` union-of-streams
+operator (per-branch discriminant on `Cursor`); negation/subqueries; `pattern = pattern` full
+unification (easy half in Phase 4, reject the three hard cases); `evolves`; cross-DB query.
+Detail and kept seams: [`CLAUDE.md` scope](CLAUDE.md#scope-phases--open-decisions),
+[open decisions](docs/open-decisions.md), [operations §11](docs/aperture-cli-design.md). The
+two *non-additive* constructs — derived facts (Phase 6) and the now-resolved `FactRef` marker
+— are handled as deliberate changes above.
+
+---
+
+## Related prior design work
+
+- **[The design book](README.md)** — the engine design of record (codec, storage, executor,
+  resume, types, compilation) with every invariant and its rationale.
+- **[`docs/aperture-cli-design.md`](docs/aperture-cli-design.md)** — the operational design
+  of record: lifecycle, `ops-I*` invariants, ingestion pipeline, fact-file format, schema
+  resolution/identity, wire protocol, on-disk + workspace layout. **Primary reference for
+  Phases 7–9.**
+- **VM / ISA design** (external note) — a fixed-width 64-bit ISA from rewriting Glean's C++
+  query VM. Relevant *only if* Aperture ever moves to a bytecode VM (currently a deliberate
+  divergence — we implement the abstract machine directly). Not needed for any current phase.
+- **`src/lens/`** — the disconnected first-attempt front end; reference for re-implementing
+  parse/typecheck/lower into `focus` (Phases 2–4), then delete.

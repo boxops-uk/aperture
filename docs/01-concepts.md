@@ -1,0 +1,171 @@
+# 1. Concepts
+
+> [Aperture design book](../README.md) · **Chapter 1** · Next: [2. The tuple codec →](02-tuple-codec.md)
+
+This chapter is the mental model. It introduces every core term at a shallow depth so the
+later chapters can go deep on one thing at a time. Nothing here is load-bearing on its
+own — it's the map, not the territory. Terms in **bold** have full entries in the
+[glossary](glossary.md).
+
+---
+
+## What Aperture is
+
+Aperture is an **embedded, immutable fact database**. Two names to keep straight:
+
+- **Aperture DB** — the database/product.
+- **focus** — its query and schema *language* (and the `src/focus/` module that implements
+  the engine and the language). When you read "a focus query," it's a query written in
+  focus and run by Aperture.
+
+It is **inspired by [Glean](https://glean.software/), not a clone.** Where we diverge
+deliberately, the chapters say so.
+
+### Immutable, by design
+
+A DB moves through a lifecycle — `Writable → Complete` — and once **Complete** it is
+frozen forever: no updates, no deletes, no in-place schema change. This is not a
+limitation bolted on; it is the keystone. Because a Complete DB never changes:
+
+- a query's view of the world is a stable **snapshot** for free;
+- a suspended query can be resumed from a few saved **bytes** rather than a pinned
+  iterator (see [chapter 5](05-resume.md));
+- ingestion can be massively parallel, because facts with different keys can never
+  interfere (see [chapter 3](03-storage-model.md) and [Operations](aperture-cli-design.md)).
+
+Immutability is the assumption almost every invariant leans on.
+
+---
+
+## The data model
+
+### Facts, predicates, FactIds
+
+A **fact** is a typed record. Every fact belongs to a **predicate** — the analogue of a
+table or a relation — which fixes the fact's *type*. Every fact has a unique **`FactId`**
+(a `u64`), its identity within the DB.
+
+A predicate's type (`PredicateTy`) has two parts:
+
+- a **key** — the part that identifies the fact and is *indexed* for querying;
+- an optional **value** — extra data carried by the fact, fetched only when you ask for it.
+
+Both key and value are typed: an integer, a string, a record (a sorted set of named
+fields), a reference to another fact, or (later) a union. Types are covered in
+[chapter 6](06-types-and-schema.md).
+
+> **Why split key from value?** Queries seek and filter on keys without ever touching
+> values, so the value can live in a separate place and stay out of the hot path. This is
+> [invariant I6](invariants.md#i6), and it shapes the whole storage and execution design.
+
+### Predicates are the unit of storage
+
+Facts are grouped by predicate on disk, and a **predicate id** is the prefix of every one
+of its keys. A query over a predicate is therefore a **prefix scan** over sorted bytes —
+which only works because the codec is order-preserving. That's the bridge to the next
+chapter.
+
+---
+
+## The two halves of the system
+
+Aperture has a clean seam in the middle: a **front end** that compiles focus text into a
+plan, and a **back end** (the executor + storage) that runs plans. They meet at one data
+structure — the **`Plan` IR** — and otherwise evolve independently.
+
+```
+   focus text
+      │
+      ▼   FRONT END  (chapter 7)
+  lex → parse → typecheck → flatten → reorder
+      │
+      ▼
+   Plan IR  ◄──── the fixed contract between the halves
+      │
+      ▼   BACK END  (chapters 3–5)
+  executor (enumerate) ── scans ──▶ storage (fjall)
+      │
+      ▼
+  projected rows ──▶ consumer (REPL / wire)
+```
+
+### The compilation pipeline (front end)
+
+`lex → parse → typecheck → flatten → reorder → plan`
+
+- **lex / parse** produce a lossless, untyped **CST façade** — grammar-shaped, with spans
+  and text.
+- **typecheck / flatten / reorder** operate on a typed **`SyntaxTree` store** (a
+  struct-of-arrays, `NodeId`-indexed tree) and produce the `Plan`.
+- **flatten** is the crux: it turns nested query structure into a flat, ordered list of
+  loop levels (**generators**). **reorder** then chooses a good loop order (a no-op at
+  first — see [chapter 7](07-compilation.md)).
+
+There are three tree representations, each earning its place (façade → typed store → boxed
+ergonomic AST); chapter 7 explains why.
+
+### The `Plan` IR (the contract)
+
+A **`Plan`** is:
+
+- an ordered list of **generators** — generator 0 is the outermost loop, the last is the
+  innermost;
+- a **head** projection — how to build each output row from the bound variables.
+
+A query is literally a **nested loop**: the generator order *is* the loop nesting. Each
+generator says "scan predicate P from this seek key, bind these variables, and keep only
+rows passing these residual checks." This is all [chapter 4](04-executor.md).
+
+### The executor (back end)
+
+The executor is a **pull-based virtual machine**. Its driver, `enumerate`, walks the
+nested loop one row at a time: descend into the next loop level, pull a matching row, bind
+variables, recurse; on exhaustion, back up a level. Crucially it is written as an explicit
+**state machine over a stack of frames**, not as native recursion — because that is what
+lets a query **suspend to bytes and resume exactly** ([chapter 5](05-resume.md)).
+
+---
+
+## Storage in one picture
+
+Two sorted key–value stores (fjall "column families"):
+
+- **`keys`**: `predicate_id ++ encoded_key → fact_id` — the index. Prefix scans over this
+  *are* predicate queries. The scan hot loop touches only this.
+- **`entities`**: `fact_id → encoded_key + value` — point lookup by identity, for when a
+  query actually needs a fact's value.
+
+The two are the two halves of one fact and are always written **together, atomically**
+([I12](invariants.md#i12)). Full detail in [chapter 3](03-storage-model.md).
+
+---
+
+## Where the code lives
+
+Knowing which module is real saves hours:
+
+- **`src/focus/`** — **the live engine and language.** All new work lands here: the codec
+  (`tuple.rs`), the store trait + in-memory test store (`plan.rs`, `mem_store.rs`), the
+  executor and resume (`iter.rs`), the plan IR (`plan.rs`), the schema/interners
+  (`schema.rs`), and the focus front end as it's built (`grammar.llw`, `lexer.rs`,
+  `parser.rs`, `syntax.rs`).
+- **`src/lens/`** — a **superseded first attempt**, kept only for reference. It is *not
+  compiled* (not declared in `lib.rs`) and targets an older, incompatible IR. Its
+  front-end phases are the reference to **re-implement into `focus`**; delete each file
+  once subsumed.
+- **`src/focus.rs`** — a **graveyard of commented-out prototype code** (~10 live lines).
+  Kept only for the transport-codec sketch. Don't add code here.
+
+---
+
+## The rest of the book
+
+With this map in hand, read the chapters in order. Each one takes a single box in the
+diagram above and explains not just *what* it does but *why it must be that way* — because
+in this project the "why" is what stops a plausible refactor from silently breaking
+correctness. Those load-bearing whys are captured as numbered **invariants**; every
+chapter states the ones it owns, and the [registry](invariants.md) lists them all.
+
+---
+
+> **Reading path:** [Index](../README.md) · **1. Concepts** · [2. The tuple codec →](02-tuple-codec.md)
