@@ -8,8 +8,14 @@ pub mod tuple;
 pub(crate) mod lexer;
 pub(crate) mod parser;
 
-#[cfg(test)]
-pub(crate) mod mem_store;
+// Test-support surface: the in-memory store and the hand-built fixtures the
+// executor batteries import. Gated so `--features proptest` exposes them to
+// consumers outside `cfg(test)` too (see `docs/testing.md`).
+#[cfg(any(test, feature = "proptest"))]
+pub mod mem_store;
+
+#[cfg(any(test, feature = "proptest"))]
+pub mod fixtures;
 
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // pub struct PredicateId(u32);

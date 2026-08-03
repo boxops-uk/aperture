@@ -488,39 +488,19 @@ impl<S: FactStore> Executor<S> {
 mod tests {
     use super::*;
     use crate::focus::{
+        fixtures::{collect_rows, compose, i64_field, interner_with, str_field},
         mem_store::MemStore,
-        plan::{Access, Generator, Plan, Project, Residual, ResidualOp, SeekKey},
-        schema::{LocalInterner, PredicateId, PredicateTy, SchemaInterner},
-        tuple::{Value, put_i64, put_str},
+        plan::{
+            Access, FactId, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+        },
+        schema::{PredicateId, PredicateTy},
+        tuple::Value,
     };
-    use lasso::Rodeo;
-    use tokio_util::sync::CancellationToken;
 
-    fn enc_str(s: &str) -> Vec<u8> {
-        let mut b = Vec::new();
-        put_str(&mut b, s);
-        b
-    }
-
+    /// Run a plan whose head projects only scalars (no record field names to
+    /// resolve). Record-head tests call [`collect_rows`] with their own interner.
     fn run(store: MemStore, plan: Plan) -> Vec<Value> {
-        let interner = LocalInterner::new(SchemaInterner::new(Rodeo::new().into_reader()));
-        let cancel = CancellationToken::new();
-        let mut ex = Executor::new(store, plan);
-
-        let out = ex
-            .enumerate(
-                Vec::<Value>::new(),
-                |mut acc, row| {
-                    acc.push(row.to_value(&interner)?);
-                    Ok(Stream::Continue(acc))
-                },
-                &cancel,
-            )
-            .expect("query failed");
-
-        match out {
-            Iteratee::Done(v) | Iteratee::Suspended(v, _) => v,
-        }
+        collect_rows(store, plan, &interner_with(&[])).unwrap()
     }
 
     // A residual on a key field is evaluated against the field's value (the
@@ -531,9 +511,9 @@ mod tests {
         let pred = PredicateId(0);
 
         let mut store = MemStore::new();
-        store.insert(pred, enc_str("alpha"), 1);
-        store.insert(pred, enc_str("beta"), 2);
-        store.insert(pred, enc_str("gamma"), 3);
+        store.insert(pred, str_field("alpha"), 1);
+        store.insert(pred, str_field("beta"), 2);
+        store.insert(pred, str_field("gamma"), 3);
 
         let plan = Plan {
             nvars: 1,
@@ -545,7 +525,7 @@ mod tests {
                 binds: Box::new([Address::new(0)]),
                 residuals: Box::new([Residual {
                     field_idx: 0,
-                    op: ResidualOp::EqConst(enc_str("beta").into_boxed_slice()),
+                    op: ResidualOp::EqConst(str_field("beta").into_boxed_slice()),
                 }]),
             }]),
             head: Project::RegisterField {
@@ -568,9 +548,7 @@ mod tests {
         let pred = PredicateId(0);
 
         let mut store = MemStore::new();
-        let mut value_bytes = Vec::new();
-        put_i64(&mut value_bytes, 42);
-        store.insert_valued(pred, enc_str("alpha"), 1, value_bytes);
+        store.insert_valued(pred, str_field("alpha"), 1, i64_field(42));
 
         let plan = Plan {
             nvars: 1,
@@ -589,5 +567,370 @@ mod tests {
         };
 
         assert_eq!(run(store, plan), vec![Value::Int(42)]);
+    }
+
+    // ---- Happy-path battery (0b) ------------------------------------------
+    //
+    // Hand-built plans over hand-built stores, checked against hand-computed
+    // rows. The model is "run to completion, collect rows" (`collect_rows`).
+    // These exercise the executor mechanics — scan order, seek splices, the
+    // three residual ops, backtracking, and every projection head — before the
+    // schema-first generator (0c) drives the same machine at scale.
+
+    /// Build an expected `Value::Record` from `(name, value)` pairs in slice
+    /// order (matching the order the plan's `Project::Record` lists its fields).
+    fn record(fields: &[(&str, Value)]) -> Value {
+        Value::Record(
+            fields
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.clone()))
+                .collect(),
+        )
+    }
+
+    /// A single generator that scans a whole predicate and binds one register.
+    fn scan_all(predicate_id: PredicateId, bind: usize) -> Generator {
+        Generator {
+            access: Access {
+                predicate_id,
+                seek_key: SeekKey::Prefix(Box::new([])),
+            },
+            binds: Box::new([Address::new(bind)]),
+            residuals: Box::new([]),
+        }
+    }
+
+    // A one-level scan projects a key field, in ascending key order regardless
+    // of insert order (the codec is order-preserving, I1).
+    #[test]
+    fn scan_projects_scalar_field_in_key_order() {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert(p, i64_field(30), 1);
+        store.insert(p, i64_field(10), 2);
+        store.insert(p, i64_field(20), 3);
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                field_idx: 0,
+                ty: PredicateTy::Int,
+            },
+        };
+
+        assert_eq!(
+            run(store, plan),
+            vec![Value::Int(10), Value::Int(20), Value::Int(30)]
+        );
+    }
+
+    // A `Prefix` residual on a string key field keeps only rows whose field
+    // starts with the given (encoded, terminator-stripped) prefix.
+    #[test]
+    fn residual_prefix_on_string_field() {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert(p, str_field("alpha"), 1);
+        store.insert(p, str_field("altair"), 2);
+        store.insert(p, str_field("beta"), 3);
+
+        // Encoded "al" is [MARK_STRING, 'a', 'l', MARK_TERM]; a field prefix is
+        // that without the terminator so it matches "al…" strings.
+        let mut prefix = str_field("al");
+        prefix.pop();
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([Generator {
+                access: Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                binds: Box::new([Address::new(0)]),
+                residuals: Box::new([Residual {
+                    field_idx: 0,
+                    op: ResidualOp::Prefix(prefix.into_boxed_slice()),
+                }]),
+            }]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                field_idx: 0,
+                ty: PredicateTy::Str,
+            },
+        };
+
+        assert_eq!(
+            run(store, plan),
+            vec![
+                Value::Str("alpha".to_string()),
+                Value::Str("altair".to_string()),
+            ]
+        );
+    }
+
+    // A two-level join: for each Person(id), seek Knows(id, other) by splicing
+    // the bound id into the inner scan prefix. Person 3 has no Knows row, so it
+    // contributes nothing (the inner scan is empty and the machine backtracks).
+    #[test]
+    fn two_level_join_via_seek_splice() {
+        let person = PredicateId(0);
+        let knows = PredicateId(1);
+
+        let mut store = MemStore::new();
+        store.insert(person, i64_field(1), 1);
+        store.insert(person, i64_field(2), 2);
+        store.insert(person, i64_field(3), 3);
+        store.insert(knows, compose(&[&i64_field(1), &i64_field(2)]), 10);
+        store.insert(knows, compose(&[&i64_field(1), &i64_field(3)]), 11);
+        store.insert(knows, compose(&[&i64_field(2), &i64_field(3)]), 12);
+
+        let interner = interner_with(&["a", "b"]);
+        let a = interner.get("a").unwrap();
+        let b = interner.get("b").unwrap();
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                scan_all(person, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: knows,
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                            address: Address::new(0),
+                            field_idx: 0,
+                        }])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([]),
+                },
+            ]),
+            head: Project::Record(Box::new([
+                (
+                    a,
+                    Project::RegisterField {
+                        address: Address::new(0),
+                        field_idx: 0,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+                (
+                    b,
+                    Project::RegisterField {
+                        address: Address::new(1),
+                        field_idx: 1,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+            ])),
+        };
+
+        let rows = collect_rows(store, plan, &interner).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                record(&[("a", Value::Int(1)), ("b", Value::Int(2))]),
+                record(&[("a", Value::Int(1)), ("b", Value::Int(3))]),
+                record(&[("a", Value::Int(2)), ("b", Value::Int(3))]),
+            ]
+        );
+    }
+
+    // A three-level join (friends-of-friends): Person(a) → Knows(a, b) →
+    // Knows(b, c). Only 1→2→3 completes all three levels; every other path dead-
+    // ends and backtracks, so exactly one row survives.
+    #[test]
+    fn three_level_join_friends_of_friends() {
+        let person = PredicateId(0);
+        let knows = PredicateId(1);
+
+        let mut store = MemStore::new();
+        for id in [1, 2, 3] {
+            store.insert(person, i64_field(id), id as u64);
+        }
+        store.insert(knows, compose(&[&i64_field(1), &i64_field(2)]), 10);
+        store.insert(knows, compose(&[&i64_field(1), &i64_field(3)]), 11);
+        store.insert(knows, compose(&[&i64_field(2), &i64_field(3)]), 12);
+
+        let interner = interner_with(&["a", "b", "c"]);
+        let a = interner.get("a").unwrap();
+        let b = interner.get("b").unwrap();
+        let c = interner.get("c").unwrap();
+
+        let seek_first_on = |reg: usize| {
+            SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                address: Address::new(reg),
+                field_idx: 0,
+            }]))
+        };
+
+        let plan = Plan {
+            nvars: 3,
+            body: Box::new([
+                scan_all(person, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: knows,
+                        seek_key: seek_first_on(0),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([]),
+                },
+                Generator {
+                    access: Access {
+                        predicate_id: knows,
+                        // splice r1's second field (b) into the inner prefix.
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                            address: Address::new(1),
+                            field_idx: 1,
+                        }])),
+                    },
+                    binds: Box::new([Address::new(2)]),
+                    residuals: Box::new([]),
+                },
+            ]),
+            head: Project::Record(Box::new([
+                (
+                    a,
+                    Project::RegisterField {
+                        address: Address::new(0),
+                        field_idx: 0,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+                (
+                    b,
+                    Project::RegisterField {
+                        address: Address::new(1),
+                        field_idx: 1,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+                (
+                    c,
+                    Project::RegisterField {
+                        address: Address::new(2),
+                        field_idx: 1,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+            ])),
+        };
+
+        let rows = collect_rows(store, plan, &interner).unwrap();
+        assert_eq!(
+            rows,
+            vec![record(&[
+                ("a", Value::Int(1)),
+                ("b", Value::Int(2)),
+                ("c", Value::Int(3)),
+            ])]
+        );
+    }
+
+    // An `EqRegisterField` residual expresses a cross-loop equality that is not a
+    // seek prefix: a self-join of R(x, y) on `inner.x == outer.y`. The inner
+    // level scans the whole predicate and the residual filters it.
+    #[test]
+    fn residual_eq_register_field_cross_loop() {
+        let r = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert(r, compose(&[&i64_field(1), &i64_field(2)]), 1);
+        store.insert(r, compose(&[&i64_field(2), &i64_field(3)]), 2);
+        store.insert(r, compose(&[&i64_field(3), &i64_field(1)]), 3);
+
+        let interner = interner_with(&["a", "b"]);
+        let a = interner.get("a").unwrap();
+        let b = interner.get("b").unwrap();
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                scan_all(r, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: r,
+                        seek_key: SeekKey::Prefix(Box::new([])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    // inner.field0 == outer(r0).field1
+                    residuals: Box::new([Residual {
+                        field_idx: 0,
+                        op: ResidualOp::EqRegisterField {
+                            address: Address::new(0),
+                            field_idx: 1,
+                        },
+                    }]),
+                },
+            ]),
+            head: Project::Record(Box::new([
+                (
+                    a,
+                    Project::RegisterField {
+                        address: Address::new(0),
+                        field_idx: 0,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+                (
+                    b,
+                    Project::RegisterField {
+                        address: Address::new(1),
+                        field_idx: 1,
+                        ty: PredicateTy::Int,
+                    },
+                ),
+            ])),
+        };
+
+        let rows = collect_rows(store, plan, &interner).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                record(&[("a", Value::Int(1)), ("b", Value::Int(3))]),
+                record(&[("a", Value::Int(2)), ("b", Value::Int(1))]),
+                record(&[("a", Value::Int(3)), ("b", Value::Int(2))]),
+            ]
+        );
+    }
+
+    // A `FactRef` head projects each matched row's fact id, in key-scan order.
+    #[test]
+    fn factref_head_yields_fact_ids_in_scan_order() {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert(p, i64_field(20), 7);
+        store.insert(p, i64_field(10), 5);
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        assert_eq!(
+            run(store, plan),
+            vec![Value::FactRef(FactId(5)), Value::FactRef(FactId(7))]
+        );
+    }
+
+    // A scan over an empty predicate yields no rows.
+    #[test]
+    fn empty_predicate_yields_no_rows() {
+        let p = PredicateId(0);
+        let store = MemStore::new();
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        assert_eq!(run(store, plan), Vec::<Value>::new());
     }
 }
