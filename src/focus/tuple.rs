@@ -847,8 +847,11 @@ pub fn decode_typed_at<'b>(
         }
 
         PredicateTy::Fact(_) => {
-            let id = dec.take_u64()?;
-            Ok(Value::FactRef(FactId(id)))
+            // A fact reference is encoded with its own marker (MARK_FACT_REF),
+            // consistently with `skip` and the `FactId` codec — not the integer
+            // codec.
+            let id = dec.take_fact_id()?;
+            Ok(Value::FactRef(id))
         }
 
         PredicateTy::Record(fields) => dec.record(|dec| {
@@ -1092,7 +1095,7 @@ pub mod proptest {
 
             (PredicateTy::Str, Value::Str(s)) => enc.put_str(s),
 
-            (PredicateTy::Fact(_), Value::FactRef(id)) => enc.put_u64(id.0),
+            (PredicateTy::Fact(_), Value::FactRef(id)) => enc.put_fact_id(*id),
 
             (PredicateTy::Record(field_tys), Value::Record(field_values)) => {
                 if field_tys.len() != field_values.len() {
@@ -1812,6 +1815,36 @@ pub(crate) mod tests {
             .put_fact_id(FactId(1))
             .unwrap();
         assert_eq!(fact_ref, [0x51, 0, 0, 0, 0, 0, 0, 0, 1]);
+    }
+
+    // A fact-typed field is encoded with the resolved fact-reference marker
+    // (MARK_FACT_REF), consistently with `skip`, `put_fact_id`/`take_fact_id`,
+    // and the `FactId` codec — never the integer codec. Regression for the
+    // latent mismatch where `decode_typed_at` decoded `Fact` fields as a u64
+    // (integer band): `skip` and `decode` disagreed, a canonically encoded fact
+    // reference could not be decoded, and fact fields sorted inside the integer
+    // band instead of after positive integers (breaking I1).
+    #[test]
+    fn fact_field_uses_fact_ref_marker_and_round_trips() {
+        use crate::focus::schema::{PredicateId, SchemaInterner};
+        use lasso::Rodeo;
+
+        let ty = PredicateTy::Fact(PredicateId(0));
+        let value = Value::FactRef(FactId(42));
+
+        let bytes = encode_typed_for_test(&ty, &value).unwrap();
+
+        // Canonical form: MARK_FACT_REF then 8 fixed big-endian bytes.
+        assert_eq!(bytes.len(), 9);
+        assert_eq!(bytes[0], MARK_FACT_REF);
+        assert_eq!(&bytes[1..], &42u64.to_be_bytes());
+
+        // `skip` consumes exactly the field...
+        assert_eq!(skip(&bytes, 0, false).unwrap(), bytes.len());
+
+        // ...and `decode_typed` round-trips it (interner unused for a fact ref).
+        let interner = LocalInterner::new(SchemaInterner::new(Rodeo::new().into_reader()));
+        assert_eq!(decode_typed(&interner, &bytes, &ty).unwrap(), value);
     }
 
     proptest! {
