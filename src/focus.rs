@@ -1,13 +1,19 @@
+pub mod cst;
 pub mod error;
 pub mod iter;
+pub mod parse;
 pub mod plan;
 pub mod schema;
 pub mod store;
 pub mod syntax;
 pub mod tuple;
 
-pub(crate) mod lexer;
-pub(crate) mod parser;
+// The generated-parser glue and its `logos` lexer. Public because the façade
+// (`cst`) hands out `Rule` and `Token` values, and because later phases — the
+// compilation driver, then the extracted front-end crate — parse from outside
+// this module.
+pub mod lexer;
+pub mod parser;
 
 // Test-support surface: the in-memory store and the hand-built fixtures the
 // executor batteries import. Gated so `--features proptest` exposes them to
