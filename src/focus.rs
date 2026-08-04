@@ -24,6 +24,11 @@ pub mod mem_store;
 #[cfg(any(test, feature = "proptest"))]
 pub mod fixtures;
 
+// The target-feature corpus — Phase 2's audit table as data, and the acceptance
+// gate for the grammar surface.
+#[cfg(any(test, feature = "proptest"))]
+pub mod corpus;
+
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // pub struct PredicateId(u32);
 
