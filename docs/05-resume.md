@@ -29,9 +29,19 @@ possible. Code: `src/focus/iter.rs`.
 > snapshot; **drop the executor at suspend** to release it. A held `Iter`/`Slice` keeps LSM
 > blocks (and a whole superseded generation) alive.
 >
-> *Guard:* `store::snapshot_released_at_suspend` — a drop-probe asserts no snapshot survives
-> a suspend. **Untestable on `MemStore`** (its scan pins nothing) ⇒ needs the fjall store
-> (why fjall is pulled forward to Phase 1 in [`PLAN.md`](../PLAN.md)).
+> *Guard:* `store::snapshot_released_at_suspend` — a drop probe over the store handle and
+> every scan it opened, plus fjall's own open-snapshot count, assert nothing survives a
+> suspend, a completed run, a cancellation, or an error unwind. **Untestable on `MemStore`**
+> (its scan pins nothing) ⇒ needs the fjall store (why fjall is pulled forward to Phase 1 in
+> [`PLAN.md`](../PLAN.md)).
+
+**"Drop the executor" is enforced by the signature, not by a rule.** `Executor::enumerate`
+takes `self` **by value**, so a run cannot outlive its own return: done, suspend, cancel and
+error unwind all consume the executor and with it the frame stack and the store handle. There
+is no shape of caller — however it stores or reuses the executor — that can park a live
+iterator across an idle portal. To continue, rebuild with `Executor::resume(store, plan,
+cursor)` against a *fresh* snapshot; that is exactly what the wire path does when a portal
+wakes up.
 
 These two are a pair: I8 says "don't keep anything alive across a suspend," which *forces*
 the cursor to be pure bytes, and I4 says "and yet reproduce the run exactly." The tension

@@ -32,24 +32,26 @@ The engine spine exists in `src/focus/`:
   skip are covered, and the golden marker table now pins the on-disk values
   ([I1](docs/invariants.md#i1), [I2](docs/invariants.md#i2), [I3](docs/invariants.md#i3)
   green). Named `arb_*` strategies live in `tuple::proptest`.
-- **Executor + resume** (`iter.rs`, `plan.rs`) — implemented and now guarded: a happy-path
+- **Executor + resume** (`iter.rs`, `plan.rs`) — implemented and guarded: a happy-path
   battery over hand-built plans, mechanical NFR guards, and the tier-3 resume battery
   (`exec::resume_equals_uninterrupted`) over schema-first `(plan, store)` pairs from
-  `plan::proptest`. [I4](docs/invariants.md#i4)–[I7](docs/invariants.md#i7),
-  [I9](docs/invariants.md#i9) green on `MemStore`; [I8](docs/invariants.md#i8) needs fjall
-  (Phase 1), which also re-runs the resume battery against the real store.
+  `plan::proptest`, **run against both `MemStore` and fjall** (the fjall arm is also
+  differential — the two stores must agree row for row and id for id).
+  [I4](docs/invariants.md#i4)–[I9](docs/invariants.md#i9) green. `enumerate` consumes the
+  executor, so releasing the snapshot at every stop is structural
+  ([I8](docs/invariants.md#i8)).
 - **Front end** (grammar, typecheck, flatten) — exists only in the disconnected `src/lens/`
   (not compiled); to be re-implemented into `focus`, then deleted file-by-file.
-- **Store** (`store.rs`) — the fjall store exists and is guarded (tasks 1a + 1b): a pair of
+- **Store** (`store.rs`) — the fjall store is complete and guarded (Phase 1 done): a pair of
   keyspaces per predicate (`keys.<id>`, `entities.<id>`), `scan`/`point`, and an atomic
   `put_fact` over a snowflake [`FactId`](docs/03-storage-model.md#factid-allocation-i11) with
   a per-predicate allocator recovered from the data. Held to `MemStore` as a differential
-  oracle. [I11](docs/invariants.md#i11)/[I12](docs/invariants.md#i12) green (the I12 crash
-  case aborts a child process mid-write). Still Phase 1: drop-at-suspend (1c) and re-running
-  the resume battery on fjall (1d), so [I8](docs/invariants.md#i8) remains `#[ignore]`d.
+  oracle. [I8](docs/invariants.md#i8), [I11](docs/invariants.md#i11),
+  [I12](docs/invariants.md#i12) green — the I12 crash case aborts a child process mid-write,
+  and the I8 guard cross-checks a drop probe against fjall's own open-snapshot count.
 - **Unbuilt:** ingestion, schema parsing, the wire protocol, and the operational layer.
-  `src/focus/store.rs` and `schema.rs` hold those phases' guards, written up front and
-  `#[ignore]`d.
+  `schema.rs` holds Phase 8's guards, written up front and `#[ignore]`d — the only pending
+  entries left in the coverage ledger.
 
 Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the design docs.
 
@@ -58,7 +60,7 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
 ## Dependency graph
 
 ```
-0  guard matrix & harness ─┬─▶ 1  fjall store   (⇒ I8, I11, I12 green; resume battery re-run on fjall)
+0  guard matrix & harness ─┬─▶ 1  fjall store ✅ (I8, I11, I12 green; resume battery re-run on fjall)
                            │
                            └─▶ 2  grammar ─▶ 3  driver ─▶ 4  flatten/reorder ─┬─▶ 5  REPL  (→ remote-only later)
                                                                               ├─▶ 6  derived facts  (deliberate machine change; own resume battery)
@@ -176,19 +178,23 @@ single-fact seeding primitive — the bulk pipeline (Phase 7) builds on the same
   with the high-water mark recovered from the last `entities` key
   ([I11](docs/invariants.md#i11)); both CFs in one write batch
   ([I12](docs/invariants.md#i12)); both guards un-ignored and green.
-- **1c.** Snapshot discipline: drop the executor's iterator at suspend; un-ignore + green
-  the [I8](docs/invariants.md#i8) drop-probe. Note this is an API change, not only a test:
-  `enumerate` takes `&mut self` and hands back `Iteratee::Suspended` while the caller keeps
-  the executor *and* its live scans.
-- **1d.** Re-run the entire Phase 0c resume battery against fjall
-  (`assert_resume_equals_uninterrupted` is currently typed to `MemStore`).
+- **1c.** ✅ Snapshot discipline: `enumerate` now takes `self` **by value**, so done,
+  suspend, cancel and error unwind all drop the frame stack and the store handle — I8 is a
+  property of the signature rather than a caller discipline. Guard cross-checks a drop probe
+  (store handle + every scan) against fjall's own open-snapshot count, with a mid-run
+  positive control.
+- **1d.** ✅ The Phase 0c resume battery generalised over `FactStore` and re-run against
+  fjall, plus a differential arm: the same spec must give identical rows and ids on fjall and
+  `MemStore` — which is what licenses every other executor battery to be written against
+  `MemStore` alone.
 
 **Acceptance:**
-- [ ] Resume == uninterrupted run holds against the *real* store (not just `MemStore`).
-- [x] I11, I12 guards un-ignored and green; I8 pending 1c.
+- [x] Resume == uninterrupted run holds against the *real* store (not just `MemStore`), and
+      the two agree row for row.
+- [x] I8, I11, I12 guards un-ignored and green.
 - [x] Facts are never half-present (bijection over generated writes, and across a crash);
       fact-ids are unique, monotonic per predicate, and never reused across a reopen (tested).
-- [ ] A held iterator does not survive a suspend (drop-probe green).
+- [x] A held iterator does not survive a suspend — and cannot be held, by construction.
 
 ---
 

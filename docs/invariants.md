@@ -23,11 +23,11 @@ green. See [testing](testing.md).
 | [I1](#i1) | Key encoding is order-preserving. | `codec::order_preservation` + round-trip | [ch2](02-tuple-codec.md) | ✅ green |
 | [I2](#i2) | Encoding is self-delimiting; `skip` needs no schema. | `codec::skip_exactness` | [ch2](02-tuple-codec.md) | ✅ green |
 | [I3](#i3) | The marker table is frozen on disk. | `codec::marker_table_golden` | [ch2](02-tuple-codec.md) | ✅ green |
-| [I4](#i4) | Resume == uninterrupted run. | `exec::resume_equals_uninterrupted` | [ch5](05-resume.md) | ✅ green on `MemStore` → fjall re-run in Phase 1 |
+| [I4](#i4) | Resume == uninterrupted run. | `exec::resume_equals_uninterrupted` + `…_on_fjall` | [ch5](05-resume.md) | ✅ green on `MemStore` **and** fjall |
 | [I5](#i5) | Register holds the whole row; fields decode lazily. | `exec::bind_is_refcount_not_decode` | [ch4](04-executor.md) | ✅ green |
 | [I6](#i6) | Values never enter the scan hot loop. | `exec::no_value_fetch_in_scan` | [ch3](03-storage-model.md)/[ch4](04-executor.md) | ✅ green |
 | [I7](#i7) | The executor is a defunctionalised state machine. | structural + resume battery | [ch4](04-executor.md) | ✅ green — resume battery in place |
-| [I8](#i8) | Immutable snapshot per query; released at suspend. | `store::snapshot_released_at_suspend` | [ch5](05-resume.md) | Phase 1 (needs fjall) |
+| [I8](#i8) | Immutable snapshot per query; released at suspend. | `store::snapshot_released_at_suspend` | [ch5](05-resume.md) | ✅ green |
 | [I9](#i9) | Hot path is allocation-free per row. | `exec::scan_is_alloc_free_per_row` | [ch4](04-executor.md) | ✅ green |
 | [I10](#i10) | Union discriminants are stable and append-only. | `schema::discriminants_append_only` | [ch6](06-types-and-schema.md) | Phase 8 (with unions) |
 | [I11](#i11) | `FactId` is stable, unique, never reused within a DB. | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | [ch3](03-storage-model.md) | ✅ green |
@@ -93,9 +93,15 @@ the resume battery is impossible to pass under a recursive rewrite; plus review.
 <a id="i8"></a>
 ### I8 — Immutable snapshot per query; released at suspend
 fjall iterators pin a read snapshot; drop the executor at suspend to release it. A held
-`Iter`/`Slice` keeps LSM blocks and a whole superseded generation alive. *Why & how:*
+`Iter`/`Slice` keeps LSM blocks and a whole superseded generation alive. **Structural, not a
+discipline:** `Executor::enumerate` takes `self` by value, so every exit path — done,
+suspend, cancel, error unwind — drops the frame stack and the store handle, and no shape of
+caller can park a live iterator across a suspend. *Why & how:*
 [chapter 5](05-resume.md#the-two-invariants-at-stake). *Guard:*
-`store::snapshot_released_at_suspend` (drop-probe) — **untestable on `MemStore`**, needs fjall.
+`store::snapshot_released_at_suspend` — all four stops, against two independent witnesses: a
+drop probe over the store handle and every scan it opened, and fjall's own open-snapshot
+count (`FjallDb::open_snapshots`), with a mid-run positive control so it cannot pass
+vacuously. **Untestable on `MemStore`**, whose scan pins nothing; needs fjall.
 
 <a id="i9"></a>
 ### I9 — Hot path is allocation-free per row

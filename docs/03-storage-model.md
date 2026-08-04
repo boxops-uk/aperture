@@ -231,6 +231,9 @@ rule ([I8](invariants.md#i8), detailed in [chapter 5](05-resume.md)):
 > **drop the executor — and its iterators — at suspend**, so no snapshot is held across an
 > idle portal.
 
+`Executor::enumerate` takes `self` by value, so this is what the signature does rather than
+what a caller must remember: every exit path consumes the executor and releases the snapshot.
+
 This is why resume is designed to reconstruct state from **bytes** rather than keep a live
 iterator around. The storage layer's job is to make that reconstruction sound: a saved key
 still resolving to the same fact is exactly what [I11](invariants.md#i11) and the immutable

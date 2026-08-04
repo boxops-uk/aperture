@@ -23,6 +23,23 @@ Flatten should implement only the **easy half** and reject the rest with clear d
 Open: the exact boundary and the diagnostics wording. This is a future-feature to-do list,
 not a P0 blocker.
 
+### Cancellation is polled per *skipped* row, not per row scanned
+
+[Chapter 5](05-resume.md#suspend-vs-cancel-vs-terminal-unwind) says the scan loop polls the
+cancellation flag "every `CANCELLATION_STRIDE` rows." The implementation resets its counter on
+every `StackFrame::next` call, so the poll is only reached when a *single* `next()` skips
+`CANCELLATION_STRIDE` rows — i.e. only while a residual is rejecting rows. **A plan whose rows
+all match never polls the token at all** and runs to completion regardless of cancellation.
+
+Found while writing the [I8](invariants.md#i8) guard, whose cancellation arm needs a
+row-rejecting residual to reach a poll — which is why that guard is built the way it is. I8
+itself is unaffected: `enumerate` consumes the executor, so the snapshot is released on the
+`Err(Cancelled)` path like any other.
+
+Open: whether "every N rows" should mean rows *scanned* (move the counter into the frame, or
+into `enumerate`'s loop) or rows *skipped* is genuinely the intended semantics. A streaming
+query that a client has abandoned is the case that argues for the former.
+
 ### Intra-row repeated variables — `EqField` vs reject
 
 A pattern like `Edge{from = X, to = X}` constrains two fields of the *same* row to be equal.
