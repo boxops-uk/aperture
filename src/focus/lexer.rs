@@ -27,6 +27,8 @@ pub enum Token {
     Whitespace,
     #[token("where")]
     Where,
+    #[token("never")]
+    Never,
     #[regex(r"[a-z][a-zA-Z0-9_]*(\.[a-z][a-zA-Z0-9_]*)*\.[A-Z][a-zA-Z0-9_]*")]
     QId,
     #[regex(r"[A-Z][a-zA-Z0-9_]*")]
@@ -55,6 +57,10 @@ pub enum Token {
     LBrace,
     #[token("}")]
     RBrace,
+    #[token("(")]
+    LPar,
+    #[token(")")]
+    RPar,
     Error,
 }
 

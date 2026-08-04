@@ -1,12 +1,13 @@
 token Whitespace;
-token Where='where';
+token Where='where' Never='never';
 token QId='<qid>';
 token UId='<uid>' LId='<lid>';
 token Wildcard='_';
 token Nat='<nat>';
 token String='<string>';
 token DotDot='..';
-token Dot='.' Eq='=' Semi=';' Comma=',' Minus='-' LBrace='{' RBrace='}';
+token Dot='.' Eq='=' Semi=';' Comma=',' Minus='-' LBrace='{' RBrace='}'
+      LPar='(' RPar=')';
 
 skip Whitespace;
 start root;
@@ -31,6 +32,8 @@ primary:
 | '-' Nat @int_primary
 | String ('..' @string_prefix_primary | @string_primary)
 | '{' [field_list] '}' @anon_record_primary
+| 'never' @never_primary
+| '(' pattern ('where' stmt_list @subquery_primary | @paren_primary) ')'
 ;
 
 fact_pattern: QId pattern;

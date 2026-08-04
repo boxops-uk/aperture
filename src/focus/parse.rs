@@ -98,7 +98,7 @@ pub fn parse(source: &str) -> Parsed<'_> {
 /// The index of the first token at which nesting exceeds [`MAX_NEST_DEPTH`].
 ///
 /// A conservative upper bound on the parser's recursion depth: each unclosed `{`
-/// opens a nested `pattern`, and so does each `QId`, since a fact pattern
+/// or `(` opens a nested `pattern`, and so does each `QId`, since a fact pattern
 /// recurses on its key. Application depth is counted per statement — a `;` at
 /// bracket depth 0 ends one — so a query with very many flat statements is not
 /// mistaken for a deep one.
@@ -108,8 +108,8 @@ fn nesting_overflow(tokens: &[Token]) -> Option<usize> {
 
     for (idx, token) in tokens.iter().enumerate() {
         match token {
-            Token::LBrace => brackets += 1,
-            Token::RBrace => brackets = brackets.saturating_sub(1),
+            Token::LBrace | Token::LPar => brackets += 1,
+            Token::RBrace | Token::RPar => brackets = brackets.saturating_sub(1),
             Token::QId => applications += 1,
             Token::Semi if brackets == 0 => applications = 0,
             _ => {}
@@ -136,6 +136,53 @@ mod tests {
         })
     }
 
+    /// Every rule name in the tree, outermost first.
+    fn rules(node: &CstNode<'_>) -> Vec<String> {
+        node.cata(&mut |kind| match kind {
+            CstKind::Token { .. } => vec![],
+            CstKind::Rule { rule, children, .. } => {
+                let mut out = vec![format!("{rule:?}")];
+                out.extend(children.into_iter().flatten());
+                out
+            }
+        })
+    }
+
+    /// The span of the outermost node with this rule name.
+    ///
+    /// Rules are matched by their grammar name (what `Rule`'s `Debug` prints) so
+    /// the tests read like the grammar and don't import generated identifiers.
+    fn rule_span(node: &CstNode<'_>, name: &str) -> Option<super::super::parser::Span> {
+        node.cata(&mut |kind| match kind {
+            CstKind::Token { .. } => None,
+            CstKind::Rule {
+                rule,
+                span,
+                children,
+            } => {
+                if format!("{rule:?}") == name {
+                    Some(span)
+                } else {
+                    children.into_iter().flatten().next()
+                }
+            }
+        })
+    }
+
+    fn parse_clean(source: &str) -> Parsed<'_> {
+        let parsed = parse(source);
+        assert!(
+            !parsed.has_errors(),
+            "{source:?} should parse, got {:?}",
+            parsed
+                .diagnostics()
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+        parsed
+    }
+
     /// Sources exercising the surface the grammar accepts today.
     const SOURCES: &[&str] = &[
         "X where X = test.Foo _",
@@ -144,6 +191,9 @@ mod tests {
         "X.name where X = test.Foo _",
         "X where X = test.Foo \"abc\"..",
         "X where X = test.Foo -42",
+        "X where X = never",
+        "X where test.Foo (X.name)",
+        "X where X = (Y where test.Foo {id = Y})",
         // Trivia is part of the tree, so odd spacing must round-trip too.
         "  X\n  where\tX = test.Foo _  ",
     ];
@@ -215,6 +265,77 @@ mod tests {
         let source = format!("X where {body}");
         let parsed = parse(&source);
         assert!(parsed.root().is_some());
+    }
+
+    /// The precedence the grammar exists to fix: `.` binds tighter than
+    /// application, so `test.Foo X.name` is `test.Foo (X.name)` — the access is the
+    /// *argument*, not applied to the result.
+    ///
+    /// Stated structurally rather than by comparing against the parenthesised form,
+    /// which would beg the question: the access node must sit strictly inside the
+    /// fact pattern's span. Were it the other way round the fact pattern would be
+    /// inside the access.
+    #[test]
+    fn dot_binds_tighter_than_application() {
+        let parsed = parse_clean("X where test.Foo X.name");
+        let root = parsed.root().expect("a tree");
+
+        let fact = rule_span(&root, "fact_pattern").expect("a fact pattern");
+        let access = rule_span(&root, "access_pattern").expect("an access");
+
+        assert!(
+            fact.start <= access.start && access.end <= fact.end && fact != access,
+            "the access {access:?} must sit inside the application {fact:?}"
+        );
+    }
+
+    /// A parenthesised group is one pattern, and transparent — the inner pattern is
+    /// the paren node's only meaningful child, which is what lets lowering drop it.
+    #[test]
+    fn a_paren_group_wraps_one_pattern() {
+        let parsed = parse_clean("X where test.Foo (X.name)");
+        let root = parsed.root().expect("a tree");
+
+        assert!(rules(&root).contains(&"paren_primary".to_string()));
+
+        let paren = rule_span(&root, "paren_primary").expect("a paren");
+        let access = rule_span(&root, "access_pattern").expect("an access");
+        assert!(paren.start < access.start && access.end < paren.end);
+    }
+
+    /// A subquery is the same shape as a query — a head pattern and a statement
+    /// list — so it reuses the query rule rather than a parallel one. The optional
+    /// `where` is also what keeps the group and the subquery a single LL(1) rule
+    /// with no backtracking.
+    #[test]
+    fn a_subquery_is_a_head_and_a_body() {
+        let parsed = parse_clean("X where X = (Y where test.Foo {id = Y})");
+        let root = parsed.root().expect("a tree");
+        let names = rules(&root);
+
+        assert!(names.contains(&"subquery_primary".to_string()));
+        // Two statement lists: the outer query's and the subquery's.
+        assert_eq!(
+            names.iter().filter(|n| *n == "stmt_list").count(),
+            2,
+            "got {names:?}"
+        );
+    }
+
+    #[test]
+    fn never_is_a_pattern() {
+        let parsed = parse_clean("X where X = never");
+        let root = parsed.root().expect("a tree");
+        assert!(rules(&root).contains(&"never_primary".to_string()));
+    }
+
+    /// Parens nest patterns, so they count toward the cap like braces do.
+    #[test]
+    fn paren_depth_counts_toward_the_nesting_cap() {
+        let depth = MAX_NEST_DEPTH + 1;
+        let source = format!("X where X = {}_{}", "(".repeat(depth), ")".repeat(depth));
+        let parsed = parse(&source);
+        assert!(parsed.root().is_none(), "the tree must be refused");
     }
 
     /// A token soup, plus raw junk to reach the lexer's error path.
