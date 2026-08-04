@@ -26,6 +26,10 @@ backbone:
 - **`cargo test -- --ignored --list` is the ledger.** It shows exactly which invariants are
   specified-but-not-yet-live. A phase is *done* only when the invariants it touches have
   their guards un-ignored and green.
+- A test that is `#[ignore]`d for any *other* reason must say so in its ignore message, so
+  reading the ledger stays unambiguous. There is one today:
+  `store::tests::crashing_writer_child_process` is ignored because it is not a test at all —
+  it is the child process [I12](invariants.md#i12)'s crash guard spawns and aborts.
 
 ### NFR guards are mechanical, not eyeballed
 

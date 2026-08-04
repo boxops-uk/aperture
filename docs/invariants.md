@@ -30,8 +30,8 @@ green. See [testing](testing.md).
 | [I8](#i8) | Immutable snapshot per query; released at suspend. | `store::snapshot_released_at_suspend` | [ch5](05-resume.md) | Phase 1 (needs fjall) |
 | [I9](#i9) | Hot path is allocation-free per row. | `exec::scan_is_alloc_free_per_row` | [ch4](04-executor.md) | ✅ green |
 | [I10](#i10) | Union discriminants are stable and append-only. | `schema::discriminants_append_only` | [ch6](06-types-and-schema.md) | Phase 8 (with unions) |
-| [I11](#i11) | `FactId` is stable, unique, never reused within a DB. | `store::factid_unique_monotonic` | [ch3](03-storage-model.md) | Phase 1 |
-| [I12](#i12) | A fact is written to both column families atomically. | `store::no_half_present_facts` | [ch3](03-storage-model.md) | Phase 1 |
+| [I11](#i11) | `FactId` is stable, unique, never reused within a DB. | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | [ch3](03-storage-model.md) | ✅ green |
+| [I12](#i12) | A fact is written to both column families atomically. | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) | [ch3](03-storage-model.md) | ✅ green |
 | [I13](#i13) | The DB's schema is embedded and frozen at create. | `schema::ingest_rejects_incompatible_schema` + `fingerprint_is_order_independent` | [ch6](06-types-and-schema.md) | Phase 8 |
 
 ---
@@ -114,18 +114,26 @@ how:* [chapter 6](06-types-and-schema.md#unions-and-stable-discriminants-i10). *
 
 <a id="i11"></a>
 ### I11 — `FactId` is stable, unique, never reused within a DB
-Assigned once from a monotonic counter; unique, never reused (no deletion), stable for the
-DB's lifetime. The scan→point map and resume's integrity check depend on it. It is a
+Assigned once as a **snowflake** — predicate id in the high 24 bits, a per-predicate sequence
+in the low 40 — so uniqueness across predicates is structural and each predicate allocates
+independently. Monotonic within a predicate, never reused (no deletion), stable for the DB's
+lifetime; sequence 0 is reserved, so `FactId(0)` is never a fact. The high-water mark is
+recovered from the last `entities` key rather than a sidecar counter, which cannot go stale
+across a crash. The scan→point map and resume's integrity check depend on it. It is a
 *physical* row id, **not** cross-DB identity (that's the content hash, [ops-I4](#ops-i4)).
-*Why & how:* [chapter 3](03-storage-model.md#factid-allocation-i11). *Guard:*
-`store::factid_unique_monotonic` (pending ingestion).
+Constrains the schema: a predicate id must fit 24 bits.
+*Why & how:* [chapter 3](03-storage-model.md#factid-allocation-i11). *Guards:*
+`store::factid_unique_monotonic` + `store::exhausted_sequence_space_is_an_error` +
+`store::untaggable_predicate_is_rejected`.
 
 <a id="i12"></a>
 ### I12 — A fact is written to both column families atomically
 `keys` and `entities` are written in one fjall batch — a fact is never half-present. A
-dangling half is silent corruption at projection. *Why & how:*
-[chapter 3](03-storage-model.md#the-atomic-two-cf-write-i12). *Guard:*
-`store::no_half_present_facts` (no danglers; crash-injection leaves neither — pending ingestion).
+dangling half is silent corruption at projection; a dangling entity is invisible to every
+query. *Why & how:* [chapter 3](03-storage-model.md#the-atomic-two-cf-write-i12). *Guards:*
+`store::no_half_present_facts_after_writes` (the two CFs in exact bijection over generated
+writes) + `store::no_half_present_facts` (a child process aborted mid-write; the bijection
+must survive recovery).
 
 <a id="i13"></a>
 ### I13 — The DB's schema is embedded and frozen at create

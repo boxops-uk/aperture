@@ -397,8 +397,13 @@ Interactive psql-like REPL.
 
 - Sidecar is the fast enumeration path (I7); the embedded schema copy inside the DB is the
   durable fallback.
-- One fjall keyspace per predicate: gives independent bulk-ingest trees and keeps
-  prefix-disjointness aligned with physical isolation.
+- One fjall keyspace per predicate **per column family** (`keys.<id>`, `entities.<id>`): gives
+  independent bulk-ingest trees, keeps prefix-disjointness aligned with physical isolation,
+  and makes dropping a re-derived predicate an O(1) tree delete rather than range tombstones.
+  A keyspace costs ~30 ms to create, so `create` should materialise every predicate's trees
+  from the schema up front — see
+  [chapter 3](03-storage-model.md#one-keyspace-per-predicate--for-both-column-families) for
+  the measurements and the `max_memtable_size` obligation that comes with the split.
 
 ## 10. Project structure
 

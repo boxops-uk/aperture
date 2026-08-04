@@ -40,9 +40,16 @@ The engine spine exists in `src/focus/`:
   (Phase 1), which also re-runs the resume battery against the real store.
 - **Front end** (grammar, typecheck, flatten) — exists only in the disconnected `src/lens/`
   (not compiled); to be re-implemented into `focus`, then deleted file-by-file.
-- **Unbuilt:** the fjall store impl, ingestion, schema parsing, the wire protocol, and the
-  operational layer. `src/focus/store.rs` and `schema.rs` hold those phases' guards, written
-  up front and `#[ignore]`d.
+- **Store** (`store.rs`) — the fjall store exists and is guarded (tasks 1a + 1b): a pair of
+  keyspaces per predicate (`keys.<id>`, `entities.<id>`), `scan`/`point`, and an atomic
+  `put_fact` over a snowflake [`FactId`](docs/03-storage-model.md#factid-allocation-i11) with
+  a per-predicate allocator recovered from the data. Held to `MemStore` as a differential
+  oracle. [I11](docs/invariants.md#i11)/[I12](docs/invariants.md#i12) green (the I12 crash
+  case aborts a child process mid-write). Still Phase 1: drop-at-suspend (1c) and re-running
+  the resume battery on fjall (1d), so [I8](docs/invariants.md#i8) remains `#[ignore]`d.
+- **Unbuilt:** ingestion, schema parsing, the wire protocol, and the operational layer.
+  `src/focus/store.rs` and `schema.rs` hold those phases' guards, written up front and
+  `#[ignore]`d.
 
 Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the design docs.
 
@@ -160,17 +167,27 @@ single-fact seeding primitive — the bulk pipeline (Phase 7) builds on the same
 - *upholds:* I1–I3.
 
 **Tasks:**
-- **1a.** fjall `FactStore` impl: one keyspace per predicate; `scan` (prefix range) + `point`.
-- **1b.** Atomic `put_fact`: monotonic `AtomicU64` FactId ([I11](docs/invariants.md#i11));
-  both CFs in one write batch ([I12](docs/invariants.md#i12)); un-ignore + green those guards.
+- **1a.** ✅ fjall `FactStore` impl: a keyspace pair per predicate; `scan` (prefix range) +
+  `point`; differential oracle against `MemStore`. Two decisions taken here and recorded in
+  [chapter 3](docs/03-storage-model.md#one-keyspace-per-predicate--for-both-column-families):
+  `entities` is split per predicate too, and predicate trees are creatable up front
+  (`create_predicates`) because a keyspace costs ~30 ms to create.
+- **1b.** ✅ Atomic `put_fact`: snowflake `FactId` (predicate tag + per-predicate sequence)
+  with the high-water mark recovered from the last `entities` key
+  ([I11](docs/invariants.md#i11)); both CFs in one write batch
+  ([I12](docs/invariants.md#i12)); both guards un-ignored and green.
 - **1c.** Snapshot discipline: drop the executor's iterator at suspend; un-ignore + green
-  the [I8](docs/invariants.md#i8) drop-probe.
-- **1d.** Re-run the entire Phase 0c resume battery against fjall.
+  the [I8](docs/invariants.md#i8) drop-probe. Note this is an API change, not only a test:
+  `enumerate` takes `&mut self` and hands back `Iteratee::Suspended` while the caller keeps
+  the executor *and* its live scans.
+- **1d.** Re-run the entire Phase 0c resume battery against fjall
+  (`assert_resume_equals_uninterrupted` is currently typed to `MemStore`).
 
 **Acceptance:**
 - [ ] Resume == uninterrupted run holds against the *real* store (not just `MemStore`).
-- [ ] I8, I11, I12 guards un-ignored and green.
-- [ ] Facts are never half-present; fact-ids are unique and monotonic (tested).
+- [x] I11, I12 guards un-ignored and green; I8 pending 1c.
+- [x] Facts are never half-present (bijection over generated writes, and across a crash);
+      fact-ids are unique, monotonic per predicate, and never reused across a reopen (tested).
 - [ ] A held iterator does not survive a suspend (drop-probe green).
 
 ---
@@ -413,7 +430,10 @@ resolution, `schema_path` roots, and redeclaration errors are
 - *makes green:* [I13](docs/invariants.md#i13) (`schema::ingest_rejects_incompatible_schema`
   + `schema::fingerprint_is_order_independent`); [I10](docs/invariants.md#i10)
   (`schema::discriminants_append_only`) when unions are represented.
-- *upholds:* [I3](docs/invariants.md#i3) (reject schema changes that would violate on-disk marker ordering).
+- *upholds:* [I3](docs/invariants.md#i3) (reject schema changes that would violate on-disk marker ordering);
+  [I11](docs/invariants.md#i11) — **a predicate id must fit the 24-bit fact-id tag**; the
+  schema loader is where that is validated (the store rejects it today, but only at the point
+  it would create the predicate's trees).
 
 **Tasks:** schema lexer/parser; lower to the schema/type model; canonical form +
 fingerprints; validate the freeze-invariants (stable discriminants, marker ordering); wire
