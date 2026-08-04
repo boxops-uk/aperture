@@ -74,9 +74,18 @@ pub enum ExprKind<T> {
     Lit(Literal),
     Var(Symbol),
     Wildcard,
+    /// The empty pattern — `never`. Deferred; typecheck reports it.
+    Never,
     Prefix(Symbol),
     Record(Box<[(Symbol, T)]>),
     Access(FieldRef, T),
+    /// Union select — `x.alt?`. A distinct operation from [`ExprKind::Access`]: it
+    /// matches a discriminant and binds a payload rather than reading a field.
+    Select(Symbol, T),
+    /// `a | b | c` — **flat**, N branches, never a right-leaning tree. Flatten
+    /// keeps this as one node and must not DNF-expand it across sibling conjuncts.
+    Disjunction(Box<[T]>),
+    Subquery(Query<T>),
     Fact(PredicateId, T),
     Error,
 }
@@ -84,6 +93,9 @@ pub enum ExprKind<T> {
 pub enum QueryStmt<T> {
     Bind(T, T),
     Implicit(T),
+    /// `!pattern`. Negation is a statement, not a pattern — it is reordered
+    /// relative to the statements that bind its non-locals.
+    Negation(T),
 }
 
 pub struct Query<T> {
@@ -91,22 +103,96 @@ pub struct Query<T> {
     head: T,
 }
 
-#[allow(dead_code)]
+impl<T> Query<T> {
+    pub fn new(head: T, body: Box<[QueryStmt<T>]>) -> Self {
+        Query { body, head }
+    }
+
+    pub fn head(&self) -> &T {
+        &self.head
+    }
+
+    pub fn body(&self) -> &[QueryStmt<T>] {
+        &self.body
+    }
+}
+
 pub struct Ast {
     query: Query<NodeId>,
     store: SyntaxTree<ExprKind<NodeId>>,
 }
 
-#[allow(dead_code)]
+impl Ast {
+    pub fn new(query: Query<NodeId>, store: SyntaxTree<ExprKind<NodeId>>) -> Self {
+        Ast { query, store }
+    }
+
+    pub fn query(&self) -> &Query<NodeId> {
+        &self.query
+    }
+
+    pub fn store(&self) -> &SyntaxTree<ExprKind<NodeId>> {
+        &self.store
+    }
+}
+
+/// A struct-of-arrays tree indexed by [`NodeId`].
+///
+/// Append-only: lowering pushes children before their parent, so a `NodeId` is
+/// stable for the tree's life and later phases annotate it through *side tables*
+/// rather than mutating the tree ([chapter 7]).
+///
+/// [chapter 7]: ../../../docs/07-compilation.md
 pub struct SyntaxTree<K: Recursive> {
     kinds: Vec<K>,
     spans: Vec<Span>,
 }
 
+impl<K: Recursive> Default for SyntaxTree<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K: Recursive> SyntaxTree<K> {
+    pub fn new() -> Self {
+        SyntaxTree {
+            kinds: vec![],
+            spans: vec![],
+        }
+    }
+
+    /// Append a node and return its id.
+    pub fn push(&mut self, kind: K, span: Span) -> NodeId {
+        let id = NodeId(self.kinds.len() as u32);
+        self.kinds.push(kind);
+        self.spans.push(span);
+        id
+    }
+
+    pub fn kind(&self, id: NodeId) -> &K {
+        &self.kinds[id.0 as usize]
+    }
+
+    pub fn span(&self, id: NodeId) -> Span {
+        self.spans[id.0 as usize].clone()
+    }
+
+    pub fn len(&self) -> usize {
+        self.kinds.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
+
+    /// Fold the subtree at `id` bottom-up.
+    ///
+    /// The algebra is handed the node's kind with each child already replaced by
+    /// that child's result — `K::Base<R>` — which is what makes one generic fold
+    /// serve every phase.
     pub fn reduce<R, F>(&self, id: NodeId, f: &mut F) -> R
     where
-        K: Recursive<Base<R> = R>,
         F: FnMut(NodeId, K::Base<R>) -> R,
     {
         let acc = self.kinds[id.0 as usize].map(|child_id| self.reduce(child_id, f));
@@ -155,7 +241,13 @@ impl Recursive for ExprKind<NodeId> {
                     .collect(),
             ),
             ExprKind::Access(field_ref, node_id) => ExprKind::Access(*field_ref, f(*node_id)),
+            ExprKind::Select(symbol, node_id) => ExprKind::Select(*symbol, f(*node_id)),
+            ExprKind::Disjunction(branches) => {
+                ExprKind::Disjunction(branches.iter().map(|id| f(*id)).collect())
+            }
+            ExprKind::Subquery(query) => ExprKind::Subquery(query.map(&mut f)),
             ExprKind::Fact(pred_id, node_id) => ExprKind::Fact(*pred_id, f(*node_id)),
+            ExprKind::Never => ExprKind::Never,
             ExprKind::Error => ExprKind::Error,
         }
     }
@@ -168,6 +260,7 @@ impl Recursive for QueryStmt<NodeId> {
         match self {
             QueryStmt::Bind(lhs, rhs) => QueryStmt::Bind(f(*lhs), f(*rhs)),
             QueryStmt::Implicit(node_id) => QueryStmt::Implicit(f(*node_id)),
+            QueryStmt::Negation(node_id) => QueryStmt::Negation(f(*node_id)),
         }
     }
 }

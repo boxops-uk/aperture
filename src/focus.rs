@@ -1,6 +1,7 @@
 pub mod cst;
 pub mod error;
 pub mod iter;
+pub mod lower;
 pub mod parse;
 pub mod plan;
 pub mod schema;

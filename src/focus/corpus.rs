@@ -52,6 +52,87 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
+use std::sync::Arc;
+
+use lasso::Rodeo;
+
+use crate::focus::schema::{Predicate, PredicateTy, Schema};
+
+/// The schema the corpus is written against.
+///
+/// Hand-built: Phase 8 parses schemas. Field lists are sorted by name, as they are
+/// everywhere ([chapter 6]) — a record's field order is part of its encoding.
+///
+/// [chapter 6]: ../../../docs/06-types-and-schema.md
+pub fn schema() -> Schema {
+    let mut names = Rodeo::new();
+    let mut sym = |s: &str| names.get_or_intern(s);
+
+    // Predicate order is predicate-id order; ids are what a `keys` row is prefixed
+    // with, so this is the one place the corpus fixes them.
+    let predicates = vec![
+        Predicate {
+            name: sym("test.Foo"),
+            key: PredicateTy::Record(Arc::from([
+                (sym("id"), PredicateTy::Int),
+                (sym("name"), PredicateTy::Str),
+            ])),
+            value: Some(PredicateTy::Str),
+        },
+        Predicate {
+            name: sym("test.Bar"),
+            key: PredicateTy::Record(Arc::from([(sym("id"), PredicateTy::Int)])),
+            value: None,
+        },
+        Predicate {
+            name: sym("test.Edge"),
+            key: PredicateTy::Record(Arc::from([
+                (sym("from"), PredicateTy::Int),
+                (sym("to"), PredicateTy::Int),
+            ])),
+            value: None,
+        },
+        Predicate {
+            name: sym("test.Node"),
+            key: PredicateTy::Record(Arc::from([(sym("id"), PredicateTy::Int)])),
+            value: None,
+        },
+        Predicate {
+            name: sym("test.Nested"),
+            key: PredicateTy::Record(Arc::from([(
+                sym("outer"),
+                PredicateTy::Record(Arc::from([(sym("inner"), PredicateTy::Int)])),
+            )])),
+            value: None,
+        },
+        Predicate {
+            name: sym("test.Name"),
+            key: PredicateTy::Str,
+            value: None,
+        },
+        Predicate {
+            name: sym("test.Count"),
+            key: PredicateTy::Int,
+            value: None,
+        },
+        // A key field literally named `value`, so `.value` is ambiguous on it —
+        // the `reject/value-shadowed` case.
+        Predicate {
+            name: sym("test.Shadow"),
+            key: PredicateTy::Record(Arc::from([(sym("value"), PredicateTy::Int)])),
+            value: None,
+        },
+    ];
+
+    // Field and predicate names the corpus uses but that no declaration interns,
+    // so `LocalInterner`'s schema-first lookup can still resolve them.
+    for name in ["a", "b", "alt", "nosuch", "value"] {
+        sym(name);
+    }
+
+    Schema::new(names.into_reader(), Arc::from(predicates))
+}
+
 /// What the compiler must do with a corpus entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expectation {
