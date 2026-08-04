@@ -10,19 +10,6 @@ with a pointer to where they now live.
 
 ## Still open
 
-### `pattern = pattern` unification — scope
-
-The grammar permits `pattern = pattern` (permissive-early, [chapter 7](07-compilation.md)).
-Flatten should implement only the **easy half** and reject the rest with clear diagnostics:
-
-- **Implement:** LHS is a variable or wildcard; LHS-structural-vs-generator resolved by
-  pattern-pushing.
-- **Reject (for now):** `var = var` with both already bound; `generator = generator`;
-  anonymous-record = anonymous-record.
-
-Open: the exact boundary and the diagnostics wording. This is a future-feature to-do list,
-not a P0 blocker.
-
 ### Cancellation is polled per *skipped* row, not per row scanned
 
 [Chapter 5](05-resume.md#suspend-vs-cancel-vs-terminal-unwind) says the scan loop polls the
@@ -51,6 +38,25 @@ diagnostic.
 ---
 
 ## Settled — recorded so they aren't reopened
+
+### `pattern = pattern` unification — scope settled at typecheck
+
+The grammar permits `pattern = pattern` (permissive-early, [chapter 7](07-compilation.md)).
+The boundary this doc left open is now **decided and enforced in `focus::ty`**, by the shape of
+the left-hand side:
+
+| LHS | outcome |
+|---|---|
+| a variable not yet bound, or `_` | **implemented** — the bind introduces it |
+| a literal or string prefix | `reject/bind-lhs` — a literal can never be a target |
+| anything else — a bound variable, a generator, an anonymous record, an access | `nyi/bind-unification` |
+
+So the three cases this doc listed as "reject for now" — `var = var` with both bound,
+`generator = generator`, `record = record` — are all the third row, and each has a corpus entry
+pinning it. LHS-structural-vs-generator by pattern-pushing is *not* implemented and lands with
+the rest of unification.
+
+Still deferred, not open: the feature itself.
 
 ### `FactRef` marker — resolved (own marker), needs housekeeping
 

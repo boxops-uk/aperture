@@ -9,10 +9,12 @@ only at the `Plan`. Covered here: the three tree representations and why each ex
 distinction, and **derived facts** — the one place a feature is allowed to change the core
 machine.
 
-> **Status.** The front end lives only partly in `src/focus/` today (grammar, lexer, the
-> `SyntaxTree` store); typecheck and flatten are being re-implemented into `focus` from the
-> superseded `src/lens/` prototype. This chapter is the *design*; [`PLAN.md`](../PLAN.md)
-> Phases 1–3 are the build.
+> **Status.** `lex → parse → lower → typecheck` is live in `src/focus/` (`grammar.llw`,
+> `lexer.rs`, `cst.rs`, `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs`) as of
+> [`PLAN.md`](../PLAN.md) Phase 2, with the boxed ergonomic AST (representation 3 below) not
+> yet built because nothing needs it. **Flatten and reorder are not built** — `src/lens/hoist.rs`
+> is their reference. The compilation driver below is Phase 3; flatten is Phase 4. This chapter
+> is the *design*.
 
 ---
 
@@ -65,9 +67,17 @@ narrow later**:
 
 Why: the grammar is the widest one-way door. Reshaping it after downstream code depends on
 its tree shape is expensive, so getting it permissive-and-stable once lets every later phase
-add *meaning* to constructs that already parse. (Known lexer/grammar conflict resolutions —
-`QId` qualified names, `..`/`.` maximal munch, dot-tighter-than-application — are recorded in
-[`PLAN.md`](../PLAN.md) Phase 2.)
+add *meaning* to constructs that already parse. (The settled lexer/grammar resolutions — the
+two precedence rules, flat disjunction, the group/subquery factoring, statement-level
+negation, permissive `Nat` — are recorded in [`PLAN.md`](../PLAN.md) Phase 2, each with the
+test that pins it.)
+
+One consequence worth stating, since it is not a grammar property at all: the generated
+parser is **recursive descent**, and `pattern` is mutually recursive with itself through both
+records and fact application. Deep input would overflow the stack, which on a data path must
+be an error ([conventions](conventions.md)) — so `parse` bounds nesting from the token stream
+*before* parsing, at the codec's `MAX_RECORD_DEPTH`, and returns no tree when the bound is
+exceeded.
 
 ### typecheck — annotate, don't mutate
 
@@ -76,6 +86,25 @@ the `NodeId` side table. It accepts the implemented subset and emits **specific,
 yet implemented" diagnostics** for the deferred constructs the grammar allowed through. It's
 also where one-way-door schema rules are enforced at load (stable discriminants,
 [I10](invariants.md#i10)).
+
+Three properties make "permissive early" actually work rather than merely parse:
+
+- **Diagnostics carry a code** — `nyi/…` for a deferred construct, `reject/…` for a
+  meaningless one, `lit/…` for a malformed literal — so the promise is *testable* by identity
+  rather than by wording. The [corpus](testing.md) asserts the whole set of codes a snippet
+  draws, which is what stops a deferred construct also reporting a type error about itself.
+- **Errors accumulate.** A failed unification rolls its substitution back, so a mistake in one
+  record field cannot poison its siblings, and checking continues — a query the grammar let
+  through can be wrong several ways at once and should say so in one pass.
+- **Poison propagates.** `Ty::Error` unifies with anything *and* binds an unbound variable to
+  itself. Without the second half, `X = nosuch.Pred _` reports the unknown predicate and then
+  reports again at every `X.field` that follows.
+
+**A record pattern may name a subset of the fields; a record type may not.** An omitted field
+in a pattern is a wildcard, so `Edge {from = 1}` means "any edge from 1" — which is exactly
+what sargeability wants, since a mentioned prefix of the key becomes a seek and the rest a
+scan. Unifying two record *types*, by contrast, requires the same field set: a pattern is a
+partial description of a value, a type is not.
 
 ### flatten — the crux
 

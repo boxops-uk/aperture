@@ -147,12 +147,13 @@ Knowing which module is real saves hours:
 - **`src/focus/`** — **the live engine and language.** All new work lands here: the codec
   (`tuple.rs`), the store trait + in-memory test store (`plan.rs`, `mem_store.rs`), the
   executor and resume (`iter.rs`), the plan IR (`plan.rs`), the schema/interners
-  (`schema.rs`), and the focus front end as it's built (`grammar.llw`, `lexer.rs`,
-  `parser.rs`, `syntax.rs`).
+  (`schema.rs`), and the front end through typecheck (`grammar.llw`, `lexer.rs`, `parser.rs`,
+  `cst.rs`, `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs`).
 - **`src/lens/`** — a **superseded first attempt**, kept only for reference. It is *not
-  compiled* (not declared in `lib.rs`) and targets an older, incompatible IR. Its
-  front-end phases are the reference to **re-implement into `focus`**; delete each file
-  once subsumed.
+  compiled* (not declared in `lib.rs`) and targets an older, incompatible IR. Its front-end
+  phases are the reference to **re-implement into `focus`**, and each file is deleted once
+  subsumed. What is left is `hoist.rs` (flatten, the Phase 4 reference), `query.rs` (the boxed
+  ergonomic AST, which `focus` has not needed yet), and the three files those depend on.
 - **`src/focus.rs`** — a **graveyard of commented-out prototype code** (~10 live lines).
   Kept only for the transport-codec sketch. Don't add code here.
 

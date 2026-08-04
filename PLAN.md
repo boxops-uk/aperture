@@ -40,8 +40,13 @@ The engine spine exists in `src/focus/`:
   [I4](docs/invariants.md#i4)–[I9](docs/invariants.md#i9) green. `enumerate` consumes the
   executor, so releasing the snapshot at every stop is structural
   ([I8](docs/invariants.md#i8)).
-- **Front end** (grammar, typecheck, flatten) — exists only in the disconnected `src/lens/`
-  (not compiled); to be re-implemented into `focus`, then deleted file-by-file.
+- **Front end** — `lex → parse → lower → typecheck` is live in `src/focus/` (Phase 2 done):
+  the full intended surface parses, lowers to the `SyntaxTree` store, and typechecks, with
+  every construct deferred to a later phase drawing one specific diagnostic naming it. The
+  acceptance artifact is `focus::corpus`, the audit table as data. **Flatten is not built** —
+  `src/lens/hoist.rs` remains its reference, along with `query.rs` (the boxed AST
+  representation, which nothing needs yet) and the three files those depend on; the other
+  seven `lens` files are deleted.
 - **Store** (`store.rs`) — the fjall store is complete and guarded (Phase 1 done): a pair of
   keyspaces per predicate (`keys.<id>`, `entities.<id>`), `scan`/`point`, and an atomic
   `put_fact` over a snowflake [`FactId`](docs/03-storage-model.md#factid-allocation-i11) with
@@ -62,7 +67,7 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
 ```
 0  guard matrix & harness ─┬─▶ 1  fjall store ✅ (I8, I11, I12 green; resume battery re-run on fjall)
                            │
-                           └─▶ 2  grammar ─▶ 3  driver ─▶ 4  flatten/reorder ─┬─▶ 5  REPL  (→ remote-only later)
+                           └─▶ 2  grammar ✅ ─▶ 3  driver ─▶ 4  flatten/reorder ─┬─▶ 5  REPL  (→ remote-only later)
                                                                               ├─▶ 6  derived facts  (deliberate machine change; own resume battery)
                                                                               └─▶ 7  ingestion ─▶ 8  schema ─▶ 9  operations
 
@@ -208,34 +213,75 @@ reshape is needed as features land.
 reference to **re-implement into `focus`** (against the `Plan` IR), then delete file-by-file.
 
 **Design of record:** [chapter 7](docs/07-compilation.md) (three tree layers; permissive-
-early principle). **Phase-specific — grammar/lexer conflict resolutions to preserve** (build
-detail, not in the book): `QId` qualified names (leading-lowercase disambiguates from `UId`
-access); dot-tighter-than-application (`test.Foo X.name` == `test.Foo (X.name)`, so
-`fact_pattern` is its own alternative); `..` vs `.` by maximal munch; the `Nat` underscore
-rule (`0|[1-9][0-9]*(_[0-9]+)*`, or lex-permissive-then-validate); the `never` keyword.
+early principle). **Phase-specific — grammar/lexer resolutions, as settled** (build detail,
+not in the book; each pinned by a test in `parse.rs` or `lexer.rs`):
+
+- `QId` qualified names — a leading-lowercase segment plus an uppercase final segment
+  disambiguates `test.Foo` from `E.from` with no parser lookahead.
+- **Dot binds tighter than application** — `test.Foo X.name` == `test.Foo (X.name)`.
+- **`|` is looser than application** — `test.Foo A | test.Bar B` is a disjunction of two
+  applications, so `fact_pattern: QId branch` (not `pattern`). Forced: with `pattern` the
+  grammar is an LL(1) conflict on `|`, since a fact's key would put `|` in its own follow
+  set. A disjunction *inside* a key is `test.Foo (A | B)`.
+- **Disjunction is flat** — `pattern: branch ('|' branch)*`, N branches under one node, which
+  is the shape `FlatDisjunction` wants. Deliberately *not* lelwel's Pratt left-recursion,
+  which would give a right-leaning binary tree for flatten to undo.
+- **Group and subquery are one rule** — `'(' pattern ('where' stmt_list | ) ')'`. Factoring
+  the optional `where` keeps it LL(1) with no ordered choice or backtracking, and makes a
+  subquery the same shape as a query, so lowering reuses the query algebra.
+- **Negation prefixes a statement**, not a pattern — the level [chapter
+  7](docs/07-compilation.md) reorders at. Consequence: `(!A) | B` is not expressible; moving
+  `!` into `branch` is the change if that is wanted.
+- `..` vs `.` by maximal munch; the `never` keyword.
+- **`Nat` is lexed permissively and validated in lowering** (`lexer::parse_nat`) — so `1__0`
+  is one token with a diagnostic pointing at the number, not two tokens with a parse error
+  pointing between them. The sign is applied after the magnitude (`signed_literal`), because
+  `i64::MIN`'s magnitude is one past `i64::MAX`.
+- **A fact pattern's key stays mandatory** — a whole-predicate scan is `test.Foo _`.
+- **`.value` is a reserved access name**, lowering to `FieldRef::Value`.
+- **Diagnostic codes** are `nyi/…` (deferred), `reject/…` (meaningless) and `lit/…`
+  (malformed literal), so tests assert on identity rather than wording. Phase 9 owns the
+  single error taxonomy and may replace them with an enum.
 
 **Invariants in scope:** *upholds:* [I10](docs/invariants.md#i10) (typecheck enforces stable
 discriminants at schema-load). No engine invariant made green here.
 
 **Tasks:**
-- **2a.** Audit the `focus` grammar/lexer vs the target feature list (using `lens` as
-  reference); table of "parses / rejected-where / not-yet-representable." *Done:* table + a
-  failing test per gap.
-- **2b.** Lexer: `QId`, `Nat`-underscore, `..`/`.` munch, `never`. *Done:* unit tests (incl.
-  `E.from` ≠ qualname, `a.B.c` boundaries, `1__0` rejected) pass.
-- **2c.** Grammar: dot-tighter-than-application; postfix `.field` chain; permissive
-  `pattern = pattern`; nested record / union-select (`?`) / disjunction (`|`) *surface*
-  syntax. *Done:* parse tests over a corpus incl. deferred features; parser build clean.
-- **2d.** Façade → `SyntaxTree` store lowering aligned; boxed AST reconciled (sorted-slice
-  record fields). *Done:* round-trip/structure tests; delete subsumed `lens` parse/lower files.
-- **2e.** Typecheck (re-implemented from `lens/ty.rs`) to the backend type model
-  (`PredicateTy` incl. `Fact`/`Record`; union discriminants stable), emitting "not yet
-  implemented" diagnostics for deferred constructs.
+- **2a.** ✅ Audit the `focus` grammar/lexer vs the target feature list. The table is
+  **executable** — `focus::corpus` holds it as data (37 entries, since grown), each classified
+  `Supported` / `Diagnosed(code)` / `ParseError`, so it cannot drift from what the compiler
+  does. Running it before touching the grammar gave the audit empirically: 6 entries did not
+  parse, and they were exactly the six constructs 2c adds.
+- **2b.** ✅ Lexer: token boundaries pinned (`E.from` ≠ qualname, `a.B.c`, `..` munch,
+  keywords) and the literal decoders added — `parse_nat`, `signed_literal`, `unescape_str`,
+  each reporting by code. **Prerequisite discovered:** nothing in the grammar was testable,
+  because `focus` had no parse entry point and no CST façade; those landed first
+  (`focus::cst`, `focus::parse`).
+- **2c.** ✅ Grammar: parens (group + subquery), `never`, union select, flat disjunction,
+  statement negation. Resolutions above.
+- **2d.** ✅ Façade → `SyntaxTree` store lowering (`focus::lower`), with sorted-slice record
+  fields and a duplicate-field rejection. The boxed ergonomic AST (representation 3) is **not**
+  built — nothing needs it yet — so `lens/query.rs` survives.
+- **2e.** ✅ Typecheck (`focus::ty`, re-implemented from `lens/ty.rs`) against `PredicateTy`,
+  emitting one specific diagnostic per deferred construct. No `Ty::Never`: `never` reports as
+  not-yet-implemented, so a type for it would be speculative.
 
 **Acceptance:**
-- [ ] The target-feature corpus parses in `focus` (incl. constructs deferred to later phases).
-- [ ] The implemented subset typechecks; every deferred construct yields a specific, tested diagnostic — never a parse error or panic.
-- [ ] Subsumed `lens` files deleted.
+- [x] The target-feature corpus parses in `focus` (incl. constructs deferred to later phases) —
+      `corpus::every_entry_parses_as_classified`.
+- [x] The implemented subset typechecks; every deferred construct yields a specific, tested
+      diagnostic — never a parse error or panic —
+      `corpus::every_entry_is_diagnosed_as_classified`, which compares the *whole set* of codes
+      so a deferred construct cannot also report a type error about itself.
+- [x] Subsumed `lens` files deleted (7 of 12; `hoist.rs` + `query.rs` and their dependencies
+      remain as the Phase 4 reference).
+
+**Two extras the phase paid for, recorded because they are one-way doors of their own:**
+`parse` bounds nesting *before* parsing (the generated parser is recursive descent and
+`pattern` is mutually recursive through both records and application, so deep input would
+overflow the stack — a panic on a data path); and a record *pattern* may name a subset of a
+key's fields, an omitted field being a wildcard, while two record *types* must still agree
+exactly ([chapter 7](docs/07-compilation.md)).
 
 ---
 

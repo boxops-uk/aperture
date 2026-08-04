@@ -33,6 +33,10 @@ stripped form of a schema; the thing a fingerprint is computed over. [ch6](06-ty
 **Complete** — the sealed, immutable lifecycle state; every open-for-write is then refused
 ([ops-I2](invariants.md#ops-i2)). Opposite: **Writable**. [Operations](aperture-cli-design.md).
 
+**corpus** — `focus::corpus`, the focus language surface as *data*: each snippet classified
+`Supported` / `Diagnosed(code)` / `ParseError`, and the acceptance gate for permissive-early.
+[testing](testing.md).
+
 **CST façade** — the first tree: an untyped, lossless, grammar-shaped concrete syntax tree
 with spans and text. [ch7](07-compilation.md).
 
@@ -110,7 +114,8 @@ fearless parallel ingest, and an O(1) wholesale drop. Costs ~30 ms per tree to c
 [ch3](03-storage-model.md).
 
 **lens** — `src/lens/`, the superseded first-attempt front end; not compiled; a reference to
-re-implement into `focus`, then delete. [ch1](01-concepts.md).
+re-implement into `focus`, then delete file-by-file. Down to flatten (`hoist.rs`) and the boxed
+AST (`query.rs`). [ch1](01-concepts.md).
 
 **MachineState** — the register file: `Box<[Option<Register>]>`. [ch4](04-executor.md).
 

@@ -127,6 +127,17 @@ tests only the error path.
   ([I11](invariants.md#i11)/[I12](invariants.md#i12)/[ops-I4](invariants.md#ops-i4)).
 - **Schema:** fingerprint order-independence (tier 2) + incompatible-schema rejection at
   ingest ([I13](invariants.md#i13)).
+- **Front end:** the **target-feature corpus** (`focus::corpus`) — the language surface as
+  *data*, each snippet classified `Supported` / `Diagnosed(code)` / `ParseError`, with two
+  gates over it: every entry parses as classified, and every entry draws exactly the
+  diagnostic codes it claims. This is the acceptance artifact for
+  "[permissive grammar, narrow later](07-compilation.md)": a construct deferred to a later
+  phase must be reported *by name*, never as a parse error or a panic. Diagnostics carry
+  codes (`nyi/…`, `reject/…`, `lit/…`) precisely so the gate asserts identity rather than
+  wording. Both gates accumulate rather than failing on the first entry, so one run lists
+  everything outstanding — which is how the Phase 2 audit was taken in the first place.
+  Parse and lowering additionally have no-panic properties over generated token soup, because
+  a tree with holes in it is the ordinary input to lowering, not an edge case.
 - **Regression examples** (specific past bugs, named edge cases) live alongside the
   properties as ordinary `#[test]`s — properties explore, examples pin.
 
