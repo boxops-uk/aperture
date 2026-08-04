@@ -7,7 +7,7 @@ token Nat='<nat>';
 token String='<string>';
 token DotDot='..';
 token Dot='.' Eq='=' Semi=';' Comma=',' Minus='-' LBrace='{' RBrace='}'
-      LPar='(' RPar=')';
+      LPar='(' RPar=')' Pipe='|' Question='?' Bang='!';
 
 skip Whitespace;
 start root;
@@ -18,11 +18,19 @@ query: pattern 'where' stmt_list;
 
 stmt_list: stmt (';' [stmt])*;
 
-stmt: pattern ('=' pattern @bind_stmt | @implicit_bind_stmt);
+stmt:
+  '!' pattern @negation_stmt
+| pattern ('=' pattern @bind_stmt | @implicit_bind_stmt)
+;
 
-pattern:
+// Disjunction is the loosest level and stays flat: a list of branches, never a
+// right-leaning tree. Flatten keeps it as one node with N branches
+// (`FlatDisjunction`) and must never DNF-expand it across sibling conjuncts.
+pattern: branch ('|' branch @disjunction)*;
+
+branch:
   fact_pattern @fact
-| primary ('.' LId @access_pattern)*
+| primary ('.' LId ['?'] @access_pattern)*
 ;
 
 primary:
@@ -36,7 +44,11 @@ primary:
 | '(' pattern ('where' stmt_list @subquery_primary | @paren_primary) ')'
 ;
 
-fact_pattern: QId pattern;
+// A fact's key is a `branch`, not a `pattern`: `|` is looser than application, so
+// `test.Foo A | test.Bar B` is a disjunction of two applications. A disjunction
+// *inside* a key is written `test.Foo (A | B)` — the same parenthesising the
+// dot-tighter-than-application rule already asks for.
+fact_pattern: QId branch;
 
 field_list: field (',' field)*;
 field: LId '=' pattern;

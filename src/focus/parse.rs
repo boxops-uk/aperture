@@ -136,6 +136,11 @@ mod tests {
         })
     }
 
+    /// How many nodes in the tree carry this rule name.
+    fn count(node: &CstNode<'_>, name: &str) -> usize {
+        rules(node).iter().filter(|n| *n == name).count()
+    }
+
     /// Every rule name in the tree, outermost first.
     fn rules(node: &CstNode<'_>) -> Vec<String> {
         node.cata(&mut |kind| match kind {
@@ -194,6 +199,9 @@ mod tests {
         "X where X = never",
         "X where test.Foo (X.name)",
         "X where X = (Y where test.Foo {id = Y})",
+        "X where test.Foo {id = X} | test.Bar {id = X}",
+        "X where test.Foo {id = X}; !test.Bar {id = X}",
+        "X.alt? where X = test.Foo _",
         // Trivia is part of the tree, so odd spacing must round-trip too.
         "  X\n  where\tX = test.Foo _  ",
     ];
@@ -327,6 +335,92 @@ mod tests {
         let parsed = parse_clean("X where X = never");
         let root = parsed.root().expect("a tree");
         assert!(rules(&root).contains(&"never_primary".to_string()));
+    }
+
+    /// Disjunction is **flat**: N branches under one node, whatever N is. A
+    /// right-leaning tree would give N-1 nodes, and flatten wants the branch list
+    /// whole so it can keep it as a single `FlatDisjunction` rather than
+    /// DNF-expanding it.
+    #[test]
+    fn disjunction_is_flat_however_many_branches() {
+        for source in [
+            "X where X = A | B",
+            "X where X = A | B | C",
+            "X where X = A | B | C | D | E",
+        ] {
+            let parsed = parse_clean(source);
+            let root = parsed.root().expect("a tree");
+            assert_eq!(
+                count(&root, "disjunction"),
+                1,
+                "{source:?} must be one flat disjunction"
+            );
+        }
+    }
+
+    /// `|` is looser than application, so this is a disjunction of two fact
+    /// patterns — not one fact pattern whose key is a disjunction.
+    #[test]
+    fn disjunction_is_looser_than_application() {
+        let parsed = parse_clean("X where test.Foo {id = X} | test.Bar {id = X}");
+        let root = parsed.root().expect("a tree");
+
+        assert_eq!(count(&root, "fact"), 2);
+
+        let disjunction = rule_span(&root, "disjunction").expect("a disjunction");
+        let fact = rule_span(&root, "fact").expect("a fact pattern");
+        assert!(
+            disjunction.start <= fact.start && fact.end < disjunction.end,
+            "the applications {fact:?} must sit inside the disjunction {disjunction:?}"
+        );
+    }
+
+    /// The other side of that decision: a disjunction *inside* a key is written
+    /// with parens, exactly as dot-tighter-than-application already requires.
+    #[test]
+    fn a_disjunction_inside_a_key_needs_parens() {
+        let parsed = parse_clean("X where test.Foo (A | B)");
+        let root = parsed.root().expect("a tree");
+
+        let fact = rule_span(&root, "fact").expect("a fact pattern");
+        let disjunction = rule_span(&root, "disjunction").expect("a disjunction");
+        assert!(
+            fact.start < disjunction.start && disjunction.end <= fact.end,
+            "the disjunction {disjunction:?} must sit inside the key {fact:?}"
+        );
+    }
+
+    /// Union select is a postfix on an access step — always `.name?`, since it
+    /// selects an alternative by name — and chains.
+    #[test]
+    fn union_select_is_a_postfix_on_an_access() {
+        let parsed = parse_clean("X.alt? where X = test.Foo _");
+        let root = parsed.root().expect("a tree");
+        assert_eq!(count(&root, "access_pattern"), 1);
+
+        let parsed = parse_clean("X.a?.b? where X = test.Foo _");
+        let root = parsed.root().expect("a tree");
+        assert_eq!(
+            count(&root, "access_pattern"),
+            1,
+            "an access chain is one node, like a disjunction"
+        );
+        assert!(token_text(&root).contains("X.a?.b?"));
+    }
+
+    /// Negation prefixes a statement — which is the level at which chapter 7 talks
+    /// about it ("negations move after their non-locals are bound"). `!(…)` groups.
+    #[test]
+    fn negation_is_a_statement_prefix() {
+        let parsed = parse_clean("X where test.Foo {id = X}; !test.Bar {id = X}");
+        let root = parsed.root().expect("a tree");
+        assert_eq!(count(&root, "negation_stmt"), 1);
+        assert_eq!(count(&root, "implicit_bind_stmt"), 1);
+
+        let parsed = parse_clean("X where test.Foo {id = X}; !(Y where test.Bar {id = Y})");
+        let root = parsed.root().expect("a tree");
+        assert_eq!(count(&root, "negation_stmt"), 1);
+        assert_eq!(count(&root, "subquery_primary"), 1);
     }
 
     /// Parens nest patterns, so they count toward the cap like braces do.

@@ -283,7 +283,6 @@ mod tests {
     /// unimplemented feature must be reported by name later, never as a syntax
     /// error here.
     #[test]
-    #[ignore = "Phase 2 — pending the grammar surface (2.4a, 2.4b)"]
     fn every_entry_parses_as_classified() {
         // Accumulate rather than assert per entry: one run then reports every
         // remaining gap, which is what makes this readable as a ledger.
