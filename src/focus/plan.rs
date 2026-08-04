@@ -2,14 +2,90 @@ use byteview::ByteView;
 use serde::{Serialize, Serializer};
 
 use crate::focus::{
-    error::ApertureError,
+    error::{ApertureError, StoreError},
     iter::Address,
     schema::{PredicateId, PredicateTy, Symbol},
     tuple::Value,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Bits of a [`FactId`] holding the predicate tag — the high three bytes.
+///
+/// Byte-aligned on purpose: the tag is a *slice* of the big-endian encoding, not a
+/// shift, so routing a `point()` to a predicate's tree costs nothing.
+pub const FACT_ID_PREDICATE_BITS: u32 = 24;
+
+/// Bits of a [`FactId`] holding the per-predicate sequence — the low five bytes.
+pub const FACT_ID_SEQUENCE_BITS: u32 = u64::BITS - FACT_ID_PREDICATE_BITS;
+
+/// Largest predicate id representable in a [`FactId`] tag (~16.7 M predicates).
+pub const MAX_TAGGABLE_PREDICATE: u32 = (1 << FACT_ID_PREDICATE_BITS) - 1;
+
+/// Largest per-predicate sequence (~1.1 T facts per predicate).
+pub const MAX_FACT_SEQUENCE: u64 = (1 << FACT_ID_SEQUENCE_BITS) - 1;
+
+/// A fact's physical row id: a **snowflake** — the owning predicate in the high
+/// [`FACT_ID_PREDICATE_BITS`] bits, a per-predicate sequence in the low
+/// [`FACT_ID_SEQUENCE_BITS`] ([I11], [chapter 3]).
+///
+/// The tag is what lets `entities` be split per predicate exactly as `keys` is:
+/// [`FactStore::point`] is handed a bare id and no predicate, so an untagged id
+/// would make identity lookup a search across every predicate's tree. Tagged, it
+/// is one lookup in one tree. It also removes the global allocator: each predicate
+/// counts its own facts, so two ingest workers on different predicates share no
+/// counter and write disjoint, ascending id ranges.
+///
+/// **Sequence 0 is reserved**, so no valid id is `FactId(0)` and a zeroed or
+/// corrupt eight bytes is detectably not a fact — worth having on a path where
+/// [I11] is what makes a bytes-only resume cursor safe.
+///
+/// Uniqueness is structural rather than enforced: the tag partitions the id space,
+/// so two predicates cannot collide however their sequences are allocated.
+///
+/// [I11]: ../../../docs/invariants.md#i11
+/// [chapter 3]: ../../../docs/03-storage-model.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FactId(pub u64);
+
+impl FactId {
+    /// Compose an id from its predicate and sequence.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::PredicateIdTooWide`] if the predicate does not fit the tag,
+    /// [`StoreError::FactIdSequence`] if the sequence is 0 (reserved) or past
+    /// [`MAX_FACT_SEQUENCE`].
+    pub fn new(predicate: PredicateId, sequence: u64) -> Result<Self, StoreError> {
+        if predicate.0 > MAX_TAGGABLE_PREDICATE {
+            return Err(StoreError::PredicateIdTooWide {
+                predicate: predicate.0,
+                max: MAX_TAGGABLE_PREDICATE,
+            });
+        }
+        if sequence == 0 || sequence > MAX_FACT_SEQUENCE {
+            return Err(StoreError::FactIdSequence {
+                sequence,
+                max: MAX_FACT_SEQUENCE,
+            });
+        }
+
+        Ok(Self(
+            (u64::from(predicate.0) << FACT_ID_SEQUENCE_BITS) | sequence,
+        ))
+    }
+
+    /// The predicate that owns this fact.
+    #[must_use]
+    pub fn predicate(self) -> PredicateId {
+        // The shift leaves 24 bits, so the narrowing cannot truncate.
+        PredicateId((self.0 >> FACT_ID_SEQUENCE_BITS) as u32)
+    }
+
+    /// This fact's sequence within its predicate.
+    #[must_use]
+    pub fn sequence(self) -> u64 {
+        self.0 & MAX_FACT_SEQUENCE
+    }
+}
 
 impl Serialize for FactId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

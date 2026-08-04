@@ -54,6 +54,7 @@ dependencies = [
  "serde",
  "serde_json",
  "string-interner",
+ "tempfile",
  "thiserror",
  "tinyvec",
  "tokio",

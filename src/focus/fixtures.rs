@@ -174,6 +174,43 @@ pub fn run_with_suspends<S: FactStore>(
     }
 }
 
+/// Assert the [`FactStore`] scan contract: **every row a scan yields lies inside
+/// the predicate named by `lo`'s prefix.**
+///
+/// This is a contract on the trait, not a property of one backend, so every impl
+/// is held to it — including for `hi = None`, which the trait permits and which a
+/// store must therefore clamp itself. A scan that walks past the predicate binds a
+/// *different* predicate's row into the register, and the join above it silently
+/// produces wrong results rather than failing.
+///
+/// [`FjallStore`](crate::focus::store::FjallStore) satisfies this structurally —
+/// one keyspace per predicate, so there is nothing else in the tree to walk into.
+/// [`MemStore`](super::mem_store::MemStore) holds every predicate in one
+/// map and has to clamp explicitly; it did not, and an unbounded scan walked on
+/// into the next predicate's rows. That bug is why this assertion exists.
+///
+/// [I1]: ../../../docs/invariants.md
+pub fn assert_scan_stays_in_predicate<S: FactStore>(
+    store: &S,
+    lo: &[u8],
+    hi: Option<&[u8]>,
+) -> Result<(), ApertureError> {
+    let predicate = lo
+        .get(..PREDICATE_ID_SIZE)
+        .expect("a scan bound names a predicate in its first four bytes");
+
+    for row in store.scan(lo, hi) {
+        let (key, fact_id) = row?;
+        assert!(
+            key.starts_with(predicate),
+            "scan from {lo:?} (hi {hi:?}) yielded {key:?} (fact {fact_id:?}), \
+             which is outside predicate {predicate:?}"
+        );
+    }
+
+    Ok(())
+}
+
 /// A `FactStore` wrapper that counts `point()` calls, for the I6 guard
 /// (`exec::no_value_fetch_in_scan`): a value must be fetched from `entities`
 /// only at projection, never during a key-only scan.
