@@ -329,18 +329,31 @@ pub mod proptest {
             (self.build_store(), self.build_plan(interner))
         }
 
-        /// Fact ids come from a monotonic counter walked in a deterministic order,
-        /// so every rebuild yields an identical store — resume's integrity check
-        /// compares a re-read row's `fact_id` against the saved one.
+        /// The spec's facts in insertion order: `(predicate, encoded key, sequence
+        /// within that predicate)`.
+        ///
+        /// One deterministic order, walked by every store this spec seeds. That is
+        /// what makes a rebuilt store identical — resume's integrity check compares
+        /// a re-read row's `fact_id` against the saved one ([I4]) — and what makes
+        /// a fjall store and a `MemStore` built from the same spec agree fact for
+        /// fact, ids included, since the numbering matches what the real
+        /// per-predicate allocator hands out ([I11]).
+        ///
+        /// [I4]: ../../../docs/invariants.md#i4
+        /// [I11]: ../../../docs/invariants.md#i11
+        pub fn facts(&self) -> impl Iterator<Item = (PredicateId, Vec<u8>, u64)> + '_ {
+            self.facts.iter().enumerate().flat_map(|(predicate, keys)| {
+                keys.iter().enumerate().map(move |(i, key)| {
+                    (PredicateId(predicate as u32), encode_key(key), i as u64 + 1)
+                })
+            })
+        }
+
         pub fn build_store(&self) -> MemStore {
             let mut store = MemStore::new();
-            let mut next_id = 1u64;
 
-            for (predicate, keys) in self.facts.iter().enumerate() {
-                for key in keys {
-                    store.insert(PredicateId(predicate as u32), encode_key(key), next_id);
-                    next_id += 1;
-                }
+            for (predicate, key, sequence) in self.facts() {
+                store.insert(predicate, key, sequence);
             }
 
             store

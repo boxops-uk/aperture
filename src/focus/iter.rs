@@ -364,6 +364,13 @@ pub enum Stream<A> {
     Suspend(A),
 }
 
+/// How a run stopped. Every variant is reached by *consuming* the executor, which
+/// is what enforces [I8](../../docs/invariants.md#i8): the store handle, its
+/// snapshot and every open scan are dropped before the caller gets the answer.
+///
+/// A resumable stop carries only a bytes-only [`Cursor`]
+/// ([chapter 5](../../docs/05-resume.md)); to continue, rebuild with
+/// [`Executor::resume`] against a fresh snapshot.
 pub enum Iteratee<A> {
     Done(A),
     Suspended(A, Cursor),
@@ -429,8 +436,21 @@ impl<S: FactStore> Executor<S> {
         Ok(ex)
     }
 
+    /// Run the plan, handing each row to `step`, until the plan is exhausted or
+    /// `step` asks to suspend.
+    ///
+    /// **Takes `self` by value, and that is load-bearing**
+    /// ([I8](../../docs/invariants.md#i8)). A fjall scan pins a read snapshot, and
+    /// a pinned snapshot keeps LSM blocks — and a whole superseded generation —
+    /// alive; an idle portal must hold neither. Consuming the executor makes that
+    /// structural instead of a discipline: *every* exit path from here (done,
+    /// suspend, cancel, error unwind) drops the frame stack and the store handle,
+    /// so there is no shape of caller that can park a live iterator across a
+    /// suspend. Resuming is `Executor::resume` with the returned [`Cursor`] and a
+    /// fresh snapshot, which is exactly what the wire path does when a portal
+    /// wakes up ([chapter 5](../../docs/05-resume.md)).
     pub fn enumerate<A>(
-        &mut self,
+        mut self,
         init: A,
         mut step: impl FnMut(A, Row<'_, S>) -> Result<Stream<A>, ApertureError>,
         cancellation_token: &CancellationToken,
@@ -502,13 +522,15 @@ mod tests {
         mem_store::MemStore,
         plan::{
             Access, FactId, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
-            proptest::{arb_interruption_schedule, arb_plan_and_store, cut_points},
+            proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
         schema::{PredicateId, PredicateTy},
+        store::FjallDb,
         tuple::{Value, decode_probe},
     };
     use ::proptest::prelude::*;
     use std::{collections::BTreeSet, sync::atomic::Ordering};
+    use tempfile::TempDir;
 
     /// Run a plan whose head projects only scalars (no record field names to
     /// resolve). Record-head tests call [`collect_rows`] with their own interner.
@@ -1067,37 +1089,61 @@ mod tests {
 
     /// Assert resume == uninterrupted for **every** cut point of `mk`'s run:
     /// suspending once after row `k` for each `k` in turn, then suspending after
-    /// every row at once. `expected_rows` pins the run's size so the property
-    /// can't pass by exercising nothing.
-    fn assert_resume_equals_uninterrupted(
-        mut mk: impl FnMut() -> (MemStore, Plan),
+    /// every row at once. Returns the model rows, so a caller can pin the run's
+    /// size (the property must not pass by exercising nothing) or check further
+    /// schedules against the same model.
+    ///
+    /// Generic over the store: the battery is the same against `MemStore` and
+    /// against fjall, which is the point — a `Cursor` is bytes-only, so a store
+    /// that yields the same rows must resume the same way (PLAN 1d). `context`
+    /// names the store in failure messages.
+    fn assert_resume_equals_uninterrupted<S: FactStore>(
+        mut mk: impl FnMut() -> (S, Plan),
         interner: &LocalInterner,
-        expected_rows: usize,
-    ) {
+        context: &str,
+    ) -> Vec<Value> {
         let (store, plan) = mk();
         let model = collect_rows(store, plan, interner).unwrap();
-
-        assert_eq!(
-            model.len(),
-            expected_rows,
-            "model produced {} row(s), expected {expected_rows}",
-            model.len()
-        );
 
         for k in 1..=model.len() {
             let schedule = BTreeSet::from([k]);
             let (rows, suspends) = run_with_suspends(&mut mk, interner, &schedule).unwrap();
 
-            assert_eq!(suspends, 1, "schedule {{{k}}} never suspended");
-            assert_eq!(rows, model, "suspending after row {k} changed the run");
+            assert_eq!(suspends, 1, "{context}: schedule {{{k}}} never suspended");
+            assert_eq!(
+                rows,
+                model,
+                "{context}: suspending after row {k} of {} changed the run",
+                model.len()
+            );
         }
 
         // The maximal schedule: a suspend/resume round-trip at every row.
         let every: BTreeSet<usize> = (1..=model.len()).collect();
         let (rows, suspends) = run_with_suspends(&mut mk, interner, &every).unwrap();
 
-        assert_eq!(suspends, model.len(), "expected one suspend per row");
-        assert_eq!(rows, model, "suspending after every row changed the run");
+        assert_eq!(
+            suspends,
+            model.len(),
+            "{context}: expected one suspend per row"
+        );
+        assert_eq!(
+            rows, model,
+            "{context}: suspending after every row changed the run"
+        );
+
+        model
+    }
+
+    /// The number of rows a deterministic case must produce, asserted separately
+    /// so a shape that silently stops matching cannot pass vacuously.
+    fn assert_rows(model: &[Value], expected: usize) {
+        assert_eq!(
+            model.len(),
+            expected,
+            "model produced {} row(s), expected {expected}",
+            model.len()
+        );
     }
 
     /// 1 level: a full scan of one predicate, scalar head.
@@ -1312,25 +1358,42 @@ mod tests {
 
     #[test]
     fn resume_equals_uninterrupted_one_level() {
-        assert_resume_equals_uninterrupted(one_level_scan, &interner_with(&[]), 3);
+        let interner = interner_with(&[]);
+        let model = assert_resume_equals_uninterrupted(one_level_scan, &interner, "MemStore");
+        assert_rows(&model, 3);
     }
 
     #[test]
     fn resume_equals_uninterrupted_two_level_seek() {
         let interner = interner_with(&["a", "b"]);
-        assert_resume_equals_uninterrupted(|| two_level_seek_join(&interner), &interner, 3);
+        let model = assert_resume_equals_uninterrupted(
+            || two_level_seek_join(&interner),
+            &interner,
+            "MemStore",
+        );
+        assert_rows(&model, 3);
     }
 
     #[test]
     fn resume_equals_uninterrupted_three_level_seek() {
         let interner = interner_with(&["a", "b", "c"]);
-        assert_resume_equals_uninterrupted(|| three_level_seek_join(&interner), &interner, 5);
+        let model = assert_resume_equals_uninterrupted(
+            || three_level_seek_join(&interner),
+            &interner,
+            "MemStore",
+        );
+        assert_rows(&model, 5);
     }
 
     #[test]
     fn resume_equals_uninterrupted_cross_loop_residual() {
         let interner = interner_with(&["a", "b"]);
-        assert_resume_equals_uninterrupted(|| two_level_residual_join(&interner), &interner, 3);
+        let model = assert_resume_equals_uninterrupted(
+            || two_level_residual_join(&interner),
+            &interner,
+            "MemStore",
+        );
+        assert_rows(&model, 3);
     }
 
     proptest! {
@@ -1352,32 +1415,93 @@ mod tests {
             let interner = spec.interner();
             let mut mk = || spec.build(&interner);
 
-            let (store, plan) = mk();
-            let model = collect_rows(store, plan, &interner).unwrap();
+            // Every single cut point, and the maximal schedule.
+            let context = format!("MemStore, {} level(s)", spec.levels());
+            let model = assert_resume_equals_uninterrupted(&mut mk, &interner, &context);
 
-            // Every single cut point.
-            for k in 1..=model.len() {
-                let cut = BTreeSet::from([k]);
-                let (rows, suspends) = run_with_suspends(&mut mk, &interner, &cut).unwrap();
+            // Then the generated schedule.
+            let cuts = cut_points(&schedule, model.len());
+            let (rows, suspends) = run_with_suspends(&mut mk, &interner, &cuts).unwrap();
 
-                assert_eq!(suspends, 1, "schedule {{{k}}} never suspended");
-                assert_eq!(
-                    rows, model,
-                    "suspending after row {k} of {} changed the run ({} level(s))",
-                    model.len(),
-                    spec.levels()
-                );
-            }
+            assert_eq!(suspends, cuts.len(), "expected one suspend per scheduled row");
+            assert_eq!(rows, model, "schedule {cuts:?} changed the run");
+        }
+    }
 
-            // The generated schedule, then the maximal one (suspend at every row).
-            let every: BTreeSet<usize> = (1..=model.len()).collect();
+    // ---- The same battery, against fjall (1d) -----------------------------
+    //
+    // I4 is only half-tested on `MemStore`: a `Cursor` is bytes-only and a resume
+    // re-seeks by exactly those bytes, so what matters is that a *real* store —
+    // LSM iterators, a snapshot per segment, rows arriving as `Slice`s rather
+    // than cloned `Vec`s — reproduces the run identically. This is also the only
+    // place [I8](../../docs/invariants.md#i8) is testable at all; its guard lives
+    // in `store` alongside the drop probe.
 
-            for cuts in [cut_points(&schedule, model.len()), every] {
-                let (rows, suspends) = run_with_suspends(&mut mk, &interner, &cuts).unwrap();
+    /// Seed a fjall DB with the spec's facts, in the spec's order.
+    ///
+    /// The returned ids are asserted to be exactly what the spec numbers them,
+    /// which pins that the real per-predicate allocator and the generator's
+    /// deterministic order agree — without that, the two stores would hold the
+    /// same rows under different ids and a `FactRef` head would diverge.
+    fn seed_fjall(spec: &PlanAndStore, path: &std::path::Path) -> FjallDb {
+        let db = FjallDb::open(path).expect("open");
 
-                assert_eq!(suspends, cuts.len(), "expected one suspend per scheduled row");
-                assert_eq!(rows, model, "schedule {cuts:?} changed the run");
-            }
+        for (predicate, key, sequence) in spec.facts() {
+            let id = db.put_fact(predicate, &key, &[]).expect("put");
+            assert_eq!(
+                id,
+                FactId::new(predicate, sequence).expect("spec fact id"),
+                "the allocator diverged from the spec's fact order"
+            );
+        }
+
+        db
+    }
+
+    proptest! {
+        // A case builds a real DB — keyspace creation is fsync-bound at ~30 ms a
+        // tree, and a spec has up to three predicates, so a case costs ~100 ms
+        // against the MemStore battery's microseconds. Enough cases to be a real
+        // battery, not 1024 of them; the shapes themselves are already covered
+        // exhaustively above, and what is under test here is the store beneath
+        // them.
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// I4 — resume == uninterrupted run, **against fjall**, at every cut point
+        /// and under a generated schedule.
+        ///
+        /// Also differential: the fjall run must equal the `MemStore` run for the
+        /// same spec, row for row and id for id. That is what licenses every other
+        /// executor battery to be written against `MemStore` alone.
+        #[test]
+        fn resume_equals_uninterrupted_on_fjall(
+            spec in arb_plan_and_store(),
+            schedule in arb_interruption_schedule(),
+        ) {
+            let interner = spec.interner();
+            let dir = TempDir::new().expect("tempdir");
+            let db = seed_fjall(&spec, dir.path());
+
+            let mut mk = || (db.reader(), spec.build_plan(&interner));
+
+            let context = format!("fjall, {} level(s)", spec.levels());
+            let model = assert_resume_equals_uninterrupted(&mut mk, &interner, &context);
+
+            let cuts = cut_points(&schedule, model.len());
+            let (rows, suspends) = run_with_suspends(&mut mk, &interner, &cuts).unwrap();
+
+            assert_eq!(suspends, cuts.len(), "expected one suspend per scheduled row");
+            assert_eq!(rows, model, "schedule {cuts:?} changed the run on fjall");
+
+            // The differential: the same spec on the in-memory model.
+            let (mem, plan) = spec.build(&interner);
+            let mem_rows = collect_rows(mem, plan, &interner).unwrap();
+
+            assert_eq!(
+                model, mem_rows,
+                "fjall and MemStore disagree on the same spec ({} level(s))",
+                spec.levels()
+            );
         }
     }
 

@@ -272,9 +272,21 @@ impl FjallDb {
         Ok(fact_id)
     }
 
+    /// How many read snapshots fjall currently considers open.
+    ///
+    /// fjall's snapshot tracker is the only thing that knows, and this is what the
+    /// [I8](../../docs/invariants.md#i8) guard asserts against: a scan or store
+    /// handle that outlives its query shows up here as a snapshot that is still
+    /// pinning LSM blocks and a superseded generation. Exposed because "the
+    /// executor released it" is only believable if the storage engine agrees.
+    #[must_use]
+    pub fn open_snapshots(&self) -> usize {
+        self.db.supervisor.snapshot_tracker.open_snapshots()
+    }
+
     /// A read view for one query: an immutable snapshot plus the keyspace handles
-    /// ([I8](../../docs/invariants.md#i8) — the executor consumes this and is
-    /// dropped at suspend, so nothing is pinned across an idle portal).
+    /// ([I8](../../docs/invariants.md#i8) — `Executor::enumerate` consumes this and
+    /// drops it on every exit path, so nothing is pinned across an idle portal).
     pub fn reader(&self) -> FjallStore {
         FjallStore {
             snapshot: self.db.snapshot(),
@@ -398,48 +410,26 @@ impl FactStore for FjallStore {
     }
 }
 
-/// Phase-1 guards still pending: [I8](../../docs/invariants.md#i8), snapshot
-/// release at suspend, which needs the executor change in PLAN 1c.
-#[cfg(test)]
-mod pending_phase_1 {
-    // I8 — an immutable snapshot per query, released at suspend. A fjall `Iter`
-    // pins a read snapshot, which keeps LSM blocks and a whole superseded
-    // generation alive; the executor must therefore be dropped at suspend, not
-    // parked.
-    //
-    // Procedure: wrap the fjall store so every `Scan` it hands out registers
-    // itself with a drop probe. Run a query against it, suspend mid-stream
-    // (`Stream::Suspend`), and assert the probe sees zero live scans once the
-    // suspend returns — the bytes-only `Cursor` is all that survives. Repeat for
-    // the terminal stops (cancel, deadline unwind): those must release the
-    // snapshot too.
-    //
-    // `Executor::enumerate` takes `&mut self` and hands back `Iteratee::Suspended`
-    // while the caller keeps the executor *and* its live scans, so this is an API
-    // change (suspend consumes the executor, or clears its frames), not only a
-    // test to write.
-    //
-    // Untestable on `MemStore`, whose scan copies rows out and pins nothing —
-    // this is why fjall is pulled forward to Phase 1.
-    #[test]
-    #[ignore = "I8 — pending Phase 1 (needs the drop probe + suspend ownership change, PLAN 1c)"]
-    fn snapshot_released_at_suspend() {
-        unimplemented!(
-            "Phase 1 (task 1c): assert no fjall snapshot survives a suspend, cancel or unwind"
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::thread;
 
     use proptest::prelude::*;
     use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::focus::{
-        fixtures::assert_scan_stays_in_predicate, mem_store::MemStore, plan::MAX_FACT_SEQUENCE,
+        fixtures::{
+            DropProbe, assert_scan_stays_in_predicate, collect_rows, i64_field, interner_with,
+        },
+        iter::{Address, CANCELLATION_STRIDE, Executor, Iteratee, Stream},
+        mem_store::MemStore,
+        plan::{
+            Access, Generator, MAX_FACT_SEQUENCE, Plan, Project, Residual, ResidualOp, SeekKey,
+            SeekKeyPart,
+        },
+        schema::PredicateTy,
         tuple::strinc,
     };
 
@@ -1024,6 +1014,211 @@ mod tests {
             assert!(!ids.contains(&id), "{id:?} was reissued after a crash");
         }
         assert_bijection(&db);
+    }
+
+    /// A two-level plan over `outer` and `inner`: scan `outer`, seek `inner` by the
+    /// outer row's first field, project the outer field. Two levels means two scans
+    /// are open at a mid-stream cut, so the probe is watching more than one thing.
+    fn two_level_plan(outer: PredicateId, inner: PredicateId) -> Plan {
+        Plan {
+            nvars: 2,
+            body: Box::new([
+                Generator {
+                    access: Access {
+                        predicate_id: outer,
+                        seek_key: SeekKey::Prefix(Box::new([])),
+                    },
+                    binds: Box::new([Address::new(0)]),
+                    residuals: Box::new([]),
+                },
+                Generator {
+                    access: Access {
+                        predicate_id: inner,
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                            address: Address::new(0),
+                            field_idx: 0,
+                        }])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([]),
+                },
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                field_idx: 0,
+                ty: PredicateTy::Int,
+            },
+        }
+    }
+
+    /// A DB whose two-level plan yields several rows: three `outer` facts, each
+    /// with two `inner` matches.
+    fn snapshot_probe_db() -> (FjallDb, TempDir, Plan) {
+        let dir = TempDir::new().expect("tempdir");
+        let db = FjallDb::open(dir.path()).expect("open");
+        let (outer, inner) = (PredicateId(0), PredicateId(1));
+
+        for x in 1i64..=3 {
+            db.put_fact(outer, &i64_field(x), &[]).expect("put");
+            for y in [10i64, 20] {
+                let key = [i64_field(x), i64_field(y)].concat();
+                db.put_fact(inner, &key, &[]).expect("put");
+            }
+        }
+
+        let plan = two_level_plan(outer, inner);
+        (db, dir, plan)
+    }
+
+    /// [I8](../../docs/invariants.md#i8) — an immutable snapshot per query,
+    /// released at **every** stop.
+    ///
+    /// A fjall scan pins a read snapshot, and a pinned snapshot keeps LSM blocks
+    /// and a whole superseded generation alive, so an idle portal must hold none.
+    /// `Executor::enumerate` takes `self` by value, which is what makes this
+    /// structural: done, suspend, cancel and error unwind all drop the frame stack
+    /// and the store handle. This asserts it for each of the four, against two
+    /// independent witnesses — the drop probe (which object is still alive) and
+    /// fjall's own open-snapshot count (whether the engine still considers the
+    /// snapshot open).
+    ///
+    /// Untestable on `MemStore`, whose scan copies rows out and pins nothing —
+    /// which is why fjall is pulled forward to Phase 1.
+    #[test]
+    fn snapshot_released_at_suspend() {
+        let (db, _dir, _) = snapshot_probe_db();
+        let (outer, inner) = (PredicateId(0), PredicateId(1));
+        let interner = interner_with(&[]);
+        let cancel = CancellationToken::new();
+
+        assert_eq!(db.open_snapshots(), 0, "a seeded DB holds no snapshot");
+
+        // Positive control: while a run is in flight, both witnesses must see the
+        // snapshot pinned. Without this the assertions below could pass vacuously.
+        //
+        // The two counts are independently derived and must agree exactly. fjall's
+        // tracker counts live *references* to a snapshot nonce — `Snapshot` holds
+        // one and each `Iter` clones it — so at a cut inside a two-level plan it
+        // reads 3: the reader plus one per open scan, which is precisely what the
+        // drop probe is counting.
+        let (probe, live) = DropProbe::new(db.reader());
+        assert_eq!(db.open_snapshots(), 1, "a reader must open a snapshot");
+        assert_eq!(live.load(Ordering::SeqCst), 1);
+
+        let mut mid_run = None;
+        let out = Executor::new(probe, two_level_plan(outer, inner))
+            .enumerate(
+                0usize,
+                |n, _row| {
+                    mid_run = Some((db.open_snapshots(), live.load(Ordering::SeqCst)));
+                    Ok(Stream::Suspend(n + 1))
+                },
+                &cancel,
+            )
+            .expect("run");
+
+        assert!(
+            matches!(out, Iteratee::Suspended(1, _)),
+            "expected a suspend"
+        );
+        assert_eq!(
+            mid_run,
+            Some((3, 3)),
+            "mid-run: expected the store handle plus two open scans, seen by both witnesses"
+        );
+        assert_eq!(
+            live.load(Ordering::SeqCst),
+            0,
+            "the executor kept a scan or the store handle alive past a suspend"
+        );
+        assert_eq!(
+            db.open_snapshots(),
+            0,
+            "a fjall snapshot survived a suspend — an idle portal is pinning LSM blocks"
+        );
+
+        // Running to completion releases it too.
+        let (probe, live) = DropProbe::new(db.reader());
+        let rows = collect_rows(probe, two_level_plan(outer, inner), &interner).expect("run");
+        assert_eq!(rows.len(), 6, "the plan must produce rows to be a real run");
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            db.open_snapshots(),
+            0,
+            "a snapshot survived a completed run"
+        );
+
+        // An error unwinding out of `step` releases it: the executor is consumed on
+        // that path too, so there is no "failed query still holding a snapshot".
+        let (probe, live) = DropProbe::new(db.reader());
+        let failed = Executor::new(probe, two_level_plan(outer, inner)).enumerate(
+            (),
+            |(), _row| Err(ApertureError::AdvanceAfterClose),
+            &cancel,
+        );
+        assert!(failed.is_err(), "the step was supposed to fail");
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            db.open_snapshots(),
+            0,
+            "a snapshot survived an error unwind"
+        );
+
+        // And a cancellation, which is the one stop that needs setting up rather
+        // than asking for. The token is polled every `CANCELLATION_STRIDE` rows
+        // *skipped inside one `next()`*, so a plan needs a residual that rejects
+        // that many rows before a match to reach a poll at all; a plan whose rows
+        // all match would run to `Done` and prove nothing about cancellation.
+        let dir = TempDir::new().expect("tempdir");
+        let big = FjallDb::open(dir.path()).expect("open");
+        let last = CANCELLATION_STRIDE as i64;
+        for x in 0..=last {
+            big.put_fact(outer, &i64_field(x), &[]).expect("put");
+        }
+
+        let filtered = Plan {
+            nvars: 1,
+            body: Box::new([Generator {
+                access: Access {
+                    predicate_id: outer,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                binds: Box::new([Address::new(0)]),
+                // Matches only the final key, so the first `next()` skips every
+                // other row and trips the poll on the way.
+                residuals: Box::new([Residual {
+                    field_idx: 0,
+                    op: ResidualOp::EqConst(i64_field(last).into_boxed_slice()),
+                }]),
+            }]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                field_idx: 0,
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+
+        let (probe, live) = DropProbe::new(big.reader());
+        let stopped = Executor::new(probe, filtered).enumerate(
+            0usize,
+            |n, _row| Ok(Stream::Continue(n + 1)),
+            &cancelled,
+        );
+
+        assert!(
+            matches!(stopped, Err(ApertureError::Cancelled)),
+            "expected the run to be cancelled, got {:?}",
+            stopped.map(|_| "a completed run")
+        );
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            big.open_snapshots(),
+            0,
+            "a snapshot survived a cancellation"
+        );
     }
 
     /// Not a guard: the crashing half of [`no_half_present_facts`], run as a child

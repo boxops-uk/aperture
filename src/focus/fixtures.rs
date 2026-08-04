@@ -68,7 +68,7 @@ pub fn collect_rows<S: FactStore>(
     interner: &LocalInterner,
 ) -> Result<Vec<Value>, ApertureError> {
     let cancel = CancellationToken::new();
-    let mut ex = Executor::new(store, plan);
+    let ex = Executor::new(store, plan);
 
     let out = ex.enumerate(
         Vec::new(),
@@ -91,7 +91,7 @@ pub fn collect_rows<S: FactStore>(
 /// decode and allocate at the escape boundary.
 pub fn count_rows<S: FactStore>(store: S, plan: Plan) -> Result<usize, ApertureError> {
     let cancel = CancellationToken::new();
-    let mut ex = Executor::new(store, plan);
+    let ex = Executor::new(store, plan);
 
     let out = ex.enumerate(0usize, |n, _row| Ok(Stream::Continue(n + 1)), &cancel)?;
 
@@ -136,7 +136,7 @@ pub fn run_with_suspends<S: FactStore>(
     loop {
         let (store, plan) = mk();
 
-        let mut ex = match cursor.take() {
+        let ex = match cursor.take() {
             None => Executor::new(store, plan),
             Some(cursor) => Executor::resume(store, plan, cursor)?,
         };
@@ -209,6 +209,79 @@ pub fn assert_scan_stays_in_predicate<S: FactStore>(
     }
 
     Ok(())
+}
+
+/// A `FactStore` wrapper counting how many things it has handed out that are
+/// **still alive** — itself, plus every scan it opened — for the I8 guard
+/// (`store::snapshot_released_at_suspend`).
+///
+/// Both have to be counted, because either alone keeps a fjall read snapshot
+/// pinned: the store handle owns the `Snapshot`, and every `Iter` fjall hands out
+/// holds its own clone of the snapshot nonce. A guard that watched only the
+/// iterators would pass while the whole snapshot stayed open.
+///
+/// The count reaching zero is the *localising* half of the guard — it says which
+/// object survived. The authoritative half is fjall's own open-snapshot count
+/// (`FjallDb::open_snapshots`).
+pub struct DropProbe<S: FactStore> {
+    inner: S,
+    live: Arc<AtomicUsize>,
+}
+
+impl<S: FactStore> DropProbe<S> {
+    /// Wrap `inner`, returning the probe and a handle to its live-object count.
+    /// The count starts at 1: the store handle itself.
+    pub fn new(inner: S) -> (Self, Arc<AtomicUsize>) {
+        let live = Arc::new(AtomicUsize::new(1));
+        (
+            Self {
+                inner,
+                live: Arc::clone(&live),
+            },
+            live,
+        )
+    }
+}
+
+impl<S: FactStore> Drop for DropProbe<S> {
+    fn drop(&mut self) {
+        self.live.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub struct ProbedScan<I> {
+    inner: I,
+    live: Arc<AtomicUsize>,
+}
+
+impl<I> Drop for ProbedScan<I> {
+    fn drop(&mut self) {
+        self.live.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl<I: Iterator> Iterator for ProbedScan<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        self.inner.next()
+    }
+}
+
+impl<S: FactStore> FactStore for DropProbe<S> {
+    type Scan = ProbedScan<S::Scan>;
+
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Self::Scan {
+        self.live.fetch_add(1, Ordering::SeqCst);
+        ProbedScan {
+            inner: self.inner.scan(lo, hi),
+            live: Arc::clone(&self.live),
+        }
+    }
+
+    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
+        self.inner.point(id)
+    }
 }
 
 /// A `FactStore` wrapper that counts `point()` calls, for the I6 guard

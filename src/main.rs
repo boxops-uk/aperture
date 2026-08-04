@@ -200,7 +200,7 @@ fn main() -> Result<(), StoreCodecError> {
         },
     };
 
-    let mut executor = Executor::new(store, plan);
+    let executor = Executor::new(store, plan);
     let cancel = CancellationToken::new();
 
     let result = executor
