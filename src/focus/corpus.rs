@@ -48,6 +48,7 @@
 //! predicate test.Name   : string
 //! predicate test.Count  : int
 //! predicate test.Shadow : { value : int }   // the `.value` shadowing case
+//! predicate test.Wide   : { outer : { extra : int, inner : int } }
 //! ```
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
@@ -120,6 +121,22 @@ pub fn schema() -> Schema {
         Predicate {
             name: sym("test.Shadow"),
             key: PredicateTy::Record(Arc::from([(sym("value"), PredicateTy::Int)])),
+            value: None,
+        },
+        // Deliberately `test.Nested`'s field name carrying a differently-shaped
+        // record: the only way a query in the implemented subset can make two record
+        // *types* meet, which is what exercises unification's exact-arity rule.
+        // Appended last — a predicate's position is its id, and the tests assert on
+        // those, so inserting anywhere else renumbers them.
+        Predicate {
+            name: sym("test.Wide"),
+            key: PredicateTy::Record(Arc::from([(
+                sym("outer"),
+                PredicateTy::Record(Arc::from([
+                    (sym("extra"), PredicateTy::Int),
+                    (sym("inner"), PredicateTy::Int),
+                ])),
+            )])),
             value: None,
         },
     ];
@@ -226,12 +243,14 @@ pub const CORPUS: &[Entry] = &[
         "underscore digit separator",
     ),
     entry(
-        "X where test.Foo X.name",
+        "Y where Y = test.Foo _; test.Name Y.name",
         Supported,
-        "dot binds tighter than application: this is `test.Foo (X.name)`",
+        "dot binds tighter than application: this is `test.Name (Y.name)`. The \
+         precedence itself is pinned structurally in `parse.rs`; this entry is here \
+         to check the well-formed case typechecks",
     ),
     entry(
-        "X where test.Foo (X.name)",
+        "Y where Y = test.Foo _; test.Name (Y.name)",
         Supported,
         "the same, parenthesised — a group is transparent",
     ),
@@ -321,6 +340,18 @@ pub const CORPUS: &[Entry] = &[
         Diagnosed("reject/type-mismatch"),
         "`name` is a string",
     ),
+    entry(
+        "X where test.Foo X.name",
+        Diagnosed("reject/unresolved-access"),
+        "nothing binds `X`, so there is no type to read `name` from. Resolving it \
+         would need row polymorphism; Phase 4's range-restriction check would reject \
+         the query anyway",
+    ),
+    entry(
+        "X.value where X = test.Bar _",
+        Diagnosed("reject/no-value"),
+        "`test.Bar` is key-only",
+    ),
     // ---- malformed literals: lexed permissively, rejected in lowering ----
     entry(
         "X where X = test.Count 1__0",
@@ -341,6 +372,17 @@ pub const CORPUS: &[Entry] = &[
         "X where X = test.Count 99999999999999999999",
         Diagnosed("lit/int-range"),
         "does not fit i64 — an error, never a panicking parse",
+    ),
+    entry(
+        "X where X = test.Count 9223372036854775808",
+        Diagnosed("lit/int-range"),
+        "one past i64::MAX; only reachable with a minus in front of it",
+    ),
+    entry(
+        r#"X where X = test.Name "\uD800""#,
+        Diagnosed("lit/string-escape"),
+        "an unpaired surrogate. The lexer's regex accepts the escape, so this is only \
+         catchable when the string is decoded",
     ),
     // ---- not focus ----
     entry("where", ParseError, "no head, no body"),
@@ -398,11 +440,81 @@ mod tests {
         );
     }
 
-    /// The other half: each `Diagnosed` entry draws exactly the code it claims,
-    /// and each `Supported` entry draws nothing.
+    /// The other half, and the phase's headline claim: each `Diagnosed` entry draws
+    /// exactly the code it claims — and nothing else — while each `Supported` entry
+    /// draws nothing at all.
+    ///
+    /// Asserting the *set* of codes rather than "contains" is deliberate. A
+    /// construct reported as not-yet-implemented must not also produce a type error
+    /// about itself; cascading is the failure mode this pass rolls back its
+    /// substitutions to avoid.
     #[test]
-    #[ignore = "Phase 2 — pending typecheck (2.7, 2.8)"]
     fn every_entry_is_diagnosed_as_classified() {
-        unimplemented!("2.8: compile each entry through typecheck and assert the diagnostic codes");
+        let mut wrong = vec![];
+
+        for Entry {
+            source,
+            expect,
+            note,
+        } in CORPUS
+        {
+            // Not focus at all — the parse half of the gate owns these.
+            if matches!(expect, ParseError) {
+                continue;
+            }
+
+            let got = compile(source);
+            let got: Vec<&str> = got.iter().map(String::as_str).collect();
+            let want: Vec<&str> = match expect {
+                Supported => vec![],
+                Diagnosed(code) => vec![code],
+                ParseError => unreachable!(),
+            };
+
+            if got != want {
+                wrong.push(format!(
+                    "{source:?}\n      want {want:?}, got {got:?}  ({note})"
+                ));
+            }
+        }
+
+        assert!(
+            wrong.is_empty(),
+            "{} of {} entries are diagnosed differently than classified:\n    {}",
+            wrong.len(),
+            CORPUS.len(),
+            wrong.join("\n    ")
+        );
+    }
+
+    /// Every distinct diagnostic code `source` draws, in first-seen order, from
+    /// lowering and typecheck together.
+    ///
+    /// Codes are collected as they come, *not* filtered against the ones the corpus
+    /// knows about: a code nobody expected has to be able to fail this gate, which is
+    /// the whole point of comparing sets.
+    fn compile(source: &str) -> Vec<String> {
+        use crate::focus::{lower::lower, parse::parse, schema::LocalInterner, ty};
+
+        let schema = schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+
+        let parsed = parse(source);
+        let Some(root) = parsed.root() else {
+            return vec![];
+        };
+
+        let (ast, lowering_diags) = lower(&root, &schema, &mut interner);
+        let (_typed, ty_diags) = ty::check(&ast, &schema, &interner);
+
+        let mut codes: Vec<String> = vec![];
+        for diag in lowering_diags.iter().chain(ty_diags.iter()) {
+            if let Some(code) = diag.code.as_deref()
+                && !codes.iter().any(|seen| seen == code)
+            {
+                codes.push(code.to_owned());
+            }
+        }
+        codes
     }
 }

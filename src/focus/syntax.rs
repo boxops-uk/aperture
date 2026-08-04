@@ -8,12 +8,42 @@ use crate::focus::{
 
 pub type Span = Range<u32>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TyVarId(u32);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+impl TyVarId {
+    pub fn new(index: usize) -> Self {
+        TyVarId(index as u32)
+    }
+
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeId(u32);
 
+impl NodeId {
+    /// Index into a side table. `NodeId`s are dense — the store is append-only —
+    /// so an annotation table is a `Vec`, not a map ([chapter 7]).
+    ///
+    /// [chapter 7]: ../../../docs/07-compilation.md
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// A query-level type.
+///
+/// Distinct from the schema's [`PredicateTy`](crate::focus::schema::PredicateTy),
+/// which has no type variables: a query is inferred, a schema is declared.
+/// `Ty::Error` is a poison that unifies with anything, so one mistake reports once
+/// instead of cascading.
+///
+/// There is no `Never` yet. `never` parses and lowers, but typecheck reports it as
+/// not yet implemented, so a type for it would be speculative.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Int,
     String,

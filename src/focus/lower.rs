@@ -28,7 +28,7 @@ use crate::focus::{
 };
 
 /// The field name that reads a fact's value side rather than a key field.
-const VALUE_FIELD: &str = "value";
+pub const VALUE_FIELD: &str = "value";
 
 /// Lower a parse into the typed store.
 ///

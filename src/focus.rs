@@ -8,6 +8,7 @@ pub mod schema;
 pub mod store;
 pub mod syntax;
 pub mod tuple;
+pub mod ty;
 
 // The generated-parser glue and its `logos` lexer. Public because the façade
 // (`cst`) hands out `Rule` and `Token` values, and because later phases — the
