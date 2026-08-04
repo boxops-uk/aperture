@@ -961,6 +961,19 @@ mod tests {
     const CRASH_CHILD: &str = "focus::store::tests::crashing_writer_child_process";
     const CRASH_DIR_VAR: &str = "APERTURE_I12_CRASH_DIR";
 
+    /// How many predicates the crashing writer spreads its facts across, and how
+    /// many facts it commits *before* arming the watchdog.
+    ///
+    /// The prefix exists so the crash case can never be vacuous. A keyspace pair
+    /// costs ~30 ms to create ([chapter 3]) and `put_fact` creates one lazily on
+    /// first use, so on a busy disk four predicates' worth of setup can outlast the
+    /// watchdog: the child then dies before a single fact is durable and the parent
+    /// fails its own non-vacuity check, having learned nothing about I12.
+    ///
+    /// [chapter 3]: ../../docs/03-storage-model.md
+    const CRASH_PREDICATES: u32 = 4;
+    const CRASH_COMMITTED_PREFIX: u32 = 8;
+
     /// [I12](../../docs/invariants.md#i12) — a fact is never half-present, **including
     /// across a crash**.
     ///
@@ -993,8 +1006,9 @@ mod tests {
         let db = FjallDb::open(dir.path()).expect("reopen after a crash");
         let recovered = assert_bijection(&db);
         assert!(
-            recovered > 0,
-            "the child crashed before writing anything — the case is vacuous"
+            recovered >= CRASH_COMMITTED_PREFIX as usize,
+            "recovered {recovered} facts, fewer than the {CRASH_COMMITTED_PREFIX} the child \
+             committed before arming its watchdog — the crash case is vacuous"
         );
 
         // The allocator recovers above everything that survived, so a post-crash
@@ -1233,15 +1247,34 @@ mod tests {
 
         let db = FjallDb::open(dir).expect("open");
 
+        // Create the trees and commit a prefix before arming the watchdog, so the
+        // kill always lands in the streaming phase — which is where the interesting
+        // case is (inside a batch commit) — and never in keyspace creation. See
+        // `CRASH_COMMITTED_PREFIX`.
+        db.create_predicates((0..CRASH_PREDICATES).map(PredicateId))
+            .expect("create predicate trees");
+
+        for k in 0..CRASH_COMMITTED_PREFIX {
+            db.put_fact(
+                PredicateId(k % CRASH_PREDICATES),
+                &k.to_be_bytes(),
+                &[7; 48],
+            )
+            .expect("put");
+        }
+
         thread::spawn(|| {
             thread::sleep(std::time::Duration::from_millis(150));
             std::process::abort();
         });
 
-        for k in 0..u32::MAX {
-            let predicate = PredicateId(k % 4);
-            db.put_fact(predicate, &k.to_be_bytes(), &[7; 48])
-                .expect("put");
+        for k in CRASH_COMMITTED_PREFIX..u32::MAX {
+            db.put_fact(
+                PredicateId(k % CRASH_PREDICATES),
+                &k.to_be_bytes(),
+                &[7; 48],
+            )
+            .expect("put");
         }
     }
 }
