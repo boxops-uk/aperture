@@ -46,6 +46,24 @@ Keep the representation choices **consistent** across all three — most importa
 fields are sorted `[(Symbol, T)]` slices everywhere, never `HashMap` ([chapter
 6](06-types-and-schema.md), [conventions](conventions.md)).
 
+### The typed tree prints back to source
+
+`focus::print` renders the `SyntaxTree` store as focus text, and it is the inverse of
+`parse → lower`: **`parse ∘ print` is the identity on trees.** That is not a convenience — it is
+what lets the front end be *property-tested* rather than only checked against hand-written
+snippets. Generate a tree, print it, parse it, compare; the corpus then says which syntax is
+acceptable, and the round-trip says the pipeline is faithful across all of it
+([testing](testing.md)).
+
+The other direction does not hold, and is not claimed: printing normalises whitespace, drops
+redundant parentheses, and picks its own string escapes. The comparison is therefore between
+*canonical forms* of trees — a separate s-expression rendering, deliberately not focus syntax,
+so the property cannot be satisfied by the printer agreeing with itself.
+
+The whole difficulty is parentheses: printing has to re-insert exactly the ones the grammar's
+three precedence levels require, which makes the printer the place where the precedence
+decisions are stated executably rather than in prose.
+
 ---
 
 ## The pipeline

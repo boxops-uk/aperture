@@ -178,6 +178,16 @@ impl Schema {
             })
     }
 
+    /// How many predicates the schema declares. A predicate's position **is** its
+    /// id, so this is also one past the largest valid [`PredicateId`].
+    pub fn len(&self) -> usize {
+        self.predicates.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.predicates.is_empty()
+    }
+
     pub fn find_position(&self, name: &str) -> Option<(PredicateId, PredicateRef<'_>)> {
         let spur = self.interner.get_spur(name)?;
         let (idx, inner) = self.predicates.iter().find_position(|p| p.name == spur)?;

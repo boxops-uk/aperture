@@ -305,3 +305,258 @@ impl Recursive for Query<NodeId> {
         }
     }
 }
+
+/// Generators for the typed tree.
+///
+/// The strategy produces an interner-free **spec** rather than an [`Ast`] directly,
+/// following the convention `tuple::proptest` sets: a spec holds names as `String`s,
+/// so it shrinks to a small readable counterexample instead of to an opaque pile of
+/// interner handles, and the real tree is materialised from it by [`QuerySpec::build`].
+///
+/// Every spec must be **buildable into a tree lowering could have produced**, since
+/// that is what the round-trip property compares against
+/// ([`print`](crate::focus::print)). Three constraints follow, and each is enforced
+/// by the generator rather than patched up when building:
+///
+/// - **field names exclude `value`**, which is the surface for a fact's value side —
+///   `Access(Key("value"))` would print as `.value` and lower back as
+///   `Access(Value)`. That the surface is genuinely ambiguous there is why
+///   `reject/value-shadowed` exists.
+/// - **a disjunction has at least two branches**, since one branch has no `|` to
+///   print and would come back as a bare pattern.
+/// - **a subquery has at least one statement**, as the grammar requires.
+#[cfg(any(test, feature = "proptest"))]
+pub mod proptest {
+    use super::*;
+    use crate::focus::schema::{LocalInterner, Schema};
+    use ::proptest::prelude::*;
+
+    #[derive(Debug, Clone)]
+    pub enum PatternSpec {
+        Wildcard,
+        Never,
+        Var(String),
+        Int(i64),
+        Str(String),
+        Prefix(String),
+        Record(Vec<(String, PatternSpec)>),
+        Field(String, Box<PatternSpec>),
+        Value(Box<PatternSpec>),
+        Select(String, Box<PatternSpec>),
+        /// A predicate, by an index reduced modulo the schema's size at build time —
+        /// so the spec shrinks as a small number and never names a predicate that
+        /// does not exist.
+        Fact(u32, Box<PatternSpec>),
+        Or(Vec<PatternSpec>),
+        Subquery(Box<QuerySpec>),
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum StmtSpec {
+        Implicit(PatternSpec),
+        Bind(PatternSpec, PatternSpec),
+        Negation(PatternSpec),
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct QuerySpec {
+        pub head: PatternSpec,
+        pub body: Vec<StmtSpec>,
+    }
+
+    /// Variable names: valid `UId`s.
+    fn arb_var() -> impl Strategy<Value = String> {
+        ::proptest::sample::select(vec!["X", "Y", "Z", "Row", "A"]).prop_map(str::to_owned)
+    }
+
+    /// Field and alternative names: valid `LId`s, no keyword, and never `value`.
+    fn arb_field() -> impl Strategy<Value = String> {
+        ::proptest::sample::select(vec!["id", "name", "from", "to", "outer", "inner", "alt"])
+            .prop_map(str::to_owned)
+    }
+
+    /// Strings, with the cases that stress escaping injected explicitly rather than
+    /// left to a random draw: quotes, backslashes, control characters, an embedded
+    /// NUL, and a non-BMP character.
+    fn arb_text() -> impl Strategy<Value = String> {
+        prop_oneof![
+            4 => any::<String>(),
+            1 => Just(String::new()),
+            1 => Just("\0".to_owned()),
+            1 => Just("a\"b\\c/d".to_owned()),
+            1 => Just("\u{1}\u{7f}\n\r\t\u{8}\u{c}".to_owned()),
+            1 => Just("\u{1f600}".to_owned()),
+        ]
+    }
+
+    fn arb_int() -> impl Strategy<Value = i64> {
+        prop_oneof![
+            4 => any::<i64>(),
+            1 => Just(i64::MIN),
+            1 => Just(i64::MAX),
+            1 => Just(0),
+        ]
+    }
+
+    fn arb_stmt(
+        pattern: BoxedStrategy<PatternSpec>,
+    ) -> impl Strategy<Value = StmtSpec> + Clone + use<> {
+        prop_oneof![
+            pattern.clone().prop_map(StmtSpec::Implicit),
+            (pattern.clone(), pattern.clone()).prop_map(|(l, r)| StmtSpec::Bind(l, r)),
+            pattern.prop_map(StmtSpec::Negation),
+        ]
+    }
+
+    pub fn arb_pattern_spec() -> BoxedStrategy<PatternSpec> {
+        let leaf = prop_oneof![
+            Just(PatternSpec::Wildcard),
+            Just(PatternSpec::Never),
+            arb_var().prop_map(PatternSpec::Var),
+            arb_int().prop_map(PatternSpec::Int),
+            arb_text().prop_map(PatternSpec::Str),
+            arb_text().prop_map(PatternSpec::Prefix),
+        ];
+
+        leaf.prop_recursive(4, 48, 4, |inner| {
+            prop_oneof![
+                ::proptest::collection::vec((arb_field(), inner.clone()), 0..4)
+                    .prop_map(PatternSpec::Record),
+                (arb_field(), inner.clone())
+                    .prop_map(|(name, base)| PatternSpec::Field(name, Box::new(base))),
+                inner
+                    .clone()
+                    .prop_map(|base| PatternSpec::Value(Box::new(base))),
+                (arb_field(), inner.clone())
+                    .prop_map(|(alt, base)| PatternSpec::Select(alt, Box::new(base))),
+                (0u32..64, inner.clone())
+                    .prop_map(|(index, key)| PatternSpec::Fact(index, Box::new(key))),
+                ::proptest::collection::vec(inner.clone(), 2..4).prop_map(PatternSpec::Or),
+                (
+                    inner.clone(),
+                    ::proptest::collection::vec(arb_stmt(inner.boxed()), 1..3)
+                )
+                    .prop_map(|(head, body)| PatternSpec::Subquery(Box::new(
+                        QuerySpec { head, body }
+                    ))),
+            ]
+        })
+        .boxed()
+    }
+
+    pub fn arb_query_spec() -> impl Strategy<Value = QuerySpec> {
+        let pattern = arb_pattern_spec();
+        (
+            pattern.clone(),
+            ::proptest::collection::vec(arb_stmt(pattern), 1..4),
+        )
+            .prop_map(|(head, body)| QuerySpec { head, body })
+    }
+
+    impl QuerySpec {
+        /// Materialise the spec as a tree, against `schema`.
+        pub fn build(&self, schema: &Schema) -> (Ast, LocalInterner) {
+            let mut builder = Builder {
+                store: SyntaxTree::new(),
+                interner: LocalInterner::new(schema.interner().clone()),
+                predicates: schema.len().max(1),
+            };
+            let query = builder.query(self);
+            (Ast::new(query, builder.store), builder.interner)
+        }
+    }
+
+    struct Builder {
+        store: SyntaxTree<ExprKind<NodeId>>,
+        interner: LocalInterner,
+        predicates: usize,
+    }
+
+    impl Builder {
+        /// Spans are all empty: a built tree has no source, and neither the printer
+        /// nor the canonical form reads them.
+        fn push(&mut self, kind: ExprKind<NodeId>) -> NodeId {
+            self.store.push(kind, 0..0)
+        }
+
+        fn query(&mut self, spec: &QuerySpec) -> Query<NodeId> {
+            let body = spec
+                .body
+                .iter()
+                .map(|stmt| match stmt {
+                    StmtSpec::Implicit(p) => QueryStmt::Implicit(self.pattern(p)),
+                    StmtSpec::Bind(l, r) => {
+                        let lhs = self.pattern(l);
+                        let rhs = self.pattern(r);
+                        QueryStmt::Bind(lhs, rhs)
+                    }
+                    StmtSpec::Negation(p) => QueryStmt::Negation(self.pattern(p)),
+                })
+                .collect();
+            let head = self.pattern(&spec.head);
+            Query::new(head, body)
+        }
+
+        fn pattern(&mut self, spec: &PatternSpec) -> NodeId {
+            let kind = match spec {
+                PatternSpec::Wildcard => ExprKind::Wildcard,
+                PatternSpec::Never => ExprKind::Never,
+                PatternSpec::Var(name) => ExprKind::Var(self.interner.get_or_intern(name)),
+                PatternSpec::Int(value) => ExprKind::Lit(Literal::Int(*value)),
+                PatternSpec::Str(text) => {
+                    ExprKind::Lit(Literal::Str(self.interner.get_or_intern(text)))
+                }
+                PatternSpec::Prefix(text) => ExprKind::Prefix(self.interner.get_or_intern(text)),
+
+                PatternSpec::Record(fields) => {
+                    // Sorted by name and deduplicated, exactly as lowering leaves a
+                    // record — otherwise the round-trip would compare a tree lowering
+                    // could not have produced.
+                    let mut built: Vec<(Symbol, NodeId)> = vec![];
+                    let mut names: Vec<&str> = vec![];
+                    let mut sorted: Vec<&(String, PatternSpec)> = fields.iter().collect();
+                    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                    for (name, value) in sorted {
+                        if names.last() == Some(&name.as_str()) {
+                            continue;
+                        }
+                        names.push(name);
+                        let symbol = self.interner.get_or_intern(name);
+                        let value = self.pattern(value);
+                        built.push((symbol, value));
+                    }
+                    ExprKind::Record(built.into())
+                }
+
+                PatternSpec::Field(name, base) => {
+                    let symbol = self.interner.get_or_intern(name);
+                    let base = self.pattern(base);
+                    ExprKind::Access(FieldRef::Key(symbol), base)
+                }
+                PatternSpec::Value(base) => {
+                    let base = self.pattern(base);
+                    ExprKind::Access(FieldRef::Value, base)
+                }
+                PatternSpec::Select(alt, base) => {
+                    let symbol = self.interner.get_or_intern(alt);
+                    let base = self.pattern(base);
+                    ExprKind::Select(symbol, base)
+                }
+                PatternSpec::Fact(index, key) => {
+                    let predicate = PredicateId((*index as usize % self.predicates) as u32);
+                    let key = self.pattern(key);
+                    ExprKind::Fact(predicate, key)
+                }
+                PatternSpec::Or(branches) => ExprKind::Disjunction(
+                    branches
+                        .iter()
+                        .map(|branch| self.pattern(branch))
+                        .collect::<Vec<_>>()
+                        .into(),
+                ),
+                PatternSpec::Subquery(spec) => ExprKind::Subquery(self.query(spec)),
+            };
+            self.push(kind)
+        }
+    }
+}

@@ -4,6 +4,7 @@ pub mod iter;
 pub mod lower;
 pub mod parse;
 pub mod plan;
+pub mod print;
 pub mod schema;
 pub mod store;
 pub mod syntax;

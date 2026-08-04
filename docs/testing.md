@@ -138,6 +138,16 @@ tests only the error path.
   everything outstanding — which is how the Phase 2 audit was taken in the first place.
   Parse and lowering additionally have no-panic properties over generated token soup, because
   a tree with holes in it is the ordinary input to lowering, not an edge case.
+- **Front end, tier 1:** **`parse ∘ print == id` on trees** — generate a tree
+  (`syntax::proptest`), print it as focus source (`focus::print`), parse and lower the text, and
+  the tree must come back structurally identical. This is what stops the corpus being the *whole*
+  specification of the surface: the corpus says which syntax is acceptable, the round-trip says
+  the front end is faithful across all of it. Only that direction is claimed — `print ∘ parse` is
+  not the identity on *text*, since whitespace, redundant parens and the choice of string escapes
+  are normalised away — so the comparison is between canonical forms of trees, in a rendering
+  deliberately distinct from the printer's so the property cannot be circular. The generator's own
+  population is asserted (median size, every construct reached), because a strategy that
+  degenerates leaves the property green and vacuous.
 - **Regression examples** (specific past bugs, named edge cases) live alongside the
   properties as ordinary `#[test]`s — properties explore, examples pin.
 
