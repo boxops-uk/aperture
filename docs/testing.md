@@ -148,6 +148,13 @@ tests only the error path.
   deliberately distinct from the printer's so the property cannot be circular. The generator's own
   population is asserted (median size, every construct reached), because a strategy that
   degenerates leaves the property green and vacuous.
+- **Front end, tier 1:** **a node's span is where its text was printed.** The printer records
+  the range it emitted each node at, and parsing and lowering that text must give back exactly
+  those ranges ([chapter 7](07-compilation.md)). This is the half of the front end the tree
+  round-trip is blind to: spans carry no structure, so every one of them could be off by a byte
+  or name a sibling while the tree comparison stayed green — and spans are what every diagnostic
+  points with. It found the access chain spanning only its field name, so a type error on
+  `X.a.b` underlined `b` where one on `test.Foo X` underlined the application.
 - **Regression examples** (specific past bugs, named edge cases) live alongside the
   properties as ordinary `#[test]`s — properties explore, examples pin.
 

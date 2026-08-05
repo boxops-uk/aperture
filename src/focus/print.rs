@@ -19,7 +19,7 @@
 
 use crate::focus::{
     schema::{LocalInterner, Schema, Symbol},
-    syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt},
+    syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, Span},
 };
 
 /// How loosely a pattern binds, from the grammar:
@@ -44,12 +44,79 @@ enum Level {
 
 /// Render `ast` as focus source.
 pub fn print(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> String {
+    spanned(ast, schema, interner).text
+}
+
+/// Render `ast` as focus source, keeping the range each node's text occupies.
+///
+/// Printing is where a span can be *predicted*: the printer knows what it emitted
+/// and where, so lowering the result must hand back exactly these ranges. That is
+/// what makes spans property-testable at all — a generated tree has no source to
+/// compare against, and re-deriving one by slicing and re-parsing would only ever
+/// check that a span looks plausible.
+pub fn spanned(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> Spanned {
+    let mut out = Spanned {
+        text: String::new(),
+        spans: vec![0..0; ast.store().len()],
+    };
     Printer {
         ast,
         schema: Some(schema),
         interner,
     }
-    .query(ast.query())
+    .query(&mut out, ast.query());
+    out
+}
+
+/// Focus source under construction, with the span each node was printed at.
+pub struct Spanned {
+    text: String,
+    /// By `NodeId`, which indexes the store densely.
+    spans: Vec<Span>,
+}
+
+impl Spanned {
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Where `id`'s own text landed.
+    ///
+    /// **Parentheses the printer wrapped around `id` are excluded**, because that is
+    /// lowering's convention: a `paren_primary` is a pass-through to its child
+    /// (`lower.rs`), so the child keeps the span it was pushed with. A subquery's
+    /// parens *are* included, since there the parens belong to the node's own rule.
+    /// The two conventions must agree, or `spans_are_where_the_text_was_printed`
+    /// would be pinning the printer's rather than lowering's.
+    pub fn span(&self, id: NodeId) -> Span {
+        self.spans[id.index()].clone()
+    }
+
+    fn push(&mut self, text: &str) {
+        self.text.push_str(text);
+    }
+
+    /// Record `id` as covering exactly what `f` emits.
+    fn node(&mut self, id: NodeId, f: impl FnOnce(&mut Self)) {
+        let start = self.text.len() as u32;
+        f(self);
+        self.spans[id.index()] = start..self.text.len() as u32;
+    }
+
+    /// Emit `items` separated by `sep`.
+    fn join<T>(
+        &mut self,
+        sep: &str,
+        items: impl IntoIterator<Item = T>,
+        mut f: impl FnMut(&mut Self, T),
+    ) {
+        for (index, item) in items.into_iter().enumerate() {
+            if index > 0 {
+                self.push(sep);
+            }
+            f(self, item);
+        }
+    }
 }
 
 /// Render `ast` as an s-expression: its structure, with no `NodeId`s or spans.
@@ -75,36 +142,39 @@ struct Printer<'a> {
 impl<'a> Printer<'a> {
     // ---- focus source ---------------------------------------------------------
 
-    fn query(&self, query: &Query<NodeId>) -> String {
-        let head = self.pattern(*query.head(), Level::Disjunction);
-        let body = query
-            .body()
-            .iter()
-            .map(|stmt| self.stmt(stmt))
-            .collect::<Vec<_>>()
-            .join("; ");
-        format!("{head} where {body}")
+    fn query(&self, out: &mut Spanned, query: &Query<NodeId>) {
+        self.pattern(out, *query.head(), Level::Disjunction);
+        out.push(" where ");
+        out.join("; ", query.body(), |out, stmt| self.stmt(out, stmt));
     }
 
-    fn stmt(&self, stmt: &QueryStmt<NodeId>) -> String {
+    fn stmt(&self, out: &mut Spanned, stmt: &QueryStmt<NodeId>) {
         match stmt {
-            QueryStmt::Implicit(id) => self.pattern(*id, Level::Disjunction),
-            QueryStmt::Bind(lhs, rhs) => format!(
-                "{} = {}",
-                self.pattern(*lhs, Level::Disjunction),
-                self.pattern(*rhs, Level::Disjunction)
-            ),
-            QueryStmt::Negation(id) => format!("!{}", self.pattern(*id, Level::Disjunction)),
+            QueryStmt::Implicit(id) => self.pattern(out, *id, Level::Disjunction),
+            QueryStmt::Bind(lhs, rhs) => {
+                self.pattern(out, *lhs, Level::Disjunction);
+                out.push(" = ");
+                self.pattern(out, *rhs, Level::Disjunction);
+            }
+            QueryStmt::Negation(id) => {
+                out.push("!");
+                self.pattern(out, *id, Level::Disjunction);
+            }
         }
     }
 
     /// Print the node at `id`, wrapping it if it binds more loosely than `permitted`.
-    fn pattern(&self, id: NodeId, permitted: Level) -> String {
-        let text = self.bare(id);
-        if self.level(id) > permitted {
-            format!("({text})")
-        } else {
-            text
+    ///
+    /// The wrapping parens are emitted *outside* the recorded span — see
+    /// [`Spanned::span`] for why that is lowering's convention and not a choice.
+    fn pattern(&self, out: &mut Spanned, id: NodeId, permitted: Level) {
+        let wrapped = self.level(id) > permitted;
+        if wrapped {
+            out.push("(");
+        }
+        out.node(id, |out| self.bare(out, id));
+        if wrapped {
+            out.push(")");
         }
     }
 
@@ -117,48 +187,54 @@ impl<'a> Printer<'a> {
         }
     }
 
-    fn bare(&self, id: NodeId) -> String {
+    fn bare(&self, out: &mut Spanned, id: NodeId) {
         match self.ast.store().kind(id) {
-            ExprKind::Wildcard => "_".to_owned(),
-            ExprKind::Never => "never".to_owned(),
-            ExprKind::Var(symbol) => self.name(*symbol).to_owned(),
+            ExprKind::Wildcard => out.push("_"),
+            ExprKind::Never => out.push("never"),
+            ExprKind::Var(symbol) => out.push(self.name(*symbol)),
 
             ExprKind::Lit(Literal::Int(value)) => {
                 // `i64::MIN`'s magnitude does not fit an `i64`, and the grammar's
                 // negative literal is `'-' Nat`, so the sign is printed separately
                 // from an unsigned magnitude.
                 if *value < 0 {
-                    format!("-{}", value.unsigned_abs())
+                    out.push(&format!("-{}", value.unsigned_abs()));
                 } else {
-                    value.to_string()
+                    out.push(&value.to_string());
                 }
             }
-            ExprKind::Lit(Literal::Str(symbol)) => escape(self.name(*symbol)),
-            ExprKind::Prefix(symbol) => format!("{}..", escape(self.name(*symbol))),
+            ExprKind::Lit(Literal::Str(symbol)) => out.push(&escape(self.name(*symbol))),
+            ExprKind::Prefix(symbol) => {
+                out.push(&escape(self.name(*symbol)));
+                out.push("..");
+            }
 
-            ExprKind::Record(fields) => format!(
-                "{{{}}}",
-                fields
-                    .iter()
-                    .map(|(name, value)| format!(
-                        "{} = {}",
-                        self.name(*name),
-                        self.pattern(*value, Level::Disjunction)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            ExprKind::Record(fields) => {
+                out.push("{");
+                out.join(", ", fields.iter(), |out, (name, value)| {
+                    out.push(self.name(*name));
+                    out.push(" = ");
+                    self.pattern(out, *value, Level::Disjunction);
+                });
+                out.push("}");
+            }
 
             // An access chain's base is a primary or another chain; anything looser
             // is wrapped.
             ExprKind::Access(FieldRef::Key(name), base) => {
-                format!("{}.{}", self.pattern(*base, Level::Chain), self.name(*name))
+                self.pattern(out, *base, Level::Chain);
+                out.push(".");
+                out.push(self.name(*name));
             }
             ExprKind::Access(FieldRef::Value, base) => {
-                format!("{}.value", self.pattern(*base, Level::Chain))
+                self.pattern(out, *base, Level::Chain);
+                out.push(".value");
             }
             ExprKind::Select(alt, base) => {
-                format!("{}.{}?", self.pattern(*base, Level::Chain), self.name(*alt))
+                self.pattern(out, *base, Level::Chain);
+                out.push(".");
+                out.push(self.name(*alt));
+                out.push("?");
             }
 
             ExprKind::Fact(predicate, key) => {
@@ -169,20 +245,29 @@ impl<'a> Printer<'a> {
                     // panic on a hand-built one.
                     None => format!("unknown.Predicate{}", predicate.0),
                 };
-                format!("{name} {}", self.pattern(*key, Level::Application))
+                out.push(&name);
+                out.push(" ");
+                self.pattern(out, *key, Level::Application);
             }
 
-            ExprKind::Disjunction(branches) => branches
-                .iter()
-                .map(|branch| self.pattern(*branch, Level::Application))
-                .collect::<Vec<_>>()
-                .join(" | "),
+            ExprKind::Disjunction(branches) => {
+                out.join(" | ", branches.iter(), |out, branch| {
+                    self.pattern(out, *branch, Level::Application)
+                });
+            }
 
-            ExprKind::Subquery(query) => format!("({})", self.query(query)),
+            // Unlike a precedence paren, these belong to the subquery's own rule, so
+            // they are emitted inside the node's span — which is where lowering puts
+            // them too.
+            ExprKind::Subquery(query) => {
+                out.push("(");
+                self.query(out, query);
+                out.push(")");
+            }
 
             // Deliberately not valid focus: a tree with an error node has no source,
             // and emitting something plausible would hide that.
-            ExprKind::Error => "!error".to_owned(),
+            ExprKind::Error => out.push("!error"),
         }
     }
 
@@ -506,6 +591,130 @@ mod tests {
                 "printed {:?}", text
             );
         }
+
+        /// **A node's span is where its text was printed.** The printer records the
+        /// range it emitted each node at; parsing and lowering that text must give
+        /// back exactly those ranges.
+        ///
+        /// This is the half of the front end the tree round-trip is blind to. Spans
+        /// carry no structure, so every one of them could be off by a byte, name a
+        /// sibling, or swallow a precedence paren while the tree comparison stayed
+        /// green — and spans are what every diagnostic points with.
+        ///
+        /// It is testable only because printing *predicts* the spans. A generated
+        /// tree has no source of its own (`QuerySpec::build` pushes `0..0`), and
+        /// re-deriving one by slicing a span and re-parsing it would only ever check
+        /// that the span looks plausible, not that it is right.
+        #[test]
+        fn spans_are_where_the_text_was_printed(spec in arb_query_spec()) {
+            let schema = corpus::schema();
+            let (ast, interner) = spec.build(&schema);
+            let printed = spanned(&ast, &schema, &interner);
+
+            let parsed = parse(printed.text());
+            prop_assert!(
+                !parsed.has_errors(),
+                "printed {:?}, which does not parse: {:?}",
+                printed.text(),
+                parsed.diagnostics().iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+            let root = parsed.root().expect("a tree");
+
+            let mut reinterner = LocalInterner::new(schema.interner().clone());
+            let (reast, diags) = lower(&root, &schema, &mut reinterner);
+            prop_assert!(
+                diags.is_empty(),
+                "printed {:?}, which does not lower cleanly: {:?}",
+                printed.text(),
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+
+            // The walk pairs nodes positionally, which only means anything if the two
+            // trees have the same shape to begin with.
+            prop_assert_eq!(
+                canonical(&ast, &interner),
+                canonical(&reast, &reinterner),
+                "printed {:?}", printed.text()
+            );
+
+            spans_agree_in_query(&printed, (&ast, ast.query()), (&reast, reast.query()))?;
+        }
+    }
+
+    /// The text a span covers, for a failure message.
+    fn slice(text: &str, span: &Span) -> String {
+        match text.get(span.start as usize..span.end as usize) {
+            Some(text) => format!("{text:?}"),
+            None => "<not a valid range>".to_owned(),
+        }
+    }
+
+    /// Walk two same-shaped trees together, checking each printed span against the
+    /// one lowering recovered.
+    fn spans_agree(
+        printed: &Spanned,
+        (ast, id): (&Ast, NodeId),
+        (reast, reid): (&Ast, NodeId),
+    ) -> Result<(), TestCaseError> {
+        let expected = printed.span(id);
+        let found = reast.store().span(reid);
+        prop_assert_eq!(
+            expected.clone(),
+            found.clone(),
+            "printed at {:?} = {}, lowered back at {:?} = {} — in {:?}",
+            expected,
+            slice(printed.text(), &expected),
+            found,
+            slice(printed.text(), &found),
+            printed.text()
+        );
+
+        // Leaves have no children, and a variant mismatch is impossible: the caller
+        // has already compared canonical forms.
+        match (ast.store().kind(id), reast.store().kind(reid)) {
+            (ExprKind::Record(fields), ExprKind::Record(refields)) => {
+                for ((_, value), (_, revalue)) in fields.iter().zip(refields.iter()) {
+                    spans_agree(printed, (ast, *value), (reast, *revalue))?;
+                }
+            }
+            (ExprKind::Access(_, base), ExprKind::Access(_, rebase))
+            | (ExprKind::Select(_, base), ExprKind::Select(_, rebase))
+            | (ExprKind::Fact(_, base), ExprKind::Fact(_, rebase)) => {
+                spans_agree(printed, (ast, *base), (reast, *rebase))?;
+            }
+            (ExprKind::Disjunction(branches), ExprKind::Disjunction(rebranches)) => {
+                for (branch, rebranch) in branches.iter().zip(rebranches.iter()) {
+                    spans_agree(printed, (ast, *branch), (reast, *rebranch))?;
+                }
+            }
+            (ExprKind::Subquery(query), ExprKind::Subquery(requery)) => {
+                spans_agree_in_query(printed, (ast, query), (reast, requery))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn spans_agree_in_query(
+        printed: &Spanned,
+        (ast, query): (&Ast, &Query<NodeId>),
+        (reast, requery): (&Ast, &Query<NodeId>),
+    ) -> Result<(), TestCaseError> {
+        spans_agree(printed, (ast, *query.head()), (reast, *requery.head()))?;
+        for (stmt, restmt) in query.body().iter().zip(requery.body()) {
+            match (stmt, restmt) {
+                (QueryStmt::Implicit(id), QueryStmt::Implicit(reid))
+                | (QueryStmt::Negation(id), QueryStmt::Negation(reid)) => {
+                    spans_agree(printed, (ast, *id), (reast, *reid))?;
+                }
+                (QueryStmt::Bind(lhs, rhs), QueryStmt::Bind(relhs, rerhs)) => {
+                    spans_agree(printed, (ast, *lhs), (reast, *relhs))?;
+                    spans_agree(printed, (ast, *rhs), (reast, *rerhs))?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }
 

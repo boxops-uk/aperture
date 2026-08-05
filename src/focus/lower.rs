@@ -436,7 +436,10 @@ impl<'a> Lowering<'a> {
             }
 
             let CstKind::Token {
-                token, text, span, ..
+                token,
+                text,
+                span: at,
+                ..
             } = node.kind()
             else {
                 continue;
@@ -446,26 +449,28 @@ impl<'a> Lowering<'a> {
                 Token::LId => {
                     // A step is only complete once we know whether `?` follows, so
                     // the previous one is emitted here.
-                    if let Some((name, at)) = pending.take() {
-                        current = Some(self.access(current, name, &at));
+                    if let Some((name, step)) = pending.take() {
+                        current = Some(self.access(current, name, &step));
                     }
-                    pending = Some((self.interner.get_or_intern(text), span));
+                    pending = Some((self.interner.get_or_intern(text), step_span(span, &at)));
                 }
                 Token::Question => {
-                    if let Some((name, at)) = pending.take() {
+                    if let Some((name, step)) = pending.take() {
                         let base = match current {
                             Some(id) => id,
-                            None => self.hole(&at),
+                            None => self.hole(&step),
                         };
-                        current = Some(self.push(ExprKind::Select(name, base), &at));
+                        // Extended through the `?`, this node's own last token.
+                        let step = step_span(span, &at);
+                        current = Some(self.push(ExprKind::Select(name, base), &step));
                     }
                 }
                 _ => {}
             }
         }
 
-        if let Some((name, at)) = pending.take() {
-            current = Some(self.access(current, name, &at));
+        if let Some((name, step)) = pending.take() {
+            current = Some(self.access(current, name, &step));
         }
 
         match current {
@@ -493,6 +498,22 @@ impl<'a> Lowering<'a> {
     fn name_of(&self, symbol: Symbol) -> &str {
         self.interner.try_resolve(symbol).unwrap_or_default()
     }
+}
+
+/// The span of one step of an access chain: from the start of the chain's source
+/// text through the step's own last token.
+///
+/// A step is written postfix, so its own tokens (`name`, or `name` and `?`) are not
+/// the text it stands for — `X.a.b` is one node covering all of it. Two things force
+/// this shape. Typecheck labels a diagnostic with the node's span whatever the kind
+/// (`ty.rs`), so a step spanning only its name would underline `b` where an
+/// application underlines the whole of `test.Foo X`. And the start has to come from
+/// the *chain's* span rather than the base node's, because a parenthesised base
+/// passes its parens through (`Rule::ParenPrimary` above): taking the base node's
+/// start would put `(test.Foo _).id?` at `test.Foo _).id?`, an underline that opens
+/// inside a paren it never closes.
+fn step_span(chain: &Span, last: &Span) -> Span {
+    chain.start..last.end
 }
 
 /// The first `Some` a picker returns over `children`.
@@ -587,6 +608,44 @@ mod tests {
             QueryStmt::Implicit(id) | QueryStmt::Negation(id) => *id,
         };
         shape(&ast, &interner, id)
+    }
+
+    /// The text each node of an access chain covers, outermost first.
+    fn chain_spans(source: &str) -> Vec<&str> {
+        let (ast, diags, _) = lower_source(source);
+        assert!(codes(&diags).is_empty(), "{source:?}: {:?}", codes(&diags));
+
+        let mut out = vec![];
+        let mut id = *ast.query().head();
+        loop {
+            let span = ast.store().span(id);
+            out.push(&source[span.start as usize..span.end as usize]);
+            id = match ast.store().kind(id) {
+                ExprKind::Access(_, base) | ExprKind::Select(_, base) => *base,
+                _ => break,
+            };
+        }
+        out
+    }
+
+    /// A chain step spans the whole chain, not the name it was written with — the
+    /// worked example behind [`step_span`]. Typecheck labels with the node's span
+    /// whatever the kind, so a step has to underline all of `X.a.b` just as an
+    /// application underlines all of `test.Foo X`.
+    ///
+    /// The last case is why the start comes from the chain's span and not the base
+    /// node's: a parenthesised base *excludes* its parens (`Rule::ParenPrimary` is a
+    /// pass-through to its child), so measuring from there would open an underline
+    /// inside a paren it never closes.
+    #[test]
+    fn a_chain_step_spans_the_whole_chain() {
+        assert_eq!(chain_spans("X.a.b where test.Foo _"), ["X.a.b", "X.a", "X"]);
+        assert_eq!(chain_spans("X.alt? where test.Foo _"), ["X.alt?", "X"]);
+        assert_eq!(chain_spans("X.value where test.Foo _"), ["X.value", "X"]);
+        assert_eq!(
+            chain_spans("(test.Bar {id = 1}).value where test.Foo _"),
+            ["(test.Bar {id = 1}).value", "test.Bar {id = 1}"]
+        );
     }
 
     #[test]

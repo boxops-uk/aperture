@@ -64,6 +64,29 @@ The whole difficulty is parentheses: printing has to re-insert exactly the ones 
 three precedence levels require, which makes the printer the place where the precedence
 decisions are stated executably rather than in prose.
 
+### A node's span is the whole text it stands for
+
+Typecheck labels a diagnostic with the node's span whatever the node is (`ty.rs`), so the rule
+has to be uniform: **a node spans all of its own source text.** An application covers
+`test.Foo X`, a record covers `{…}` — and a postfix chain step covers `X.a.b`, not the `b` it
+was written with. A step spanning only its name would underline one identifier where every
+other kind underlines the construct.
+
+Two consequences are worth stating, because both are easy to get subtly wrong:
+
+- **A step's start comes from the chain, not from its base node.** A parenthesised base
+  *excludes* its parens (`paren_primary` lowers as a pass-through to its child, so the child
+  keeps the span it was pushed with), and measuring from there would put
+  `(test.Foo _).value` at `test.Foo _).value` — an underline that opens inside a paren it never
+  closes.
+- **Precedence parens belong to no node.** They are inserted by *printing* to preserve a shape,
+  so they sit outside the span of what they wrap. A subquery's parens are the opposite case:
+  they belong to its own rule, and are inside it.
+
+The printer is what makes this testable. It knows where it emitted each node, so it can
+*predict* every span, and lowering the printed text must recover exactly those ranges
+([testing](testing.md)) — a generated tree has no source of its own to compare against.
+
 ---
 
 ## The pipeline
