@@ -51,10 +51,15 @@ The engine spine exists in `src/focus/`:
   `src/lens/hoist.rs` remains its reference, along with `query.rs` (the boxed AST
   representation, which nothing needs yet) and the three files those depend on; the other
   seven `lens` files are deleted.
+- **The compilation driver** (`focus::compile`, Phase 3 done) — one `Compilation` carrying
+  the source, schema, interner, diagnostics sink and the trees the phases produce. A phase
+  reports by pushing into the sink and cannot return diagnostics; codes are a `Code` enum
+  rather than strings; rendering sorts into source order while the sink keeps arrival order.
 - **A focus shell** (`src/main.rs`) — reads a query, highlights it from the compiler's own
   lexer, and reports what the front end makes of it against a real `FjallDb` seeded at
-  startup; `:facts` runs a hand-built plan through the executor. It **cannot run a query**
-  (that needs flatten) and says so. Phase 5 scaffold, landed early — see that phase.
+  startup; `:facts` runs a hand-built plan through the executor. It compiles only through the
+  driver, and **cannot run a query** (that needs flatten) and says so. Phase 5 scaffold,
+  landed early — see that phase.
 - **Store** (`store.rs`) — the fjall store is complete and guarded (Phase 1 done): a pair of
   keyspaces per predicate (`keys.<id>`, `entities.<id>`), `scan`/`point`, and an atomic
   `put_fact` over a snowflake [`FactId`](docs/03-storage-model.md#factid-allocation-i11) with
@@ -75,7 +80,7 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
 ```
 0  guard matrix & harness ─┬─▶ 1  fjall store ✅ (I8, I11, I12 green; resume battery re-run on fjall)
                            │
-                           └─▶ 2  grammar ✅ ─▶ 3  driver ─▶ 4  flatten/reorder ─┬─▶ 5  REPL  (→ remote-only later)
+                           └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ─┬─▶ 5  REPL  (→ remote-only later)
                                                                               ├─▶ 6  derived facts  (deliberate machine change; own resume battery)
                                                                               └─▶ 7  ingestion ─▶ 8  schema ─▶ 9  operations
 
@@ -308,15 +313,44 @@ tables; explicitly no memoization).
 **Invariants in scope:** none made green (plumbing). *upholds:* the record-field-ordering
 convention across tree layers.
 
+**Smaller than it was written, because Phase 2 delivered four of its pieces:** keep-going
+diagnostics in all three phases, single-lex (`aea2003a6`), severity-aware `has_errors`
+(`ef70c8c6d` — added precisely so a pooled sink carrying a warning would not read as a failed
+parse), and a side table of *resolved* types. What was left is the sink, the context, and the
+rendering.
+
 **Tasks:**
-- **3a.** Stand up the context (diagnostics + interners + store/side tables); thread it
-  through parse → typecheck. *Done:* typecheck reports multiple diagnostics in one pass (tested).
-- **3b.** The driver sequencing phases to `plan(query)` (a stub into Phase 4). *Done:*
-  end-to-end "text → typed → (stub) plan" for the implemented subset, all diagnostics through one sink.
+- **3a.** ✅ `focus::diag` — the sink and the code taxonomy. `Code` is an enum (20 variants,
+  `as_str` rendering exactly the strings Phase 2 used, `kind` deriving the prefix); the
+  `Diagnostic` alias moves out of `parser.rs`, which is generated-parser glue; `Diagnostics`
+  reports with either span type and filters `has_errors` by severity.
+- **3b.** ✅ Phases take the sink and cannot return diagnostics — `parse → Option<Cst>`,
+  `lower → Ast`, `check → Typed`. *Done:* the corpus gates pass **unchanged**, which is what
+  proves the signature change altered no behaviour.
+- **3c.** ✅ `focus::compile::Compilation` — source, schema, interner, sink, tree and side
+  tables in one context; `check()` sequences the phases; rendering lives here. The CST is
+  deliberately not stored (it borrows the source; storing it buys a self-referential struct).
+- **3d.** ✅ `plan()` as the Phase 4 seam: type-checks, then reports `nyi/flatten`.
+- **3e.** ✅ `src/main.rs` compiles only through the driver.
 
 **Acceptance:**
-- [ ] One context carries diagnostics + interning + the typed store through the pipeline.
-- [ ] `plan(q)` runs typecheck → flatten in sequence; multi-error diagnostics render via `codespan-reporting` (tested).
+- [x] No front-end function returns diagnostics — the sink is the only path. Structural: the
+      signatures are the check, so there is nothing to test and nothing to remember.
+- [x] One context carries diagnostics + interning + the typed store through the pipeline, and
+      is the only thing the shell calls.
+- [x] `plan(q)` sequences the phases and reports `nyi/flatten` (a query that does not
+      typecheck has no plan to report as missing).
+- [x] Multi-error diagnostics render via `codespan-reporting`, **in source order**, tested
+      against a buffer — `compile::one_sink_holds_every_phase_and_rendering_sorts_it` and the
+      shell's own `a_line_wrong_twice_prints_both_faults_in_source_order`.
+- [x] Determinism and composed-no-panic properties green over generated input; the ledger is
+      still 4 entries, since this phase makes no invariant green and adds no pending guard.
+
+**What the phase discovered:** a sink has **two orders**. Diagnostics arrive in phase order —
+lowering's before typecheck's, whatever part of the query each is about — which is right for a
+log and wrong for a reader. Rendering sorts by where a diagnostic points; the sink does not,
+because that arrival order is what lets a caller ask what one phase reported. Both are pinned
+by one test on the same two diagnostics.
 
 ---
 

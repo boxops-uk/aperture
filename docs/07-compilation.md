@@ -199,8 +199,8 @@ That's the next section, and it's why the reorder interface takes a DAG from day
 
 ## The compilation driver
 
-The phases don't thread their own state; they run through one **compilation context** that
-carries the shared plumbing:
+The phases don't thread their own state; they run through one **compilation context**
+(`focus::compile::Compilation`) that carries the shared plumbing:
 
 - **One diagnostics sink** for the whole pipeline (parse/typecheck/flatten), accumulating
   errors and **continuing** rather than failing fast (permissive-grammar-narrow-later needs
@@ -213,6 +213,37 @@ carries the shared plumbing:
 The driver's terminal product is `plan(query) -> Plan`. Explicitly **not** now: memoization,
 incremental recomputation, a `salsa`-style query engine — the context is a plain threaded
 struct; incrementality must not be designed-in speculatively ([`PLAN.md`](../PLAN.md) Phase 3).
+
+Three things about the sink are load-bearing, and the third was a surprise.
+
+**A phase reports by pushing, and cannot return diagnostics.** `parse`, `lower` and
+`ty::check` take `&mut Diagnostics` and hand back only their artifact. A `Vec` handed back is
+a `Vec` a caller can drop, which made "every diagnostic reaches the user" a property of each
+call site rather than of the code — the same shape of problem as an executor that *could* be
+parked across a suspend, and the same fix ([I8](invariants.md#i8)): make the wrong thing
+unexpressible rather than forbidden.
+
+**A code is an identity, not a string.** `diag::Code` enumerates the taxonomy — `nyi/…`
+deferred to a later phase, `reject/…` meaningless, `lit/…` a malformed literal — so a typo
+cannot make a test pass for the wrong reason, and `Code::kind` answers "is this something
+that will work later?" without parsing the prefix back out. Phase 9 still owns the error
+taxonomy end to end; this is its shape.
+
+**The sink has two orders, and they are not the same.** Diagnostics arrive in *phase* order,
+so a fault at the head of a query found by typecheck lands after one in its body found by
+lowering. That is right for the sink, which is a log — it is what lets a caller ask what a
+single phase reported — and wrong for a person, who reads the query top to bottom. So
+**rendering sorts by where a diagnostic points and the sink does not**: presentation is a
+different question from accumulation, and conflating them means one of the two answers is
+wrong.
+
+### The refusal case
+
+`parse` returns `Option<Cst>`, and `None` means *no tree at all* — a source too long to
+address, or nesting past the cap. It is not "a tree with errors in it": that is the ordinary
+case, comes back as `Some`, and is what lowering's error nodes and typecheck's poison exist
+to handle. Keeping the two distinct in the type is what stops a driver treating a refusal as
+an empty query.
 
 ---
 

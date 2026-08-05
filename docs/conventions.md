@@ -35,6 +35,13 @@ are wrong.
   byte shouldn't take down a connection. `unwrap` is acceptable only where an invariant makes
   it truly impossible, with a comment saying why. (`BadResumeKey`, `BadRecord`, and the
   codec's canonicalisation rejections are examples of this done right.)
+- **A front-end phase reports by pushing, never by returning.** Diagnostics go into the
+  compilation's `Diagnostics` sink (`focus::diag`); a phase returns its artifact and nothing
+  else. A returned `Vec<Diagnostic>` is one a caller can quietly drop, which turns "every
+  diagnostic reaches the user" into a convention each call site has to keep
+  ([chapter 7](07-compilation.md#the-compilation-driver)). Report with a `Code`, not a
+  string: the enum is the taxonomy, and a code that names nothing is a test passing for the
+  wrong reason.
 - **Ownership types signal sharing.**
   - `Box<[T]>` for owned-once inner structure (a `Plan`'s generators, a residual list).
   - `Arc<T>` **only** at genuine sharing boundaries (a `Plan` shared across a

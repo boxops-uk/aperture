@@ -52,6 +52,26 @@ one row must cost k skips, not k(k+1)/2 — `exec::projection_walks_each_field_o
 (`ty::checking_a_deep_type_is_linear_not_quadratic`). Both are exact counts rather than ratios
 with a threshold to argue about.
 
+### The front end reports into one sink, and it has two orders
+
+Diagnostics from every phase land in one `Diagnostics` sink per compilation
+([chapter 7](07-compilation.md#the-compilation-driver)), which changes what a test asks. "What
+did *this phase* report" is no longer "the `Vec` it returned" — nothing returns one — but the
+tail added while it ran (`Diagnostics::since`). That is why the sink keeps **arrival** order,
+and why **rendering** sorts into source order instead: a test slices a log, a reader reads a
+query. One test pins both, on the same two diagnostics in opposite orders, so a change that
+collapsed the distinction fails it whichever way it went.
+
+Two properties cover the composed pipeline, and one is deliberately documented by what it does
+*not* catch. **Compiling never panics** on arbitrary input, *including through rendering* —
+each phase has that property alone, and the driver is where a phase can be handed something
+impossible by the one before it. **Compiling is deterministic** — the same source twice gives
+the same tree and the same rendered text — which catches a `HashMap` iteration order or a clock
+reaching the output, but *cannot* catch a dependence on interning order, since two runs of one
+source intern identically. `print`'s round-trip, which re-parses with a fresh interner, is that
+guard; collapsing every name in the canonical form to a constant leaves determinism green and
+fails eight of the printer's tests.
+
 ### Trait contracts are asserted per implementation, not differentially
 
 Where a trait has more than one implementation, its contract lives in `focus::fixtures` as an
