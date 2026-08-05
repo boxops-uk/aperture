@@ -17,6 +17,8 @@
 //! The hard part is parentheses. The grammar has three precedence levels, and a
 //! child looser than its position allows has to be wrapped — see [`Level`].
 
+use std::fmt::Write as _;
+
 use crate::focus::{
     schema::{LocalInterner, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},
@@ -123,14 +125,17 @@ impl Spanned {
 ///
 /// Not focus syntax, and not parseable. This is what two trees are compared by.
 pub fn canonical(ast: &Ast, interner: &LocalInterner) -> String {
-    Printer {
+    let printer = Printer {
         ast,
         // Predicates are named by id here, so no schema is needed — which is also
         // why a canonical form survives being compared across two schemas.
         schema: None,
         interner,
-    }
-    .canonical_query(ast.query())
+    };
+
+    let mut out = String::new();
+    printer.canonical_query(&mut out, ast.query());
+    out
 }
 
 struct Printer<'a> {
@@ -275,62 +280,124 @@ impl Printer<'_> {
 
     // ---- canonical form -------------------------------------------------------
 
-    fn canonical_query(&self, query: &Query<NodeId>) -> String {
-        let body = query
-            .body()
-            .iter()
-            .map(|stmt| match stmt {
-                QueryStmt::Implicit(id) => format!("(implicit {})", self.canonical_pattern(*id)),
-                QueryStmt::Bind(lhs, rhs) => format!(
-                    "(bind {} {})",
-                    self.canonical_pattern(*lhs),
-                    self.canonical_pattern(*rhs)
-                ),
-                QueryStmt::Negation(id) => format!("(not {})", self.canonical_pattern(*id)),
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!("(query {} {body})", self.canonical_pattern(*query.head()))
+    fn canonical_query(&self, out: &mut String, query: &Query<NodeId>) {
+        out.push_str("(query ");
+        self.canonical_body(out, query);
+        out.push(')');
     }
 
-    fn canonical_pattern(&self, id: NodeId) -> String {
-        self.ast.store().reduce(id, &mut |_, kind| match kind {
-            ExprKind::Wildcard => "(wild)".to_owned(),
-            ExprKind::Never => "(never)".to_owned(),
-            ExprKind::Error => "(error)".to_owned(),
-            ExprKind::Var(symbol) => format!("(var {})", self.name(symbol)),
-            ExprKind::Lit(Literal::Int(value)) => format!("(int {value})"),
-            ExprKind::Lit(Literal::Str(symbol)) => format!("(str {:?})", self.name(symbol)),
-            ExprKind::Prefix(symbol) => format!("(prefix {:?})", self.name(symbol)),
-            ExprKind::Record(fields) => format!(
-                "(record{})",
-                fields
-                    .iter()
-                    .map(|(name, value)| format!(" ({} {value})", self.name(*name)))
-                    .collect::<String>()
-            ),
-            ExprKind::Access(FieldRef::Key(name), base) => {
-                format!("(field {} {base})", self.name(name))
+    /// `head stmt stmt …` — the inside a query and a subquery share.
+    fn canonical_body(&self, out: &mut String, query: &Query<NodeId>) {
+        self.canonical_pattern(out, *query.head());
+        out.push(' ');
+
+        for (index, stmt) in query.body().iter().enumerate() {
+            if index > 0 {
+                out.push(' ');
             }
-            ExprKind::Access(FieldRef::Value, base) => format!("(value {base})"),
-            ExprKind::Select(alt, base) => format!("(select {} {base})", self.name(alt)),
-            ExprKind::Fact(predicate, key) => format!("(fact {} {key})", predicate.0),
-            ExprKind::Disjunction(branches) => format!("(or {})", branches.join(" ")),
-            ExprKind::Subquery(query) => format!(
-                "(subquery {} {})",
-                query.head(),
-                query
-                    .body()
-                    .iter()
-                    .map(|stmt| match stmt {
-                        QueryStmt::Implicit(text) => format!("(implicit {text})"),
-                        QueryStmt::Bind(lhs, rhs) => format!("(bind {lhs} {rhs})"),
-                        QueryStmt::Negation(text) => format!("(not {text})"),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
-        })
+            match stmt {
+                QueryStmt::Implicit(id) => {
+                    out.push_str("(implicit ");
+                    self.canonical_pattern(out, *id);
+                    out.push(')');
+                }
+                QueryStmt::Bind(lhs, rhs) => {
+                    out.push_str("(bind ");
+                    self.canonical_pattern(out, *lhs);
+                    out.push(' ');
+                    self.canonical_pattern(out, *rhs);
+                    out.push(')');
+                }
+                QueryStmt::Negation(id) => {
+                    out.push_str("(not ");
+                    self.canonical_pattern(out, *id);
+                    out.push(')');
+                }
+            }
+        }
+    }
+
+    /// Written into one buffer rather than folded up as a `String` per node: the
+    /// fold concatenated whole subtrees at every level, so a tree of n nodes cost
+    /// O(n²) copying to render.
+    fn canonical_pattern(&self, out: &mut String, id: NodeId) {
+        /// A `String` is an infallible sink; `write!` returns `Result` regardless.
+        const SINK: &str = "writing to a String cannot fail";
+
+        match self.ast.store().kind(id) {
+            ExprKind::Wildcard => out.push_str("(wild)"),
+            ExprKind::Never => out.push_str("(never)"),
+            ExprKind::Error => out.push_str("(error)"),
+
+            ExprKind::Var(symbol) => {
+                out.push_str("(var ");
+                out.push_str(self.name(*symbol));
+                out.push(')');
+            }
+
+            ExprKind::Lit(Literal::Int(value)) => write!(out, "(int {value})").expect(SINK),
+            ExprKind::Lit(Literal::Str(symbol)) => {
+                write!(out, "(str {:?})", self.name(*symbol)).expect(SINK);
+            }
+            ExprKind::Prefix(symbol) => {
+                write!(out, "(prefix {:?})", self.name(*symbol)).expect(SINK);
+            }
+
+            ExprKind::Record(fields) => {
+                out.push_str("(record");
+                for (name, value) in fields.iter() {
+                    out.push_str(" (");
+                    out.push_str(self.name(*name));
+                    out.push(' ');
+                    self.canonical_pattern(out, *value);
+                    out.push(')');
+                }
+                out.push(')');
+            }
+
+            ExprKind::Access(FieldRef::Key(name), base) => {
+                out.push_str("(field ");
+                out.push_str(self.name(*name));
+                out.push(' ');
+                self.canonical_pattern(out, *base);
+                out.push(')');
+            }
+            ExprKind::Access(FieldRef::Value, base) => {
+                out.push_str("(value ");
+                self.canonical_pattern(out, *base);
+                out.push(')');
+            }
+            ExprKind::Select(alt, base) => {
+                out.push_str("(select ");
+                out.push_str(self.name(*alt));
+                out.push(' ');
+                self.canonical_pattern(out, *base);
+                out.push(')');
+            }
+
+            ExprKind::Fact(predicate, key) => {
+                write!(out, "(fact {} ", predicate.0).expect(SINK);
+                self.canonical_pattern(out, *key);
+                out.push(')');
+            }
+
+            ExprKind::Disjunction(branches) => {
+                out.push_str("(or ");
+                for (index, branch) in branches.iter().enumerate() {
+                    if index > 0 {
+                        out.push(' ');
+                    }
+                    self.canonical_pattern(out, *branch);
+                }
+                out.push(')');
+            }
+
+            ExprKind::Subquery(query) => {
+                out.push_str("(subquery ");
+                self.canonical_body(out, query);
+                out.push(')');
+            }
+        }
     }
 
     fn name(&self, symbol: Symbol) -> &str {

@@ -148,22 +148,7 @@ impl Lowering<'_> {
             .unwrap_or(Out::Nothing),
 
             // `query: pattern 'where' stmt_list`
-            Rule::Query => {
-                let mut head = None;
-                let mut body = vec![];
-                for (_, out) in children {
-                    match out {
-                        Out::Pattern(id) => head = Some(id),
-                        Out::Stmts(stmts) => body = stmts,
-                        _ => {}
-                    }
-                }
-                let head = match head {
-                    Some(id) => id,
-                    None => self.hole(&span),
-                };
-                Out::Query(Query::new(head, body.into()))
-            }
+            Rule::Query => Out::Query(self.head_and_body(children, &span)),
 
             Rule::StmtList => Out::Stmts(
                 children
@@ -176,21 +161,7 @@ impl Lowering<'_> {
             ),
 
             // `pattern ('=' pattern)`
-            Rule::BindStmt => {
-                let mut ids = patterns(children).into_iter();
-                match (ids.next(), ids.next()) {
-                    (Some(lhs), Some(rhs)) => Out::Stmt(QueryStmt::Bind(lhs, rhs)),
-                    // Half a bind: the parse already reported the missing side.
-                    (Some(only), _) => {
-                        let hole = self.hole(&span);
-                        Out::Stmt(QueryStmt::Bind(only, hole))
-                    }
-                    (None, _) => {
-                        let hole = self.hole(&span);
-                        Out::Stmt(QueryStmt::Implicit(hole))
-                    }
-                }
-            }
+            Rule::BindStmt => Out::Stmt(self.bind_stmt(children, &span)),
 
             // `Rule::Stmt` and `Rule::Primary` never appear in a well-formed tree —
             // every alternative of those rules renames its node — but a parse that
@@ -318,27 +289,59 @@ impl Lowering<'_> {
                 Out::Pattern(id)
             }
 
-            // `'(' pattern 'where' stmt_list ')'` — the same shape as a query.
+            // `'(' pattern 'where' stmt_list ')'` — the same shape as a query, and
+            // collected the same way.
             Rule::SubqueryPrimary => {
-                let mut head = None;
-                let mut body = vec![];
-                for (_, out) in children {
-                    match out {
-                        Out::Pattern(id) => head = Some(id),
-                        Out::Stmts(stmts) => body = stmts,
-                        _ => {}
-                    }
-                }
-                let head = match head {
-                    Some(id) => id,
-                    None => self.hole(&span),
-                };
-                let id = self.push(ExprKind::Subquery(Query::new(head, body.into())), &span);
+                let query = self.head_and_body(children, &span);
+                let id = self.push(ExprKind::Subquery(query), &span);
                 Out::Pattern(id)
             }
 
             // The parser's own error node: the diagnostic is already reported.
             Rule::Error => Out::Nothing,
+        }
+    }
+
+    /// A head pattern and a statement list, which is the shape of both `query` and
+    /// `subquery_primary` — the grammar reuses the rule, so lowering reuses this.
+    ///
+    /// A missing head is a hole: the parse reported whatever was wrong, and every
+    /// query has to have one for the tree to be walkable.
+    fn head_and_body(&mut self, children: Box<[(CstNode<'_>, Out)]>, span: &Span) -> Query<NodeId> {
+        let mut head = None;
+        let mut body = vec![];
+
+        for (_, out) in children {
+            match out {
+                Out::Pattern(id) => head = Some(id),
+                Out::Stmts(stmts) => body = stmts,
+                _ => {}
+            }
+        }
+
+        let head = match head {
+            Some(id) => id,
+            None => self.hole(span),
+        };
+
+        Query::new(head, body.into())
+    }
+
+    /// `pattern ('=' pattern)`, with either side possibly missing.
+    fn bind_stmt(&mut self, children: Box<[(CstNode<'_>, Out)]>, span: &Span) -> QueryStmt<NodeId> {
+        let mut ids = patterns(children).into_iter();
+
+        match (ids.next(), ids.next()) {
+            (Some(lhs), Some(rhs)) => QueryStmt::Bind(lhs, rhs),
+            // Half a bind: the parse already reported the missing side.
+            (Some(only), _) => {
+                let hole = self.hole(span);
+                QueryStmt::Bind(only, hole)
+            }
+            (None, _) => {
+                let hole = self.hole(span);
+                QueryStmt::Implicit(hole)
+            }
         }
     }
 
