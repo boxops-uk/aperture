@@ -39,10 +39,15 @@ pub fn lower(
     schema: &Schema,
     interner: &mut LocalInterner,
 ) -> (Ast, Vec<Diagnostic>) {
+    // Interned once, up front: `access` decides `.value` by comparing against it,
+    // and that decision must not depend on resolving a symbol back to text.
+    let value_field = interner.get_or_intern(VALUE_FIELD);
+
     let mut lowering = Lowering {
         store: SyntaxTree::new(),
         schema,
         interner,
+        value_field,
         diagnostics: vec![],
     };
 
@@ -83,6 +88,8 @@ struct Lowering<'a> {
     store: SyntaxTree<ExprKind<NodeId>>,
     schema: &'a Schema,
     interner: &'a mut LocalInterner,
+    /// [`VALUE_FIELD`] interned in this query's interner.
+    value_field: Symbol,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -494,7 +501,12 @@ impl<'a> Lowering<'a> {
             Some(id) => id,
             None => self.hole(span),
         };
-        let field = if self.name_of(name) == VALUE_FIELD {
+        // Compared as symbols, not as text. Two names are the same name exactly
+        // when one interner gives them the same symbol, and going back through
+        // the text meant this — a decision about what the query *means* — resting
+        // on `name_of`, whose fallback exists only so a diagnostic can render
+        // something.
+        let field = if name == self.value_field {
             FieldRef::Value
         } else {
             FieldRef::Key(name)
@@ -502,8 +514,13 @@ impl<'a> Lowering<'a> {
         self.push(ExprKind::Access(field, base), span)
     }
 
+    /// A symbol's text, for putting in a diagnostic or ordering record fields.
+    ///
+    /// The fallback is why this must not be used for a decision about meaning: a
+    /// symbol this interner cannot resolve is a bug, but a diagnostic still has to
+    /// render something rather than fail.
     fn name_of(&self, symbol: Symbol) -> &str {
-        self.interner.try_resolve(symbol).unwrap_or_default()
+        self.interner.try_resolve(symbol).unwrap_or("?")
     }
 }
 
@@ -768,6 +785,29 @@ mod tests {
         assert_eq!(
             stmt_shape("X where test.Foo {a = 1, = 2}"),
             "fact(0, {a=1})"
+        );
+    }
+
+    /// `.value` is decided by symbol identity, so it works whichever tier interned
+    /// the name — the schema's, or the query's own when the schema never declared
+    /// a field called `value`.
+    #[test]
+    fn value_access_is_decided_by_symbol_not_text() {
+        // Schema tier: the corpus interns `value` (test.Shadow has such a field).
+        assert_eq!(head_shape("X.value where test.Foo _"), "var(X).value!");
+
+        // Local tier: nothing is declared at all, so `value` is a query-local
+        // symbol and the comparison has to hold there too.
+        let schema = corpus::schema();
+        let mut interner = bare_interner();
+        let parsed = parse("X.value where test.Foo _");
+        let root = parsed.root().expect("a tree");
+        let (ast, _) = lower(&root, &schema, &mut interner);
+
+        assert_eq!(
+            shape(&ast, &interner, *ast.query().head()),
+            "var(X).value!",
+            "`.value` must read the value side however `value` was interned"
         );
     }
 

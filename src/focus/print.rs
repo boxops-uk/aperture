@@ -238,13 +238,15 @@ impl<'a> Printer<'a> {
             }
 
             ExprKind::Fact(predicate, key) => {
-                let name = match self.schema.and_then(|s| s.get(*predicate)) {
-                    Some(p) => p.name().to_owned(),
-                    // Unreachable from a lowered tree — lowering only builds a
-                    // `Fact` for a predicate it resolved — but printing must not
-                    // panic on a hand-built one.
-                    None => format!("unknown.Predicate{}", predicate.0),
-                };
+                // Unreachable from a lowered tree — lowering only builds a `Fact`
+                // for a predicate it resolved, under a schema that could name it —
+                // but printing must not panic on a hand-built one.
+                let name = self
+                    .schema
+                    .and_then(|s| s.get(*predicate))
+                    .and_then(|p| p.name())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("unknown.Predicate{}", predicate.0));
                 out.push(&name);
                 out.push(" ");
                 self.pattern(out, *key, Level::Application);

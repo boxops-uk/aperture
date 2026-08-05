@@ -700,8 +700,8 @@ impl<'a> Checker<'a> {
             // like a compiler fault.
             Ty::Error => "(already reported)".to_owned(),
             Ty::Var(_) => "an unknown type".to_owned(),
-            Ty::Fact(predicate) => match self.schema.get(*predicate) {
-                Some(p) => format!("`{}`", p.name()),
+            Ty::Fact(predicate) => match self.schema.get(*predicate).and_then(|p| p.name()) {
+                Some(name) => format!("`{name}`"),
                 None => "a fact".to_owned(),
             },
             Ty::Record(fields) => format!(
