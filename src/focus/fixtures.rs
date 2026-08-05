@@ -21,7 +21,7 @@ use crate::focus::{
     iter::{Cursor, Executor, Iteratee, Stream},
     plan::{Entity, FactId, FactStore, Plan},
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId, SchemaInterner},
-    tuple::{Value, put_i64, put_str},
+    tuple::{Value, put_i64, put_str, strinc},
 };
 
 /// Encode a single i64 key field.
@@ -342,14 +342,36 @@ impl FrozenStore {
         predicate_id: PredicateId,
         facts: impl IntoIterator<Item = (Vec<u8>, u64)>,
     ) -> Self {
+        Self::from_facts(
+            facts
+                .into_iter()
+                .map(move |(key_fields, sequence)| (predicate_id, key_fields, sequence)),
+        )
+    }
+
+    /// Build from key-only facts spread across predicates.
+    ///
+    /// The multi-predicate case is what makes the scan contract testable here at
+    /// all — a store holding one predicate cannot leak out of it.
+    ///
+    /// `sequence` is the fact's number *within its predicate*, not a raw
+    /// [`FactId`], for the same reason [`MemStore::insert_valued`] takes one: the
+    /// real store composes a snowflake id from the two, so a fixture that took
+    /// whole ids could hold a fact tagged for a different predicate — or, as this
+    /// one did, sequence 0, which [I11] reserves precisely so that no valid id is
+    /// `FactId(0)`.
+    ///
+    /// [I11]: ../../../docs/invariants.md
+    /// [`MemStore::insert_valued`]: super::mem_store::MemStore::insert_valued
+    pub fn from_facts(facts: impl IntoIterator<Item = (PredicateId, Vec<u8>, u64)>) -> Self {
         let mut rows: Vec<FrozenFact> = facts
             .into_iter()
-            .map(|(key_fields, id)| {
+            .map(|(predicate_id, key_fields, sequence)| {
                 let mut full = predicate_id.0.to_be_bytes().to_vec();
                 full.extend_from_slice(&key_fields);
                 FrozenFact {
                     key: ByteView::from(full),
-                    fact_id: FactId(id),
+                    fact_id: FactId::new(predicate_id, sequence).expect("test fixture fact id"),
                     value: ByteView::from(Vec::new()),
                 }
             })
@@ -384,9 +406,23 @@ impl FactStore for FrozenStore {
     type Scan = FrozenScan;
 
     fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> FrozenScan {
+        // A scan never crosses out of the predicate named by `lo`'s prefix — the
+        // trait's contract, which [`assert_scan_stays_in_predicate`] holds every
+        // impl to. Like `MemStore`, this store keeps every predicate in one
+        // sorted run and so has to clamp explicitly; the real store gets it
+        // structurally from one keyspace per predicate.
+        //
+        // A fixture that shipped beside that assertion while breaking it is worse
+        // than one that never claimed to satisfy it, because it reads as evidence.
+        let predicate_end = lo.get(..PREDICATE_ID_SIZE).and_then(strinc);
+        let upper = match (hi, predicate_end.as_deref()) {
+            (Some(hi), Some(predicate_end)) => Some(hi.min(predicate_end)),
+            (hi, predicate_end) => hi.or(predicate_end),
+        };
+
         let start = self.rows.partition_point(|f| f.key.as_ref() < lo);
-        let end = match hi {
-            Some(hi) => self.rows.partition_point(|f| f.key.as_ref() < hi),
+        let end = match upper {
+            Some(upper) => self.rows.partition_point(|f| f.key.as_ref() < upper),
             None => self.rows.len(),
         };
         FrozenScan {
@@ -401,5 +437,39 @@ impl FactStore for FrozenStore {
             key: f.key.slice(PREDICATE_ID_SIZE..),
             value: f.value.clone(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`FrozenStore`] is held to the same scan contract as every other
+    /// `FactStore`, including the `hi = None` case the trait permits — the case
+    /// `MemStore` was once wrong about, and this store was silently wrong about
+    /// too until it gained a second predicate to leak into.
+    #[test]
+    fn frozen_store_scan_stays_in_its_predicate() {
+        let (first, second) = (PredicateId(0), PredicateId(1));
+
+        let store = FrozenStore::from_facts([
+            (first, i64_field(1), 1),
+            (first, i64_field(2), 2),
+            (second, i64_field(1), 1),
+            (second, i64_field(2), 2),
+        ]);
+
+        for predicate in [first, second] {
+            let lo = predicate.0.to_be_bytes().to_vec();
+            let hi = strinc(&lo);
+
+            for hi in [hi.as_deref(), None] {
+                assert_scan_stays_in_predicate(&store, &lo, hi).expect("frozen scan");
+            }
+
+            // ...and it yields the predicate's rows rather than none of them.
+            let rows = store.scan(&lo, None).count();
+            assert_eq!(rows, 2, "predicate {} lost its rows", predicate.0);
+        }
     }
 }

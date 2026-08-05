@@ -44,9 +44,29 @@ pub const MAX_FACT_SEQUENCE: u64 = (1 << FACT_ID_SEQUENCE_BITS) - 1;
 /// [I11]: ../../../docs/invariants.md#i11
 /// [chapter 3]: ../../../docs/03-storage-model.md
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FactId(pub u64);
+pub struct FactId(u64);
 
 impl FactId {
+    /// The raw eight bytes, for storing or comparing.
+    #[must_use]
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+
+    /// Wrap an id that is **already known to be valid** — decoded from a stored
+    /// row that the decode boundary has checked, or handed back by a model store
+    /// that got it from [`FactId::new`].
+    ///
+    /// The field is private so that [`FactId::new`]'s checks are the only way to
+    /// *mint* an id: the tag has to fit and sequence 0 is reserved, which is what
+    /// makes a zeroed eight bytes detectably not a fact
+    /// ([I11](../../../docs/invariants.md#i11)). Named rather than a tuple
+    /// constructor so the places that bypass those checks are greppable.
+    #[must_use]
+    pub fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
     /// Compose an id from its predicate and sequence.
     ///
     /// # Errors
@@ -150,6 +170,9 @@ pub enum Project {
     Record(Box<[(Symbol, Project)]>),
 }
 
+/// The compiled query — the fixed contract between the front end and the
+/// executor.
+#[derive(Debug)]
 pub struct Plan {
     pub nvars: usize,
     pub body: Box<[Generator]>,

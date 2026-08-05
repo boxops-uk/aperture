@@ -5,7 +5,7 @@ use tinyvec::ArrayVec;
 use tokio_util::sync::CancellationToken;
 
 use crate::focus::{
-    error::{ApertureError, StoreCodecError},
+    error::{ApertureError, StoreCodecError, StoreError},
     plan::{
         FactId, FactStore, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
     },
@@ -22,9 +22,12 @@ impl Address {
     }
 }
 
-impl fmt::LowerHex for Address {
+impl fmt::Display for Address {
+    /// A register index, written `r0`, `r1`, … — not a machine address. It used
+    /// to render as a 16-digit hex value, so `Address(0)` reached a diagnostic as
+    /// `0x0000000000000000`, which reads as a pointer.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::LowerHex::fmt(&self.0, f)
+        write!(f, "r{}", self.0)
     }
 }
 
@@ -69,8 +72,47 @@ impl MachineState {
 
 const FIELD_OFFSETS_CAPACITY: usize = 16;
 
+/// Where each leading key field of **one specific row** ends.
+///
+/// `ends[k]` is the offset one past field `k`, so field `k` spans
+/// `ends[k - 1]..ends[k]`. Filled lazily, left to right — the encoding is
+/// self-delimiting ([I2](../../docs/invariants.md#i2)), so finding field `k`
+/// means skipping the `k` before it, and caching the boundaries is what stops a
+/// seek splice and a residual on the same register re-walking the row.
+///
+/// # The reuse invariant
+///
+/// **The offsets describe the row they were filled from, and nothing else.** A
+/// cache read against a *different* row silently truncates or overruns the field
+/// — a wrong seek prefix (wrong join results) or an out-of-range slice. Reuse is
+/// therefore sound only while the row is fixed, which rests on three links:
+///
+/// 1. A frame's caches are indexed by **register address**
+///    ([`StackFrame::field_offsets`]), so each one only ever describes the row
+///    held by that one register.
+/// 2. A generator only names registers bound at **strictly outer** levels, so
+///    none of them can change while its own level is open.
+/// 3. [`StackFrame::open`] clears every cache, and a level is re-opened whenever
+///    an outer level advances.
+///
+/// Link 2 is a property of the *plan*, which the executor does not verify, and
+/// link 3 was once missing — the regression is
+/// `seek_splice_rereads_field_when_outer_row_width_changes`. So the chain is also
+/// checked mechanically: in debug builds a cache remembers the row it was filled
+/// from and [`FieldOffsets::get`] asserts every later read presents the same one.
+/// That turns every executor test, including the generated resume battery, into a
+/// check of this invariant. The witness costs nothing in release, and nothing on
+/// the hot path either way — a `ByteView` clone is a refcount bump
+/// ([I9](../../docs/invariants.md#i9)).
 #[derive(Debug, Clone)]
-pub struct FieldOffsets(ArrayVec<[usize; FIELD_OFFSETS_CAPACITY]>);
+pub struct FieldOffsets {
+    ends: ArrayVec<[usize; FIELD_OFFSETS_CAPACITY]>,
+    /// The row the offsets were derived from; `None` until the first fill. Debug
+    /// builds only — this is the witness for the reuse invariant above, not state
+    /// the cache needs to work.
+    #[cfg(debug_assertions)]
+    row: Option<ByteView>,
+}
 
 impl Default for FieldOffsets {
     fn default() -> Self {
@@ -80,26 +122,43 @@ impl Default for FieldOffsets {
 
 impl FieldOffsets {
     pub fn new() -> Self {
-        Self(ArrayVec::new())
-    }
-    pub fn clear(&mut self) {
-        self.0.clear();
+        Self {
+            ends: ArrayVec::new(),
+            #[cfg(debug_assertions)]
+            row: None,
+        }
     }
 
+    /// Drop every cached offset. Called when the row a cache describes may have
+    /// changed — which is what makes reusing one safe.
+    pub fn clear(&mut self) {
+        self.ends.clear();
+        #[cfg(debug_assertions)]
+        {
+            self.row = None;
+        }
+    }
+
+    /// The span of field `idx` within `key`, skipping only as far as it must.
+    ///
+    /// `key` must be the same row every time until [`clear`](Self::clear) — see
+    /// the type's reuse invariant.
     pub fn get(&mut self, key: &ByteView, idx: usize) -> Result<Range<usize>, StoreCodecError> {
-        if let Some(&end) = self.0.get(idx) {
+        self.witness_row(key);
+
+        if let Some(&end) = self.ends.get(idx) {
             return Ok(if idx == 0 {
                 0..end
             } else {
-                self.0[idx - 1]..end
+                self.ends[idx - 1]..end
             });
         }
-        let mut i = self.0.len();
-        let mut start = if i == 0 { 0 } else { self.0[i - 1] };
+        let mut i = self.ends.len();
+        let mut start = if i == 0 { 0 } else { self.ends[i - 1] };
         loop {
             let end = skip(key, start, false)?;
             if i < FIELD_OFFSETS_CAPACITY {
-                self.0.push(end);
+                self.ends.push(end);
             }
             if i == idx {
                 return Ok(start..end);
@@ -108,18 +167,87 @@ impl FieldOffsets {
             start = end;
         }
     }
+
+    /// Record the row on first fill, and check every later read against it.
+    ///
+    /// Compares by *content*: two registers holding equal bytes yield equal
+    /// offsets, so equal bytes are exactly the right notion of "the same row".
+    #[cfg(debug_assertions)]
+    fn witness_row(&mut self, key: &ByteView) {
+        match &self.row {
+            None => self.row = Some(key.clone()),
+            Some(filled) => assert!(
+                filled == key,
+                "field-offset cache reused against a different row: filled from \
+                 {:02x?}, now read against {:02x?}. The cache must be cleared \
+                 (`StackFrame::open`) whenever the register it describes changes.",
+                filled.as_ref(),
+                key.as_ref(),
+            ),
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[inline]
+    fn witness_row(&mut self, _key: &ByteView) {}
 }
 
+/// How many rows the executor examines between cancellation polls.
+///
+/// Polling costs an atomic load, which is cheap but not free next to the per-row
+/// work, so it happens on a stride rather than per row. The consequence is that a
+/// run shorter than the stride can complete despite a cancelled token — a bounded
+/// overrun, which is the trade the stride exists to make.
 pub const CANCELLATION_STRIDE: usize = 4096;
 
-pub struct StackFrame<S: FactStore> {
+/// Polls the cancellation token every [`CANCELLATION_STRIDE`] rows examined.
+///
+/// **Rows examined, not rows produced.** The two shapes fail differently: a
+/// residual that rejects a million rows does a million rows of work without
+/// producing one, while a scan whose rows all match produces a row — and returns
+/// from [`StackFrame::next`] — after a single iteration. Counting only the first
+/// (which is what a counter local to one `next()` call does) leaves a query that
+/// matches everything unable to observe cancellation at all, however long it
+/// runs. So the count lives here, above any single `next()`, and one tick means
+/// one row pulled from a scan, whichever way it goes.
+struct Deadline<'a> {
+    token: &'a CancellationToken,
+    since_poll: usize,
+}
+
+impl<'a> Deadline<'a> {
+    fn new(token: &'a CancellationToken) -> Self {
+        Self {
+            token,
+            since_poll: 0,
+        }
+    }
+
+    /// Count one examined row, polling the token on the stride.
+    #[inline]
+    fn tick(&mut self) -> Result<(), ApertureError> {
+        self.since_poll += 1;
+
+        if self.since_poll >= CANCELLATION_STRIDE {
+            self.since_poll = 0;
+
+            if self.token.is_cancelled() {
+                return Err(ApertureError::Cancelled);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+struct StackFrame<S: FactStore> {
     scan: Option<S::Scan>,
     current: Option<Register>,
     field_offsets: Box<[FieldOffsets]>,
 }
 
 impl<S: FactStore> StackFrame<S> {
-    pub fn closed(nvars: usize) -> Self {
+    fn closed(nvars: usize) -> Self {
         Self {
             scan: None,
             current: None,
@@ -127,7 +255,7 @@ impl<S: FactStore> StackFrame<S> {
         }
     }
 
-    pub fn open(
+    fn open(
         &mut self,
         store: &S,
         generator: &Generator,
@@ -162,10 +290,10 @@ impl<S: FactStore> StackFrame<S> {
             .get_mut(var.0)
             .ok_or(ApertureError::AddressOutOfBounds(var))?
             .get(key, idx)
-            .map_err(ApertureError::DecodeError)
+            .map_err(ApertureError::Decode)
     }
 
-    pub fn build_prefix(
+    fn build_prefix(
         &mut self,
         state: &MachineState,
         generator: &Generator,
@@ -198,25 +326,37 @@ impl<S: FactStore> StackFrame<S> {
         Ok(prefix)
     }
 
-    pub fn next(
+    /// Advance to the next row satisfying this level's residuals.
+    ///
+    /// `deadline` is the run's, not this call's: it counts every row pulled here
+    /// — matched or skipped — so the poll interval holds however the plan filters
+    /// (see [`Deadline`]).
+    fn next(
         &mut self,
         state: &MachineState,
         generator: &Generator,
-        cancellation_token: &CancellationToken,
+        deadline: &mut Deadline<'_>,
     ) -> Result<Option<Register>, ApertureError> {
         let scan = self.scan.as_mut().ok_or(ApertureError::AdvanceAfterClose)?;
-        let mut since_check: usize = 0;
 
         for row in scan {
-            since_check += 1;
-            if since_check == CANCELLATION_STRIDE {
-                if cancellation_token.is_cancelled() {
-                    return Err(ApertureError::Cancelled);
-                }
-                since_check = 0;
-            }
+            deadline.tick()?;
 
             let (key_bytes, fact_id) = row?;
+
+            // Every `keys` row begins with its predicate id, and `Register::key`
+            // slices those bytes off to reach the key fields — on a shorter row
+            // that slice panics. This is the one point where store output becomes
+            // machine state, so checking here covers every `FactStore` impl at
+            // once, including ones written later.
+            if key_bytes.len() < PREDICATE_ID_SIZE {
+                return Err(StoreError::ShortKeyRow {
+                    len: key_bytes.len(),
+                    expected: PREDICATE_ID_SIZE,
+                }
+                .into());
+            }
+
             let current = Register {
                 fact_id,
                 bytes: key_bytes,
@@ -236,7 +376,7 @@ impl<S: FactStore> StackFrame<S> {
         Ok(None)
     }
 
-    pub fn check_residuals(
+    fn check_residuals(
         frame_field_offsets: &mut Box<[FieldOffsets]>,
         state: &MachineState,
         residuals: &[Residual],
@@ -248,7 +388,7 @@ impl<S: FactStore> StackFrame<S> {
         for residual in residuals.iter() {
             let span = row_field_offsets
                 .get(&key, residual.field_idx)
-                .map_err(ApertureError::DecodeError)?;
+                .map_err(ApertureError::Decode)?;
             let field = &key[span];
 
             let ok = match &residual.op {
@@ -322,7 +462,7 @@ fn project<S: FactStore>(
 
             let span = offsets
                 .get(&key, *field_idx)
-                .map_err(ApertureError::DecodeError)?;
+                .map_err(ApertureError::Decode)?;
 
             let field = &key[span];
 
@@ -406,11 +546,23 @@ impl<S: FactStore> Executor<S> {
     pub fn resume(store: S, plan: Plan, cursor: Cursor) -> Result<Self, ApertureError> {
         let mut ex = Executor::new(store, plan);
 
+        // A `Cursor` is bytes-only and rebuilt from the wire, so it is untrusted:
+        // checked here rather than left to index `plan.body` out of bounds below.
+        if cursor.0.len() > ex.plan.body.len() {
+            return Err(ApertureError::CursorPlanMismatch {
+                cursor: cursor.0.len(),
+                plan: ex.plan.body.len(),
+            });
+        }
+
         if cursor.0.is_empty() {
             return Ok(ex);
         }
 
+        // Replaying a cursor re-reads one row per level, so it cannot run long
+        // enough to reach a poll; the token is here only to satisfy `next`.
         let cancel = CancellationToken::new();
+        let mut deadline = Deadline::new(&cancel);
 
         for (level, saved) in cursor.0.iter().enumerate() {
             let generator = &ex.plan.body[level];
@@ -419,7 +571,7 @@ impl<S: FactStore> Executor<S> {
             frame.open(&ex.store, generator, &ex.state, Some(&saved.bytes))?;
 
             let row = frame
-                .next(&ex.state, generator, &cancel)?
+                .next(&ex.state, generator, &mut deadline)?
                 .ok_or(ApertureError::BadResumeKey)?;
 
             if row.fact_id != saved.fact_id {
@@ -455,6 +607,18 @@ impl<S: FactStore> Executor<S> {
         mut step: impl FnMut(A, Row<'_, S>) -> Result<Stream<A>, ApertureError>,
         cancellation_token: &CancellationToken,
     ) -> Result<Iteratee<A>, ApertureError> {
+        // With no generators, `depth` is already at the head on the first pass and
+        // there is no level to back into — `depth -= 1` would underflow. Rejected
+        // rather than read as the unit relation: a single row emitted here could
+        // not be resumed past (an empty `Cursor` restarts the run), so it would
+        // trade a panic for a duplicated row.
+        if self.plan.body.is_empty() {
+            return Err(ApertureError::EmptyPlan);
+        }
+
+        // One deadline for the whole run: the poll interval is a property of the
+        // run, not of any single level's scan.
+        let mut deadline = Deadline::new(cancellation_token);
         let mut acc = init;
 
         loop {
@@ -485,7 +649,7 @@ impl<S: FactStore> Executor<S> {
                 frame.open(&self.store, generator, &self.state, None)?;
             }
 
-            match frame.next(&self.state, generator, cancellation_token)? {
+            match frame.next(&self.state, generator, &mut deadline)? {
                 Some(register) => {
                     for var_address in generator.binds.iter() {
                         let slot = self
@@ -521,7 +685,8 @@ mod tests {
         },
         mem_store::MemStore,
         plan::{
-            Access, FactId, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+            Access, Entity, FactId, Generator, Plan, Project, Residual, ResidualOp, SeekKey,
+            SeekKeyPart,
             proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
         schema::{PredicateId, PredicateTy},
@@ -536,6 +701,288 @@ mod tests {
     /// resolve). Record-head tests call [`collect_rows`] with their own interner.
     fn run(store: MemStore, plan: Plan) -> Vec<Value> {
         collect_rows(store, plan, &interner_with(&[])).unwrap()
+    }
+
+    // ---- the field-offset cache -------------------------------------------
+    //
+    // The cache is what stops a seek splice and a residual on the same register
+    // re-walking the row, and it is sound only while the row it describes is
+    // fixed (see [`FieldOffsets`]). These pin that contract directly, at the unit
+    // it lives in; `seek_splice_rereads_field_when_outer_row_width_changes` is
+    // the same invariant asserted through the executor.
+
+    /// A composite key as the register would hold it.
+    fn key_of(fields: &[&[u8]]) -> ByteView {
+        ByteView::from(compose(fields))
+    }
+
+    /// Offsets are filled left to right however they are asked for, and each span
+    /// is exactly its field — including when the first read skips ahead.
+    #[test]
+    fn field_offsets_span_each_field_and_fill_lazily() {
+        let key = key_of(&[&i64_field(1), &str_field("abc"), &i64_field(2)]);
+        let mut offsets = FieldOffsets::new();
+
+        // Asked out of order: reaching field 2 has to fill 0 and 1 on the way.
+        let third = offsets.get(&key, 2).unwrap();
+        let first = offsets.get(&key, 0).unwrap();
+        let second = offsets.get(&key, 1).unwrap();
+
+        assert_eq!(&key[first.clone()], i64_field(1).as_slice());
+        assert_eq!(&key[second.clone()], str_field("abc").as_slice());
+        assert_eq!(&key[third.clone()], i64_field(2).as_slice());
+
+        // Contiguous and covering: fields abut, and the last one ends the key.
+        assert_eq!(first.start, 0);
+        assert_eq!(first.end, second.start);
+        assert_eq!(second.end, third.start);
+        assert_eq!(third.end, key.len());
+    }
+
+    /// A key with more fields than the cache can hold: the tail past the cap is
+    /// re-derived on each read rather than cached, and must still be right — both
+    /// the first time and on a repeat read.
+    #[test]
+    fn field_offsets_resolve_fields_past_the_cache_capacity() {
+        let fields: Vec<Vec<u8>> = (0..FIELD_OFFSETS_CAPACITY as i64 + 4)
+            .map(i64_field)
+            .collect();
+        let refs: Vec<&[u8]> = fields.iter().map(Vec::as_slice).collect();
+        let key = key_of(&refs);
+        let mut offsets = FieldOffsets::new();
+
+        for (idx, field) in fields.iter().enumerate() {
+            let span = offsets.get(&key, idx).unwrap();
+            assert_eq!(&key[span], field.as_slice(), "field {idx}");
+        }
+
+        let last = fields.len() - 1;
+        let span = offsets.get(&key, last).unwrap();
+        assert_eq!(
+            &key[span],
+            fields[last].as_slice(),
+            "re-read of field {last}"
+        );
+    }
+
+    /// After a clear the cache describes whatever row it is next given. The two
+    /// rows have deliberately different field widths, so a surviving offset could
+    /// not go unnoticed.
+    #[test]
+    fn field_offsets_reread_the_new_row_after_clear() {
+        let short = key_of(&[&str_field("a"), &i64_field(7)]);
+        let long = key_of(&[&str_field("abcdef"), &i64_field(7)]);
+
+        let mut offsets = FieldOffsets::new();
+        let span = offsets.get(&short, 1).unwrap();
+        assert_eq!(&short[span], i64_field(7).as_slice());
+
+        offsets.clear();
+        let span = offsets.get(&long, 1).unwrap();
+        assert_eq!(&long[span], i64_field(7).as_slice());
+    }
+
+    /// The witness is not decorative. Without the clear above, the cached
+    /// boundaries of `"a"` applied to `"abcdef"` name bytes in the middle of the
+    /// string rather than the integer that follows it — a wrong seek prefix, or a
+    /// residual comparing the wrong bytes. That must be caught, not answered.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "field-offset cache reused against a different row")]
+    fn field_offsets_reject_a_stale_row() {
+        let filled = key_of(&[&str_field("a"), &i64_field(7)]);
+        let other = key_of(&[&str_field("abcdef"), &i64_field(7)]);
+
+        let mut offsets = FieldOffsets::new();
+        offsets.get(&filled, 1).unwrap();
+        let _ = offsets.get(&other, 1);
+    }
+
+    /// A register renders as an index, not a machine address. `Address(0)` used to
+    /// reach a diagnostic as `0x0000000000000000`.
+    #[test]
+    fn an_address_reads_as_a_register() {
+        assert_eq!(Address::new(0).to_string(), "r0");
+        assert_eq!(
+            ApertureError::UseBeforeBind(Address::new(2)).to_string(),
+            "r2 was read before anything was bound to it"
+        );
+        assert_eq!(
+            ApertureError::AddressOutOfBounds(Address::new(7)).to_string(),
+            "r7 is not a register in this plan"
+        );
+    }
+
+    // ---- malformed plans and cursors --------------------------------------
+    //
+    // Both cross into the executor from outside — a plan from the compiler, a
+    // `Cursor` from the wire — so neither may panic it (conventions: errors, not
+    // panics, on data paths).
+
+    /// A plan with no generators has no level to back into. Before this was
+    /// checked, the first row underflowed `depth` (`0usize - 1`).
+    #[test]
+    fn an_empty_plan_body_is_an_error_not_a_panic() {
+        let plan = Plan {
+            nvars: 0,
+            body: Box::new([]),
+            head: Project::Lit(Value::Int(1)),
+        };
+
+        assert!(matches!(
+            collect_rows(MemStore::new(), plan, &interner_with(&[])),
+            Err(ApertureError::EmptyPlan)
+        ));
+    }
+
+    /// Cancellation is observed on a scan whose rows **all match**.
+    ///
+    /// The token is polled every `CANCELLATION_STRIDE` rows examined. While the
+    /// counter lived inside a single `next()` call it only ever counted rows a
+    /// residual *skipped*: a plan with no residual returns after one iteration
+    /// each time, so the counter reset before it could reach the stride and the
+    /// token was never read. A long-running query that matched everything could
+    /// not be cancelled at all — the one shape most likely to need it.
+    ///
+    /// The companion positive control is `snapshot_released_at_suspend` in
+    /// `store`, which covers the skipped-row path and the snapshot release.
+    #[test]
+    fn a_matching_scan_observes_cancellation() {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        for i in 0..(CANCELLATION_STRIDE as i64 * 2) {
+            store.insert(p, i64_field(i), i as u64 + 1);
+        }
+
+        // No residual: every row matches, so every `next()` returns immediately.
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+
+        let mut seen = 0usize;
+        let out = Executor::new(store, plan).enumerate(
+            0usize,
+            |n, _row| {
+                seen = n + 1;
+                Ok(Stream::Continue(n + 1))
+            },
+            &cancelled,
+        );
+
+        assert!(
+            matches!(out, Err(ApertureError::Cancelled)),
+            "a matching scan ran to completion under a cancelled token"
+        );
+        assert!(
+            seen < CANCELLATION_STRIDE * 2,
+            "cancellation must stop the run early, not after every row ({seen})"
+        );
+    }
+
+    /// A `FactStore` yielding one malformed row: three bytes, too few to carry
+    /// the predicate-id prefix every `keys` row begins with.
+    struct ShortRowStore;
+
+    impl FactStore for ShortRowStore {
+        type Scan = std::vec::IntoIter<Result<(ByteView, FactId), ApertureError>>;
+
+        fn scan(&self, _lo: &[u8], _hi: Option<&[u8]>) -> Self::Scan {
+            vec![Ok((
+                ByteView::from(vec![0u8; PREDICATE_ID_SIZE - 1]),
+                FactId::from_raw(1),
+            ))]
+            .into_iter()
+        }
+
+        fn point(&self, _id: FactId) -> Result<Option<Entity>, ApertureError> {
+            Ok(None)
+        }
+    }
+
+    /// A corrupt `keys` row is a surfaced error, not a panicking slice. The read
+    /// path decodes bytes this process did not write — a reopened DB, a file
+    /// copied between machines — so a malformed row is a data condition.
+    #[test]
+    fn a_short_keys_row_is_an_error_not_a_panic() {
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(PredicateId(0), 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        assert!(matches!(
+            collect_rows(ShortRowStore, plan, &interner_with(&[])),
+            Err(ApertureError::Store(StoreError::ShortKeyRow {
+                len: 3,
+                expected: 4
+            }))
+        ));
+    }
+
+    /// A cursor naming more levels than the plan has must be rejected, not used
+    /// to index the plan's body.
+    ///
+    /// The cursor is a real one — taken from a two-level run and offered to a
+    /// one-level plan, which is the shape a stale portal on the wire has.
+    #[test]
+    fn resume_rejects_a_cursor_deeper_than_the_plan() {
+        let (person, knows) = (PredicateId(0), PredicateId(1));
+
+        let seed = || {
+            let mut store = MemStore::new();
+            store.insert(person, i64_field(1), 1);
+            store.insert(knows, compose(&[&i64_field(1), &i64_field(2)]), 1);
+            store
+        };
+
+        let two_level = Plan {
+            nvars: 2,
+            body: Box::new([
+                scan_all(person, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: knows,
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                            address: Address::new(0),
+                            field_idx: 0,
+                        }])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([]),
+                },
+            ]),
+            head: Project::FactRef(Address::new(1)),
+        };
+
+        let suspended = Executor::new(seed(), two_level)
+            .enumerate(
+                0usize,
+                |n, _row| Ok(Stream::Suspend(n + 1)),
+                &CancellationToken::new(),
+            )
+            .expect("run");
+
+        let Iteratee::Suspended(_, cursor) = suspended else {
+            panic!("the plan was supposed to suspend");
+        };
+        assert_eq!(cursor.0.len(), 2, "the cursor must name both levels");
+
+        let one_level = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(person, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        assert!(matches!(
+            Executor::resume(seed(), one_level, cursor),
+            Err(ApertureError::CursorPlanMismatch { cursor: 2, plan: 1 })
+        ));
     }
 
     // A residual on a key field is evaluated against the field's value (the
@@ -1059,7 +1506,10 @@ mod tests {
 
         assert_eq!(
             run(store, plan),
-            vec![Value::FactRef(FactId(5)), Value::FactRef(FactId(7))]
+            vec![
+                Value::FactRef(FactId::new(p, 5).expect("id")),
+                Value::FactRef(FactId::new(p, 7).expect("id")),
+            ]
         );
     }
 
@@ -1653,8 +2103,10 @@ mod tests {
 
         let p = PredicateId(0);
 
-        let store_n = FrozenStore::from_keys(p, (0..64u64).map(|i| (i64_field(i as i64), i)));
-        let store_2n = FrozenStore::from_keys(p, (0..128u64).map(|i| (i64_field(i as i64), i)));
+        // Sequences are 1-based: sequence 0 is reserved, so `FactId::new` rejects
+        // it ([I11](../../docs/invariants.md#i11)).
+        let store_n = FrozenStore::from_keys(p, (1..=64u64).map(|i| (i64_field(i as i64), i)));
+        let store_2n = FrozenStore::from_keys(p, (1..=128u64).map(|i| (i64_field(i as i64), i)));
 
         let plan = |bind| Plan {
             nvars: 1,

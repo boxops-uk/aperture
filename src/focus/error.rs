@@ -1,20 +1,39 @@
 use thiserror::Error;
 
-use crate::focus::{iter::Address, plan::FactId, schema::Symbol};
+use crate::focus::{
+    iter::Address,
+    plan::FactId,
+    schema::{PredicateId, Symbol},
+};
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ApertureError {
     #[error("decode error: {0}")]
-    DecodeError(#[from] StoreCodecError),
+    Decode(#[from] StoreCodecError),
 
-    #[error("variable at address 0x{0:016x} used before it was bound")]
+    #[error("{0} was read before anything was bound to it")]
     UseBeforeBind(Address),
 
-    #[error("address 0x{0:016x} out of bounds")]
+    #[error("{0} is not a register in this plan")]
     AddressOutOfBounds(Address),
 
     #[error("advance of closed frame")]
     AdvanceAfterClose,
+
+    /// A plan with no generators. The executor is a nested loop over the plan's
+    /// body, so "no loops" has no level to back into; the compiler never emits
+    /// one, which makes this a malformed plan rather than a query yielding
+    /// nothing.
+    #[error("a plan must have at least one generator")]
+    EmptyPlan,
+
+    /// A resume cursor naming more levels than the plan has. A
+    /// [`Cursor`](crate::focus::iter::Cursor) is bytes-only and rebuilt from the
+    /// wire, so a cursor that does not match the plan it is resumed against is
+    /// untrusted input, not an impossibility.
+    #[error("resume cursor names {cursor} level(s) but the plan has {plan}")]
+    CursorPlanMismatch { cursor: usize, plan: usize },
 
     #[error("resume key not found")]
     BadResumeKey,
@@ -40,6 +59,7 @@ pub enum ApertureError {
 /// between machines), so a malformed row is a data condition, not an
 /// impossibility.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum StoreError {
     #[error("fjall: {0}")]
     Backend(#[from] fjall::Error),
@@ -49,6 +69,12 @@ pub enum StoreError {
 
     #[error("`entities` row for {0:?} is truncated")]
     TruncatedEntity(FactId),
+
+    /// A `keys` row too short to carry the predicate-id prefix every row begins
+    /// with. A register holds the whole row and strips that prefix to reach the
+    /// key fields, so a shorter row has no key to read.
+    #[error("`keys` row is {len} bytes, shorter than the {expected}-byte predicate prefix")]
+    ShortKeyRow { len: usize, expected: usize },
 
     #[error("scan bound is {len} bytes, shorter than the {expected}-byte predicate prefix")]
     ShortScanBound { len: usize, expected: usize },
@@ -67,12 +93,13 @@ pub enum StoreError {
     /// routes `point()`, so accepting it would file the fact where no query looks.
     #[error("fact id {found:?} is tagged predicate {} but the fact is {expected:?}", found.predicate().0)]
     FactIdPredicateMismatch {
-        expected: crate::focus::schema::PredicateId,
+        expected: PredicateId,
         found: FactId,
     },
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum StoreCodecError {
     #[error("unexpected end of input")]
     UnexpectedEof,

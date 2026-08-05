@@ -50,7 +50,7 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
 
 use crate::focus::{
     error::{ApertureError, StoreError},
-    plan::{Entity, FactId, FactStore, MAX_TAGGABLE_PREDICATE},
+    plan::{Entity, FactId, FactStore, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
     schema::{PREDICATE_ID_SIZE, PredicateId},
 };
 
@@ -86,7 +86,15 @@ pub struct FjallDb {
     db: Database,
     /// `predicate → handles`, materialised at open for what is on disk and
     /// extended on first write to a predicate.
-    predicates: RwLock<BTreeMap<u32, Arc<Predicate>>>,
+    ///
+    /// Behind an `Arc` as well as the lock, so [`FjallDb::reader`] shares the map
+    /// instead of copying it: opening a query used to clone every predicate's
+    /// handles, on the one path that happens per query. Writes are
+    /// copy-on-write ([`Arc::make_mut`]), which costs a copy only when a predicate
+    /// is created — already the expensive operation, at ~30 ms a keyspace pair.
+    /// Readers keep whichever map they were handed, which is the snapshot
+    /// semantics a query wants anyway.
+    predicates: RwLock<Arc<BTreeMap<u32, Arc<Predicate>>>>,
 }
 
 impl FjallDb {
@@ -117,7 +125,7 @@ impl FjallDb {
 
         Ok(Self {
             db,
-            predicates: RwLock::new(predicates),
+            predicates: RwLock::new(Arc::new(predicates)),
         })
     }
 
@@ -201,13 +209,20 @@ impl FjallDb {
             .into());
         }
 
-        if let Some(handle) = self
-            .predicates
-            .read()
-            .expect("predicate map lock is poisoned")
-            .get(&predicate.0)
+        // The read guard is bound and dropped explicitly rather than left as a
+        // temporary in an `if let` scrutinee: a temporary there lives to the end
+        // of the `if let`, so taking the write lock below would be sound only
+        // because Rust 2024 shortened that scope. Stated this way it does not
+        // depend on the edition.
         {
-            return Ok(Arc::clone(handle));
+            let predicates = self
+                .predicates
+                .read()
+                .expect("predicate map lock is poisoned");
+
+            if let Some(handle) = predicates.get(&predicate.0) {
+                return Ok(Arc::clone(handle));
+            }
         }
 
         let mut predicates = self
@@ -221,7 +236,7 @@ impl FjallDb {
         }
 
         let handle = Arc::new(Self::open_predicate(&self.db, predicate)?);
-        predicates.insert(predicate.0, Arc::clone(&handle));
+        Arc::make_mut(&mut predicates).insert(predicate.0, Arc::clone(&handle));
         Ok(handle)
     }
 
@@ -231,6 +246,20 @@ impl FjallDb {
     ///
     /// This is the single-fact seeding primitive; Phase 7's bulk path allocates
     /// blocks of sequences and writes through the same layout.
+    ///
+    /// # A key is written once
+    ///
+    /// A `keys` row maps a key to exactly *one* fact, so writing the same
+    /// `(predicate, key_fields)` twice overwrites the index row and strands the
+    /// first fact's `entities` row — a fact no query can reach, and one that no
+    /// bijection check can attribute to anything. **Not writing a key twice is
+    /// the caller's contract**, which an immutable fact database has no reason to
+    /// break.
+    ///
+    /// It is not enforced on the write path: the check is a point lookup per
+    /// fact, and this is the primitive Phase 7's bulk ingest is built on. So it
+    /// is asserted in debug builds — where the whole suite, including the
+    /// generated store batteries, exercises it — and costs nothing in release.
     pub fn put_fact(
         &self,
         predicate: PredicateId,
@@ -251,6 +280,24 @@ impl FjallDb {
         index_key.extend_from_slice(&predicate.0.to_be_bytes());
         index_key.extend_from_slice(key_fields);
 
+        // The write-once contract, checked where it is free to check (see above).
+        #[cfg(debug_assertions)]
+        {
+            let already_written = handle
+                .trees
+                .keys
+                .contains_key(&index_key)
+                .map_err(StoreError::Backend)?;
+
+            assert!(
+                !already_written,
+                "predicate {} already holds a fact keyed {:02x?}. Writing it again \
+                 would overwrite the `keys` row and strand the first fact's entity; \
+                 a key is written once.",
+                predicate.0, key_fields,
+            );
+        }
+
         let mut entity = Vec::with_capacity(KEY_LEN_LEN + key_fields.len() + value.len());
         entity.extend_from_slice(&(key_fields.len() as u32).to_be_bytes());
         entity.extend_from_slice(key_fields);
@@ -260,11 +307,11 @@ impl FjallDb {
         batch.insert(
             &handle.trees.keys,
             index_key,
-            fact_id.0.to_be_bytes().to_vec(),
+            fact_id.raw().to_be_bytes().to_vec(),
         );
         batch.insert(
             &handle.trees.entities,
-            fact_id.0.to_be_bytes().to_vec(),
+            fact_id.raw().to_be_bytes().to_vec(),
             entity,
         );
         batch.commit().map_err(StoreError::Backend)?;
@@ -288,15 +335,14 @@ impl FjallDb {
     /// ([I8](../../docs/invariants.md#i8) — `Executor::enumerate` consumes this and
     /// drops it on every exit path, so nothing is pinned across an idle portal).
     pub fn reader(&self) -> FjallStore {
+        let predicates = self
+            .predicates
+            .read()
+            .expect("predicate map lock is poisoned");
+
         FjallStore {
             snapshot: self.db.snapshot(),
-            predicates: self
-                .predicates
-                .read()
-                .expect("predicate map lock is poisoned")
-                .iter()
-                .map(|(id, handle)| (*id, handle.trees.clone()))
-                .collect(),
+            predicates: Arc::clone(&predicates),
         }
     }
 }
@@ -304,7 +350,7 @@ impl FjallDb {
 /// The per-query `FactStore`: one snapshot, one set of keyspace handles.
 pub struct FjallStore {
     snapshot: Snapshot,
-    predicates: BTreeMap<u32, Trees>,
+    predicates: Arc<BTreeMap<u32, Arc<Predicate>>>,
 }
 
 /// A scan over one predicate's `keys` tree.
@@ -330,12 +376,30 @@ impl Iterator for FjallScan {
 }
 
 /// Decode a stored 8-byte big-endian fact id.
+///
+/// This is the one place stored bytes become a [`FactId`], which is where the
+/// reserved sequence has to be enforced: sequence 0 exists precisely so that
+/// zeroed or truncated bytes are *detectably* not a fact
+/// ([I11](../../docs/invariants.md#i11)), and a property nothing checks is only
+/// an intention. Unchecked, a corrupt row's `FactId(0)` travels on and surfaces
+/// as a dangling reference at projection — several layers from the row that is
+/// actually wrong.
 fn decode_fact_id(bytes: &[u8]) -> Result<FactId, StoreError> {
     let bytes: [u8; FACT_ID_LEN] = bytes.try_into().map_err(|_| StoreError::FactIdWidth {
         len: bytes.len(),
         expected: FACT_ID_LEN,
     })?;
-    Ok(FactId(u64::from_be_bytes(bytes)))
+
+    let id = FactId::from_raw(u64::from_be_bytes(bytes));
+
+    if id.sequence() == 0 {
+        return Err(StoreError::FactIdSequence {
+            sequence: 0,
+            max: MAX_FACT_SEQUENCE,
+        });
+    }
+
+    Ok(id)
 }
 
 /// `keys` row → `(row bytes, fact id)`.
@@ -367,26 +431,26 @@ impl FactStore for FjallStore {
         };
         let predicate = u32::from_be_bytes(prefix.try_into().expect("checked four bytes above"));
 
-        let Some(trees) = self.predicates.get(&predicate) else {
+        let Some(handle) = self.predicates.get(&predicate) else {
             return FjallScan::Empty;
         };
 
         FjallScan::Rows(match hi {
-            Some(hi) => self.snapshot.range(&trees.keys, lo..hi),
-            None => self.snapshot.range(&trees.keys, lo..),
+            Some(hi) => self.snapshot.range(&handle.trees.keys, lo..hi),
+            None => self.snapshot.range(&handle.trees.keys, lo..),
         })
     }
 
     fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
         // The id's tag names the tree, so identity lookup is one point read even
         // though `entities` is split per predicate.
-        let Some(trees) = self.predicates.get(&id.predicate().0) else {
+        let Some(handle) = self.predicates.get(&id.predicate().0) else {
             return Ok(None);
         };
 
         let Some(row) = self
             .snapshot
-            .get(&trees.entities, id.0.to_be_bytes())
+            .get(&handle.trees.entities, id.raw().to_be_bytes())
             .map_err(StoreError::Backend)?
         else {
             return Ok(None);
@@ -517,7 +581,7 @@ mod tests {
             .scan(lo, hi)
             .map(|row| {
                 let (key, id) = row.expect("scan row");
-                (key.to_vec(), id.0)
+                (key.to_vec(), id.raw())
             })
             .collect()
     }
@@ -732,7 +796,7 @@ mod tests {
 
         let want = vec![(
             bound_bytes(0, &[7]),
-            FactId::new(PredicateId(0), 1).expect("id").0,
+            FactId::new(PredicateId(0), 1).expect("id").raw(),
         )];
         for hi in [Some(hi.as_slice()), None] {
             assert_eq!(
@@ -772,11 +836,11 @@ mod tests {
         let want = vec![
             (
                 bound_bytes(last, &[1]),
-                FactId::new(PredicateId(last), 1).expect("id").0,
+                FactId::new(PredicateId(last), 1).expect("id").raw(),
             ),
             (
                 bound_bytes(last, &[2]),
-                FactId::new(PredicateId(last), 2).expect("id").0,
+                FactId::new(PredicateId(last), 2).expect("id").raw(),
             ),
         ];
         assert_eq!(scan_rows(&reader, &lo, None), want);
@@ -851,7 +915,7 @@ mod tests {
 
         assert_eq!(
             scan_rows(&reader, &lo, strinc(&lo).as_deref()),
-            vec![(bound_bytes(predicate.0, &key), written.0)],
+            vec![(bound_bytes(predicate.0, &key), written.raw())],
             "reopened DB lost predicate 5's rows"
         );
         let entity = reader.point(written).expect("point").expect("present");
@@ -936,6 +1000,116 @@ mod tests {
                 .expect("put")
                 .sequence(),
             101
+        );
+    }
+
+    /// [I11](../../docs/invariants.md#i11) — sequence 0 is reserved so that
+    /// zeroed or corrupt bytes are *detectably* not a fact. That only holds if
+    /// the decode boundary enforces it, so it is checked both as a unit and
+    /// end to end, on a row written behind the store's back.
+    #[test]
+    fn a_zeroed_fact_id_is_rejected_at_decode() {
+        assert!(matches!(
+            decode_fact_id(&[0u8; FACT_ID_LEN]),
+            Err(StoreError::FactIdSequence { sequence: 0, .. })
+        ));
+
+        // A corrupt `keys` row surfaces on the scan that reads it, rather than
+        // handing `FactId(0)` to the executor to fail as a dangling reference at
+        // projection — several layers from the row that is actually wrong.
+        let seeded = seed(&[(0, vec![1u8], vec![])]);
+        let trees = predicates_of(&seeded.db)
+            .into_iter()
+            .find(|(id, _)| *id == 0)
+            .expect("predicate 0's trees")
+            .1;
+
+        let mut batch = seeded.db.db.batch();
+        batch.insert(&trees.keys, bound_bytes(0, &[2]), vec![0u8; FACT_ID_LEN]);
+        batch.commit().expect("write a corrupt keys row");
+
+        let reader = seeded.db.reader();
+        let lo = bound_bytes(0, &[]);
+        let fault = reader
+            .scan(&lo, strinc(&lo).as_deref())
+            .find_map(Result::err)
+            .expect("the corrupt row must surface");
+
+        assert!(
+            matches!(
+                fault,
+                ApertureError::Store(StoreError::FactIdSequence { sequence: 0, .. })
+            ),
+            "got {fault:?}"
+        );
+    }
+
+    /// A key is written once ([`FjallDb::put_fact`]). Writing it twice would
+    /// overwrite the `keys` row and strand the first fact's entity — invisible to
+    /// every query, and undetectable without a bijection check. Enforcing that on
+    /// the write path costs a lookup per fact, so it is a debug assertion; this
+    /// is the control proving it is armed.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a key is written once")]
+    fn writing_a_key_twice_is_caught_in_debug() {
+        let dir = TempDir::new().expect("tempdir");
+        let db = FjallDb::open(dir.path()).expect("open");
+
+        db.put_fact(PredicateId(0), &[1, 2], &[]).expect("put");
+        let _ = db.put_fact(PredicateId(0), &[1, 2], &[]);
+    }
+
+    /// [`FjallDb::reader`] costs the same whatever the schema's size.
+    ///
+    /// Opening a reader happens once per query, and it used to copy the whole
+    /// predicate map — a heap allocation plus every predicate's handles. The map is
+    /// shared behind an `Arc` now, so a DB with four times the predicates must cost
+    /// a reader exactly the same: one allocation, for the snapshot.
+    ///
+    /// Measured rather than asserted, as every non-functional claim here is.
+    #[test]
+    fn opening_a_reader_does_not_scale_with_the_predicate_count() {
+        // The counting allocator is only linked because `allocation-counter` is a
+        // dev-dependency. If that breaks, `measure` reports zeroes and the equality
+        // below holds vacuously — so prove the probe sees a known allocation.
+        let control = allocation_counter::measure(|| {
+            std::hint::black_box(Vec::<u8>::with_capacity(4096));
+        });
+        assert!(
+            control.count_total > 0,
+            "counting allocator is not installed; this guard would pass vacuously: {control:?}"
+        );
+
+        let reader_allocations = |predicates: u32| {
+            let dir = TempDir::new().expect("tempdir");
+            let db = FjallDb::open(dir.path()).expect("open");
+            db.create_predicates((0..predicates).map(PredicateId))
+                .expect("create predicate trees");
+
+            let mut seen = 0;
+            let info = allocation_counter::measure(|| {
+                let reader = db.reader();
+                seen = reader.predicates.len();
+                std::hint::black_box(&reader);
+            });
+
+            // Without this the guard would also pass for a reader that saw nothing.
+            assert_eq!(
+                seen, predicates as usize,
+                "the reader must see every predicate"
+            );
+            info.count_total
+        };
+
+        let few = reader_allocations(4);
+        let many = reader_allocations(16);
+
+        assert!(few > 0, "opening a reader allocated nothing at all");
+        assert_eq!(
+            few, many,
+            "opening a reader scales with the schema: {few} allocations for 4 \
+             predicates against {many} for 16"
         );
     }
 
@@ -1179,10 +1353,14 @@ mod tests {
         );
 
         // And a cancellation, which is the one stop that needs setting up rather
-        // than asking for. The token is polled every `CANCELLATION_STRIDE` rows
-        // *skipped inside one `next()`*, so a plan needs a residual that rejects
-        // that many rows before a match to reach a poll at all; a plan whose rows
-        // all match would run to `Done` and prove nothing about cancellation.
+        // than asking for: the token is polled every `CANCELLATION_STRIDE` rows
+        // examined, so the run has to be at least that long to reach a poll.
+        //
+        // The shape here is the *skipped*-row half — a residual that rejects the
+        // whole predicate bar one row — because that is the half where a snapshot
+        // is held across the most work. The matched-row half is
+        // `iter::a_matching_scan_observes_cancellation`, which is about the poll
+        // interval rather than the snapshot.
         let dir = TempDir::new().expect("tempdir");
         let big = FjallDb::open(dir.path()).expect("open");
         let last = CANCELLATION_STRIDE as i64;
@@ -1198,8 +1376,8 @@ mod tests {
                     seek_key: SeekKey::Prefix(Box::new([])),
                 },
                 binds: Box::new([Address::new(0)]),
-                // Matches only the final key, so the first `next()` skips every
-                // other row and trips the poll on the way.
+                // Matches only the final key, so the run skips every other row
+                // and trips the poll on the way.
                 residuals: Box::new([Residual {
                     field_idx: 0,
                     op: ResidualOp::EqConst(i64_field(last).into_boxed_slice()),

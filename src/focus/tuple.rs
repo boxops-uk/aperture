@@ -463,7 +463,7 @@ impl<'a> TupleEncoder<'a> {
 
     pub fn put_fact_id(&mut self, id: FactId) -> Result<(), StoreCodecError> {
         self.out.push(MARK_FACT_REF);
-        self.out.extend_from_slice(&id.0.to_be_bytes());
+        self.out.extend_from_slice(&id.raw().to_be_bytes());
         Ok(())
     }
 
@@ -596,7 +596,7 @@ impl<'a> TupleDecoder<'a> {
 
         self.pos = end;
 
-        Ok(FactId(u64::from_be_bytes(buf)))
+        Ok(FactId::from_raw(u64::from_be_bytes(buf)))
     }
 
     pub fn record<R, E>(
@@ -787,43 +787,10 @@ pub fn decode_typed(
             .copied()
             .ok_or(StoreCodecError::UnexpectedEof)?;
 
-        return Err(ApertureError::DecodeError(StoreCodecError::UnexpectedMark(
-            mark,
-        )));
+        return Err(ApertureError::Decode(StoreCodecError::UnexpectedMark(mark)));
     }
 
     Ok(value)
-}
-
-pub fn decode_record_typed<'b>(
-    interner: &LocalInterner,
-    dec: &mut TupleDecoder<'b>,
-    fields: &[(Symbol, PredicateTy)],
-) -> Result<Value, ApertureError> {
-    dec.record(|dec| {
-        let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
-
-        for (name, field_ty) in fields.iter() {
-            if dec.is_record_end()? {
-                return Err(ApertureError::DecodeError(StoreCodecError::BadRecord));
-            }
-
-            let value = decode_typed_at(interner, dec, field_ty)?;
-
-            let field_name = interner
-                .try_resolve(*name)
-                .ok_or(ApertureError::UnknownSymbol(*name))?
-                .to_owned();
-
-            out.push((field_name, value));
-        }
-
-        if !dec.is_record_end()? {
-            return Err(ApertureError::DecodeError(StoreCodecError::BadRecord));
-        }
-
-        Ok(Value::Record(out.into_boxed_slice()))
-    })
 }
 
 pub fn decode_typed_at<'b>(
@@ -859,7 +826,7 @@ pub fn decode_typed_at<'b>(
 
             for (name, field_ty) in fields.iter() {
                 if dec.is_record_end()? {
-                    return Err(ApertureError::DecodeError(StoreCodecError::BadRecord));
+                    return Err(ApertureError::Decode(StoreCodecError::BadRecord));
                 }
 
                 let value = decode_typed_at(interner, dec, field_ty)?;
@@ -874,7 +841,7 @@ pub fn decode_typed_at<'b>(
             }
 
             if !dec.is_record_end()? {
-                return Err(ApertureError::DecodeError(StoreCodecError::BadRecord));
+                return Err(ApertureError::Decode(StoreCodecError::BadRecord));
             }
 
             Ok(Value::Record(out.into_boxed_slice()))
@@ -915,7 +882,7 @@ impl Ord for Value {
                 Value::Str(_) => MARK_STRING,
                 Value::Record(_) => MARK_RECORD,
                 Value::Int(_) => MARK_INT_NEG_MIN,
-                Value::FactRef(_) => MARK_INT_POS_MIN,
+                Value::FactRef(_) => MARK_FACT_REF,
             }
         }
 
@@ -929,7 +896,7 @@ impl Ord for Value {
         match (self, other) {
             (Int(a), Int(b)) => a.cmp(b),
             (Str(a), Str(b)) => a.cmp(b),
-            (FactRef(a), FactRef(b)) => a.0.cmp(&b.0),
+            (FactRef(a), FactRef(b)) => a.raw().cmp(&b.raw()),
             (Record(a), Record(b)) => a.as_ref().cmp(b.as_ref()),
             (Null, Null) => Ordering::Equal,
             _ => unreachable!("equal rank for different Value variants"),
@@ -946,7 +913,7 @@ impl Serialize for Value {
             Value::Null => serializer.serialize_none(),
             Value::Int(n) => serializer.serialize_i64(*n),
             Value::Str(s) => serializer.serialize_str(s),
-            Value::FactRef(id) => serializer.serialize_u64(id.0),
+            Value::FactRef(id) => serializer.serialize_u64(id.raw()),
             Value::Record(fields) => {
                 let mut map = serializer.serialize_map(Some(fields.len()))?;
 
@@ -1126,7 +1093,7 @@ pub mod proptest {
 
             (PredicateTy::Str, Value::Str(a), Value::Str(b)) => a.cmp(b),
 
-            (PredicateTy::Fact(_), Value::FactRef(a), Value::FactRef(b)) => a.0.cmp(&b.0),
+            (PredicateTy::Fact(_), Value::FactRef(a), Value::FactRef(b)) => a.raw().cmp(&b.raw()),
 
             (PredicateTy::Record(field_tys), Value::Record(a_fields), Value::Record(b_fields)) => {
                 assert_eq!(field_tys.len(), a_fields.len());
@@ -1186,8 +1153,8 @@ pub mod proptest {
             }),
             (any::<u64>(), any::<u64>()).prop_map(|(a, b)| TypedPairSpec {
                 ty: TySpec::Fact(PredicateId(0)),
-                a: Value::FactRef(FactId(a)),
-                b: Value::FactRef(FactId(b)),
+                a: Value::FactRef(FactId::from_raw(a)),
+                b: Value::FactRef(FactId::from_raw(b)),
             }),
         ];
 
@@ -1812,7 +1779,7 @@ pub(crate) mod tests {
 
         let mut fact_ref = Vec::new();
         TupleEncoder::new(&mut fact_ref)
-            .put_fact_id(FactId(1))
+            .put_fact_id(FactId::from_raw(1))
             .unwrap();
         assert_eq!(fact_ref, [0x51, 0, 0, 0, 0, 0, 0, 0, 1]);
     }
@@ -1830,7 +1797,7 @@ pub(crate) mod tests {
         use lasso::Rodeo;
 
         let ty = PredicateTy::Fact(PredicateId(0));
-        let value = Value::FactRef(FactId(42));
+        let value = Value::FactRef(FactId::from_raw(42));
 
         let bytes = encode_typed_for_test(&ty, &value).unwrap();
 

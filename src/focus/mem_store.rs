@@ -50,8 +50,8 @@ impl MemStore {
 
         let mut full_key = predicate_id.0.to_be_bytes().to_vec();
         full_key.extend_from_slice(&key_fields);
-        self.index.insert(full_key, fact_id.0);
-        self.by_id.insert(fact_id.0, (key_fields, value));
+        self.index.insert(full_key, fact_id.raw());
+        self.by_id.insert(fact_id.raw(), (key_fields, value));
     }
 }
 
@@ -63,7 +63,10 @@ impl Iterator for MemScan {
     type Item = Result<(ByteView, FactId), ApertureError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.rows.next().map(|(k, id)| Ok((k.into(), FactId(id))))
+        // The ids in this map came from `FactId::new`, so they are already valid.
+        self.rows
+            .next()
+            .map(|(k, id)| Ok((k.into(), FactId::from_raw(id))))
     }
 }
 
@@ -101,7 +104,7 @@ impl FactStore for MemStore {
     }
 
     fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
-        Ok(self.by_id.get(&id.0).map(|(k, v)| Entity {
+        Ok(self.by_id.get(&id.raw()).map(|(k, v)| Entity {
             key: k.clone().into(),
             value: v.clone().into(),
         }))
