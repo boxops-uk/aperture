@@ -17,7 +17,18 @@ proptest = ["dep:proptest"]
 [dependencies]
 byteview = "0.10.1"
 codespan-reporting = "0.13.1"
-fjall = "3.1.5"
+# Pinned exactly, not a caret requirement, for two reasons that compound.
+#
+# The on-disk format is frozen (I3 markers, I13 the embedded schema), so moving
+# the storage engine underneath an existing database is a deliberate act with a
+# migration question attached — not something `cargo update` should decide.
+#
+# And the I8 guard reads fjall's snapshot count through a `#[doc(hidden)]` field,
+# which carries no stability promise (see `FjallDb::open_snapshots`). That reach
+# is confined to test builds, so a move breaks the guard rather than the library
+# — but a pin is what makes the break happen when someone chooses to upgrade,
+# with the guard in front of them, instead of on an unrelated `cargo update`.
+fjall = "=3.1.8"
 lasso = "0.7.3"
 logos = "0.16.1"
 memchr = "2.8.2"
