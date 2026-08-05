@@ -17,10 +17,11 @@ use lasso::Rodeo;
 use tokio_util::sync::CancellationToken;
 
 use crate::focus::{
-    error::ApertureError,
+    error::{ApertureError, StoreError},
     iter::{Cursor, Executor, Iteratee, Stream},
     plan::{Entity, FactId, FactStore, Plan},
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId, SchemaInterner},
+    store::predicate_of,
     tuple::{Value, put_i64, put_str, strinc},
 };
 
@@ -199,7 +200,7 @@ pub fn assert_scan_stays_in_predicate<S: FactStore>(
         .get(..PREDICATE_ID_SIZE)
         .expect("a scan bound names a predicate in its first four bytes");
 
-    for row in store.scan(lo, hi) {
+    for row in store.scan(lo, hi)? {
         let (key, fact_id) = row?;
         assert!(
             key.starts_with(predicate),
@@ -209,6 +210,32 @@ pub fn assert_scan_stays_in_predicate<S: FactStore>(
     }
 
     Ok(())
+}
+
+/// Assert the other half of the scan contract: **a bound too short to name a
+/// predicate is rejected when the scan is opened**, identically by every impl.
+///
+/// Opening a scan can fail, so it is `scan` that reports it rather than the first
+/// row. While it could not, this case was unspecified and each implementation
+/// answered differently — the real store smuggled the fault out as a first row,
+/// while the two model stores read "no predicate to bound to" as "no bound" and
+/// scanned straight across the boundary, which is the leak
+/// [`assert_scan_stays_in_predicate`] exists to forbid. No valid bound is ever
+/// short, so nothing caught the divergence.
+pub fn assert_short_bound_is_rejected<S: FactStore>(store: &S, lo: &[u8]) {
+    assert!(
+        lo.len() < PREDICATE_ID_SIZE,
+        "this asserts the *malformed* case; {lo:?} is a legal bound"
+    );
+
+    match store.scan(lo, None) {
+        Err(ApertureError::Store(StoreError::ShortScanBound { len, expected })) => {
+            assert_eq!(len, lo.len());
+            assert_eq!(expected, PREDICATE_ID_SIZE);
+        }
+        Err(other) => panic!("expected a short-bound error, got {other}"),
+        Ok(_) => panic!("a {}-byte bound was accepted", lo.len()),
+    }
 }
 
 /// A `FactStore` wrapper counting how many things it has handed out that are
@@ -271,12 +298,17 @@ impl<I: Iterator> Iterator for ProbedScan<I> {
 impl<S: FactStore> FactStore for DropProbe<S> {
     type Scan = ProbedScan<S::Scan>;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Self::Scan {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, ApertureError> {
+        // Counted only once the inner scan exists. A failed open hands out
+        // nothing, so incrementing first would leave a count no drop balances and
+        // the I8 guard would report a leak that never happened.
+        let inner = self.inner.scan(lo, hi)?;
         self.live.fetch_add(1, Ordering::SeqCst);
-        ProbedScan {
-            inner: self.inner.scan(lo, hi),
+
+        Ok(ProbedScan {
+            inner,
             live: Arc::clone(&self.live),
-        }
+        })
     }
 
     fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
@@ -309,7 +341,7 @@ impl<S: FactStore> PointSpy<S> {
 impl<S: FactStore> FactStore for PointSpy<S> {
     type Scan = S::Scan;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Self::Scan {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, ApertureError> {
         self.inner.scan(lo, hi)
     }
 
@@ -405,7 +437,7 @@ impl Iterator for FrozenScan {
 impl FactStore for FrozenStore {
     type Scan = FrozenScan;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> FrozenScan {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<FrozenScan, ApertureError> {
         // A scan never crosses out of the predicate named by `lo`'s prefix — the
         // trait's contract, which [`assert_scan_stays_in_predicate`] holds every
         // impl to. Like `MemStore`, this store keeps every predicate in one
@@ -414,7 +446,7 @@ impl FactStore for FrozenStore {
         //
         // A fixture that shipped beside that assertion while breaking it is worse
         // than one that never claimed to satisfy it, because it reads as evidence.
-        let predicate_end = lo.get(..PREDICATE_ID_SIZE).and_then(strinc);
+        let predicate_end = strinc(&predicate_of(lo)?.to_be_bytes());
         let upper = match (hi, predicate_end.as_deref()) {
             (Some(hi), Some(predicate_end)) => Some(hi.min(predicate_end)),
             (hi, predicate_end) => hi.or(predicate_end),
@@ -425,11 +457,11 @@ impl FactStore for FrozenStore {
             Some(upper) => self.rows.partition_point(|f| f.key.as_ref() < upper),
             None => self.rows.len(),
         };
-        FrozenScan {
+        Ok(FrozenScan {
             rows: Arc::clone(&self.rows),
             idx: start,
             end,
-        }
+        })
     }
 
     fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
@@ -468,7 +500,7 @@ mod tests {
             }
 
             // ...and it yields the predicate's rows rather than none of them.
-            let rows = store.scan(&lo, None).count();
+            let rows = store.scan(&lo, None).expect("open scan").count();
             assert_eq!(rows, 2, "predicate {} lost its rows", predicate.0);
         }
     }

@@ -379,8 +379,6 @@ pub enum FjallScan {
     Rows(fjall::Iter),
     /// The predicate has no tree in this DB: no facts, not an error.
     Empty,
-    /// The bounds were malformed; yields the fault once, then ends.
-    Failed(Option<ApertureError>),
 }
 
 impl Iterator for FjallScan {
@@ -389,10 +387,26 @@ impl Iterator for FjallScan {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Empty => None,
-            Self::Failed(fault) => fault.take().map(Err),
             Self::Rows(rows) => Some(row_to_item(rows.next()?)),
         }
     }
+}
+
+/// The predicate a scan bound names — its first four bytes.
+///
+/// Shared by every [`FactStore`], so the contract for a malformed bound is one
+/// behaviour rather than one per implementation.
+pub(crate) fn predicate_of(lo: &[u8]) -> Result<u32, StoreError> {
+    let prefix = lo
+        .get(..PREDICATE_ID_SIZE)
+        .ok_or(StoreError::ShortScanBound {
+            len: lo.len(),
+            expected: PREDICATE_ID_SIZE,
+        })?;
+
+    Ok(u32::from_be_bytes(
+        prefix.try_into().expect("checked four bytes above"),
+    ))
 }
 
 /// Decode a stored 8-byte big-endian fact id.
@@ -436,29 +450,21 @@ fn row_to_item(row: fjall::Guard) -> Result<(ByteView, FactId), ApertureError> {
 impl FactStore for FjallStore {
     type Scan = FjallScan;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> FjallScan {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<FjallScan, ApertureError> {
         // The bound's first four bytes name the predicate, which selects the tree.
         // `hi` cannot be used for this: it is typically `strinc(lo)`, whose carry
         // can name the *next* predicate (`strinc([0,0,0,0]) == [0,0,0,1]`).
-        let Some(prefix) = lo.get(..PREDICATE_ID_SIZE) else {
-            return FjallScan::Failed(Some(
-                StoreError::ShortScanBound {
-                    len: lo.len(),
-                    expected: PREDICATE_ID_SIZE,
-                }
-                .into(),
-            ));
-        };
-        let predicate = u32::from_be_bytes(prefix.try_into().expect("checked four bytes above"));
+        let prefix = predicate_of(lo)?;
 
-        let Some(handle) = self.predicates.get(&predicate) else {
-            return FjallScan::Empty;
+        let Some(handle) = self.predicates.get(&prefix) else {
+            // No tree for this predicate: no facts, which is not a fault.
+            return Ok(FjallScan::Empty);
         };
 
-        FjallScan::Rows(match hi {
+        Ok(FjallScan::Rows(match hi {
             Some(hi) => self.snapshot.range(&handle.trees.keys, lo..hi),
             None => self.snapshot.range(&handle.trees.keys, lo..),
-        })
+        }))
     }
 
     fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
@@ -505,7 +511,8 @@ mod tests {
     use super::*;
     use crate::focus::{
         fixtures::{
-            DropProbe, assert_scan_stays_in_predicate, collect_rows, i64_field, interner_with,
+            DropProbe, FrozenStore, assert_scan_stays_in_predicate, assert_short_bound_is_rejected,
+            collect_rows, i64_field, interner_with,
         },
         iter::{Address, CANCELLATION_STRIDE, Executor, Iteratee, Stream},
         mem_store::MemStore,
@@ -599,6 +606,7 @@ mod tests {
     fn scan_rows<S: FactStore>(store: &S, lo: &[u8], hi: Option<&[u8]>) -> Vec<(Vec<u8>, u64)> {
         store
             .scan(lo, hi)
+            .expect("open scan")
             .map(|row| {
                 let (key, id) = row.expect("scan row");
                 (key.to_vec(), id.raw())
@@ -633,7 +641,7 @@ mod tests {
         for (predicate, _) in predicates_of(db) {
             let lo = bound_bytes(predicate, &[]);
             let hi = strinc(&lo);
-            for row in reader.scan(&lo, hi.as_deref()) {
+            for row in reader.scan(&lo, hi.as_deref()).expect("open scan") {
                 let (key, id) = row.expect("keys row");
                 rows.push((id, key[PREDICATE_ID_SIZE..].to_vec()));
             }
@@ -871,6 +879,33 @@ mod tests {
         assert_scan_stays_in_predicate(&seeded.mem, &neighbour, None).expect("mem scan");
     }
 
+    /// **Every** `FactStore` rejects a bound too short to name a predicate, the
+    /// same way and at the same moment.
+    ///
+    /// This is what making `scan` fallible bought. While it returned the iterator
+    /// directly there was nowhere to report a malformed bound, so the case went
+    /// unspecified and the implementations diverged: fjall yielded the fault as a
+    /// first row, while `MemStore` and `FrozenStore` read "no predicate to bound
+    /// to" as "no bound" and scanned straight on — returning rows from *two*
+    /// predicates, which is the leak `assert_scan_stays_in_predicate` exists to
+    /// forbid. Nothing caught it, because no valid bound is ever short.
+    #[test]
+    fn every_store_rejects_a_bound_too_short_to_name_a_predicate() {
+        // Two predicates, so a store that fails to bound has somewhere to leak to.
+        let short: &[u8] = &[0, 0];
+        let seeded = seed(&[(0, vec![1u8], vec![]), (1, vec![1u8], vec![])]);
+
+        assert_short_bound_is_rejected(&seeded.db.reader(), short);
+        assert_short_bound_is_rejected(&seeded.mem, short);
+        assert_short_bound_is_rejected(
+            &FrozenStore::from_facts([
+                (PredicateId(0), i64_field(1), 1),
+                (PredicateId(1), i64_field(1), 1),
+            ]),
+            short,
+        );
+    }
+
     /// A predicate with no tree reads as empty rather than failing — and a bound
     /// too short to name a predicate is a surfaced error, not a panic.
     #[test]
@@ -881,12 +916,11 @@ mod tests {
         let lo = bound_bytes(9, &[]);
         assert!(scan_rows(&reader, &lo, None).is_empty());
 
-        let mut short = reader.scan(&[0, 0], None);
+        // Reported by `scan` itself: opening is what failed, not a row.
         assert!(matches!(
-            short.next(),
-            Some(Err(ApertureError::Store(StoreError::ShortScanBound { .. })))
+            reader.scan(&[0, 0], None).err(),
+            Some(ApertureError::Store(StoreError::ShortScanBound { .. }))
         ));
-        assert!(short.next().is_none(), "the fault is yielded once");
     }
 
     /// A predicate id too wide for the fact-id tag is rejected before any tree is
@@ -1052,6 +1086,7 @@ mod tests {
         let lo = bound_bytes(0, &[]);
         let fault = reader
             .scan(&lo, strinc(&lo).as_deref())
+            .expect("open scan")
             .find_map(Result::err)
             .expect("the corrupt row must surface");
 

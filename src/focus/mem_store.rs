@@ -11,7 +11,8 @@ use byteview::ByteView;
 use crate::focus::{
     error::ApertureError,
     plan::{Entity, FactId, FactStore},
-    schema::{PREDICATE_ID_SIZE, PredicateId},
+    schema::PredicateId,
+    store::predicate_of,
     tuple::strinc,
 };
 
@@ -73,14 +74,20 @@ impl Iterator for MemScan {
 impl FactStore for MemStore {
     type Scan = MemScan;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> MemScan {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<MemScan, ApertureError> {
+        // A bound too short to name a predicate is rejected here exactly as the
+        // real store rejects it. Reading it as "no predicate end, so scan on"
+        // is how this store used to walk straight across the boundary while
+        // fjall returned an error for the same call.
+        let predicate = predicate_of(lo)?;
+
         // A scan is a *predicate* query ([chapter 3](../../docs/03-storage-model.md)):
         // it never crosses out of the predicate named by `lo`'s prefix. One
         // `BTreeMap` holds every predicate here, so that bound has to be applied
         // explicitly — the real store gets it structurally, from one keyspace per
         // predicate. Without it an absent `hi` (which the executor produces only
         // for an all-`0xFF` prefix) would walk on into the next predicate's rows.
-        let predicate_end = lo.get(..PREDICATE_ID_SIZE).and_then(strinc);
+        let predicate_end = strinc(&predicate.to_be_bytes());
         let end = match (hi, predicate_end.as_deref()) {
             (Some(hi), Some(predicate_end)) => Some(hi.min(predicate_end)),
             (hi, predicate_end) => hi.or(predicate_end),
@@ -98,9 +105,9 @@ impl FactStore for MemStore {
                 .map(|(k, &v)| (k.clone(), v))
                 .collect(),
         };
-        MemScan {
+        Ok(MemScan {
             rows: rows.into_iter(),
-        }
+        })
     }
 
     fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {

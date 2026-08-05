@@ -274,7 +274,7 @@ impl<S: FactStore> StackFrame<S> {
         let hi = strinc(&prefix);
         let lo = resume_at.unwrap_or(&prefix);
 
-        self.scan = Some(store.scan(lo, hi.as_deref()));
+        self.scan = Some(store.scan(lo, hi.as_deref())?);
         self.current = None;
 
         Ok(())
@@ -906,12 +906,12 @@ mod tests {
     impl FactStore for ShortRowStore {
         type Scan = std::vec::IntoIter<Result<(ByteView, FactId), ApertureError>>;
 
-        fn scan(&self, _lo: &[u8], _hi: Option<&[u8]>) -> Self::Scan {
-            vec![Ok((
+        fn scan(&self, _lo: &[u8], _hi: Option<&[u8]>) -> Result<Self::Scan, ApertureError> {
+            Ok(vec![Ok((
                 ByteView::from(vec![0u8; PREDICATE_ID_SIZE - 1]),
                 FactId::from_raw(1),
             ))]
-            .into_iter()
+            .into_iter())
         }
 
         fn point(&self, _id: FactId) -> Result<Option<Entity>, ApertureError> {

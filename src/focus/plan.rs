@@ -188,7 +188,16 @@ pub struct Entity {
 pub trait FactStore {
     type Scan: Iterator<Item = Result<(ByteView, FactId), ApertureError>>;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Self::Scan;
+    /// Open a scan of `lo..hi`, bounded to the predicate named by `lo`'s first
+    /// [`PREDICATE_ID_SIZE`](crate::focus::schema::PREDICATE_ID_SIZE) bytes.
+    ///
+    /// Fallible, because opening genuinely can fail: a `lo` too short to name a
+    /// predicate names nothing, and that is a fault in the *call*, not in a row.
+    /// While this returned the iterator directly there was nowhere to say so, and
+    /// each implementation invented an answer — one smuggled the error out as a
+    /// first row, the others scanned across the predicate boundary and reported
+    /// nothing.
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, ApertureError>;
 
     fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError>;
 }
