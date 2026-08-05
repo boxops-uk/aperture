@@ -23,26 +23,19 @@
 use std::{borrow::Cow, collections::BTreeMap, path::Path, sync::Arc};
 
 use aperture::focus::{
-    cst::CstNode,
-    diag::Diagnostics,
+    compile::Compilation,
     error::{ApertureError, StoreCodecError},
     iter::{Address, Executor, Iteratee, Stream},
     lexer::{Token, tokenize},
-    lower::lower,
-    parse::parse,
     plan::{Access, FactId, FactStore, Generator, Plan, Project, SeekKey},
     schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner},
     store::{FjallDb, FjallStore},
     syntax::Ty,
     tuple::{TupleEncoder, Value, decode_typed},
-    ty,
 };
-use codespan_reporting::{
-    files::SimpleFile,
-    term::{
-        self,
-        termcolor::{ColorChoice, StandardStream},
-    },
+use codespan_reporting::term::{
+    self,
+    termcolor::{ColorChoice, StandardStream},
 };
 use lasso::Rodeo;
 use rustyline::{
@@ -457,46 +450,26 @@ fn render_predicate_ty(ty: &PredicateTy, schema: &Schema, interner: &SchemaInter
 
 // ---- the front end ---------------------------------------------------------
 
-/// Parse, lower and typecheck `source`, reporting everything it finds.
+/// Compile `source` as far as the front end goes, and say what it found.
 ///
-/// The phases accumulate rather than fail fast, so a query wrong in several ways
-/// is reported in one go — except that lowering needs a tree, so a refused parse
-/// stops there.
+/// The sequencing, the interner and the rendering all belong to
+/// [`Compilation`] now — the shell's job is to decide what to print, which is
+/// the type when the query is clean and nothing extra when it is not, since the
+/// diagnostics have already said it.
 fn check(source: &str, schema: &Schema) {
+    let mut compilation = Compilation::new(source, schema);
+    compilation.check();
+
     let writer = StandardStream::stdout(ColorChoice::Auto);
-    let config = term::Config::default();
-    let file = SimpleFile::new("<input>", source);
+    let _ = compilation.render(&mut writer.lock(), &term::Config::default());
 
-    let mut diagnostics = Diagnostics::new();
-
-    let cst = parse(source, &mut diagnostics);
-    let emit = |diagnostics: &Diagnostics| {
-        for diagnostic in diagnostics {
-            let _ = term::emit_to_write_style(&mut writer.lock(), &config, &file, diagnostic);
-        }
-    };
-
-    let Some(cst) = cst else {
-        emit(&diagnostics);
-        return;
-    };
-    if diagnostics.has_errors() {
-        emit(&diagnostics);
+    if compilation.diagnostics().has_errors() {
         return;
     }
 
-    let mut interner = LocalInterner::new(schema.interner().clone());
-    let ast = lower(&CstNode::new(&cst), schema, &mut interner, &mut diagnostics);
-    let typed = ty::check(&ast, schema, &interner, &mut diagnostics);
-    emit(&diagnostics);
-
-    if !diagnostics.is_empty() {
-        return;
-    }
-
-    match typed.ty(*ast.query().head()) {
+    match compilation.head_ty() {
         Some(head) => {
-            println!("  : {}", render_ty(head, schema, &interner));
+            println!("  : {}", render_ty(head, schema, compilation.interner()));
             println!("  (typechecked — running it needs flatten, which is Phase 4)");
         }
         None => println!("  (the head was not annotated)"),
@@ -763,29 +736,42 @@ mod tests {
         let schema = demo_schema();
 
         for source in EXAMPLES {
-            let mut diagnostics = Diagnostics::new();
-            let cst = parse(source, &mut diagnostics)
-                .expect("a tree, since an example must be well-formed");
-
-            let mut interner = LocalInterner::new(schema.interner().clone());
-            let ast = lower(
-                &CstNode::new(&cst),
-                &schema,
-                &mut interner,
-                &mut diagnostics,
-            );
-            let typed = ty::check(&ast, &schema, &interner, &mut diagnostics);
+            let mut compilation = Compilation::new(source, &schema);
+            compilation.check();
 
             assert!(
-                diagnostics.is_empty(),
-                "{source}: {:?}",
-                diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+                compilation.diagnostics().is_empty(),
+                "{source}:\n{}",
+                compilation.render_to_string()
             );
             assert!(
-                typed.ty(*ast.query().head()).is_some(),
+                compilation.head_ty().is_some(),
                 "{source}: the head was not annotated"
             );
         }
+    }
+
+    /// A line wrong in two ways prints both faults, in the order they were
+    /// written.
+    ///
+    /// The shell is the reason the driver sorts for rendering rather than
+    /// emitting in phase order: this is what someone typing at the prompt
+    /// actually sees, and the unknown predicate is found by lowering — an earlier
+    /// phase than the one that rejects the head — while being written later.
+    #[test]
+    fn a_line_wrong_twice_prints_both_faults_in_source_order() {
+        let schema = demo_schema();
+        let mut compilation = Compilation::new("_ where X = nosuch.Pred _", &schema);
+        compilation.check();
+
+        let rendered = compilation.render_to_string();
+        let head = rendered.find("wildcard").expect("the head fault");
+        let name = rendered.find("nosuch").expect("the unresolved name");
+
+        assert!(
+            head < name,
+            "the shell printed these out of order:\n{rendered}"
+        );
     }
 
     /// The schema the shell offers has to be the schema it seeded, or a query
