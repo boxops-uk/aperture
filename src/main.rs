@@ -1,181 +1,687 @@
-//! A worked example: build a schema, write facts, run a two-level plan.
+//! `aperture` — an interactive shell for the focus language.
 //!
-//! This runs against the real [`FjallDb`] rather than a model store. There was a
-//! second, private `MemStore` here once — a stale copy of
-//! `focus::mem_store::MemStore`, still carrying the unbounded-scan bug that one
-//! was fixed for. A demo whose store disagrees with the product's is worse than
-//! no demo, and the model store is test machinery (gated behind `cfg(test)` /
-//! the `proptest` feature) rather than something a binary should reach for.
+//! Reads a focus query, highlights it as you type from the same `logos` lexer the
+//! compiler uses, and reports what the front end makes of it: lex and parse
+//! errors, names lowering cannot resolve, and the type typecheck infers for the
+//! head.
+//!
+//! It runs against a **real** [`FjallDb`] in a scratch directory, seeded at
+//! startup from the schema below — so the names a query resolves against, and the
+//! rows `:facts` prints, are the ones actually on disk.
+//!
+//! # What it cannot do yet
+//!
+//! **Run your query.** Turning a typed tree into a [`Plan`] is flatten, which is
+//! Phase 4 and does not exist — `focus::syntax::FlatPlan` is unwired scaffolding.
+//! So a query gets as far as a type and stops, and the shell says so rather than
+//! pretending. `:facts` runs a plan this program builds by hand, which is the
+//! honest way to show the store, executor and codec underneath all working.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{borrow::Cow, path::Path, sync::Arc};
 
 use aperture::focus::{
     error::{ApertureError, StoreCodecError},
     iter::{Address, Executor, Iteratee, Stream},
-    plan::{Access, Generator, Plan, Project, SeekKey, SeekKeyPart},
-    schema::{LocalInterner, Predicate, PredicateTy, Schema},
+    lexer::{Token, tokenize},
+    lower::lower,
+    parse::parse,
+    plan::{Access, Generator, Plan, Project, SeekKey},
+    schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner},
     store::FjallDb,
-    tuple::{MARK_RECORD, TupleEncode, TupleEncoder, Value, encode_tuple, put_str},
+    syntax::Ty,
+    tuple::{TupleEncoder, Value},
+    ty,
+};
+use codespan_reporting::{
+    files::SimpleFile,
+    term::{
+        self,
+        termcolor::{ColorChoice, StandardStream},
+    },
 };
 use lasso::Rodeo;
+use rustyline::{
+    Context, Editor, Helper,
+    completion::Completer,
+    error::ReadlineError,
+    highlight::{CmdKind, Highlighter},
+    hint::Hinter,
+    history::DefaultHistory,
+    validate::Validator,
+};
 use tokio_util::sync::CancellationToken;
 
-struct FileFact(String);
+const PROMPT: &str = "focus> ";
 
-impl TupleEncode for FileFact {
-    fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
-        enc.put_str(&self.0);
-        Ok(())
-    }
+// ---- the schema, and the facts that back it --------------------------------
+
+/// A key or value field, before encoding.
+enum Field<'a> {
+    Int(i64),
+    Str(&'a str),
 }
 
-struct FunctionFact {
-    file_path: String,
-    name: String,
-}
-
-impl TupleEncode for FunctionFact {
-    fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
-        enc.record(|enc| {
-            enc.put_str(&self.file_path);
-            enc.put_str(&self.name);
-            Ok(())
-        })
-    }
-}
-
-/// A scratch directory of this run's own, so re-running the demo neither
-/// inherits the last run's facts nor writes a key twice (see
-/// [`FjallDb::put_fact`] — a key is written once).
-fn scratch_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("aperture-demo-{}", std::process::id()))
-}
-
-fn main() -> Result<(), ApertureError> {
-    let dir = scratch_dir();
-    let result = demo(&dir);
-
-    // On *every* path, including an early `?`: best effort, since failing to
-    // tidy up is not a reason to fail the run.
-    let _ = std::fs::remove_dir_all(&dir);
-
-    result
-}
-
-fn demo(dir: &std::path::Path) -> Result<(), ApertureError> {
+/// The schema this shell resolves names against.
+///
+/// Record fields are listed **sorted by name**, as everywhere: a record's field
+/// order is part of its encoding.
+fn demo_schema() -> Schema {
     let mut rodeo = Rodeo::new();
-    let fn_file_path = rodeo.get_or_intern("file_path");
-    let fn_name = rodeo.get_or_intern("name");
+    let mut sym = |name: &str| rodeo.get_or_intern(name);
 
-    let fn_record_ty = PredicateTy::Record(Arc::from([
-        (fn_file_path, PredicateTy::Str),
-        (fn_name, PredicateTy::Str),
-    ]));
-
-    let predicates = Arc::from([
+    let predicates = vec![
+        // A person is identified by id, and their name is the value side — so
+        // `X.value` has something to read.
         Predicate {
-            name: rodeo.get_or_intern("src.File"),
+            name: sym("demo.Person"),
+            key: PredicateTy::Record(Arc::from([(sym("id"), PredicateTy::Int)])),
+            value: Some(PredicateTy::Str),
+        },
+        Predicate {
+            name: sym("demo.Knows"),
+            key: PredicateTy::Record(Arc::from([
+                (sym("from"), PredicateTy::Int),
+                (sym("to"), PredicateTy::Int),
+            ])),
+            value: None,
+        },
+        // A bare scalar key, so not every predicate here is a record.
+        Predicate {
+            name: sym("demo.City"),
             key: PredicateTy::Str,
             value: None,
         },
         Predicate {
-            name: rodeo.get_or_intern("src.Function"),
-            key: fn_record_ty.clone(),
+            name: sym("demo.LivesIn"),
+            key: PredicateTy::Record(Arc::from([
+                (sym("city"), PredicateTy::Str),
+                (sym("person"), PredicateTy::Int),
+            ])),
             value: None,
         },
-    ]);
+    ];
 
-    let schema = Schema::new(rodeo.into_reader(), predicates);
-    let interner = LocalInterner::new(schema.interner().clone());
+    Schema::new(rodeo.into_reader(), Arc::from(predicates))
+}
 
-    let (src_file_id, _) = schema
-        .find_position("src.File")
-        .expect("src.File is declared above");
-    let (src_fn_id, _) = schema
-        .find_position("src.Function")
-        .expect("src.Function is declared above");
-
-    let db = FjallDb::open(dir)?;
-
-    // The schema is known up front, so pay for the trees here rather than at an
-    // arbitrary point inside the writes below.
-    db.create_predicates([src_file_id, src_fn_id])?;
-
-    for path in ["src/main.rs", "src/lib.rs", "src/utils.rs"] {
-        let key = encode_tuple(&FileFact(path.to_string()))?;
-        db.put_fact(src_file_id, &key, &[])?;
+fn put_field(enc: &mut TupleEncoder<'_>, field: &Field<'_>) {
+    match field {
+        Field::Int(value) => enc.put_i64(*value),
+        Field::Str(value) => enc.put_str(value),
     }
+}
 
-    for (file_path, name) in [
-        ("src/main.rs", "main"),
-        ("src/main.rs", "setup"),
-        ("src/lib.rs", "new"),
-        ("src/lib.rs", "parse"),
-        ("src/lib.rs", "execute"),
-        ("src/utils.rs", "helper"),
-    ] {
-        let key = encode_tuple(&FunctionFact {
-            file_path: file_path.to_string(),
-            name: name.to_string(),
-        })?;
-        db.put_fact(src_fn_id, &key, &[])?;
-    }
+/// Encode a record key — the shape of every predicate here bar `demo.City`.
+fn record_key(fields: &[Field<'_>]) -> Result<Vec<u8>, StoreCodecError> {
+    let mut out = Vec::new();
+    let mut enc = TupleEncoder::new(&mut out);
 
-    // "the functions declared in src/main.rs": seek `src.File` straight to that
-    // one path, then splice the bound row's path field into a scan of
-    // `src.Function`, whose key is a record and so starts with MARK_RECORD.
-    let mut file_seek = vec![];
-    put_str(&mut file_seek, "src/main.rs");
+    enc.record(|enc| {
+        for field in fields {
+            put_field(enc, field);
+        }
+        Ok(())
+    })?;
 
-    let plan = Plan {
-        nvars: 2,
-        body: Box::new([
-            Generator {
-                access: Access {
-                    predicate_id: src_file_id,
-                    seek_key: SeekKey::Prefix(file_seek.into_boxed_slice()),
-                },
-                binds: Box::new([Address::new(0)]),
-                residuals: Box::new([]),
-            },
-            Generator {
-                access: Access {
-                    predicate_id: src_fn_id,
-                    seek_key: SeekKey::Composite(Box::new([
-                        SeekKeyPart::Bytes(Box::new([MARK_RECORD])),
-                        SeekKeyPart::RegisterField {
-                            address: Address::new(0),
-                            field_idx: 0,
-                        },
-                    ])),
-                },
-                binds: Box::new([Address::new(1)]),
-                residuals: Box::new([]),
-            },
-        ]),
-        // `field_idx` indexes the key's *top-level* fields, and a `src.Function`
-        // key is one record, so field 0 is the whole `{file_path, name}`.
-        head: Project::RegisterField {
-            address: Address::new(1),
-            field_idx: 0,
-            ty: fn_record_ty,
-        },
+    Ok(out)
+}
+
+/// Encode a bare scalar, for a key or a value.
+fn scalar(field: &Field<'_>) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_field(&mut TupleEncoder::new(&mut out), field);
+    out
+}
+
+/// Write the facts the schema describes, returning how many.
+///
+/// Every key is distinct: a key is written once ([`FjallDb::put_fact`]).
+fn seed(db: &FjallDb, schema: &Schema) -> Result<usize, ApertureError> {
+    let id_of = |name: &str| {
+        schema
+            .find_position(name)
+            .map(|(id, _)| id)
+            .expect("declared in `demo_schema`")
     };
 
-    let result = Executor::new(db.reader(), plan).enumerate(
+    let (person, knows) = (id_of("demo.Person"), id_of("demo.Knows"));
+    let (city, lives_in) = (id_of("demo.City"), id_of("demo.LivesIn"));
+
+    let mut written = 0;
+    let mut put = |predicate, key: Vec<u8>, value: Vec<u8>| -> Result<(), ApertureError> {
+        db.put_fact(predicate, &key, &value)?;
+        written += 1;
+        Ok(())
+    };
+
+    for (id, name) in [
+        (1, "Ada Lovelace"),
+        (2, "Grace Hopper"),
+        (3, "Alan Turing"),
+        (4, "Edsger Dijkstra"),
+    ] {
+        put(
+            person,
+            record_key(&[Field::Int(id)])?,
+            scalar(&Field::Str(name)),
+        )?;
+    }
+
+    for (from, to) in [(1, 2), (1, 3), (2, 3), (3, 4)] {
+        put(
+            knows,
+            record_key(&[Field::Int(from), Field::Int(to)])?,
+            vec![],
+        )?;
+    }
+
+    for name in ["Amsterdam", "Baltimore", "Cambridge"] {
+        put(city, scalar(&Field::Str(name)), vec![])?;
+    }
+
+    for (place, id) in [
+        ("Cambridge", 1),
+        ("Baltimore", 2),
+        ("Cambridge", 3),
+        ("Amsterdam", 4),
+    ] {
+        put(
+            lives_in,
+            record_key(&[Field::Str(place), Field::Int(id)])?,
+            vec![],
+        )?;
+    }
+
+    Ok(written)
+}
+
+// ---- highlighting ----------------------------------------------------------
+
+/// ANSI colours, chosen by what a token *means* rather than what it is: someone
+/// scanning a query wants predicates, variables and literals to separate.
+fn colour(token: Token) -> &'static str {
+    match token {
+        // A lexer error, marked as it is typed — the earliest diagnostic there is.
+        Token::Error => "1;31",
+        Token::Where | Token::Never => "1;35",
+        Token::QId => "33",
+        Token::UId => "1;36",
+        Token::LId => "34",
+        Token::Nat | Token::String | Token::Minus | Token::DotDot => "32",
+        Token::Wildcard | Token::Pipe | Token::Bang | Token::Question => "1;90",
+        _ => "90",
+    }
+}
+
+struct FocusHelper;
+
+impl FocusHelper {
+    /// Whether `line` is a shell command rather than a query.
+    fn is_command(line: &str) -> bool {
+        line.trim_start().starts_with(':')
+    }
+}
+
+impl Highlighter for FocusHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        if line.is_empty() || Self::is_command(line) {
+            return Cow::Borrowed(line);
+        }
+
+        // Diagnostics discarded: they belong to submitting a line, not to typing
+        // one. What is live here is the colour — an invalid token turns red under
+        // the cursor.
+        let (tokens, spans) = tokenize(line, &mut Vec::new());
+
+        let mut out = String::with_capacity(line.len() * 2);
+        let mut last = 0;
+
+        for (token, span) in tokens.iter().zip(spans.iter()) {
+            if span.start > last {
+                out.push_str(&line[last..span.start]);
+            }
+
+            // Whitespace carries no colour: painting it would colour the gaps
+            // between tokens as well as the tokens.
+            if matches!(token, Token::Whitespace) {
+                out.push_str(&line[span.clone()]);
+            } else {
+                out.push_str("\x1b[");
+                out.push_str(colour(*token));
+                out.push('m');
+                out.push_str(&line[span.clone()]);
+                out.push_str("\x1b[0m");
+            }
+
+            last = span.end;
+        }
+
+        if last < line.len() {
+            out.push_str(&line[last..]);
+        }
+
+        Cow::Owned(out)
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, _kind: CmdKind) -> bool {
+        true
+    }
+}
+
+impl Hinter for FocusHelper {
+    type Hint = String;
+
+    /// A live hint for the one fault that is unambiguous mid-typing.
+    ///
+    /// Lexical only. Half-written input is a *parse* error almost continuously —
+    /// `X where` is incomplete rather than wrong — so hinting those would be
+    /// noise. An invalid token stays wrong however much more is typed.
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
+        if pos < line.len() || Self::is_command(line) {
+            return None;
+        }
+
+        let (tokens, _) = tokenize(line, &mut Vec::new());
+        tokens
+            .iter()
+            .any(|token| matches!(token, Token::Error))
+            .then(|| "   invalid token".to_owned())
+    }
+}
+
+impl Completer for FocusHelper {
+    type Candidate = String;
+}
+
+impl Validator for FocusHelper {}
+impl Helper for FocusHelper {}
+
+// ---- rendering types -------------------------------------------------------
+
+fn render_ty(ty: &Ty, schema: &Schema, interner: &LocalInterner) -> String {
+    match ty {
+        Ty::Int => "int".to_owned(),
+        Ty::String => "str".to_owned(),
+        Ty::Error => "?error".to_owned(),
+        Ty::Var(_) => "?".to_owned(),
+        Ty::Fact(predicate) => schema
+            .get(*predicate)
+            .and_then(|p| p.name())
+            .map_or_else(|| "fact".to_owned(), str::to_owned),
+        Ty::Record(fields) => {
+            let rendered = fields
+                .iter()
+                .map(|(name, field)| {
+                    format!(
+                        "{} : {}",
+                        interner.try_resolve(*name).unwrap_or("?"),
+                        render_ty(field, schema, interner)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{rendered}}}")
+        }
+    }
+}
+
+fn render_predicate_ty(ty: &PredicateTy, schema: &Schema, interner: &SchemaInterner) -> String {
+    match ty {
+        PredicateTy::Int => "int".to_owned(),
+        PredicateTy::Str => "str".to_owned(),
+        PredicateTy::Fact(predicate) => schema
+            .get(*predicate)
+            .and_then(|p| p.name())
+            .map_or_else(|| "fact".to_owned(), str::to_owned),
+        PredicateTy::Record(fields) => {
+            let rendered = fields
+                .iter()
+                .map(|(name, field)| {
+                    format!(
+                        "{} : {}",
+                        interner.resolve(*name).unwrap_or("?"),
+                        render_predicate_ty(field, schema, interner)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{rendered}}}")
+        }
+    }
+}
+
+// ---- the front end ---------------------------------------------------------
+
+/// Parse, lower and typecheck `source`, reporting everything it finds.
+///
+/// The phases accumulate rather than fail fast, so a query wrong in several ways
+/// is reported in one go — except that lowering needs a tree, so a refused parse
+/// stops there.
+fn check(source: &str, schema: &Schema) {
+    let writer = StandardStream::stdout(ColorChoice::Auto);
+    let config = term::Config::default();
+    let file = SimpleFile::new("<input>", source);
+
+    let emit = |diagnostics: &[_]| {
+        for diagnostic in diagnostics {
+            let _ = term::emit_to_write_style(&mut writer.lock(), &config, &file, diagnostic);
+        }
+    };
+
+    let parsed = parse(source);
+    emit(parsed.diagnostics());
+
+    let Some(root) = parsed.root() else { return };
+    if parsed.has_errors() {
+        return;
+    }
+
+    let mut interner = LocalInterner::new(schema.interner().clone());
+    let (ast, lowering) = lower(&root, schema, &mut interner);
+    emit(&lowering);
+
+    let (typed, checking) = ty::check(&ast, schema, &interner);
+    emit(&checking);
+
+    if !lowering.is_empty() || !checking.is_empty() {
+        return;
+    }
+
+    match typed.ty(*ast.query().head()) {
+        Some(head) => {
+            println!("  : {}", render_ty(head, schema, &interner));
+            println!("  (typechecked — running it needs flatten, which is Phase 4)");
+        }
+        None => println!("  (the head was not annotated)"),
+    }
+}
+
+// ---- commands --------------------------------------------------------------
+
+fn print_help() {
+    println!("  <query>          typecheck a focus query, e.g.");
+    println!("                     X where demo.Knows {{from = 1, to = X}}");
+    println!("  :schema          the predicates this shell knows");
+    println!("  :facts <name>    rows stored for a predicate, read through the executor");
+    println!("  :help            this");
+    println!("  :quit            leave");
+}
+
+fn print_schema(schema: &Schema) {
+    for index in 0..schema.len() {
+        let Some(predicate) = schema.get(PredicateId(index as u32)) else {
+            continue;
+        };
+
+        let key = render_predicate_ty(predicate.key().ty, schema, schema.interner());
+        let value = predicate.value().map_or_else(String::new, |value| {
+            format!(
+                " -> {}",
+                render_predicate_ty(value.ty, schema, schema.interner())
+            )
+        });
+
+        println!("  {} : {key}{value}", predicate.name().unwrap_or("?"));
+    }
+}
+
+/// A whole-predicate scan, projecting the key and — where there is one — the
+/// value.
+///
+/// Hand-built, because flatten does not exist yet. `field_idx` indexes the key's
+/// *top-level* fields, and a key is one field however many parts it has, so field
+/// 0 is the whole key.
+fn scan_plan(
+    id: PredicateId,
+    key_ty: PredicateTy,
+    value_ty: Option<PredicateTy>,
+    interner: &mut LocalInterner,
+) -> Plan {
+    let key = Project::RegisterField {
+        address: Address::new(0),
+        field_idx: 0,
+        ty: key_ty,
+    };
+
+    let head = match value_ty {
+        None => key,
+        Some(value_ty) => {
+            // Sorted by name, as record fields are everywhere.
+            let key_name = interner.get_or_intern("key");
+            let value_name = interner.get_or_intern("value");
+
+            Project::Record(Box::new([
+                (key_name, key),
+                (
+                    value_name,
+                    Project::Value {
+                        address: Address::new(0),
+                        ty: value_ty,
+                    },
+                ),
+            ]))
+        }
+    };
+
+    Plan {
+        nvars: 1,
+        body: Box::new([Generator {
+            access: Access {
+                predicate_id: id,
+                seek_key: SeekKey::Prefix(Box::new([])),
+            },
+            binds: Box::new([Address::new(0)]),
+            residuals: Box::new([]),
+        }]),
+        head,
+    }
+}
+
+fn print_facts(db: &FjallDb, schema: &Schema, name: &str) {
+    let Some((id, predicate)) = schema.find_position(name) else {
+        println!("  no predicate called `{name}` — try :schema");
+        return;
+    };
+
+    let key_ty = predicate.key().ty.clone();
+    let value_ty = predicate.value().map(|value| value.ty.clone());
+
+    let mut interner = LocalInterner::new(schema.interner().clone());
+    let plan = scan_plan(id, key_ty, value_ty, &mut interner);
+
+    let rows = Executor::new(db.reader(), plan).enumerate(
         Vec::<Value>::new(),
         |mut acc, mut row| {
             acc.push(row.to_value(&interner)?);
             Ok(Stream::Continue(acc))
         },
         &CancellationToken::new(),
-    )?;
-
-    let (Iteratee::Done(values) | Iteratee::Suspended(values, _)) = result;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&values).expect("`Value` serialises infallibly")
     );
 
-    Ok(())
+    match rows {
+        Err(error) => println!("  {error}"),
+        Ok(Iteratee::Done(rows) | Iteratee::Suspended(rows, _)) => {
+            for row in &rows {
+                println!(
+                    "  {}",
+                    serde_json::to_string(row).expect("`Value` serialises infallibly")
+                );
+            }
+            println!("  {} row(s)", rows.len());
+        }
+    }
+}
+
+// ---- the loop --------------------------------------------------------------
+
+/// A scratch directory of this run's own, so two shells never share a database
+/// and re-running never writes a key twice.
+fn scratch_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("aperture-shell-{}", std::process::id()))
+}
+
+fn main() -> Result<(), ApertureError> {
+    let dir = scratch_dir();
+    let result = shell(&dir);
+
+    // On every path, including an early `?`: best effort, since failing to tidy
+    // up is not a reason to fail the run.
+    let _ = std::fs::remove_dir_all(&dir);
+
+    result
+}
+
+fn shell(dir: &Path) -> Result<(), ApertureError> {
+    let schema = demo_schema();
+
+    let db = FjallDb::open(dir)?;
+    db.create_predicates((0..schema.len()).map(|index| PredicateId(index as u32)))?;
+    let written = seed(&db, &schema)?;
+
+    println!("aperture — a focus shell");
+    println!("{written} facts in {}\n", dir.display());
+    print_schema(&schema);
+    println!();
+    print_help();
+    println!();
+
+    let mut editor: Editor<FocusHelper, DefaultHistory> =
+        Editor::new().map_err(|error| readline_failure(&error))?;
+    editor.set_helper(Some(FocusHelper));
+
+    loop {
+        match editor.readline(PROMPT) {
+            Ok(line) => {
+                let line = line.trim().to_owned();
+                if line.is_empty() {
+                    continue;
+                }
+                let _ = editor.add_history_entry(&line);
+
+                match line.split_once(char::is_whitespace) {
+                    Some((":facts", name)) => print_facts(&db, &schema, name.trim()),
+                    _ if line == ":facts" => println!("  :facts needs a predicate — try :schema"),
+                    _ if line == ":schema" => print_schema(&schema),
+                    _ if line == ":help" => print_help(),
+                    _ if line == ":quit" || line == ":q" => return Ok(()),
+                    _ if line.starts_with(':') => {
+                        println!("  no such command: {line} — try :help");
+                    }
+                    _ => check(&line, &schema),
+                }
+            }
+
+            // Ctrl-C abandons the line; Ctrl-D leaves.
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => return Ok(()),
+            Err(error) => return Err(readline_failure(&error)),
+        }
+    }
+}
+
+/// A terminal that cannot be read is not a store fault, but the shell has one
+/// error type to leave by.
+fn readline_failure(error: &ReadlineError) -> ApertureError {
+    eprintln!("aperture: {error}");
+    ApertureError::Cancelled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Drop the ANSI sequences [`FocusHelper::highlight`] inserts, leaving what
+    /// the terminal would actually show.
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars();
+
+        while let Some(c) = chars.next() {
+            if c != '\x1b' {
+                out.push(c);
+                continue;
+            }
+            // `\x1b[…m`, which is the only form emitted here.
+            for escaped in chars.by_ref() {
+                if escaped == 'm' {
+                    break;
+                }
+            }
+        }
+
+        out
+    }
+
+    /// The schema the shell offers has to be the schema it seeded, or a query
+    /// resolves against names with no facts behind them.
+    #[test]
+    fn every_declared_predicate_is_seeded() {
+        let dir = scratch_dir().with_extension("test-seed");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let schema = demo_schema();
+        let db = FjallDb::open(&dir).expect("open");
+        db.create_predicates((0..schema.len()).map(|i| PredicateId(i as u32)))
+            .expect("create");
+        let written = seed(&db, &schema).expect("seed");
+
+        assert!(written > 0);
+        for index in 0..schema.len() {
+            let id = PredicateId(index as u32);
+            let predicate = schema.get(id).expect("declared");
+            let name = predicate.name().expect("named");
+
+            let mut interner = LocalInterner::new(schema.interner().clone());
+            let plan = scan_plan(
+                id,
+                predicate.key().ty.clone(),
+                predicate.value().map(|v| v.ty.clone()),
+                &mut interner,
+            );
+
+            let rows = Executor::new(db.reader(), plan)
+                .enumerate(
+                    0usize,
+                    |n, _row| Ok(Stream::Continue(n + 1)),
+                    &CancellationToken::new(),
+                )
+                .expect("scan");
+            let (Iteratee::Done(rows) | Iteratee::Suspended(rows, _)) = rows;
+
+            assert!(rows > 0, "{name} is declared but has no facts");
+        }
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    proptest! {
+        /// **Highlighting only adds colour.** Strip the escapes and the line comes
+        /// back byte for byte.
+        ///
+        /// This runs on every keystroke over whatever is half-typed, so it has to
+        /// be total: losing a byte would show the wrong text under the cursor, and
+        /// panicking would take the shell down mid-edit. Hence arbitrary input —
+        /// that is what a line editor gets.
+        ///
+        /// Bar `ESC` itself, which is a limit of the *oracle*, not of the
+        /// highlighter: `strip_ansi` cannot tell an escape this code emitted from
+        /// one that was in the line, so it would eat the input's. The highlighter
+        /// pushes only slices of `line` and fixed colour codes, so it is
+        /// byte-preserving there too — there is just no text-level way to say so.
+        #[test]
+        fn highlighting_only_adds_colour(line in "[^\u{1b}]{0,120}") {
+            let highlighted = FocusHelper.highlight(&line, line.len());
+            prop_assert_eq!(strip_ansi(&highlighted), line);
+        }
+
+        /// A command is passed through untouched — it is not focus source.
+        #[test]
+        fn commands_are_not_highlighted(rest in "[^\u{1b}]{0,40}") {
+            let line = format!(":{rest}");
+            let highlighted = FocusHelper.highlight(&line, line.len());
+            prop_assert_eq!(highlighted.as_ref(), line.as_str());
+        }
+    }
 }
