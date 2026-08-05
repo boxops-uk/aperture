@@ -55,6 +55,7 @@ pub enum Code {
     NyiDisjunction,
     NyiNegation,
     NyiNever,
+    NyiFlatten,
     NyiSubquery,
     NyiUnionSelect,
 
@@ -86,6 +87,7 @@ impl Code {
     pub const ALL: &'static [Code] = &[
         Code::NyiBindUnification,
         Code::NyiDisjunction,
+        Code::NyiFlatten,
         Code::NyiNegation,
         Code::NyiNever,
         Code::NyiSubquery,
@@ -112,6 +114,7 @@ impl Code {
         match self {
             Code::NyiBindUnification => "nyi/bind-unification",
             Code::NyiDisjunction => "nyi/disjunction",
+            Code::NyiFlatten => "nyi/flatten",
             Code::NyiNegation => "nyi/negation",
             Code::NyiNever => "nyi/never",
             Code::NyiSubquery => "nyi/subquery",
@@ -142,6 +145,7 @@ impl Code {
         match self {
             Code::NyiBindUnification
             | Code::NyiDisjunction
+            | Code::NyiFlatten
             | Code::NyiNegation
             | Code::NyiNever
             | Code::NyiSubquery
@@ -350,6 +354,7 @@ mod tests {
             match code {
                 Code::NyiBindUnification
                 | Code::NyiDisjunction
+                | Code::NyiFlatten
                 | Code::NyiNegation
                 | Code::NyiNever
                 | Code::NyiSubquery

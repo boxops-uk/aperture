@@ -1,3 +1,4 @@
+pub mod compile;
 pub mod cst;
 pub mod diag;
 pub mod error;
