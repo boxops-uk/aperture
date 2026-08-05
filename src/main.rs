@@ -24,7 +24,8 @@ struct FileFact(String);
 
 impl TupleEncode for FileFact {
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
-        enc.put_str(&self.0)
+        enc.put_str(&self.0);
+        Ok(())
     }
 }
 
@@ -36,8 +37,9 @@ struct FunctionFact {
 impl TupleEncode for FunctionFact {
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
         enc.record(|enc| {
-            enc.put_str(&self.file_path)?;
-            enc.put_str(&self.name)
+            enc.put_str(&self.file_path);
+            enc.put_str(&self.name);
+            Ok(())
         })
     }
 }

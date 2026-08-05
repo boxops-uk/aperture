@@ -27,6 +27,10 @@ pub const MARK_ESCAPE: u8 = 0xFF;
 
 pub const NULL: u8 = 0x00;
 
+/// How many big-endian bytes a magnitude needs: 0 for zero, else 1..=8.
+///
+/// The bound is what licenses the narrowing casts on this value elsewhere — a
+/// width always fits a `u8`, and `8 - width` never underflows.
 #[inline]
 pub fn int_width(mag: u64) -> usize {
     8 - (mag.leading_zeros() / 8) as usize
@@ -41,10 +45,14 @@ pub fn put_i64(out: &mut Vec<u8>, val: i64) {
     let mag = val.unsigned_abs();
     let width = int_width(mag);
 
+    // `width` is 1..=8 for a non-zero magnitude ([`int_width`]), so the cast
+    // cannot truncate and the mark stays inside its band: 0x49..=0x50 going up
+    // from MARK_INT_ZERO, 0x40..=0x47 going down.
+    let width_byte = width as u8;
     let mark = if val > 0 {
-        MARK_INT_ZERO + width as u8
+        MARK_INT_ZERO + width_byte
     } else {
-        MARK_INT_ZERO - width as u8
+        MARK_INT_ZERO - width_byte
     };
 
     let bytes = if val > 0 {
@@ -84,6 +92,7 @@ pub fn get_i64(bytes: &[u8]) -> Result<(i64, usize), StoreCodecError> {
                 return Err(StoreCodecError::Overflow);
             }
 
+            // Checked against `i64::MAX` just above, so the sign cannot flip.
             Ok((mag as i64, width + 1))
         }
 
@@ -114,6 +123,9 @@ pub fn get_i64(bytes: &[u8]) -> Result<(i64, usize), StoreCodecError> {
                 return Err(StoreCodecError::Underflow);
             }
 
+            // `i64::MIN` is the one magnitude that does not fit an `i64`, so it is
+            // named rather than negated; every smaller one does fit, which is what
+            // makes the cast below safe.
             let val = if mag == (1u64 << 63) {
                 i64::MIN
             } else {
@@ -135,6 +147,7 @@ pub fn put_u64(out: &mut Vec<u8>, val: u64) {
     }
     let width = int_width(val);
     let be = val.to_be_bytes();
+    // 1..=8, as in `put_i64`.
     out.push(MARK_INT_ZERO + width as u8);
     out.extend_from_slice(&be[8 - width..]);
 }
@@ -187,7 +200,7 @@ fn put_escaped(out: &mut Vec<u8>, bytes: &[u8]) {
     out.push(MARK_TERM);
 }
 
-fn get_escaped<'a>(bytes: &'a [u8]) -> Result<(Cow<'a, [u8]>, usize), StoreCodecError> {
+fn get_escaped(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, usize), StoreCodecError> {
     use memchr::memchr;
 
     let mut out = Vec::new();
@@ -227,7 +240,7 @@ pub fn put_str(out: &mut Vec<u8>, s: &str) {
     put_escaped(out, s.as_bytes());
 }
 
-pub fn get_str<'a>(bytes: &'a [u8]) -> Result<(Cow<'a, str>, usize), StoreCodecError> {
+pub fn get_str(bytes: &[u8]) -> Result<(Cow<'_, str>, usize), StoreCodecError> {
     let Some((&mark, contents)) = bytes.split_first() else {
         return Err(StoreCodecError::UnexpectedEof);
     };
@@ -435,36 +448,36 @@ impl<'a> TupleEncoder<'a> {
         }
     }
 
-    pub fn put_null(&mut self) -> Result<(), StoreCodecError> {
+    /// Writing a scalar cannot fail — the sink is a `Vec` and every encoding is
+    /// total — so these return nothing. [`record`](Self::record) is the one
+    /// fallible operation, because nesting past [`MAX_RECORD_DEPTH`] is a fault
+    /// the encoding itself cannot express. A `Result` on the rest only put a `?`
+    /// at every call site and left a reader wondering which of them could fail.
+    pub fn put_null(&mut self) {
+        self.out.push(MARK_NULL);
+
+        // Inside a record a bare NULL *is* the terminator, so a null value has to
+        // be escaped to be distinguishable from the end of the record.
         if self.record_depth > 0 {
-            self.out.push(MARK_NULL);
             self.out.push(MARK_ESCAPE);
-        } else {
-            self.out.push(MARK_NULL);
         }
-
-        Ok(())
     }
 
-    pub fn put_i64(&mut self, val: i64) -> Result<(), StoreCodecError> {
+    pub fn put_i64(&mut self, val: i64) {
         put_i64(self.out, val);
-        Ok(())
     }
 
-    pub fn put_u64(&mut self, val: u64) -> Result<(), StoreCodecError> {
+    pub fn put_u64(&mut self, val: u64) {
         put_u64(self.out, val);
-        Ok(())
     }
 
-    pub fn put_str(&mut self, val: &str) -> Result<(), StoreCodecError> {
+    pub fn put_str(&mut self, val: &str) {
         put_str(self.out, val);
-        Ok(())
     }
 
-    pub fn put_fact_id(&mut self, id: FactId) -> Result<(), StoreCodecError> {
+    pub fn put_fact_id(&mut self, id: FactId) {
         self.out.push(MARK_FACT_REF);
         self.out.extend_from_slice(&id.raw().to_be_bytes());
-        Ok(())
     }
 
     pub fn record<R>(
@@ -653,7 +666,8 @@ impl<'a> TupleDecoder<'a> {
 
 impl TupleEncode for i64 {
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
-        enc.put_i64(*self)
+        enc.put_i64(*self);
+        Ok(())
     }
 }
 
@@ -665,7 +679,8 @@ impl<'a> TupleDecode<'a> for i64 {
 
 impl TupleEncode for u64 {
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
-        enc.put_u64(*self)
+        enc.put_u64(*self);
+        Ok(())
     }
 }
 
@@ -677,7 +692,8 @@ impl<'a> TupleDecode<'a> for u64 {
 
 impl TupleEncode for FactId {
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
-        enc.put_fact_id(*self)
+        enc.put_fact_id(*self);
+        Ok(())
     }
 }
 
@@ -689,19 +705,22 @@ impl<'a> TupleDecode<'a> for FactId {
 
 impl TupleEncode for str {
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
-        enc.put_str(self)
+        enc.put_str(self);
+        Ok(())
     }
 }
 
 impl TupleEncode for String {
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
-        enc.put_str(self)
+        enc.put_str(self);
+        Ok(())
     }
 }
 
 impl TupleEncode for &str {
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
-        enc.put_str(self)
+        enc.put_str(self);
+        Ok(())
     }
 }
 
@@ -724,7 +743,10 @@ where
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
         match self {
             Some(value) => value.tuple_encode(enc),
-            None => enc.put_null(),
+            None => {
+                enc.put_null();
+                Ok(())
+            }
         }
     }
 }
@@ -793,9 +815,9 @@ pub fn decode_typed(
     Ok(value)
 }
 
-pub fn decode_typed_at<'b>(
+pub fn decode_typed_at(
     interner: &LocalInterner,
-    dec: &mut TupleDecoder<'b>,
+    dec: &mut TupleDecoder<'_>,
     ty: &PredicateTy,
 ) -> Result<Value, ApertureError> {
     // I5 probe: this is the single funnel for typed field/value decoding.
@@ -1058,11 +1080,20 @@ pub mod proptest {
         value: &Value,
     ) -> Result<(), StoreCodecError> {
         match (ty, value) {
-            (PredicateTy::Int, Value::Int(i)) => enc.put_i64(*i),
+            (PredicateTy::Int, Value::Int(i)) => {
+                enc.put_i64(*i);
+                Ok(())
+            }
 
-            (PredicateTy::Str, Value::Str(s)) => enc.put_str(s),
+            (PredicateTy::Str, Value::Str(s)) => {
+                enc.put_str(s);
+                Ok(())
+            }
 
-            (PredicateTy::Fact(_), Value::FactRef(id)) => enc.put_fact_id(*id),
+            (PredicateTy::Fact(_), Value::FactRef(id)) => {
+                enc.put_fact_id(*id);
+                Ok(())
+            }
 
             (PredicateTy::Record(field_tys), Value::Record(field_values)) => {
                 if field_tys.len() != field_values.len() {
@@ -1773,14 +1804,15 @@ pub(crate) mod tests {
 
         let mut rec_of_zero = Vec::new();
         TupleEncoder::new(&mut rec_of_zero)
-            .record(|enc| enc.put_i64(0))
+            .record(|enc| {
+                enc.put_i64(0);
+                Ok(())
+            })
             .unwrap();
         assert_eq!(rec_of_zero, [0x22, 0x48, 0x00]);
 
         let mut fact_ref = Vec::new();
-        TupleEncoder::new(&mut fact_ref)
-            .put_fact_id(FactId::from_raw(1))
-            .unwrap();
+        TupleEncoder::new(&mut fact_ref).put_fact_id(FactId::from_raw(1));
         assert_eq!(fact_ref, [0x51, 0, 0, 0, 0, 0, 0, 0, 1]);
     }
 

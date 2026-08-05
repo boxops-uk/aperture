@@ -58,6 +58,7 @@ use std::sync::Arc;
 use lasso::Rodeo;
 
 use crate::focus::schema::{Predicate, PredicateTy, Schema};
+use Expectation::{Diagnosed, ParseError, Supported};
 
 /// The schema the corpus is written against.
 ///
@@ -181,8 +182,6 @@ const fn entry(source: &'static str, expect: Expectation, note: &'static str) ->
         note,
     }
 }
-
-use Expectation::{Diagnosed, ParseError, Supported};
 
 pub const CORPUS: &[Entry] = &[
     // ---- the implemented subset: parses, typechecks, and Phase 4 flattens ----

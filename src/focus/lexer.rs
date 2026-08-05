@@ -2,7 +2,7 @@ use super::parser::{Diagnostic, Span};
 use codespan_reporting::diagnostic::Label;
 use logos::Logos;
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LexerError {
     #[default]
     Invalid,
@@ -19,7 +19,7 @@ impl LexerError {
 }
 
 #[allow(clippy::upper_case_acronyms)]
-#[derive(Logos, Debug, PartialEq, Copy, Clone)]
+#[derive(Logos, Debug, PartialEq, Eq, Copy, Clone)]
 #[logos(error = LexerError)]
 pub enum Token {
     EOF,
@@ -148,12 +148,40 @@ pub fn parse_nat(text: &str) -> Result<u64, LiteralError> {
         return Err(LiteralError::IntSeparator);
     }
 
-    let digits: String = text.chars().filter(|c| *c != '_').collect();
-    if digits.len() > 1 && digits.starts_with('0') {
+    // Folded rather than collected into a `String` first: the shape is already
+    // established above, so the digits can be accumulated in one pass.
+    let mut digits = 0u32;
+    let mut value = 0u64;
+    let mut leading_zero = false;
+
+    for c in text.chars() {
+        if c == '_' {
+            continue;
+        }
+
+        let digit = c.to_digit(10).ok_or(LiteralError::IntRange)?;
+
+        if digits == 0 && digit == 0 {
+            leading_zero = true;
+        }
+        digits += 1;
+
+        value = value
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(u64::from(digit)))
+            .ok_or(LiteralError::IntRange)?;
+    }
+
+    if digits == 0 {
+        return Err(LiteralError::IntRange);
+    }
+
+    // `0` is a number; `007` and `0_0` are not.
+    if leading_zero && digits > 1 {
         return Err(LiteralError::IntLeadingZero);
     }
 
-    digits.parse::<u64>().map_err(|_| LiteralError::IntRange)
+    Ok(value)
 }
 
 /// Apply a sign to a magnitude, rejecting anything outside `i64`.
@@ -251,6 +279,7 @@ fn take_hex4(chars: &mut std::str::Chars<'_>) -> Result<u32, LiteralError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// Tokens, minus the trivia the parser skips.
     fn tokens(source: &str) -> Vec<Token> {
@@ -329,6 +358,34 @@ mod tests {
             "a raw newline is a control char"
         );
         assert!(!diags.is_empty());
+    }
+
+    proptest! {
+        /// Any `u64` written out decimally reads back as itself, and separators
+        /// between digits are not part of the value.
+        ///
+        /// Independent of how the digits are accumulated, which is the point: the
+        /// fold that replaced a `String` collect has to agree with what the text
+        /// means, not with the previous implementation.
+        #[test]
+        fn parse_nat_reads_back_any_u64(value in any::<u64>()) {
+            let text = value.to_string();
+            prop_assert_eq!(parse_nat(&text), Ok(value));
+
+            let separated = text
+                .chars()
+                .map(String::from)
+                .collect::<Vec<_>>()
+                .join("_");
+            prop_assert_eq!(parse_nat(&separated), parse_nat(&text), "for {:?}", separated);
+        }
+
+        /// One past `u64::MAX` is out of range however it is written.
+        #[test]
+        fn parse_nat_rejects_anything_too_wide(extra in "[0-9]{1,4}") {
+            let text = format!("{}{extra}", u64::MAX);
+            prop_assert_eq!(parse_nat(&text), Err(LiteralError::IntRange));
+        }
     }
 
     #[test]

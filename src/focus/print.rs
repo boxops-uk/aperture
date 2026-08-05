@@ -139,7 +139,7 @@ struct Printer<'a> {
     interner: &'a LocalInterner,
 }
 
-impl<'a> Printer<'a> {
+impl Printer<'_> {
     // ---- focus source ---------------------------------------------------------
 
     fn query(&self, out: &mut Spanned, query: &Query<NodeId>) {

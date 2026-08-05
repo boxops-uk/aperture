@@ -95,7 +95,7 @@ struct Lowering<'a> {
     diagnostics: Vec<Diagnostic>,
 }
 
-impl<'a> Lowering<'a> {
+impl Lowering<'_> {
     fn push(&mut self, kind: ExprKind<NodeId>, span: &Span) -> NodeId {
         // `span` is a `parser::Span` — a `usize` range — and the store holds a
         // `NodeSpan`. The two are named apart precisely so this crossing is
@@ -418,10 +418,10 @@ impl<'a> Lowering<'a> {
     }
 
     fn fact(&mut self, children: Box<[(CstNode<'_>, Out)]>, span: &Span) -> NodeId {
-        let name = token_text(&children, Token::QId)
-            .unwrap_or_default()
-            .to_owned();
-        let predicate = self.schema.find_position(&name).map(|(id, _)| id);
+        // Borrowed from the *source*, not from `children`, so this outlives the
+        // move below and needs no clone.
+        let name = token_text(&children, Token::QId).unwrap_or_default();
+        let predicate = self.schema.find_position(name).map(|(id, _)| id);
         let key = self.one_pattern(children, span);
 
         match predicate {
@@ -542,8 +542,8 @@ fn step_span(chain: &Span, last: &Span) -> Span {
 }
 
 /// The first `Some` a picker returns over `children`.
-fn take<'s, T>(
-    children: Box<[(CstNode<'s>, Out)]>,
+fn take<T>(
+    children: Box<[(CstNode<'_>, Out)]>,
     mut pick: impl FnMut(Out) -> Option<T>,
 ) -> Option<T> {
     children.into_iter().find_map(|(_, out)| pick(out))
@@ -574,6 +574,7 @@ fn token_text<'s>(children: &[(CstNode<'s>, Out)], token: Token) -> Option<&'s s
 mod tests {
     use super::*;
     use crate::focus::{corpus, parse::parse, schema::SchemaInterner, syntax::source_range};
+    use lasso::Rodeo;
     use proptest::prelude::*;
 
     /// Lower `source` against the corpus schema.
@@ -854,8 +855,6 @@ mod tests {
             }
         }
     }
-
-    use lasso::Rodeo;
 
     /// Fragments that reach every rule, including ones that will not compose.
     fn arb_source() -> impl Strategy<Value = String> {

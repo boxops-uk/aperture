@@ -111,7 +111,7 @@ struct Checker<'a> {
     diagnostics: Vec<Diagnostic>,
 }
 
-impl<'a> Checker<'a> {
+impl Checker<'_> {
     // ---- the walk -------------------------------------------------------------
 
     fn query(&mut self, ast: &Ast, query: &Query<NodeId>) {

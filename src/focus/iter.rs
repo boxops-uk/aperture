@@ -281,7 +281,7 @@ impl<S: FactStore> StackFrame<S> {
     }
 
     fn get_field_span(
-        field_offsets: &mut Box<[FieldOffsets]>,
+        field_offsets: &mut [FieldOffsets],
         key: &ByteView,
         var: Address,
         idx: usize,
@@ -377,7 +377,7 @@ impl<S: FactStore> StackFrame<S> {
     }
 
     fn check_residuals(
-        frame_field_offsets: &mut Box<[FieldOffsets]>,
+        frame_field_offsets: &mut [FieldOffsets],
         state: &MachineState,
         residuals: &[Residual],
         register: &Register,
@@ -433,7 +433,7 @@ pub struct Row<'a, S: FactStore> {
     plan: &'a Plan,
 }
 
-impl<'a, S: FactStore> Row<'a, S> {
+impl<S: FactStore> Row<'_, S> {
     pub fn to_value(&self, interner: &LocalInterner) -> Result<Value, ApertureError> {
         project(interner, &self.plan.head, self.state, self.store)
     }
@@ -534,13 +534,27 @@ impl<S: FactStore> Executor<S> {
         }
     }
 
+    /// The bytes-only resume point: one detached row per open level.
+    ///
+    /// Called at a suspend, where every level from 0 up to and including `depth`
+    /// has produced a row — so the cursor is expected to name `depth + 1` of them
+    /// and be contiguous. Asserted rather than assumed: collecting whatever
+    /// happened to be set would quietly renumber the levels if a frame in the
+    /// middle were ever empty, and `resume` replays a cursor by position.
     pub fn build_cursor(&self) -> Cursor {
-        Cursor(
-            self.stack
-                .iter()
-                .filter_map(|f| f.current.as_ref().map(|r| r.to_detached()))
-                .collect(),
-        )
+        let saved: Vec<Register> = self
+            .stack
+            .iter()
+            .filter_map(|f| f.current.as_ref().map(Register::to_detached))
+            .collect();
+
+        debug_assert_eq!(
+            saved.len(),
+            self.depth + 1,
+            "a suspend cursor must name every level up to `depth`, contiguously"
+        );
+
+        Cursor(saved)
     }
 
     pub fn resume(store: S, plan: Plan, cursor: Cursor) -> Result<Self, ApertureError> {
