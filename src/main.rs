@@ -7,7 +7,10 @@
 //!
 //! It runs against a **real** [`FjallDb`] in a scratch directory, seeded at
 //! startup from the schema below — so the names a query resolves against, and the
-//! rows `:facts` prints, are the ones actually on disk.
+//! rows `:facts` prints, are the ones actually on disk. The schema is built
+//! around **fact references**: the relations point at the entities by `FactId`
+//! rather than repeating their keys, which is what `:facts` resolves back to
+//! `demo.City "Cambridge"` when it prints a row.
 //!
 //! # What it cannot do yet
 //!
@@ -17,7 +20,7 @@
 //! pretending. `:facts` runs a plan this program builds by hand, which is the
 //! honest way to show the store, executor and codec underneath all working.
 
-use std::{borrow::Cow, path::Path, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, path::Path, sync::Arc};
 
 use aperture::focus::{
     error::{ApertureError, StoreCodecError},
@@ -25,11 +28,11 @@ use aperture::focus::{
     lexer::{Token, tokenize},
     lower::lower,
     parse::parse,
-    plan::{Access, Generator, Plan, Project, SeekKey},
+    plan::{Access, FactId, FactStore, Generator, Plan, Project, SeekKey},
     schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner},
-    store::FjallDb,
+    store::{FjallDb, FjallStore},
     syntax::Ty,
-    tuple::{TupleEncoder, Value},
+    tuple::{TupleEncoder, Value, decode_typed},
     ty,
 };
 use codespan_reporting::{
@@ -59,12 +62,31 @@ const PROMPT: &str = "focus> ";
 enum Field<'a> {
     Int(i64),
     Str(&'a str),
+    /// A reference to another fact, by the id its write returned.
+    Ref(FactId),
 }
+
+/// A predicate id **is** its position in the schema — and a `Fact` field names
+/// one, so the ids have to be written down before the vector that defines them.
+/// `predicate_ids_are_positions` checks each against the name it is meant to be.
+const PERSON: PredicateId = PredicateId(0);
+const KNOWS: PredicateId = PredicateId(1);
+const CITY: PredicateId = PredicateId(2);
+const LIVES_IN: PredicateId = PredicateId(3);
 
 /// The schema this shell resolves names against.
 ///
 /// Record fields are listed **sorted by name**, as everywhere: a record's field
 /// order is part of its encoding.
+///
+/// Two predicates are *entities* — `demo.Person` and `demo.City` — and the two
+/// relations refer to them by [`PredicateTy::Fact`] rather than by repeating a
+/// key. That is the shape a fact database is for: a reference is a `FactId`,
+/// encoded under its own marker (`0x51`), so `demo.LivesIn` names the very row
+/// `demo.City` wrote, and a reference to a city that was never written cannot be
+/// spelled. It is also what gives a query something to walk: the `person` of a
+/// `demo.LivesIn` fact *is* a person, so `.value` on it reads that person's name
+/// with no join written out by hand.
 fn demo_schema() -> Schema {
     let mut rodeo = Rodeo::new();
     let mut sym = |name: &str| rodeo.get_or_intern(name);
@@ -80,12 +102,14 @@ fn demo_schema() -> Schema {
         Predicate {
             name: sym("demo.Knows"),
             key: PredicateTy::Record(Arc::from([
-                (sym("from"), PredicateTy::Int),
-                (sym("to"), PredicateTy::Int),
+                (sym("from"), PredicateTy::Fact(PERSON)),
+                (sym("to"), PredicateTy::Fact(PERSON)),
             ])),
             value: None,
         },
-        // A bare scalar key, so not every predicate here is a record.
+        // A bare scalar key, so not every predicate here is a record — and a
+        // referable fact all the same: what a reference names is a *fact*, whatever
+        // shape its key has.
         Predicate {
             name: sym("demo.City"),
             key: PredicateTy::Str,
@@ -94,8 +118,8 @@ fn demo_schema() -> Schema {
         Predicate {
             name: sym("demo.LivesIn"),
             key: PredicateTy::Record(Arc::from([
-                (sym("city"), PredicateTy::Str),
-                (sym("person"), PredicateTy::Int),
+                (sym("city"), PredicateTy::Fact(CITY)),
+                (sym("person"), PredicateTy::Fact(PERSON)),
             ])),
             value: None,
         },
@@ -108,6 +132,7 @@ fn put_field(enc: &mut TupleEncoder<'_>, field: &Field<'_>) {
     match field {
         Field::Int(value) => enc.put_i64(*value),
         Field::Str(value) => enc.put_str(value),
+        Field::Ref(id) => enc.put_fact_id(*id),
     }
 }
 
@@ -136,47 +161,46 @@ fn scalar(field: &Field<'_>) -> Vec<u8> {
 /// Write the facts the schema describes, returning how many.
 ///
 /// Every key is distinct: a key is written once ([`FjallDb::put_fact`]).
-fn seed(db: &FjallDb, schema: &Schema) -> Result<usize, ApertureError> {
-    let id_of = |name: &str| {
-        schema
-            .find_position(name)
-            .map(|(id, _)| id)
-            .expect("declared in `demo_schema`")
-    };
-
-    let (person, knows) = (id_of("demo.Person"), id_of("demo.Knows"));
-    let (city, lives_in) = (id_of("demo.City"), id_of("demo.LivesIn"));
-
+///
+/// The entities go first, because a reference is to a fact and the id that names
+/// it is what [`FjallDb::put_fact`] hands back — so `demo.Knows` and
+/// `demo.LivesIn` cannot be written until the people and cities they point at
+/// exist. Referential integrity here is a consequence of the order, not a check.
+fn seed(db: &FjallDb) -> Result<usize, ApertureError> {
     let mut written = 0;
-    let mut put = |predicate, key: Vec<u8>, value: Vec<u8>| -> Result<(), ApertureError> {
-        db.put_fact(predicate, &key, &value)?;
+    let mut put = |predicate, key: Vec<u8>, value: Vec<u8>| -> Result<FactId, ApertureError> {
+        let id = db.put_fact(predicate, &key, &value)?;
         written += 1;
-        Ok(())
+        Ok(id)
     };
 
+    let mut people = BTreeMap::new();
     for (id, name) in [
         (1, "Ada Lovelace"),
         (2, "Grace Hopper"),
         (3, "Alan Turing"),
         (4, "Edsger Dijkstra"),
     ] {
-        put(
-            person,
+        let fact = put(
+            PERSON,
             record_key(&[Field::Int(id)])?,
             scalar(&Field::Str(name)),
         )?;
+        people.insert(id, fact);
+    }
+
+    let mut cities = BTreeMap::new();
+    for name in ["Amsterdam", "Baltimore", "Cambridge"] {
+        let fact = put(CITY, scalar(&Field::Str(name)), vec![])?;
+        cities.insert(name, fact);
     }
 
     for (from, to) in [(1, 2), (1, 3), (2, 3), (3, 4)] {
         put(
-            knows,
-            record_key(&[Field::Int(from), Field::Int(to)])?,
+            KNOWS,
+            record_key(&[Field::Ref(people[&from]), Field::Ref(people[&to])])?,
             vec![],
         )?;
-    }
-
-    for name in ["Amsterdam", "Baltimore", "Cambridge"] {
-        put(city, scalar(&Field::Str(name)), vec![])?;
     }
 
     for (place, id) in [
@@ -186,8 +210,8 @@ fn seed(db: &FjallDb, schema: &Schema) -> Result<usize, ApertureError> {
         ("Amsterdam", 4),
     ] {
         put(
-            lives_in,
-            record_key(&[Field::Str(place), Field::Int(id)])?,
+            LIVES_IN,
+            record_key(&[Field::Ref(cities[place]), Field::Ref(people[&id])])?,
             vec![],
         )?;
     }
@@ -325,6 +349,85 @@ fn render_ty(ty: &Ty, schema: &Schema, interner: &LocalInterner) -> String {
     }
 }
 
+/// How far [`render_value`] follows references before it stops and names the row
+/// instead.
+///
+/// A referenced fact's key can hold references of its own, and nothing stops a
+/// schema being cyclic — so rendering is bounded rather than trusting the data to
+/// bottom out. This schema is two deep.
+const MAX_REF_DEPTH: usize = 4;
+
+/// Render a projected row as focus-flavoured text.
+///
+/// A reference prints as the fact it names — `demo.City "Cambridge"` — which is
+/// both what a reader wants and how that same fact is written in a query. It
+/// costs one point read apiece, which is why this runs over rows the executor has
+/// already produced: values stay out of the scan loop
+/// ([I6](../docs/invariants.md#i6)).
+fn render_value(
+    store: &FjallStore,
+    schema: &Schema,
+    interner: &LocalInterner,
+    value: &Value,
+    depth: usize,
+) -> String {
+    match value {
+        Value::Null => "null".to_owned(),
+        Value::Int(n) => n.to_string(),
+        // Debug formatting is the quoting and escaping focus source uses.
+        Value::Str(s) => format!("{s:?}"),
+        Value::FactRef(id) => render_ref(store, schema, interner, *id, depth),
+        Value::Record(fields) => {
+            let rendered = fields
+                .iter()
+                .map(|(name, field)| {
+                    format!(
+                        "{name} = {}",
+                        render_value(store, schema, interner, field, depth)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{rendered}}}")
+        }
+    }
+}
+
+/// Resolve one reference through the `entities` column family.
+///
+/// The id's own tag says which predicate it belongs to, so the schema gives the
+/// key's type without anything else being carried alongside. Where the fact
+/// cannot be read — depth exhausted, or a dangling id — the reference still names
+/// a row, so print the identity rather than nothing: `demo.Person#3`.
+fn render_ref(
+    store: &FjallStore,
+    schema: &Schema,
+    interner: &LocalInterner,
+    id: FactId,
+    depth: usize,
+) -> String {
+    let Some(predicate) = schema.get(id.predicate()) else {
+        return format!("?#{}", id.sequence());
+    };
+    let name = predicate.name().unwrap_or("?");
+
+    if depth == 0 {
+        return format!("{name}#{}", id.sequence());
+    }
+
+    match store.point(id) {
+        Ok(Some(entity)) => match decode_typed(interner, &entity.key, predicate.key().ty) {
+            Ok(key) => format!(
+                "{name} {}",
+                render_value(store, schema, interner, &key, depth - 1)
+            ),
+            Err(error) => format!("{name}#{} ({error})", id.sequence()),
+        },
+        Ok(None) => format!("{name}#{} (dangling)", id.sequence()),
+        Err(error) => format!("{name}#{} ({error})", id.sequence()),
+    }
+}
+
 fn render_predicate_ty(ty: &PredicateTy, schema: &Schema, interner: &SchemaInterner) -> String {
     match ty {
         PredicateTy::Int => "int".to_owned(),
@@ -398,9 +501,23 @@ fn check(source: &str, schema: &Schema) {
 
 // ---- commands --------------------------------------------------------------
 
+/// The queries `:help` offers, which `help_examples_typecheck` checks: a shell
+/// that suggests a query it then rejects is worse than one that suggests none.
+///
+/// Both are about references. A field typed `Fact` is written as the fact itself —
+/// `demo.Person {id = 1}` — so a key nests the pattern that names it; and reading
+/// through one is `.value`, which needs no join because a reference already *is*
+/// the row.
+const EXAMPLES: [&str; 2] = [
+    "X.value where demo.Knows {from = demo.Person {id = 1}, to = X}",
+    "P.value where demo.LivesIn {city = demo.City \"Cambridge\", person = P}",
+];
+
 fn print_help() {
     println!("  <query>          typecheck a focus query, e.g.");
-    println!("                     X where demo.Knows {{from = 1, to = X}}");
+    for example in EXAMPLES {
+        println!("                     {example}");
+    }
     println!("  :schema          the predicates this shell knows");
     println!("  :facts <name>    rows stored for a predicate, read through the executor");
     println!("  :help            this");
@@ -501,10 +618,14 @@ fn print_facts(db: &FjallDb, schema: &Schema, name: &str) {
     match rows {
         Err(error) => println!("  {error}"),
         Ok(Iteratee::Done(rows) | Iteratee::Suspended(rows, _)) => {
+            // A reader of its own, opened after the scan has finished: resolving a
+            // reference is a point read, and this is not the scan loop.
+            let store = db.reader();
+
             for row in &rows {
                 println!(
                     "  {}",
-                    serde_json::to_string(row).expect("`Value` serialises infallibly")
+                    render_value(&store, schema, &interner, row, MAX_REF_DEPTH)
                 );
             }
             println!("  {} row(s)", rows.len());
@@ -536,7 +657,7 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
 
     let db = FjallDb::open(dir)?;
     db.create_predicates((0..schema.len()).map(|index| PredicateId(index as u32)))?;
-    let written = seed(&db, &schema)?;
+    let written = seed(&db)?;
 
     println!("aperture — a focus shell");
     println!("{written} facts in {}\n", dir.display());
@@ -613,6 +734,52 @@ mod tests {
         out
     }
 
+    /// The ids the `Fact` fields refer to have to be the predicates they are named
+    /// for. A predicate id is a *position*, so inserting one into the middle of
+    /// `demo_schema` silently repoints every reference — this is what says so.
+    #[test]
+    fn predicate_ids_are_positions() {
+        let schema = demo_schema();
+
+        for (name, id) in [
+            ("demo.Person", PERSON),
+            ("demo.Knows", KNOWS),
+            ("demo.City", CITY),
+            ("demo.LivesIn", LIVES_IN),
+        ] {
+            let found = schema.find_position(name).map(|(id, _)| id);
+            assert_eq!(found, Some(id), "{name} is not at {}", id.0);
+        }
+    }
+
+    /// Every example the shell prints parses, lowers and typechecks against the
+    /// schema it seeds — `:help` is advice, and wrong advice is worse than none.
+    #[test]
+    fn help_examples_typecheck() {
+        let schema = demo_schema();
+
+        for source in EXAMPLES {
+            let parsed = parse(source);
+            assert!(
+                !parsed.has_errors(),
+                "{source}: {:?}",
+                parsed.diagnostics().len()
+            );
+            let root = parsed.root().expect("a tree, since there are no errors");
+
+            let mut interner = LocalInterner::new(schema.interner().clone());
+            let (ast, lowering) = lower(&root, &schema, &mut interner);
+            assert!(lowering.is_empty(), "{source}: {lowering:?}");
+
+            let (typed, checking) = ty::check(&ast, &schema, &interner);
+            assert!(checking.is_empty(), "{source}: {checking:?}");
+            assert!(
+                typed.ty(*ast.query().head()).is_some(),
+                "{source}: the head was not annotated"
+            );
+        }
+    }
+
     /// The schema the shell offers has to be the schema it seeded, or a query
     /// resolves against names with no facts behind them.
     #[test]
@@ -624,7 +791,7 @@ mod tests {
         let db = FjallDb::open(&dir).expect("open");
         db.create_predicates((0..schema.len()).map(|i| PredicateId(i as u32)))
             .expect("create");
-        let written = seed(&db, &schema).expect("seed");
+        let written = seed(&db).expect("seed");
 
         assert!(written > 0);
         for index in 0..schema.len() {
@@ -651,6 +818,90 @@ mod tests {
 
             assert!(rows > 0, "{name} is declared but has no facts");
         }
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every reference the seed writes names a fact that is there.
+    ///
+    /// Nothing on the write path checks this — a `FactId` is eight bytes like any
+    /// other field, and referential integrity comes from the *order* `seed` writes
+    /// in. So reordering it would leave the shell printing `(dangling)` and a query
+    /// reading through a reference failing at the point lookup; this fails first.
+    #[test]
+    fn every_reference_resolves() {
+        let dir = scratch_dir().with_extension("test-refs");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let schema = demo_schema();
+        let db = FjallDb::open(&dir).expect("open");
+        db.create_predicates((0..schema.len()).map(|i| PredicateId(i as u32)))
+            .expect("create");
+        seed(&db).expect("seed");
+
+        /// Collect the references anywhere in a projected row.
+        fn refs(value: &Value, out: &mut Vec<FactId>) {
+            match value {
+                Value::FactRef(id) => out.push(*id),
+                Value::Record(fields) => {
+                    for (_, field) in fields.iter() {
+                        refs(field, out);
+                    }
+                }
+                Value::Null | Value::Int(_) | Value::Str(_) => {}
+            }
+        }
+
+        let store = db.reader();
+        let mut seen = 0;
+
+        for index in 0..schema.len() {
+            let id = PredicateId(index as u32);
+            let predicate = schema.get(id).expect("declared");
+
+            let mut interner = LocalInterner::new(schema.interner().clone());
+            let plan = scan_plan(
+                id,
+                predicate.key().ty.clone(),
+                predicate.value().map(|v| v.ty.clone()),
+                &mut interner,
+            );
+
+            let rows = Executor::new(db.reader(), plan)
+                .enumerate(
+                    Vec::<Value>::new(),
+                    |mut acc, mut row| {
+                        acc.push(row.to_value(&interner)?);
+                        Ok(Stream::Continue(acc))
+                    },
+                    &CancellationToken::new(),
+                )
+                .expect("scan");
+            let (Iteratee::Done(rows) | Iteratee::Suspended(rows, _)) = rows;
+
+            for row in &rows {
+                let mut ids = Vec::new();
+                refs(row, &mut ids);
+
+                for fact in ids {
+                    let target = schema.get(fact.predicate()).expect("a declared predicate");
+                    let entity = store
+                        .point(fact)
+                        .expect("point")
+                        .unwrap_or_else(|| panic!("dangling reference {}", fact.raw()));
+
+                    decode_typed(&interner, &entity.key, target.key().ty)
+                        .expect("the referenced key decodes at the referenced predicate's type");
+                    seen += 1;
+                }
+            }
+        }
+
+        assert!(
+            seen > 0,
+            "the schema has `Fact` fields but nothing wrote one"
+        );
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
