@@ -89,9 +89,12 @@ enum Undo {
     Annotation { node: NodeId, prev: Option<Ty> },
 }
 
+/// Where to roll a scope back to.
+///
+/// No mark for the substitution: its *values* are restored from the undo log, and
+/// its slots are deliberately never reclaimed (see [`Checker::fresh_var_id`]).
 struct Snapshot {
     undo: usize,
-    subst: usize,
     env: usize,
 }
 
@@ -561,6 +564,16 @@ impl<'a> Checker<'a> {
 
     // ---- state ----------------------------------------------------------------
 
+    /// A type variable that has never been used before, and whose id will never be
+    /// handed out again.
+    ///
+    /// A [`TyVarId`] is an index into `subst`, so ids are only fresh while the
+    /// substitution grows monotonically — which is why [`Checker::rollback`]
+    /// restores its values but does not truncate it. Reclaiming the slots would let
+    /// this hand back an id belonging to a rolled-back scope, and a `Ty::Var` that
+    /// outlived that scope would then quietly mean a *different* variable. A
+    /// handful of unused `Option<Ty>` slots for the length of one query is the
+    /// cheaper mistake by a wide margin.
     fn fresh_var_id(&mut self) -> TyVarId {
         self.subst.push(None);
         TyVarId::new(self.subst.len() - 1)
@@ -585,6 +598,8 @@ impl<'a> Checker<'a> {
     fn set_var(&mut self, var: TyVarId, ty: Ty) {
         let prev = self.var_ty(var);
         self.undo.push(Undo::Subst { var, prev });
+        // Indexed directly, and sound by construction: every `TyVarId` comes from
+        // `fresh_var_id`, which pushes the slot, and nothing removes one.
         self.subst[var.index()] = Some(ty);
     }
 
@@ -596,11 +611,17 @@ impl<'a> Checker<'a> {
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             undo: self.undo.len(),
-            subst: self.subst.len(),
             env: self.env.len(),
         }
     }
 
+    /// Undo everything a failed scope did, so a mistake in one field cannot poison
+    /// its siblings.
+    ///
+    /// The undo log restores every substitution and annotation the scope wrote. The
+    /// environment *is* truncated, because a variable introduced in the scope must
+    /// stop counting as bound; the substitution is not, because its ids must stay
+    /// unique for the checker's life ([`Checker::fresh_var_id`]).
     fn rollback(&mut self, at: Snapshot) {
         while self.undo.len() > at.undo {
             match self.undo.pop() {
@@ -609,7 +630,6 @@ impl<'a> Checker<'a> {
                 None => break,
             }
         }
-        self.subst.truncate(at.subst);
         self.env.truncate(at.env);
     }
 
@@ -1017,6 +1037,49 @@ mod tests {
         // ...and the same shape twice is fine.
         let checked = compile("X where test.Nested {outer = X}; test.Nested {outer = X}");
         assert!(codes(&checked).is_empty(), "{:?}", codes(&checked));
+    }
+
+    /// A rolled-back scope's type variables are never handed out again.
+    ///
+    /// `rollback` restores the substitution's values from the undo log but does not
+    /// reclaim its slots, and that asymmetry is the point. Truncating would make a
+    /// later `fresh_var_id` return an id belonging to the abandoned scope, so a
+    /// `Ty::Var` that outlived it would silently come to mean a different variable
+    /// — a wrong type inferred quietly, where the leak it saves is a few unused
+    /// `Option<Ty>` slots for one query.
+    #[test]
+    fn a_rolled_back_scope_does_not_reuse_its_type_variables() {
+        let schema = corpus::schema();
+        let interner = LocalInterner::new(schema.interner().clone());
+        let mut checker = Checker {
+            schema: &schema,
+            interner: &interner,
+            env: vec![],
+            subst: vec![],
+            tys: vec![],
+            undo: vec![],
+            diagnostics: vec![],
+        };
+
+        let outer = checker.fresh_var_id();
+        let at = checker.snapshot();
+
+        let inner = checker.fresh_var_id();
+        checker.set_var(inner, Ty::Int);
+        checker.rollback(at);
+
+        // The abandoned scope's binding is gone...
+        assert_eq!(checker.var_ty(inner), None, "the binding must be undone");
+
+        // ...and its id is not reissued, so no stale `Ty::Var` can alias it.
+        let next = checker.fresh_var_id();
+        assert_ne!(next, inner, "a rolled-back id was handed out again");
+        assert_ne!(next, outer);
+
+        // A variable from *before* the snapshot is still writable — the
+        // substitution was not truncated out from under it.
+        checker.set_var(outer, Ty::String);
+        assert_eq!(checker.var_ty(outer), Some(Ty::String));
     }
 
     // ---- poison, and how far it reaches --------------------------------------
