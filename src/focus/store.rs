@@ -326,6 +326,26 @@ impl FjallDb {
     /// handle that outlives its query shows up here as a snapshot that is still
     /// pinning LSM blocks and a superseded generation. Exposed because "the
     /// executor released it" is only believable if the storage engine agrees.
+    ///
+    /// # This is the one place that reaches into fjall
+    ///
+    /// There is no supported API for it. `Database::snapshot` is the only public
+    /// snapshot method; the count lives on `SnapshotTracker`, reached through
+    /// `DatabaseInner::supervisor`, which is `#[doc(hidden)] pub` — reachable, with
+    /// no stability promise — and fjall itself calls `open_snapshots` only from its
+    /// own unit tests.
+    ///
+    /// So it is confined to test builds. An ordinary build of this crate, and every
+    /// consumer of it, depends on fjall's public surface alone; only the guard
+    /// depends on more, and an upgrade that moves the field breaks the *test* build,
+    /// loudly, in the one place that knows why.
+    ///
+    /// If it disappears, the fix is a documented accessor upstream rather than a
+    /// different witness. I8 deliberately has two: `DropProbe` says *which object*
+    /// survived, and this says whether the engine agrees. Nothing else can answer
+    /// the second question without inferring it from disk usage or compaction
+    /// behaviour, which would be a guess dressed as a guard.
+    #[cfg(any(test, feature = "proptest"))]
     #[must_use]
     pub fn open_snapshots(&self) -> usize {
         self.db.supervisor.snapshot_tracker.open_snapshots()
