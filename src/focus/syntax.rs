@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 use crate::focus::{
     iter::Address,
@@ -48,7 +48,12 @@ pub enum Ty {
     Int,
     String,
     Fact(PredicateId),
-    Record(Box<[(Symbol, Ty)]>),
+    /// Fields sorted by name, as everywhere. `Arc` rather than `Box` because
+    /// substitution genuinely shares: one inferred type ends up in the
+    /// substitution, in the annotation side table, and inside error values, so a
+    /// `Ty` clone has to be a refcount bump rather than a deep copy of the tree
+    /// (see `ty::Checker::repr`).
+    Record(Arc<[(Symbol, Ty)]>),
     Var(TyVarId),
     Error,
 }

@@ -65,13 +65,13 @@ pub fn check(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> (Typed, Ve
     // Resolve every annotation before handing the table over. During checking an
     // annotation is whatever was known at the time — usually a type variable — and a
     // side table full of unresolved variables tells a later phase nothing.
-    for id in 0..checker.tys.len() {
-        if let Some(ty) = checker.tys[id].take() {
-            checker.tys[id] = Some(checker.zonk(&ty));
-        }
-    }
+    let tys = checker
+        .tys
+        .iter()
+        .map(|slot| slot.as_ref().map(|ty| checker.zonk(ty)))
+        .collect();
 
-    (Typed { tys: checker.tys }, checker.diagnostics)
+    (Typed { tys }, checker.diagnostics)
 }
 
 /// Why two types could not be made equal.
@@ -270,11 +270,12 @@ impl<'a> Checker<'a> {
 
     /// Check `id` against a known type, rather than inferring it.
     fn check(&mut self, ast: &Ast, id: NodeId, expected: &Ty) {
-        let expected = self.zonk(expected);
+        let expected = self.repr(expected);
 
         // A poisoned expectation means something upstream already failed; checking
-        // against it would report the same mistake again.
-        if has_error(&expected) {
+        // against it would report the same mistake again. At the head, as in
+        // `unify`: poison inside a record is the business of the field it is in.
+        if matches!(expected, Ty::Error) {
             return;
         }
 
@@ -336,7 +337,7 @@ impl<'a> Checker<'a> {
     /// One `.field` or `.value` step.
     fn access(&mut self, ast: &Ast, id: NodeId, field: FieldRef, base: NodeId) -> Ty {
         let base_ty = self.infer(ast, base);
-        let base_ty = self.zonk(&base_ty);
+        let base_ty = self.repr(&base_ty);
 
         match field {
             FieldRef::Value => match base_ty {
@@ -428,17 +429,25 @@ impl<'a> Checker<'a> {
     // ---- unification ----------------------------------------------------------
 
     fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), TyError> {
-        let a = self.zonk(a);
-        let b = self.zonk(b);
+        let a = self.repr(a);
+        let b = self.repr(b);
 
         // Poison unifies with anything, so one mistake reports once — and it has to
         // *propagate* into an unbound variable, not just stop here. `X = nosuch.Pred _`
         // binds `X` to an error node; without this, `X` stays unknown and every later
         // `X.field` reports "the type of this value is not known", turning one bad
         // predicate name into a diagnostic per use.
-        if has_error(&a) || has_error(&b) {
+        //
+        // Checked at the **head**, not through the whole type. Poison buried inside
+        // a record is reached by the structural recursion below, which silences the
+        // field it is actually in and leaves the rest of the comparison
+        // reportable. That is the rule: report a mismatch only when it is a fact
+        // about what the user wrote — an arity or a field name is, and neither can
+        // be influenced by a subtree that already failed. Returning early on poison
+        // *anywhere* swallowed those too.
+        if matches!(a, Ty::Error) || matches!(b, Ty::Error) {
             for ty in [&a, &b] {
-                // Both sides are zonked, so a variable here is genuinely unbound.
+                // Both sides are resolved, so a variable here is genuinely unbound.
                 if let Ty::Var(var) = ty {
                     self.set_var(*var, Ty::Error);
                 }
@@ -484,19 +493,52 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Resolve a type as far as the substitution allows, compressing the path.
-    fn zonk(&mut self, ty: &Ty) -> Ty {
+    /// Resolve `ty` far enough to see its outermost shape: follow a chain of bound
+    /// variables to the first non-variable, or to an unbound one.
+    ///
+    /// The shallow half of what [`zonk`](Self::zonk) does, and all any caller
+    /// during checking needs — each one matches on the head and then recurses, and
+    /// every recursion resolves its own head. Deep-resolving at every level
+    /// instead re-walked the whole remaining subtree once per level, which is
+    /// quadratic in the type's size. A `Ty` clone is a refcount bump
+    /// ([`Ty::Record`] is an `Arc`), so this is not.
+    ///
+    /// Takes `&self`: nothing here writes back. The previous form compressed the
+    /// path as it walked, which meant an `Undo` entry per traversal — undo-log
+    /// growth during what reads as a pure query.
+    fn repr(&self, ty: &Ty) -> Ty {
+        let mut current = ty.clone();
+
+        // A chain cannot be longer than the number of variables, and `bind_var`'s
+        // occurs check makes a cycle impossible. The bound is a backstop: it turns
+        // a broken occurs check into a debug assertion rather than a hang.
+        for _ in 0..=self.subst.len() {
+            let Ty::Var(var) = current else {
+                return current;
+            };
+            let Some(bound) = self.var_ty(var) else {
+                return current;
+            };
+            current = bound;
+        }
+
+        debug_assert!(false, "substitution chain is cyclic at {current:?}");
+        current
+    }
+
+    /// Resolve a type **fully**, rebuilding every record it walks.
+    ///
+    /// The expensive one, and so called in exactly one place: the final pass over
+    /// the annotation table, which is the only point a completely resolved type is
+    /// wanted. Everything during checking uses [`repr`](Self::repr).
+    fn zonk(&self, ty: &Ty) -> Ty {
         match ty {
             Ty::Error | Ty::Int | Ty::String | Ty::Fact(_) => ty.clone(),
 
-            Ty::Var(var) => {
-                let Some(bound) = self.var_ty(*var) else {
-                    return ty.clone();
-                };
-                let bound = self.zonk(&bound);
-                self.set_var(*var, bound.clone());
-                bound
-            }
+            Ty::Var(var) => match self.var_ty(*var) {
+                Some(bound) => self.zonk(&bound),
+                None => ty.clone(),
+            },
 
             Ty::Record(fields) => Ty::Record(
                 fields
@@ -507,8 +549,8 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn occurs(&mut self, var: TyVarId, ty: &Ty) -> bool {
-        match self.zonk(ty) {
+    fn occurs(&self, var: TyVarId, ty: &Ty) -> bool {
+        match self.repr(ty) {
             Ty::Error | Ty::Int | Ty::String | Ty::Fact(_) => false,
             Ty::Var(other) => other == var,
             Ty::Record(fields) => fields.iter().any(|(_, field)| self.occurs(var, field)),
@@ -652,7 +694,11 @@ impl<'a> Checker<'a> {
         match ty {
             Ty::Int => "an integer".to_owned(),
             Ty::String => "a string".to_owned(),
-            Ty::Error => "an error".to_owned(),
+            // Only reachable nested inside another type: a bare poison never
+            // reaches a message, because `unify` returns `Ok` on it. Named as
+            // already-reported rather than as a type — "found an error" reads
+            // like a compiler fault.
+            Ty::Error => "(already reported)".to_owned(),
             Ty::Var(_) => "an unknown type".to_owned(),
             Ty::Fact(predicate) => match self.schema.get(*predicate) {
                 Some(p) => format!("`{}`", p.name()),
@@ -695,18 +741,17 @@ fn field_of(ty: &Ty, name: Symbol) -> Option<Ty> {
         .map(|(_, ty)| ty.clone())
 }
 
-fn has_error(ty: &Ty) -> bool {
-    match ty {
-        Ty::Error => true,
-        Ty::Int | Ty::String | Ty::Var(_) | Ty::Fact(_) => false,
-        Ty::Record(fields) => fields.iter().any(|(_, field)| has_error(field)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{corpus, lower::lower, parse::parse, schema::PredicateId};
+    use crate::focus::{
+        corpus,
+        lower::lower,
+        parse::parse,
+        schema::{Predicate, PredicateId},
+    };
+    use lasso::Rodeo;
+    use std::sync::Arc;
 
     struct Checked {
         typed: Typed,
@@ -741,6 +786,27 @@ mod tests {
             .diagnostics
             .iter()
             .filter_map(|d| d.code.as_deref())
+            .collect()
+    }
+
+    /// Every diagnostic code `source` draws, from lowering **and** typecheck, in
+    /// order.
+    ///
+    /// Unlike [`compile`], lowering is allowed to report — which is how poison
+    /// gets into a query in the first place, so it is the only way to test what
+    /// typecheck does with it.
+    fn all_codes(source: &str) -> Vec<String> {
+        let schema = corpus::schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+        let parsed = parse(source);
+        let root = parsed.root().expect("a tree");
+        let (ast, lowering) = lower(&root, &schema, &mut interner);
+        let (_typed, checking) = check(&ast, &schema, &interner);
+
+        lowering
+            .iter()
+            .chain(checking.iter())
+            .filter_map(|d| d.code.as_deref().map(str::to_owned))
             .collect()
     }
 
@@ -951,6 +1017,71 @@ mod tests {
         assert!(codes(&checked).is_empty(), "{:?}", codes(&checked));
     }
 
+    // ---- poison, and how far it reaches --------------------------------------
+    //
+    // `Ty::Error` is a poison that unifies with anything, so one mistake reports
+    // once. The question these pin is *how much* it silences. The rule is:
+    //
+    //   report a mismatch only when it is a fact about what the user literally
+    //   wrote — never an inference from something already reported.
+    //
+    // So poison silences the comparison it is *part of*, and nothing else.
+    // Arities, field names and concrete type constructors are read off the source
+    // pattern or the schema, neither of which a poisoned subtree can influence,
+    // so they stay reportable.
+
+    /// Poison silences its own comparison while an independent structural error
+    /// beside it still reports.
+    ///
+    /// `nosuch.Pred` poisons the `a` field of `X`'s record type. Unifying that
+    /// against `test.Nested`'s `{inner: int}` is two separate facts: the poisoned
+    /// field, already reported and to be left alone, and the field *name* `a`,
+    /// which the user genuinely wrote where `inner` was needed.
+    ///
+    /// This used to report only the first — any poison anywhere in either type
+    /// returned early and swallowed the whole unification, independent errors
+    /// included.
+    #[test]
+    fn poison_silences_its_own_comparison_but_not_an_independent_one() {
+        assert_eq!(
+            all_codes("X where X = {a = nosuch.Pred _}; test.Nested {outer = X}"),
+            ["reject/unknown-predicate", "reject/unknown-field"]
+        );
+    }
+
+    /// The other half, and the reason poison exists: a *read* of the poisoned
+    /// thing adds nothing, however many times it happens.
+    #[test]
+    fn reading_a_poisoned_value_never_cascades() {
+        for source in [
+            "X.a where X = {a = nosuch.Pred _}",
+            "{p = X.a, q = X.a} where X = {a = nosuch.Pred _}",
+            "X where X = nosuch.Pred _; test.Foo {id = X}",
+        ] {
+            assert_eq!(
+                all_codes(source),
+                ["reject/unknown-predicate"],
+                "for {source:?}"
+            );
+        }
+    }
+
+    /// A variable bound to a variable resolves through the chain — including when
+    /// the far end is a compound type that has to be carried back.
+    ///
+    /// Resolving used to compress the chain as a side effect of walking it. It no
+    /// longer does, so the walk itself has to be right. Two links is as deep as
+    /// the implemented subset reaches: a third would need `Y = Z` with `Y`
+    /// already bound, which is `nyi/bind-unification`.
+    #[test]
+    fn a_variable_bound_to_a_variable_resolves_through_the_chain() {
+        assert_eq!(head_ty("X where X = Y; test.Foo {id = Y}"), "int");
+        assert_eq!(
+            head_ty("X where X = Y; test.Nested {outer = Y}"),
+            "{inner=int}"
+        );
+    }
+
     #[test]
     fn an_unknown_predicate_poisons_without_cascading() {
         let schema = corpus::schema();
@@ -971,6 +1102,99 @@ mod tests {
             diags.is_empty(),
             "typecheck should stay quiet: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// A schema with one predicate, `test.Deep`, whose key is `outer` nested
+    /// `depth` records deep with an `int` at the bottom.
+    fn deep_schema(depth: usize) -> Schema {
+        let mut rodeo = Rodeo::new();
+        let outer = rodeo.get_or_intern("outer");
+        let name = rodeo.get_or_intern("test.Deep");
+
+        let mut key = PredicateTy::Int;
+        for _ in 0..depth {
+            key = PredicateTy::Record(Arc::from([(outer, key)]));
+        }
+
+        Schema::new(
+            rodeo.into_reader(),
+            Arc::from([Predicate {
+                name,
+                key,
+                value: None,
+            }]),
+        )
+    }
+
+    /// Allocations made by `check` alone (parse and lower excluded) for a query
+    /// that unifies two copies of a `depth`-deep record type.
+    fn checking_allocations(depth: usize) -> u64 {
+        let schema = deep_schema(depth);
+        let source = "X where test.Deep {outer = X}; test.Deep {outer = X}";
+
+        let mut interner = LocalInterner::new(schema.interner().clone());
+        let parsed = parse(source);
+        let root = parsed.root().expect("a tree");
+        let (ast, lowering) = lower(&root, &schema, &mut interner);
+        assert!(lowering.is_empty(), "the fixture query must lower cleanly");
+
+        let mut reported = usize::MAX;
+        let info = allocation_counter::measure(|| {
+            let (_typed, diagnostics) = check(&ast, &schema, &interner);
+            reported = diagnostics.len();
+        });
+
+        assert_eq!(
+            reported, 0,
+            "the fixture query must typecheck cleanly, or this measures diagnostics"
+        );
+        info.count_total
+    }
+
+    /// Checking a deeply nested record type costs **linear** work, not quadratic.
+    ///
+    /// `unify` resolves both sides at each level and then recurses, and `occurs`
+    /// walks the type the same way — so while resolving was *deep*, each level
+    /// rebuilt the whole remaining subtree and a type of size n cost O(n²)
+    /// allocations. Resolution is now shallow ([`Checker::repr`]) and a `Ty` clone
+    /// is a refcount bump, so doubling the depth must roughly double the work.
+    ///
+    /// Measured rather than asserted, as every non-functional claim here is.
+    /// Allocations per `check` when this was written:
+    ///
+    /// | depth | deep resolve | shallow |
+    /// |------:|-------------:|--------:|
+    /// |    32 |        1,872 |     227 |
+    /// |    64 |        6,816 |     451 |
+    /// |   128 |       25,920 |     899 |
+    ///
+    /// The doubling ratio separates cleanly: 3.6–3.8 against 1.99.
+    #[test]
+    fn checking_a_deep_type_is_linear_not_quadratic() {
+        // The counting allocator ships inside `allocation-counter` and is only
+        // linked because it is a dev-dependency. If that wiring ever breaks,
+        // `measure` reports zeroes and the ratio below is vacuous — so prove the
+        // probe sees a known allocation first.
+        let control = allocation_counter::measure(|| {
+            std::hint::black_box(Vec::<u8>::with_capacity(4096));
+        });
+        assert!(
+            control.count_total > 0,
+            "counting allocator is not installed; this guard would pass vacuously: {control:?}"
+        );
+
+        let n = checking_allocations(64);
+        let twice = checking_allocations(128);
+        assert!(n > 0, "checking a 64-deep type allocated nothing at all");
+
+        // Linear growth is a ratio of 2, or a little under with a constant term;
+        // quadratic is 4. The threshold sits between, with room for both.
+        assert!(
+            twice * 100 <= n * 250,
+            "checking is superlinear in the type's depth: {n} allocations at depth 64 \
+             and {twice} at 128, a ratio of {:.2} where linear is 2 and quadratic 4",
+            twice as f64 / n as f64,
         );
     }
 
