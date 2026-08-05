@@ -1,83 +1,24 @@
-use std::{collections::BTreeMap, sync::Arc};
+//! A worked example: build a schema, write facts, run a two-level plan.
+//!
+//! This runs against the real [`FjallDb`] rather than a model store. There was a
+//! second, private `MemStore` here once — a stale copy of
+//! `focus::mem_store::MemStore`, still carrying the unbounded-scan bug that one
+//! was fixed for. A demo whose store disagrees with the product's is worse than
+//! no demo, and the model store is test machinery (gated behind `cfg(test)` /
+//! the `proptest` feature) rather than something a binary should reach for.
+
+use std::{path::PathBuf, sync::Arc};
 
 use aperture::focus::{
     error::{ApertureError, StoreCodecError},
     iter::{Address, Executor, Iteratee, Stream},
-    plan::{Access, Entity, FactId, FactStore, Generator, Plan, Project, SeekKey, SeekKeyPart},
-    schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema},
+    plan::{Access, Generator, Plan, Project, SeekKey, SeekKeyPart},
+    schema::{LocalInterner, Predicate, PredicateTy, Schema},
+    store::FjallDb,
     tuple::{MARK_RECORD, TupleEncode, TupleEncoder, Value, encode_tuple, put_str},
 };
-use byteview::ByteView;
 use lasso::Rodeo;
 use tokio_util::sync::CancellationToken;
-
-struct MemStore {
-    index: BTreeMap<Vec<u8>, u64>,
-    by_id: BTreeMap<u64, (Vec<u8>, Vec<u8>)>,
-}
-
-impl MemStore {
-    fn new() -> Self {
-        Self {
-            index: BTreeMap::new(),
-            by_id: BTreeMap::new(),
-        }
-    }
-
-    fn insert(
-        &mut self,
-        predicate_id: PredicateId,
-        key_fields: Vec<u8>,
-        fact_id: u64,
-        value: Vec<u8>,
-    ) {
-        let mut full_key = predicate_id.0.to_be_bytes().to_vec();
-        full_key.extend_from_slice(&key_fields);
-        self.index.insert(full_key, fact_id);
-        self.by_id.insert(fact_id, (key_fields, value));
-    }
-}
-
-struct MemScan {
-    rows: std::vec::IntoIter<(Vec<u8>, u64)>,
-}
-
-impl Iterator for MemScan {
-    type Item = Result<(ByteView, FactId), ApertureError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.rows.next().map(|(k, id)| Ok((k.into(), FactId(id))))
-    }
-}
-
-impl FactStore for MemStore {
-    type Scan = MemScan;
-
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> MemScan {
-        let rows: Vec<_> = match hi {
-            Some(hi_bytes) => self
-                .index
-                .range(lo.to_vec()..hi_bytes.to_vec())
-                .map(|(k, &v)| (k.clone(), v))
-                .collect(),
-            None => self
-                .index
-                .range(lo.to_vec()..)
-                .map(|(k, &v)| (k.clone(), v))
-                .collect(),
-        };
-        MemScan {
-            rows: rows.into_iter(),
-        }
-    }
-
-    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
-        Ok(self.by_id.get(&id.0).map(|(k, v)| Entity {
-            key: k.clone().into(),
-            value: v.clone().into(),
-        }))
-    }
-}
 
 struct FileFact(String);
 
@@ -96,50 +37,71 @@ impl TupleEncode for FunctionFact {
     fn tuple_encode(&self, enc: &mut TupleEncoder<'_>) -> Result<(), StoreCodecError> {
         enc.record(|enc| {
             enc.put_str(&self.file_path)?;
-            enc.put_str(&self.name)?;
-            Ok(())
+            enc.put_str(&self.name)
         })
     }
 }
 
-fn main() -> Result<(), StoreCodecError> {
+/// A scratch directory of this run's own, so re-running the demo neither
+/// inherits the last run's facts nor writes a key twice (see
+/// [`FjallDb::put_fact`] — a key is written once).
+fn scratch_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("aperture-demo-{}", std::process::id()))
+}
+
+fn main() -> Result<(), ApertureError> {
+    let dir = scratch_dir();
+    let result = demo(&dir);
+
+    // On *every* path, including an early `?`: best effort, since failing to
+    // tidy up is not a reason to fail the run.
+    let _ = std::fs::remove_dir_all(&dir);
+
+    result
+}
+
+fn demo(dir: &std::path::Path) -> Result<(), ApertureError> {
     let mut rodeo = Rodeo::new();
-    let fn_file_path_spur = rodeo.get_or_intern("file_path");
-    let fn_name_spur = rodeo.get_or_intern("name");
+    let fn_file_path = rodeo.get_or_intern("file_path");
+    let fn_name = rodeo.get_or_intern("name");
 
-    let src_file_pred = Predicate {
-        name: rodeo.get_or_intern("src.File"),
-        key: PredicateTy::Str,
-        value: None,
-    };
+    let fn_record_ty = PredicateTy::Record(Arc::from([
+        (fn_file_path, PredicateTy::Str),
+        (fn_name, PredicateTy::Str),
+    ]));
 
-    let src_fn_pred = Predicate {
-        name: rodeo.get_or_intern("src.Function"),
-        key: PredicateTy::Record(Arc::from(vec![
-            (fn_file_path_spur, PredicateTy::Str),
-            (fn_name_spur, PredicateTy::Str),
-        ])),
-        value: None,
-    };
+    let predicates = Arc::from([
+        Predicate {
+            name: rodeo.get_or_intern("src.File"),
+            key: PredicateTy::Str,
+            value: None,
+        },
+        Predicate {
+            name: rodeo.get_or_intern("src.Function"),
+            key: fn_record_ty.clone(),
+            value: None,
+        },
+    ]);
 
-    let schema = Schema::new(
-        rodeo.into_reader(),
-        Arc::from(vec![src_file_pred, src_fn_pred]),
-    );
-
+    let schema = Schema::new(rodeo.into_reader(), predicates);
     let interner = LocalInterner::new(schema.interner().clone());
 
-    let (src_file_id, _) = schema.find_position("src.File").unwrap();
-    let (src_fn_id, _) = schema.find_position("src.Function").unwrap();
+    let (src_file_id, _) = schema
+        .find_position("src.File")
+        .expect("src.File is declared above");
+    let (src_fn_id, _) = schema
+        .find_position("src.Function")
+        .expect("src.Function is declared above");
 
-    let mut store = MemStore::new();
-    let mut next_id = 1u64;
+    let db = FjallDb::open(dir)?;
+
+    // The schema is known up front, so pay for the trees here rather than at an
+    // arbitrary point inside the writes below.
+    db.create_predicates([src_file_id, src_fn_id])?;
 
     for path in ["src/main.rs", "src/lib.rs", "src/utils.rs"] {
-        let fact = FileFact(path.to_string());
-        let key = encode_tuple(&fact)?;
-        store.insert(src_file_id, key, next_id, vec![]);
-        next_id += 1;
+        let key = encode_tuple(&FileFact(path.to_string()))?;
+        db.put_fact(src_file_id, &key, &[])?;
     }
 
     for (file_path, name) in [
@@ -150,22 +112,18 @@ fn main() -> Result<(), StoreCodecError> {
         ("src/lib.rs", "execute"),
         ("src/utils.rs", "helper"),
     ] {
-        let fact = FunctionFact {
+        let key = encode_tuple(&FunctionFact {
             file_path: file_path.to_string(),
             name: name.to_string(),
-        };
-        let key = encode_tuple(&fact)?;
-        store.insert(src_fn_id, key, next_id, vec![]);
-        next_id += 1;
+        })?;
+        db.put_fact(src_fn_id, &key, &[])?;
     }
 
+    // "the functions declared in src/main.rs": seek `src.File` straight to that
+    // one path, then splice the bound row's path field into a scan of
+    // `src.Function`, whose key is a record and so starts with MARK_RECORD.
     let mut file_seek = vec![];
     put_str(&mut file_seek, "src/main.rs");
-
-    let fn_record_ty = PredicateTy::Record(Arc::from(vec![
-        (fn_file_path_spur, PredicateTy::Str),
-        (fn_name_spur, PredicateTy::Str),
-    ]));
 
     let plan = Plan {
         nvars: 2,
@@ -193,6 +151,8 @@ fn main() -> Result<(), StoreCodecError> {
                 residuals: Box::new([]),
             },
         ]),
+        // `field_idx` indexes the key's *top-level* fields, and a `src.Function`
+        // key is one record, so field 0 is the whole `{file_path, name}`.
         head: Project::RegisterField {
             address: Address::new(1),
             field_idx: 0,
@@ -200,26 +160,20 @@ fn main() -> Result<(), StoreCodecError> {
         },
     };
 
-    let executor = Executor::new(store, plan);
-    let cancel = CancellationToken::new();
+    let result = Executor::new(db.reader(), plan).enumerate(
+        Vec::<Value>::new(),
+        |mut acc, row| {
+            acc.push(row.to_value(&interner)?);
+            Ok(Stream::Continue(acc))
+        },
+        &CancellationToken::new(),
+    )?;
 
-    let result = executor
-        .enumerate(
-            Vec::<Value>::new(),
-            |mut acc, row| {
-                let value = row.to_value(&interner)?;
-                acc.push(value);
-                Ok(Stream::Continue(acc))
-            },
-            &cancel,
-        )
-        .expect("query failed");
-
-    let values = match result {
-        Iteratee::Done(v) | Iteratee::Suspended(v, _) => v,
-    };
-
-    println!("{}", serde_json::to_string_pretty(&values).unwrap());
+    let (Iteratee::Done(values) | Iteratee::Suspended(values, _)) = result;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&values).expect("`Value` serialises infallibly")
+    );
 
     Ok(())
 }
