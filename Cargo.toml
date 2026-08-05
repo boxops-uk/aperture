@@ -8,28 +8,27 @@ edition = "2024"
 # shared fixtures) to consumers outside `cfg(test)` — integration tests and, later,
 # the workspace crates. Under `cargo test` the modules are active via `cfg(test)`
 # regardless; this feature is for everything that isn't the crate's own unit tests.
-proptest = []
+#
+# `dep:proptest` is what keeps the strategies' own dependency out of an ordinary
+# build: the modules that need the crate are exactly the ones this feature (or
+# `cfg(test)`, which the dev-dependency covers) turns on.
+proptest = ["dep:proptest"]
 
 [dependencies]
 byteview = "0.10.1"
 codespan-reporting = "0.13.1"
 fjall = "3.1.5"
-im-rc = "15.1.0"
-itertools = "0.15.0"
 lasso = "0.7.3"
 logos = "0.16.1"
 memchr = "2.8.2"
-proptest = "1.11.0"
-rustyline = "18.0.0"
+# Optional, and reached only through the `proptest` feature above — never linked
+# into an ordinary build. `cargo test` gets it from `[dev-dependencies]`.
+proptest = { version = "1.11.0", optional = true }
 serde = { version = "1.0.150", features = ["derive"] }
 serde_json = "1.0.150"
-string-interner = "0.20.0"
 thiserror = "2.0.18"
 tinyvec = { version = "1.11.0", features = ["alloc"] }
-tokio = "1.52.3"
 tokio-util = "0.7.18"
-tracing = { version = "0.1.44", features = ["release_max_level_info"] }
-tracing-subscriber = "0.3.23"
 
 [dev-dependencies]
 # Allocation-counting global allocator for the I9 hot-path guard
@@ -38,6 +37,10 @@ tracing-subscriber = "0.3.23"
 # unconditionally, so keeping it a dev-dependency is what confines the counting
 # allocator to test binaries.
 allocation-counter = "0.8.1"
+# The `arb_*` strategies are active under `cfg(test)` whether or not the
+# `proptest` feature is on, so the crate has to be here as well as being an
+# optional dependency.
+proptest = "1.11.0"
 # Scratch directories for the fjall store batteries (PLAN 1a+).
 tempfile = "3.24.0"
 
