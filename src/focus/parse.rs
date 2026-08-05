@@ -33,7 +33,7 @@ const MAX_NEST_DEPTH: usize = 256;
 /// The longest source [`parse`] accepts.
 ///
 /// Spans in the typed store are `u32` to keep nodes compact
-/// ([`syntax::Span`](crate::focus::syntax::Span)), and lowering narrows the
+/// ([`syntax::NodeSpan`](crate::focus::syntax::NodeSpan)), and lowering narrows the
 /// parser's `usize` spans to fit. Refusing an unaddressable source here is what
 /// makes that narrowing lossless — otherwise every span past the 4 GiB mark would
 /// silently wrap and point at the wrong bytes, which is the one thing a span may

@@ -32,7 +32,9 @@ use crate::focus::{
     lower::VALUE_FIELD,
     parser::Diagnostic,
     schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},
-    syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, Ty, TyVarId},
+    syntax::{
+        Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, Ty, TyVarId, source_range,
+    },
 };
 
 /// The types a query's nodes were given.
@@ -619,7 +621,7 @@ impl<'a> Checker<'a> {
             Diagnostic::error()
                 .with_code(code)
                 .with_message(message)
-                .with_label(Label::primary((), span.start as usize..span.end as usize)),
+                .with_label(Label::primary((), source_range(&span))),
         );
     }
 

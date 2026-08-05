@@ -6,7 +6,41 @@ use crate::focus::{
     schema::{PredicateId, Symbol},
 };
 
-pub type Span = Range<u32>;
+/// A byte range in the query's source text, as stored on a node.
+///
+/// `u32` rather than the parser's `usize`, to keep a node compact:
+/// [`parse`](crate::focus::parse::parse) refuses a source longer than `u32::MAX`,
+/// which is what makes the narrowing lossless.
+///
+/// **Named apart from [`parser::Span`](crate::focus::parser::Span) deliberately.**
+/// Both are byte ranges into the same text and differ only in width, so one name
+/// for both meant either could be passed where the other was meant with nothing
+/// but an `as u32` to tell them apart — inside a function handling both, which
+/// `lower::push` does. Crossing between them goes through [`narrow_offset`] and
+/// [`source_range`].
+pub type NodeSpan = Range<u32>;
+
+/// Narrow a source byte offset for storage in a [`NodeSpan`].
+///
+/// Lossless because `parse` refuses a source that could not be addressed by a
+/// `u32`. Asserted in debug builds all the same, so a caller building a tree
+/// without going through `parse` finds out here rather than storing a wrapped
+/// offset that silently points at the wrong bytes.
+#[must_use]
+pub fn narrow_offset(offset: usize) -> u32 {
+    debug_assert!(
+        u32::try_from(offset).is_ok(),
+        "byte offset {offset} does not fit a node span; `parse` refuses a source this long"
+    );
+    offset as u32
+}
+
+/// A [`NodeSpan`] widened back to source byte offsets — for slicing the source, or
+/// labelling a diagnostic.
+#[must_use]
+pub fn source_range(span: &NodeSpan) -> Range<usize> {
+    span.start as usize..span.end as usize
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TyVarId(u32);
@@ -180,7 +214,7 @@ impl Ast {
 /// [chapter 7]: ../../../docs/07-compilation.md
 pub struct SyntaxTree<K: Recursive> {
     kinds: Vec<K>,
-    spans: Vec<Span>,
+    spans: Vec<NodeSpan>,
 }
 
 impl<K: Recursive> Default for SyntaxTree<K> {
@@ -198,7 +232,7 @@ impl<K: Recursive> SyntaxTree<K> {
     }
 
     /// Append a node and return its id.
-    pub fn push(&mut self, kind: K, span: Span) -> NodeId {
+    pub fn push(&mut self, kind: K, span: NodeSpan) -> NodeId {
         let id = NodeId(self.kinds.len() as u32);
         self.kinds.push(kind);
         self.spans.push(span);
@@ -209,7 +243,7 @@ impl<K: Recursive> SyntaxTree<K> {
         &self.kinds[id.0 as usize]
     }
 
-    pub fn span(&self, id: NodeId) -> Span {
+    pub fn span(&self, id: NodeId) -> NodeSpan {
         self.spans[id.0 as usize].clone()
     }
 
@@ -308,6 +342,30 @@ impl Recursive for Query<NodeId> {
             body: self.body.iter().map(|stmt| stmt.map(&mut f)).collect(),
             head: f(self.head),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two directions are inverse, which is what makes the narrower stored
+    /// width a storage detail rather than a lossy one.
+    #[test]
+    fn narrowing_and_widening_round_trip() {
+        for (start, end) in [(0usize, 0usize), (0, 12), (7, 7), (1_000, 1_048_576)] {
+            let span = narrow_offset(start)..narrow_offset(end);
+            assert_eq!(source_range(&span), start..end);
+        }
+    }
+
+    /// The assertion is not decorative: an offset `parse` should have refused is
+    /// caught, rather than wrapping to point silently at the wrong bytes.
+    #[test]
+    #[cfg(all(debug_assertions, target_pointer_width = "64"))]
+    #[should_panic(expected = "does not fit a node span")]
+    fn narrowing_rejects_an_offset_parse_would_have_refused() {
+        let _ = narrow_offset(u32::MAX as usize + 1);
     }
 }
 

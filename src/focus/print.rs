@@ -19,7 +19,7 @@
 
 use crate::focus::{
     schema::{LocalInterner, Schema, Symbol},
-    syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, Span},
+    syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},
 };
 
 /// How loosely a pattern binds, from the grammar:
@@ -72,7 +72,7 @@ pub fn spanned(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> Spanned 
 pub struct Spanned {
     text: String,
     /// By `NodeId`, which indexes the store densely.
-    spans: Vec<Span>,
+    spans: Vec<NodeSpan>,
 }
 
 impl Spanned {
@@ -88,7 +88,7 @@ impl Spanned {
     /// parens *are* included, since there the parens belong to the node's own rule.
     /// The two conventions must agree, or `spans_are_where_the_text_was_printed`
     /// would be pinning the printer's rather than lowering's.
-    pub fn span(&self, id: NodeId) -> Span {
+    pub fn span(&self, id: NodeId) -> NodeSpan {
         self.spans[id.index()].clone()
     }
 
@@ -98,9 +98,9 @@ impl Spanned {
 
     /// Record `id` as covering exactly what `f` emits.
     fn node(&mut self, id: NodeId, f: impl FnOnce(&mut Self)) {
-        let start = self.text.len() as u32;
+        let start = narrow_offset(self.text.len());
         f(self);
-        self.spans[id.index()] = start..self.text.len() as u32;
+        self.spans[id.index()] = start..narrow_offset(self.text.len());
     }
 
     /// Emit `items` separated by `sep`.
@@ -368,7 +368,12 @@ pub fn escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{corpus, lower::lower, parse::parse, syntax::proptest::arb_query_spec};
+    use crate::focus::{
+        corpus,
+        lower::lower,
+        parse::parse,
+        syntax::{proptest::arb_query_spec, source_range},
+    };
     use ::proptest::prelude::*;
 
     /// Parse and lower `source`, requiring both to be clean.
@@ -644,8 +649,8 @@ mod tests {
     }
 
     /// The text a span covers, for a failure message.
-    fn slice(text: &str, span: &Span) -> String {
-        match text.get(span.start as usize..span.end as usize) {
+    fn slice(text: &str, span: &NodeSpan) -> String {
+        match text.get(source_range(span)) {
             Some(text) => format!("{text:?}"),
             None => "<not a valid range>".to_owned(),
         }

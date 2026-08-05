@@ -24,7 +24,9 @@ use crate::focus::{
     lexer::{self, LiteralError, Token},
     parser::{Diagnostic, Rule, Span},
     schema::{LocalInterner, Schema, Symbol},
-    syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, SyntaxTree},
+    syntax::{
+        Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, SyntaxTree, narrow_offset,
+    },
 };
 
 /// The field name that reads a fact's value side rather than a key field.
@@ -95,12 +97,11 @@ struct Lowering<'a> {
 
 impl<'a> Lowering<'a> {
     fn push(&mut self, kind: ExprKind<NodeId>, span: &Span) -> NodeId {
-        // Spans are `u32` in the store to keep nodes compact. The narrowing is
-        // lossless because `parse` refuses a source longer than
-        // `parse::MAX_SOURCE_LEN`, which is exactly `u32::MAX`.
-        let start = span.start as u32;
-        let end = span.end as u32;
-        self.store.push(kind, start..end)
+        // `span` is a `parser::Span` — a `usize` range — and the store holds a
+        // `NodeSpan`. The two are named apart precisely so this crossing is
+        // visible; `parse` refusing an over-long source is what makes it lossless.
+        self.store
+            .push(kind, narrow_offset(span.start)..narrow_offset(span.end))
     }
 
     fn error(&mut self, span: &Span, code: &str, message: impl Into<String>) {
@@ -572,7 +573,7 @@ fn token_text<'s>(children: &[(CstNode<'s>, Out)], token: Token) -> Option<&'s s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{corpus, parse::parse, schema::SchemaInterner};
+    use crate::focus::{corpus, parse::parse, schema::SchemaInterner, syntax::source_range};
     use proptest::prelude::*;
 
     /// Lower `source` against the corpus schema.
@@ -643,7 +644,7 @@ mod tests {
         let mut id = *ast.query().head();
         loop {
             let span = ast.store().span(id);
-            out.push(&source[span.start as usize..span.end as usize]);
+            out.push(&source[source_range(&span)]);
             id = match ast.store().kind(id) {
                 ExprKind::Access(_, base) | ExprKind::Select(_, base) => *base,
                 _ => break,
