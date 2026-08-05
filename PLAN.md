@@ -42,11 +42,19 @@ The engine spine exists in `src/focus/`:
   ([I8](docs/invariants.md#i8)).
 - **Front end** — `lex → parse → lower → typecheck` is live in `src/focus/` (Phase 2 done):
   the full intended surface parses, lowers to the `SyntaxTree` store, and typechecks, with
-  every construct deferred to a later phase drawing one specific diagnostic naming it. The
-  acceptance artifact is `focus::corpus`, the audit table as data. **Flatten is not built** —
+  every construct deferred to a later phase drawing one specific diagnostic naming it. Three
+  acceptance artifacts: `focus::corpus` (the audit table as data, with a parse gate and a
+  diagnostic-code gate over it), **`parse ∘ print == id` on generated trees** (`focus::print`
+  renders a tree back to focus source, so the corpus is worked examples rather than the whole
+  specification), and **a node's span is where the printer emitted it** — the half spans are
+  checkable at all, since a tree comparison is blind to them. **Flatten is not built** —
   `src/lens/hoist.rs` remains its reference, along with `query.rs` (the boxed AST
   representation, which nothing needs yet) and the three files those depend on; the other
   seven `lens` files are deleted.
+- **A focus shell** (`src/main.rs`) — reads a query, highlights it from the compiler's own
+  lexer, and reports what the front end makes of it against a real `FjallDb` seeded at
+  startup; `:facts` runs a hand-built plan through the executor. It **cannot run a query**
+  (that needs flatten) and says so. Phase 5 scaffold, landed early — see that phase.
 - **Store** (`store.rs`) — the fjall store is complete and guarded (Phase 1 done): a pair of
   keyspaces per predicate (`keys.<id>`, `entities.<id>`), `scan`/`point`, and an atomic
   `put_fact` over a snowflake [`FactId`](docs/03-storage-model.md#factid-allocation-i11) with
@@ -381,6 +389,16 @@ Phase 9; don't build in state a wire shell can't reproduce.
 a store with fixtures; run compiled plans via `enumerate` and print projected `Value`s;
 `:commands` (show flattened plan, show diagnostics). *Done per task:* an integration test
 drives a query string through the REPL path and asserts the printed rows.
+
+**Part of this already exists, from Phase 2** (`src/main.rs`): the loop, line editing, live
+highlighting from the compiler's own lexer, codespan diagnostic rendering, a real `FjallDb`
+seeded at startup, and `:schema` / `:facts` — the latter driving a hand-built plan through
+`enumerate` and printing projected `Value`s, with fact references resolved to the facts they
+name. What is missing is the compile step in the middle: it stops at a type, because flatten
+does not exist. So Phase 5 owes the `plan(query)` call and the `:commands` that show a plan —
+not the shell around it. It earned its place early by finding a double-reported lexer
+diagnostic that only a live front end makes obvious; treat it as the scaffold this phase
+already says it is.
 
 **Acceptance:**
 - [ ] Typing a focus query returns rows (or a well-rendered diagnostic) against a fixture store, end-to-end, through the real compiler and executor.

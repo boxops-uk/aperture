@@ -45,7 +45,21 @@ module, not per-test boilerplate:
 | I8 — snapshot released | a drop probe over the store handle *and* every scan it opened, cross-checked against fjall's own open-snapshot count, at all four stops (done/suspend/cancel/unwind) |
 | I9 — alloc-free hot path | the `allocation-counter` dev-dependency; N vs 2N rows must match on alloc count *and* bytes |
 
-An NFR with no mechanical guard is an aspiration, not an acceptance criterion.
+An NFR with no mechanical guard is an aspiration, not an acceptance criterion. Two more in the
+same idiom, guarding cost rather than an invariant: a **skip counter** (projecting k fields of
+one row must cost k skips, not k(k+1)/2 — `exec::projection_walks_each_field_once`) and an
+**allocation count per `check`** that must stay linear in the size of the type, not quadratic
+(`ty::checking_a_deep_type_is_linear_not_quadratic`). Both are exact counts rather than ratios
+with a threshold to argue about.
+
+### Trait contracts are asserted per implementation, not differentially
+
+Where a trait has more than one implementation, its contract lives in `focus::fixtures` as an
+assertion each store is put through directly — `assert_scan_stays_in_predicate` and
+`assert_short_bound_is_rejected` ([chapter 3](03-storage-model.md#the-scan-contract)). A
+differential between two stores is not a substitute: two implementations that break the
+contract the same way agree with each other perfectly. Both of these exist because that
+happened — a leak `MemStore` and `FrozenStore` shared, which the differential could never see.
 
 ---
 
@@ -53,10 +67,13 @@ An NFR with no mechanical guard is an aspiration, not an acceptance criterion.
 
 - Every domain type owns a **canonical strategy**. Add the type → add its strategy in the
   same change (the same discipline as deriving `Debug`).
-- Strategies live in a **`proptest` support module per domain area** — `codec::proptest`,
-  `plan::proptest`, `exec::proptest` — gated behind `cfg(any(test, feature = "proptest"))`,
-  exporting **named strategy functions** (`arb_value()`, `arb_predicate_ty()`,
-  `arb_plan_and_store()`). Tests **import** strategies; they don't define generators inline.
+- Strategies live in a **`proptest` support module per domain area** — today
+  `tuple::proptest` (values and typed pairs), `plan::proptest` (whole `(plan, store)` pairs,
+  which is what the executor batteries generate) and `syntax::proptest` (query trees, for the
+  front-end round trip) — gated behind `cfg(any(test, feature = "proptest"))`, exporting
+  **named strategy functions** (`arb_value()`, `arb_typed_pair()`, `arb_plan_and_store()`,
+  `arb_interruption_schedule()`, `arb_query_spec()`). Tests **import** strategies; they don't
+  define generators inline.
 - **Compose, don't hand-roll.** Build strategies from combinators (`prop_map`,
   `prop_flat_map`, `prop_oneof`, `prop_recursive`) — never imperative `Rng` sampling. This
   is what makes proptest's **shrinking** work: a compositional generator yields a *minimal,

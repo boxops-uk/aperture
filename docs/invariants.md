@@ -14,14 +14,20 @@ Each invariant names a **guard test**: the test that pins it. Guards are written
 coverage ledger. A phase is done only when the invariants it touches are un-ignored and
 green. See [testing](testing.md).
 
+> **Reading a guard name.** The prefix is the *subsystem* as this book names it, not a Rust
+> path: `codec::` is `src/focus/tuple.rs`, `exec::` is `src/focus/iter.rs`, `store::` is
+> `src/focus/store.rs`, `schema::` is `src/focus/schema.rs`. The part after `::` is the test
+> function — every one of them is greppable, and the real module path is
+> `focus::<file>::tests::<name>`.
+
 ---
 
 ## Engine invariants — quick table
 
 | ID | Statement | Guard | Where | Status |
 |----|-----------|-------|-------|--------|
-| [I1](#i1) | Key encoding is order-preserving. | `codec::order_preservation` + round-trip | [ch2](02-tuple-codec.md) | ✅ green |
-| [I2](#i2) | Encoding is self-delimiting; `skip` needs no schema. | `codec::skip_exactness` | [ch2](02-tuple-codec.md) | ✅ green |
+| [I1](#i1) | Key encoding is order-preserving. | `codec::test_typed_value_order_matches_encoded_order` + round-trip | [ch2](02-tuple-codec.md) | ✅ green |
+| [I2](#i2) | Encoding is self-delimiting; `skip` needs no schema. | the `codec::test_skip_*` family | [ch2](02-tuple-codec.md) | ✅ green |
 | [I3](#i3) | The marker table is frozen on disk. | `codec::marker_table_golden` | [ch2](02-tuple-codec.md) | ✅ green |
 | [I4](#i4) | Resume == uninterrupted run. | `exec::resume_equals_uninterrupted` + `…_on_fjall` | [ch5](05-resume.md) | ✅ green on `MemStore` **and** fjall |
 | [I5](#i5) | Register holds the whole row; fields decode lazily. | `exec::bind_is_refcount_not_decode` | [ch4](04-executor.md) | ✅ green |
@@ -43,15 +49,21 @@ green. See [testing](testing.md).
 `memcmp(encode(a), encode(b)) == semantic_compare(a, b)`. Prefix scans over sorted bytes
 *are* range/predicate queries — the whole storage model rests on this. **The gate for any
 codec change.** *Why & how:* [chapter 2](02-tuple-codec.md#property-1--order-preserving-i1).
-*Guard:* `codec::order_preservation` (tier-2 vs an independent comparator) + round-trip.
+*Guard:* `codec::test_typed_value_order_matches_encoded_order` (tier-2: encoded-byte order vs
+`cmp_typed`, an independent comparator that walks the type rather than reusing the code under
+test) + `test_roundtrip_preserves_value_and_ordering` + the scalar properties
+`test_{i64,u64,str}_preserves_order`.
 
 <a id="i2"></a>
 ### I2 — Encoding is self-delimiting; `skip` needs no schema
 The marker byte alone says how to advance past a value (three skip families). Lets the scan
 hot loop walk fields with no type info; a full decode consumes exactly to end-of-input.
 Record nesting is bounded (`MAX_RECORD_DEPTH`) → errors, never stack overflow. *Why & how:*
-[chapter 2](02-tuple-codec.md#property-2--self-delimiting-i2). *Guard:* `codec::skip_exactness`
-+ trailing-bytes-rejected + max-depth-errors.
+[chapter 2](02-tuple-codec.md#property-2--self-delimiting-i2). *Guard:* the
+`codec::test_skip_*` family — `test_skip_{string,i64,u64}` are the exactness properties (skip
+lands exactly where decode ends), the rest are the record/terminator/escape edge cases — plus
+`decode_typed` rejecting trailing bytes and `MAX_RECORD_DEPTH` erroring rather than
+overflowing.
 
 <a id="i3"></a>
 ### I3 — The marker table is frozen on disk

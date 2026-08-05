@@ -126,6 +126,23 @@ cross-keyspace and consistent, making [I8](invariants.md#i8) identical under eit
 `src/focus/store.rs` and nowhere else. The `FactId` layout below is the part that is *not*
 reversible once data exists.
 
+### The scan contract
+
+Because that seam is the only way in, what `scan` promises is a contract on the **trait**, not
+on any one store — and both halves of it are asserted directly against every implementation
+(`focus::fixtures`), never inferred from two stores agreeing, since two stores that leak
+identically would satisfy a differential and both still be wrong.
+
+- **A scan never leaves the predicate its lower bound names**
+  (`assert_scan_stays_in_predicate`). fjall gets this structurally, from one tree per
+  predicate; a store holding every predicate in one map has to clamp explicitly, and
+  `MemStore` once didn't.
+- **Opening a scan is fallible, and a bound too short to name a predicate is an error**
+  (`assert_short_bound_is_rejected`). `scan` returns `Result` for exactly this: a `lo` with
+  fewer than four bytes is a fault in the *call*, not in a row, and there is nowhere else to
+  report it. Left unspecified, each store invented an answer — one returned an error as a
+  first row, the others scanned across the predicate boundary and reported nothing.
+
 ---
 
 ## FactId allocation ([I11](invariants.md#i11))

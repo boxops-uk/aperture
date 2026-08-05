@@ -11,9 +11,12 @@ sealed, and thereafter only read. That single decision is what makes the rest of
 design tractable — snapshots are trivial, resume tokens can be plain bytes, and parallel
 ingestion is "fearless."
 
-> **Status.** Being taken from prototype to production. The engine spine (codec,
-> executor, resume, projection) exists in `src/focus/`; the front end, ingestion, schema
-> parsing, and the operational layer are being built out. See [`PLAN.md`](PLAN.md) for the
+> **Status.** Being taken from prototype to production. In `src/focus/`: the engine spine
+> (codec, executor, resume, projection) and the fjall store are built and guarded, and the
+> front end is live through typecheck — focus text parses, lowers and typechecks, with every
+> construct deferred to a later phase drawing a diagnostic that names it. **Not yet built:**
+> flatten/reorder, so no query compiles to a `Plan` and nothing runs end to end yet; then
+> ingestion, schema parsing, and the operational layer. See [`PLAN.md`](PLAN.md) for the
 > sequence and current state.
 
 ---
@@ -91,6 +94,7 @@ cargo fmt
 - [`PLAN.md`](PLAN.md) — the living phase tree: the build sequence and current state.
 
 Module map: `src/focus/` is the live engine and language — all new work lands there.
-`src/lens/` is a superseded first attempt (not compiled) kept only as a reference to
-re-implement into `focus`. `src/focus.rs` is a commented-out graveyard. See
+`src/main.rs` is the `aperture` focus shell (a Phase 5 scaffold: it typechecks, it cannot yet
+run a query). `src/lens/` is a superseded first attempt (not compiled) kept only as a reference
+to re-implement into `focus`. `src/focus.rs` is a commented-out graveyard. See
 [Concepts](docs/01-concepts.md) for detail.

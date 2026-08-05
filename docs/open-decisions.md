@@ -10,23 +10,6 @@ with a pointer to where they now live.
 
 ## Still open
 
-### Cancellation is polled per *skipped* row, not per row scanned
-
-[Chapter 5](05-resume.md#suspend-vs-cancel-vs-terminal-unwind) says the scan loop polls the
-cancellation flag "every `CANCELLATION_STRIDE` rows." The implementation resets its counter on
-every `StackFrame::next` call, so the poll is only reached when a *single* `next()` skips
-`CANCELLATION_STRIDE` rows — i.e. only while a residual is rejecting rows. **A plan whose rows
-all match never polls the token at all** and runs to completion regardless of cancellation.
-
-Found while writing the [I8](invariants.md#i8) guard, whose cancellation arm needs a
-row-rejecting residual to reach a poll — which is why that guard is built the way it is. I8
-itself is unaffected: `enumerate` consumes the executor, so the snapshot is released on the
-`Err(Cancelled)` path like any other.
-
-Open: whether "every N rows" should mean rows *scanned* (move the counter into the frame, or
-into `enumerate`'s loop) or rows *skipped* is genuinely the intended semantics. A streaming
-query that a client has abandoned is the case that argues for the former.
-
 ### Intra-row repeated variables — `EqField` vs reject
 
 A pattern like `Edge{from = X, to = X}` constrains two fields of the *same* row to be equal.
@@ -38,6 +21,26 @@ diagnostic.
 ---
 
 ## Settled — recorded so they aren't reopened
+
+### Cancellation counts rows *examined* — settled as the book already said
+
+The question was whether "polls every `CANCELLATION_STRIDE` rows"
+([chapter 5](05-resume.md#suspend-vs-cancel-vs-terminal-unwind)) meant rows *scanned* or rows
+*skipped*. **Decided: examined** — matched or skipped alike, which is what the chapters said
+all along; the implementation was the thing that disagreed.
+
+It disagreed because the counter was a local inside a single `StackFrame::next` call, so it
+reset on every call and the poll was only reachable while a residual was rejecting rows: **a
+plan whose rows all matched never polled the token**, and ran to completion regardless of
+cancellation. The count now belongs to the run (`CancellationPoll`, `src/focus/iter.rs`), and
+`exec::a_matching_scan_observes_cancellation` is the guard — a scan with no residual, cancelled
+mid-run, must stop. The bounded overrun a stride buys (a run shorter than the stride can finish
+despite a cancelled token) is the intended trade and is documented on the constant.
+
+Found while writing the [I8](invariants.md#i8) guard, whose cancellation arm needed a
+row-rejecting residual to reach a poll — which is why that guard is built the way it is. I8 was
+never affected: `enumerate` consumes the executor, so the snapshot is released on the
+`Err(Cancelled)` path like any other.
 
 ### `pattern = pattern` unification — scope settled at typecheck
 
@@ -58,7 +61,7 @@ the rest of unification.
 
 Still deferred, not open: the feature itself.
 
-### `FactRef` marker — resolved (own marker), needs housekeeping
+### `FactRef` marker — resolved (own marker)
 
 **Decision: `FactRef` has its own fixed-width marker.** This is **implemented** in the
 codec — `MARK_FACT_REF = 0x51` (a fixed-width band right above the positive-integer band),
@@ -68,11 +71,10 @@ distinction is enforced. The earlier "share the integer encoding for byte-unifor
 splices" rationale was found overstated (splices work with a distinct marker too). See
 [chapter 2](02-tuple-codec.md#the-marker-table).
 
-> **Housekeeping:** `CLAUDE.md §7` still lists this as an open decision ("until implemented,
-> fact-typed fields encode via `put_u64` and decode requires the schema type"). That text is
-> **stale** — reconcile it when `CLAUDE.md` is refactored to point into this book. The
-> engine-side effect (the [Phase 7 gate](../PLAN.md) "resolve `FactRef` before ingesting
-> fact-typed fields") is now satisfied by the marker existing.
+The engine-side effect (the [Phase 7 gate](../PLAN.md) "resolve `FactRef` before ingesting
+fact-typed fields") is satisfied by the marker existing, and `CLAUDE.md` no longer lists it as
+open. A fact-typed field is now written end to end by the demo shell (`src/main.rs`), whose
+`demo.LivesIn` references the `demo.City` and `demo.Person` facts it is about.
 
 ### Storage codec vs transport (wire) codec — settled
 

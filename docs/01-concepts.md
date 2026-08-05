@@ -144,18 +144,30 @@ The two are the two halves of one fact and are always written **together, atomic
 
 Knowing which module is real saves hours:
 
-- **`src/focus/`** — **the live engine and language.** All new work lands here: the codec
-  (`tuple.rs`), the store trait + in-memory test store (`plan.rs`, `mem_store.rs`), the
-  executor and resume (`iter.rs`), the plan IR (`plan.rs`), the schema/interners
-  (`schema.rs`), and the front end through typecheck (`grammar.llw`, `lexer.rs`, `parser.rs`,
-  `cst.rs`, `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs`).
+- **`src/focus/`** — **the live engine and language.** All new work lands here:
+  - the codec (`tuple.rs`) and the error taxonomy (`error.rs`);
+  - the plan IR and the `FactStore` trait (`plan.rs`), the fjall store behind it
+    (`store.rs`), and the in-memory test store (`mem_store.rs`);
+  - the executor and resume (`iter.rs`);
+  - the schema and interners (`schema.rs`);
+  - the front end through typecheck — `grammar.llw`, `lexer.rs`, `parser.rs`, `cst.rs`,
+    `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs` — plus `print.rs`, which renders a tree back
+    to focus source and is what makes the front end round-trippable
+    ([chapter 7](07-compilation.md));
+  - test support: `fixtures.rs` (shared store contracts and hand-built plans) and `corpus.rs`
+    (the language surface as data — the acceptance gate for the grammar).
+- **`src/main.rs`** — the `aperture` binary: an interactive **focus shell** that lexes,
+  parses, lowers and typechecks what you type against a real store seeded at startup. It is a
+  *scaffold* for the Phase 5 REPL, not the REPL — it cannot run a query, because flatten does
+  not exist. Useful for seeing the front end and the store behave; not a place to put logic.
 - **`src/lens/`** — a **superseded first attempt**, kept only for reference. It is *not
   compiled* (not declared in `lib.rs`) and targets an older, incompatible IR. Its front-end
   phases are the reference to **re-implement into `focus`**, and each file is deleted once
   subsumed. What is left is `hoist.rs` (flatten, the Phase 4 reference), `query.rs` (the boxed
   ergonomic AST, which `focus` has not needed yet), and the three files those depend on.
-- **`src/focus.rs`** — a **graveyard of commented-out prototype code** (~10 live lines).
-  Kept only for the transport-codec sketch. Don't add code here.
+- **`src/focus.rs`** — the module list, and then a **graveyard of commented-out prototype
+  code** (~20 live lines out of ~1,250). Kept only for the transport-codec sketch. Don't add
+  code here.
 
 ---
 
