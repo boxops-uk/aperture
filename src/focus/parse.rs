@@ -6,7 +6,7 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use codespan_reporting::diagnostic::Label;
+use codespan_reporting::diagnostic::{Label, Severity};
 
 use crate::focus::{
     cst::CstNode,
@@ -29,6 +29,16 @@ use crate::focus::{
 ///
 /// [conventions]: ../../../docs/conventions.md
 const MAX_NEST_DEPTH: usize = 256;
+
+/// The longest source [`parse`] accepts.
+///
+/// Spans in the typed store are `u32` to keep nodes compact
+/// ([`syntax::Span`](crate::focus::syntax::Span)), and lowering narrows the
+/// parser's `usize` spans to fit. Refusing an unaddressable source here is what
+/// makes that narrowing lossless — otherwise every span past the 4 GiB mark would
+/// silently wrap and point at the wrong bytes, which is the one thing a span may
+/// not do.
+const MAX_SOURCE_LEN: usize = u32::MAX as usize;
 
 /// The result of parsing: the tree, and every diagnostic the lexer and parser
 /// produced.
@@ -58,8 +68,15 @@ impl<'src> Parsed<'src> {
         &self.diagnostics
     }
 
+    /// Whether anything error-or-worse was reported.
+    ///
+    /// Filtered by severity rather than asking whether the list is empty: the
+    /// sink is shared, and the first warning or note added to it must not start
+    /// reading as a failed parse.
     pub fn has_errors(&self) -> bool {
-        !self.diagnostics.is_empty()
+        self.diagnostics
+            .iter()
+            .any(|d| d.severity >= Severity::Error)
     }
 
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
@@ -70,6 +87,19 @@ impl<'src> Parsed<'src> {
 /// Parse `source` into a lossless CST, collecting diagnostics as it goes.
 pub fn parse(source: &str) -> Parsed<'_> {
     let mut diagnostics = vec![];
+
+    // Refused without a label: there is no span to point at that the renderer
+    // could address, which is the whole reason for the limit.
+    if source.len() > MAX_SOURCE_LEN {
+        diagnostics.push(Diagnostic::error().with_message(format!(
+            "source is {} bytes; the limit is {MAX_SOURCE_LEN}",
+            source.len()
+        )));
+        return Parsed {
+            cst: None,
+            diagnostics,
+        };
+    }
 
     // Lexed here only to bound the nesting; `Parser::new` lexes again. Two
     // passes over query text isn't worth a shared-token API.
@@ -97,24 +127,62 @@ pub fn parse(source: &str) -> Parsed<'_> {
 
 /// The index of the first token at which nesting exceeds [`MAX_NEST_DEPTH`].
 ///
-/// A conservative upper bound on the parser's recursion depth: each unclosed `{`
-/// or `(` opens a nested `pattern`, and so does each `QId`, since a fact pattern
-/// recurses on its key. Application depth is counted per statement — a `;` at
-/// bracket depth 0 ends one — so a query with very many flat statements is not
-/// mistaken for a deep one.
+/// A bound on the parser's recursion depth, read straight off the token stream:
+/// each unclosed `{` or `(` opens a nested `pattern`, and so does each `QId`,
+/// since `fact_pattern: QId branch` recurses on its key.
+///
+/// The subtlety is that applications nest only along a *path*. `test.A test.B _`
+/// is two levels deep, but `{a = test.A _, b = test.B _}` is a record of two
+/// siblings — one level, whichever way it is counted. So application counts are
+/// kept **per bracket level** and reset at the tokens that end an argument (`,`
+/// `|` `;` `=` `where`), and the depth at any point is the open-bracket count plus
+/// the applications still on the path. Counting every `QId` in a statement
+/// instead — which is what this did — made a *wide* record read as a deep one, so
+/// a machine-generated query with more than [`MAX_NEST_DEPTH`] fact-valued fields
+/// was refused for nesting two levels.
+///
+/// Still only a bound, and deliberately: the parser spends a few frames per level
+/// (`pattern` → `branch` → `primary`), so the real depth is a small multiple of
+/// this. That is fine — the cap is a policy limit borrowed from the codec, far
+/// below the depth that would actually exhaust the stack.
 fn nesting_overflow(tokens: &[Token]) -> Option<usize> {
-    let mut brackets = 0usize;
-    let mut applications = 0usize;
+    // One entry per open bracket level, holding that level's application count;
+    // `total` is their sum, maintained incrementally so this stays O(1) a token.
+    let mut levels: Vec<usize> = vec![0];
+    let mut total = 0usize;
 
     for (idx, token) in tokens.iter().enumerate() {
         match token {
-            Token::LBrace | Token::LPar => brackets += 1,
-            Token::RBrace | Token::RPar => brackets = brackets.saturating_sub(1),
-            Token::QId => applications += 1,
-            Token::Semi if brackets == 0 => applications = 0,
+            Token::LBrace | Token::LPar => levels.push(0),
+
+            Token::RBrace | Token::RPar => {
+                // Guarded: unbalanced brackets are a parse error, reported by the
+                // parser, and must not underflow the level stack on the way there.
+                if levels.len() > 1 {
+                    total -= levels.pop().unwrap_or_default();
+                }
+            }
+
+            Token::QId => {
+                if let Some(level) = levels.last_mut() {
+                    *level += 1;
+                    total += 1;
+                }
+            }
+
+            // An argument ends here, so whatever was applied at this level is no
+            // longer on the path.
+            Token::Comma | Token::Pipe | Token::Semi | Token::Eq | Token::Where => {
+                if let Some(level) = levels.last_mut() {
+                    total -= *level;
+                    *level = 0;
+                }
+            }
+
             _ => {}
         }
-        if brackets + applications > MAX_NEST_DEPTH {
+
+        if levels.len() - 1 + total > MAX_NEST_DEPTH {
             return Some(idx);
         }
     }
@@ -421,6 +489,60 @@ mod tests {
         let root = parsed.root().expect("a tree");
         assert_eq!(count(&root, "negation_stmt"), 1);
         assert_eq!(count(&root, "subquery_primary"), 1);
+    }
+
+    /// A *wide* record is not a deep one. Its fields are siblings, so however many
+    /// of them apply a fact pattern the nesting is two levels — and a
+    /// machine-generated query with hundreds of them must be accepted.
+    ///
+    /// This was the false rejection: every `QId` in a statement counted toward one
+    /// running total, so field count read as depth.
+    #[test]
+    fn a_wide_record_is_not_deep() {
+        let fields = (0..MAX_NEST_DEPTH * 2)
+            .map(|i| format!("f{i} = test.Foo _"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!("X where X = {{{fields}}}");
+
+        let parsed = parse(&source);
+        assert!(
+            parsed.root().is_some(),
+            "a record of {} sibling fact patterns was refused as deeply nested",
+            MAX_NEST_DEPTH * 2
+        );
+    }
+
+    /// The other direction, and the reason applications are counted at all: a
+    /// *chain* of them does nest, because each fact pattern's key is the next.
+    #[test]
+    fn a_deep_application_chain_is_still_refused() {
+        let source = format!("X where X = {}_", "test.Foo ".repeat(MAX_NEST_DEPTH + 1));
+
+        let parsed = parse(&source);
+        assert!(
+            parsed.root().is_none(),
+            "a chain of {} applications must be refused",
+            MAX_NEST_DEPTH + 1
+        );
+    }
+
+    /// Disjunction branches are siblings too, at whatever bracket level they sit.
+    #[test]
+    fn wide_disjunction_and_many_fields_are_not_deep() {
+        let branches = (0..MAX_NEST_DEPTH * 2)
+            .map(|_| "test.Foo _")
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(parse(&format!("X where {branches}")).root().is_some());
+
+        // Nested one level in, so the reset has to be per bracket level rather
+        // than global.
+        assert!(
+            parse(&format!("X where X = {{a = {branches}}}"))
+                .root()
+                .is_some()
+        );
     }
 
     /// Parens nest patterns, so they count toward the cap like braces do.

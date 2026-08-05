@@ -88,8 +88,9 @@ struct Lowering<'a> {
 
 impl<'a> Lowering<'a> {
     fn push(&mut self, kind: ExprKind<NodeId>, span: &Span) -> NodeId {
-        // Spans are `u32` in the store to keep nodes compact; `parse` refuses a
-        // source that could not be addressed by one.
+        // Spans are `u32` in the store to keep nodes compact. The narrowing is
+        // lossless because `parse` refuses a source longer than
+        // `parse::MAX_SOURCE_LEN`, which is exactly `u32::MAX`.
         let start = span.start as u32;
         let end = span.end as u32;
         self.store.push(kind, start..end)
@@ -281,7 +282,13 @@ impl<'a> Lowering<'a> {
 
             // `field: LId '=' pattern`
             Rule::Field => {
-                let name = token_text(&children, Token::LId).unwrap_or_default();
+                // A field with no name matches nothing and names nothing, and the
+                // parse already reported what was missing. Dropped, rather than
+                // interned as `""` — which sorts ahead of every real field and then
+                // draws a second, baffling "`` is not a field here" from typecheck.
+                let Some(name) = token_text(&children, Token::LId) else {
+                    return Out::Nothing;
+                };
                 let name = self.interner.get_or_intern(name);
                 let value = self.one_pattern(children, &span);
                 Out::Field(Field {
@@ -749,6 +756,19 @@ mod tests {
             ast.query().body(),
             [QueryStmt::Implicit(_), QueryStmt::Negation(_)]
         ));
+    }
+
+    /// A record field the parser could not name is dropped rather than interned
+    /// as the empty string. It used to become a real field called `""`, which
+    /// sorts ahead of every other one — so `{a = 1, = 2}` lowered to `{=2, a=1}`
+    /// and typecheck then reported the nameless field as unknown, on top of the
+    /// parse error that had already explained it.
+    #[test]
+    fn a_nameless_field_is_dropped_not_named_empty() {
+        assert_eq!(
+            stmt_shape("X where test.Foo {a = 1, = 2}"),
+            "fact(0, {a=1})"
+        );
     }
 
     #[test]
