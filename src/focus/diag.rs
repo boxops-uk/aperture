@@ -296,6 +296,18 @@ impl Diagnostics {
         self.inner.iter().filter_map(|d| d.code.as_deref())
     }
 
+    /// Everything reported since `mark`, where `mark` is a [`len`](Self::len)
+    /// taken earlier.
+    ///
+    /// One sink for the whole compilation means "what did *this phase* report" is
+    /// no longer "the `Vec` it returned"; it is the tail added while it ran. Used
+    /// by the driver to decide whether a phase found anything, and by tests that
+    /// pin one phase's output rather than a query's.
+    #[must_use]
+    pub fn since(&self, mark: usize) -> &[Diagnostic] {
+        self.inner.get(mark..).unwrap_or_default()
+    }
+
     /// The backing vector, for the generated parser and the lexer alone.
     ///
     /// lelwel's `Parser::parse` and `tokenize` both take `&mut Vec<Diagnostic>`, so

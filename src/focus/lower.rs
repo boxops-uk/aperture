@@ -17,12 +17,11 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use codespan_reporting::diagnostic::Label;
-
 use crate::focus::{
     cst::{CstKind, CstNode},
+    diag::{Code, Diagnostics},
     lexer::{self, LiteralError, Token},
-    parser::{Diagnostic, Rule, Span},
+    parser::{Rule, Span},
     schema::{LocalInterner, Schema, Symbol},
     syntax::{
         Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, SyntaxTree, narrow_offset,
@@ -32,15 +31,16 @@ use crate::focus::{
 /// The field name that reads a fact's value side rather than a key field.
 pub const VALUE_FIELD: &str = "value";
 
-/// Lower a parse into the typed store.
+/// Lower a parse into the typed store, reporting into `diagnostics`.
 ///
-/// The returned diagnostics are additional to the parse's own; Phase 3 replaces
-/// both with the compilation context's single sink.
+/// The sink is the parse's own: lowering's faults and the parse's belong to one
+/// compilation and are read together, in source order.
 pub fn lower(
     root: &CstNode<'_>,
     schema: &Schema,
     interner: &mut LocalInterner,
-) -> (Ast, Vec<Diagnostic>) {
+    diagnostics: &mut Diagnostics,
+) -> Ast {
     // Interned once, up front: `access` decides `.value` by comparing against it,
     // and that decision must not depend on resolving a symbol back to text.
     let value_field = interner.get_or_intern(VALUE_FIELD);
@@ -50,7 +50,7 @@ pub fn lower(
         schema,
         interner,
         value_field,
-        diagnostics: vec![],
+        diagnostics,
     };
 
     let query = match root.para(&mut |kind| lowering.algebra(kind)) {
@@ -63,7 +63,7 @@ pub fn lower(
         }
     };
 
-    (Ast::new(query, lowering.store), lowering.diagnostics)
+    Ast::new(query, lowering.store)
 }
 
 /// One record field, with the span its name was written at so a duplicate can be
@@ -92,7 +92,7 @@ struct Lowering<'a> {
     interner: &'a mut LocalInterner,
     /// [`VALUE_FIELD`] interned in this query's interner.
     value_field: Symbol,
-    diagnostics: Vec<Diagnostic>,
+    diagnostics: &'a mut Diagnostics,
 }
 
 impl Lowering<'_> {
@@ -104,17 +104,12 @@ impl Lowering<'_> {
             .push(kind, narrow_offset(span.start)..narrow_offset(span.end))
     }
 
-    fn error(&mut self, span: &Span, code: &str, message: impl Into<String>) {
-        self.diagnostics.push(
-            Diagnostic::error()
-                .with_code(code)
-                .with_message(message.into())
-                .with_label(Label::primary((), span.clone())),
-        );
+    fn error(&mut self, span: &Span, code: Code, message: impl Into<String>) {
+        self.diagnostics.error(code, message, span);
     }
 
     /// An `Error` node, reported.
-    fn error_node(&mut self, span: &Span, code: &str, message: impl Into<String>) -> NodeId {
+    fn error_node(&mut self, span: &Span, code: Code, message: impl Into<String>) -> NodeId {
         self.error(span, code, message);
         self.push(ExprKind::Error, span)
     }
@@ -412,7 +407,7 @@ impl Lowering<'_> {
             let name = self.name_of(name).to_owned();
             self.error(
                 &at,
-                "reject/duplicate-field",
+                Code::RejectDuplicateField,
                 format!("field `{name}` is given twice"),
             );
         }
@@ -431,7 +426,7 @@ impl Lowering<'_> {
             Some(id) => self.push(ExprKind::Fact(id, key), span),
             None => self.error_node(
                 span,
-                "reject/unknown-predicate",
+                Code::RejectUnknownPredicate,
                 format!("`{name}` is not a predicate in this schema"),
             ),
         }
@@ -581,17 +576,26 @@ mod tests {
     use proptest::prelude::*;
 
     /// Lower `source` against the corpus schema.
-    fn lower_source(source: &str) -> (Ast, Vec<Diagnostic>, LocalInterner) {
+    ///
+    /// One sink for the parse and the lowering both, as a compilation has.
+    fn lower_source(source: &str) -> (Ast, Diagnostics, LocalInterner) {
         let schema = corpus::schema();
         let mut interner = LocalInterner::new(schema.interner().clone());
-        let parsed = parse(source);
-        let root = parsed.root().expect("a tree");
-        let (ast, diags) = lower(&root, &schema, &mut interner);
-        (ast, diags, interner)
+        let mut diagnostics = Diagnostics::new();
+
+        let cst = parse(source, &mut diagnostics).expect("a tree");
+        let ast = lower(
+            &CstNode::new(&cst),
+            &schema,
+            &mut interner,
+            &mut diagnostics,
+        );
+
+        (ast, diagnostics, interner)
     }
 
-    fn codes(diags: &[Diagnostic]) -> Vec<&str> {
-        diags.iter().filter_map(|d| d.code.as_deref()).collect()
+    fn codes(diags: &Diagnostics) -> Vec<&str> {
+        diags.codes().collect()
     }
 
     /// Render a node as `kind(child …)`, so a test states the shape it means.
@@ -805,9 +809,14 @@ mod tests {
         // symbol and the comparison has to hold there too.
         let schema = corpus::schema();
         let mut interner = bare_interner();
-        let parsed = parse("X.value where test.Foo _");
-        let root = parsed.root().expect("a tree");
-        let (ast, _) = lower(&root, &schema, &mut interner);
+        let mut diagnostics = Diagnostics::new();
+        let cst = parse("X.value where test.Foo _", &mut diagnostics).expect("a tree");
+        let ast = lower(
+            &CstNode::new(&cst),
+            &schema,
+            &mut interner,
+            &mut diagnostics,
+        );
 
         assert_eq!(
             shape(&ast, &interner, *ast.query().head()),
@@ -829,9 +838,14 @@ mod tests {
         for entry in corpus::CORPUS {
             let schema = corpus::schema();
             let mut interner = LocalInterner::new(schema.interner().clone());
-            let parsed = parse(entry.source);
-            if let Some(root) = parsed.root() {
-                let _ = lower(&root, &schema, &mut interner);
+            let mut diagnostics = Diagnostics::new();
+            if let Some(cst) = parse(entry.source, &mut diagnostics) {
+                let _ = lower(
+                    &CstNode::new(&cst),
+                    &schema,
+                    &mut interner,
+                    &mut diagnostics,
+                );
             }
         }
     }
@@ -850,9 +864,14 @@ mod tests {
         fn lowering_arbitrary_sources_never_panics(source in arb_source()) {
             let schema = corpus::schema();
             let mut interner = LocalInterner::new(schema.interner().clone());
-            let parsed = parse(&source);
-            if let Some(root) = parsed.root() {
-                let (ast, _) = lower(&root, &schema, &mut interner);
+            let mut diagnostics = Diagnostics::new();
+            if let Some(cst) = parse(&source, &mut diagnostics) {
+                let ast = lower(
+                    &CstNode::new(&cst),
+                    &schema,
+                    &mut interner,
+                    &mut diagnostics,
+                );
                 // The head is always a real node, even when nothing parsed.
                 prop_assert!(!ast.store().is_empty());
             }
@@ -893,9 +912,10 @@ mod tests {
     fn a_bare_interner_still_lowers() {
         let schema = corpus::schema();
         let mut interner = bare_interner();
-        let parsed = parse("X.name where test.Foo {id = X}");
-        let root = parsed.root().expect("a tree");
-        let (ast, _) = lower(&root, &schema, &mut interner);
+        let mut diagnostics = Diagnostics::new();
+        let cst = parse("X.name where test.Foo {id = X}", &mut diagnostics).expect("a tree");
+        let root = CstNode::new(&cst);
+        let ast = lower(&root, &schema, &mut interner, &mut diagnostics);
         assert!(!ast.store().is_empty());
     }
 }

@@ -23,6 +23,8 @@
 use std::{borrow::Cow, collections::BTreeMap, path::Path, sync::Arc};
 
 use aperture::focus::{
+    cst::CstNode,
+    diag::Diagnostics,
     error::{ApertureError, StoreCodecError},
     iter::{Address, Executor, Iteratee, Stream},
     lexer::{Token, tokenize},
@@ -465,28 +467,30 @@ fn check(source: &str, schema: &Schema) {
     let config = term::Config::default();
     let file = SimpleFile::new("<input>", source);
 
-    let emit = |diagnostics: &[_]| {
+    let mut diagnostics = Diagnostics::new();
+
+    let cst = parse(source, &mut diagnostics);
+    let emit = |diagnostics: &Diagnostics| {
         for diagnostic in diagnostics {
             let _ = term::emit_to_write_style(&mut writer.lock(), &config, &file, diagnostic);
         }
     };
 
-    let parsed = parse(source);
-    emit(parsed.diagnostics());
-
-    let Some(root) = parsed.root() else { return };
-    if parsed.has_errors() {
+    let Some(cst) = cst else {
+        emit(&diagnostics);
+        return;
+    };
+    if diagnostics.has_errors() {
+        emit(&diagnostics);
         return;
     }
 
     let mut interner = LocalInterner::new(schema.interner().clone());
-    let (ast, lowering) = lower(&root, schema, &mut interner);
-    emit(&lowering);
+    let ast = lower(&CstNode::new(&cst), schema, &mut interner, &mut diagnostics);
+    let typed = ty::check(&ast, schema, &interner, &mut diagnostics);
+    emit(&diagnostics);
 
-    let (typed, checking) = ty::check(&ast, schema, &interner);
-    emit(&checking);
-
-    if !lowering.is_empty() || !checking.is_empty() {
+    if !diagnostics.is_empty() {
         return;
     }
 
@@ -759,20 +763,24 @@ mod tests {
         let schema = demo_schema();
 
         for source in EXAMPLES {
-            let parsed = parse(source);
-            assert!(
-                !parsed.has_errors(),
-                "{source}: {:?}",
-                parsed.diagnostics().len()
-            );
-            let root = parsed.root().expect("a tree, since there are no errors");
+            let mut diagnostics = Diagnostics::new();
+            let cst = parse(source, &mut diagnostics)
+                .expect("a tree, since an example must be well-formed");
 
             let mut interner = LocalInterner::new(schema.interner().clone());
-            let (ast, lowering) = lower(&root, &schema, &mut interner);
-            assert!(lowering.is_empty(), "{source}: {lowering:?}");
+            let ast = lower(
+                &CstNode::new(&cst),
+                &schema,
+                &mut interner,
+                &mut diagnostics,
+            );
+            let typed = ty::check(&ast, &schema, &interner, &mut diagnostics);
 
-            let (typed, checking) = ty::check(&ast, &schema, &interner);
-            assert!(checking.is_empty(), "{source}: {checking:?}");
+            assert!(
+                diagnostics.is_empty(),
+                "{source}: {:?}",
+                diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
             assert!(
                 typed.ty(*ast.query().head()).is_some(),
                 "{source}: the head was not annotated"

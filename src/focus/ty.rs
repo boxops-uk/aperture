@@ -26,15 +26,11 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use codespan_reporting::diagnostic::Label;
-
 use crate::focus::{
+    diag::{Code, Diagnostics},
     lower::VALUE_FIELD,
-    parser::Diagnostic,
     schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},
-    syntax::{
-        Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, Ty, TyVarId, source_range,
-    },
+    syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, Ty, TyVarId},
 };
 
 /// The types a query's nodes were given.
@@ -50,8 +46,16 @@ impl Typed {
     }
 }
 
-/// Typecheck a lowered query.
-pub fn check(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> (Typed, Vec<Diagnostic>) {
+/// Typecheck a lowered query, reporting into `diagnostics`.
+///
+/// The sink is lowering's and the parse's: one compilation, one list, read in
+/// source order.
+pub fn check(
+    ast: &Ast,
+    schema: &Schema,
+    interner: &LocalInterner,
+    diagnostics: &mut Diagnostics,
+) -> Typed {
     let mut checker = Checker {
         schema,
         interner,
@@ -59,7 +63,7 @@ pub fn check(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> (Typed, Ve
         subst: vec![],
         tys: vec![None; ast.store().len()],
         undo: vec![],
-        diagnostics: vec![],
+        diagnostics,
     };
 
     checker.query(ast, ast.query());
@@ -73,7 +77,7 @@ pub fn check(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> (Typed, Ve
         .map(|slot| slot.as_ref().map(|ty| checker.zonk(ty)))
         .collect();
 
-    (Typed { tys }, checker.diagnostics)
+    Typed { tys }
 }
 
 /// Why two types could not be made equal.
@@ -108,7 +112,7 @@ struct Checker<'a> {
     subst: Vec<Option<Ty>>,
     tys: Vec<Option<Ty>>,
     undo: Vec<Undo>,
-    diagnostics: Vec<Diagnostic>,
+    diagnostics: &'a mut Diagnostics,
 }
 
 impl Checker<'_> {
@@ -127,7 +131,7 @@ impl Checker<'_> {
             self.reject(
                 ast,
                 head,
-                "reject/wildcard-in-head",
+                Code::RejectWildcardInHead,
                 "a wildcard head projects nothing",
             );
         }
@@ -140,7 +144,7 @@ impl Checker<'_> {
                 self.infer(ast, *id);
             }
             QueryStmt::Negation(id) => {
-                self.nyi(ast, *id, "nyi/negation", "negation");
+                self.nyi(ast, *id, Code::NyiNegation, "negation");
                 self.infer(ast, *id);
             }
             QueryStmt::Bind(lhs, rhs) => self.bind(ast, *lhs, *rhs),
@@ -180,7 +184,7 @@ impl Checker<'_> {
                 self.reject(
                     ast,
                     lhs,
-                    "reject/bind-lhs",
+                    Code::RejectBindLhs,
                     "a literal cannot be bound to; put the variable on the left",
                 );
                 self.infer(ast, rhs);
@@ -195,7 +199,7 @@ impl Checker<'_> {
                 self.nyi(
                     ast,
                     lhs,
-                    "nyi/bind-unification",
+                    Code::NyiBindUnification,
                     "matching two patterns against each other",
                 );
                 self.infer(ast, lhs);
@@ -249,22 +253,27 @@ impl Checker<'_> {
             // descending would only add diagnostics about a construct we have
             // declined.
             ExprKind::Never => {
-                self.nyi(ast, id, "nyi/never", "the empty pattern `never`");
+                self.nyi(ast, id, Code::NyiNever, "the empty pattern `never`");
                 Ty::Error
             }
             ExprKind::Select(..) => {
-                self.nyi(ast, id, "nyi/union-select", "selecting a union alternative");
+                self.nyi(
+                    ast,
+                    id,
+                    Code::NyiUnionSelect,
+                    "selecting a union alternative",
+                );
                 Ty::Error
             }
             ExprKind::Disjunction(branches) => {
-                self.nyi(ast, id, "nyi/disjunction", "disjunction");
+                self.nyi(ast, id, Code::NyiDisjunction, "disjunction");
                 for branch in branches.iter() {
                     self.infer(ast, *branch);
                 }
                 Ty::Error
             }
             ExprKind::Subquery(_) => {
-                self.nyi(ast, id, "nyi/subquery", "a subquery");
+                self.nyi(ast, id, Code::NyiSubquery, "a subquery");
                 Ty::Error
             }
         };
@@ -315,7 +324,7 @@ impl Checker<'_> {
                                 self.reject(
                                     ast,
                                     *value,
-                                    "reject/unknown-field",
+                                    Code::RejectUnknownField,
                                     format!("`{name}` is not a field here"),
                                 );
                             }
@@ -354,7 +363,7 @@ impl Checker<'_> {
                         return self.reject_ty(
                             ast,
                             id,
-                            "reject/value-shadowed",
+                            Code::RejectValueShadowed,
                             "this predicate has a key field called `value`, so `.value` is ambiguous",
                         );
                     }
@@ -363,7 +372,7 @@ impl Checker<'_> {
                         None => self.reject_ty(
                             ast,
                             id,
-                            "reject/no-value",
+                            Code::RejectNoValue,
                             "this predicate has no value",
                         ),
                     }
@@ -374,7 +383,7 @@ impl Checker<'_> {
                     self.reject_ty(
                         ast,
                         id,
-                        "reject/type-mismatch",
+                        Code::RejectTypeMismatch,
                         format!("only a fact has a value; this is {got}"),
                     )
                 }
@@ -394,7 +403,7 @@ impl Checker<'_> {
                         return self.reject_ty(
                             ast,
                             id,
-                            "reject/type-mismatch",
+                            Code::RejectTypeMismatch,
                             format!("{got} has no fields"),
                         );
                     }
@@ -407,7 +416,7 @@ impl Checker<'_> {
                         self.reject_ty(
                             ast,
                             id,
-                            "reject/unknown-field",
+                            Code::RejectUnknownField,
                             format!("`{name}` is not a field here"),
                         )
                     }
@@ -426,7 +435,7 @@ impl Checker<'_> {
         self.reject_ty(
             ast,
             id,
-            "reject/unresolved-access",
+            Code::RejectUnresolvedAccess,
             "the type of this value is not known here, so its field cannot be resolved",
         )
     }
@@ -635,28 +644,22 @@ impl Checker<'_> {
 
     // ---- diagnostics ----------------------------------------------------------
 
-    fn diagnostic(&mut self, ast: &Ast, id: NodeId, code: &str, message: String) {
-        let span = ast.store().span(id);
-        self.diagnostics.push(
-            Diagnostic::error()
-                .with_code(code)
-                .with_message(message)
-                .with_label(Label::primary((), source_range(&span))),
-        );
+    fn diagnostic(&mut self, ast: &Ast, id: NodeId, code: Code, message: String) {
+        self.diagnostics.error(code, message, ast.store().span(id));
     }
 
-    fn reject(&mut self, ast: &Ast, id: NodeId, code: &str, message: impl Into<String>) {
+    fn reject(&mut self, ast: &Ast, id: NodeId, code: Code, message: impl Into<String>) {
         self.diagnostic(ast, id, code, message.into());
     }
 
-    fn reject_ty(&mut self, ast: &Ast, id: NodeId, code: &str, message: impl Into<String>) -> Ty {
+    fn reject_ty(&mut self, ast: &Ast, id: NodeId, code: Code, message: impl Into<String>) -> Ty {
         self.reject(ast, id, code, message);
         Ty::Error
     }
 
     /// A construct that parses and will be implemented, but not yet. The message
     /// says so in those words, because "not supported" reads as "never will be".
-    fn nyi(&mut self, ast: &Ast, id: NodeId, code: &str, what: &str) {
+    fn nyi(&mut self, ast: &Ast, id: NodeId, code: Code, what: &str) {
         self.diagnostic(ast, id, code, format!("{what} is not implemented yet"));
     }
 
@@ -667,7 +670,7 @@ impl Checker<'_> {
                 self.reject(
                     ast,
                     id,
-                    "reject/type-mismatch",
+                    Code::RejectTypeMismatch,
                     format!("expected {expected}, found {got}"),
                 );
             }
@@ -676,14 +679,14 @@ impl Checker<'_> {
                 self.reject(
                     ast,
                     id,
-                    "reject/unknown-field",
+                    Code::RejectUnknownField,
                     format!("`{name}` is not a field here"),
                 );
             }
             TyError::Infinite => self.reject(
                 ast,
                 id,
-                "reject/infinite-type",
+                Code::RejectInfiniteType,
                 "this pattern would have to contain itself",
             ),
         }
@@ -768,6 +771,7 @@ mod tests {
     use super::*;
     use crate::focus::{
         corpus,
+        cst::CstNode,
         lower::lower,
         parse::parse,
         schema::{Predicate, PredicateId},
@@ -777,7 +781,7 @@ mod tests {
 
     struct Checked {
         typed: Typed,
-        diagnostics: Vec<Diagnostic>,
+        diagnostics: Diagnostics,
         head: NodeId,
         interner: LocalInterner,
     }
@@ -785,15 +789,16 @@ mod tests {
     fn compile(source: &str) -> Checked {
         let schema = corpus::schema();
         let mut interner = LocalInterner::new(schema.interner().clone());
-        let parsed = parse(source);
-        let root = parsed.root().expect("a tree");
-        let (ast, lowering) = lower(&root, &schema, &mut interner);
+        let mut diagnostics = Diagnostics::new();
+        let cst = parse(source, &mut diagnostics).expect("a tree");
+        let root = CstNode::new(&cst);
+        let ast = lower(&root, &schema, &mut interner, &mut diagnostics);
         assert!(
-            lowering.is_empty(),
+            diagnostics.is_empty(),
             "{source:?} should lower cleanly: {:?}",
-            lowering.iter().map(|d| &d.message).collect::<Vec<_>>()
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-        let (typed, diagnostics) = check(&ast, &schema, &interner);
+        let typed = check(&ast, &schema, &interner, &mut diagnostics);
         let head = *ast.query().head();
         Checked {
             typed,
@@ -820,16 +825,13 @@ mod tests {
     fn all_codes(source: &str) -> Vec<String> {
         let schema = corpus::schema();
         let mut interner = LocalInterner::new(schema.interner().clone());
-        let parsed = parse(source);
-        let root = parsed.root().expect("a tree");
-        let (ast, lowering) = lower(&root, &schema, &mut interner);
-        let (_typed, checking) = check(&ast, &schema, &interner);
+        let mut diagnostics = Diagnostics::new();
+        let cst = parse(source, &mut diagnostics).expect("a tree");
+        let root = CstNode::new(&cst);
+        let ast = lower(&root, &schema, &mut interner, &mut diagnostics);
+        let _typed = check(&ast, &schema, &interner, &mut diagnostics);
 
-        lowering
-            .iter()
-            .chain(checking.iter())
-            .filter_map(|d| d.code.as_deref().map(str::to_owned))
-            .collect()
+        diagnostics.codes().map(str::to_owned).collect()
     }
 
     /// The head's type, rendered.
@@ -985,12 +987,11 @@ mod tests {
     #[test]
     fn deferred_messages_say_yet() {
         let checked = compile("X where X = never");
+        let first = checked.diagnostics.iter().next().expect("a diagnostic");
         assert!(
-            checked.diagnostics[0]
-                .message
-                .contains("not implemented yet"),
+            first.message.contains("not implemented yet"),
             "got {:?}",
-            checked.diagnostics[0].message
+            first.message
         );
     }
 
@@ -1051,6 +1052,7 @@ mod tests {
     fn a_rolled_back_scope_does_not_reuse_its_type_variables() {
         let schema = corpus::schema();
         let interner = LocalInterner::new(schema.interner().clone());
+        let mut diagnostics = Diagnostics::new();
         let mut checker = Checker {
             schema: &schema,
             interner: &interner,
@@ -1058,7 +1060,7 @@ mod tests {
             subst: vec![],
             tys: vec![],
             undo: vec![],
-            diagnostics: vec![],
+            diagnostics: &mut diagnostics,
         };
 
         let outer = checker.fresh_var_id();
@@ -1151,22 +1153,28 @@ mod tests {
     fn an_unknown_predicate_poisons_without_cascading() {
         let schema = corpus::schema();
         let mut interner = LocalInterner::new(schema.interner().clone());
-        let parsed = parse("X.name where X = nosuch.Pred _");
-        let root = parsed.root().expect("a tree");
-        let (ast, lowering) = lower(&root, &schema, &mut interner);
+        let mut diagnostics = Diagnostics::new();
+        let cst = parse("X.name where X = nosuch.Pred _", &mut diagnostics).expect("a tree");
+        let root = CstNode::new(&cst);
+        let ast = lower(&root, &schema, &mut interner, &mut diagnostics);
         // Lowering reported the predicate; typecheck must not add to it.
         assert_eq!(
-            lowering
-                .iter()
-                .filter_map(|d| d.code.as_deref())
-                .collect::<Vec<_>>(),
+            diagnostics.codes().collect::<Vec<_>>(),
             ["reject/unknown-predicate"]
         );
-        let (_typed, diags) = check(&ast, &schema, &interner);
+
+        // The sink is shared, so "typecheck said nothing" is "nothing arrived
+        // while it ran" rather than "it returned an empty list".
+        let mark = diagnostics.len();
+        let _typed = check(&ast, &schema, &interner, &mut diagnostics);
         assert!(
-            diags.is_empty(),
+            diagnostics.since(mark).is_empty(),
             "typecheck should stay quiet: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            diagnostics
+                .since(mark)
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1199,14 +1207,18 @@ mod tests {
         let source = "X where test.Deep {outer = X}; test.Deep {outer = X}";
 
         let mut interner = LocalInterner::new(schema.interner().clone());
-        let parsed = parse(source);
-        let root = parsed.root().expect("a tree");
-        let (ast, lowering) = lower(&root, &schema, &mut interner);
-        assert!(lowering.is_empty(), "the fixture query must lower cleanly");
+        let mut diagnostics = Diagnostics::new();
+        let cst = parse(source, &mut diagnostics).expect("a tree");
+        let root = CstNode::new(&cst);
+        let ast = lower(&root, &schema, &mut interner, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "the fixture query must lower cleanly"
+        );
 
         let mut reported = usize::MAX;
         let info = allocation_counter::measure(|| {
-            let (_typed, diagnostics) = check(&ast, &schema, &interner);
+            let _typed = check(&ast, &schema, &interner, &mut diagnostics);
             reported = diagnostics.len();
         });
 

@@ -57,7 +57,10 @@ use std::sync::Arc;
 
 use lasso::Rodeo;
 
-use crate::focus::schema::{Predicate, PredicateTy, Schema};
+use crate::focus::{
+    diag::Code,
+    schema::{Predicate, PredicateTy, Schema},
+};
 use Expectation::{Diagnosed, ParseError, Supported};
 
 /// The schema the corpus is written against.
@@ -159,10 +162,10 @@ pub enum Expectation {
     /// Parses, then draws exactly this diagnostic code.
     ///
     /// The code — not the wording — is what tests assert on, so diagnostics can
-    /// be reworded without churning the corpus. Prefixes: `nyi/` for a construct
-    /// deferred to a later phase, `reject/` for one that is meaningless and never
-    /// will be implemented, `lit/` for a malformed literal.
-    Diagnosed(&'static str),
+    /// be reworded without churning the corpus. [`Code::kind`] says which sort of
+    /// fault it is: deferred to a later phase, meaningless and rejected for good,
+    /// or a malformed literal.
+    Diagnosed(Code),
     /// Not valid focus; a parse diagnostic is correct.
     ParseError,
 }
@@ -261,125 +264,125 @@ pub const CORPUS: &[Entry] = &[
     // ---- deferred constructs: parse, then say so by name ----
     entry(
         "X where test.Foo {id = X} | test.Bar {id = X}",
-        Diagnosed("nyi/disjunction"),
+        Diagnosed(Code::NyiDisjunction),
         "disjunction survives flattening as a node (never DNF-expanded); the \
          union-of-streams operator is a deferred feature",
     ),
     entry(
         "X where test.Foo {id = X}; !test.Bar {id = X}",
-        Diagnosed("nyi/negation"),
+        Diagnosed(Code::NyiNegation),
         "statement-level negation; must move after its non-locals are bound",
     ),
     entry(
         "X where X = (Y where test.Foo {id = Y})",
-        Diagnosed("nyi/subquery"),
+        Diagnosed(Code::NyiSubquery),
         "subquery as a pattern",
     ),
     entry(
         "X.alt? where X = test.Foo _",
-        Diagnosed("nyi/union-select"),
+        Diagnosed(Code::NyiUnionSelect),
         "union select lowers to a DiscriminantEq residual; PredicateTy has no \
          Union variant yet (I10 freezes discriminants when it does)",
     ),
     entry(
         "X where X = never",
-        Diagnosed("nyi/never"),
+        Diagnosed(Code::NyiNever),
         "the empty pattern",
     ),
     entry(
         "X where test.Foo {id = X}; test.Bar {id = Y}; X = Y",
-        Diagnosed("nyi/bind-unification"),
+        Diagnosed(Code::NyiBindUnification),
         "`var = var` with both sides already bound — the hard half of \
          `pattern = pattern` (docs/open-decisions.md)",
     ),
     entry(
         "X where test.Foo {id = X} = test.Bar {id = X}",
-        Diagnosed("nyi/bind-unification"),
+        Diagnosed(Code::NyiBindUnification),
         "generator = generator — also the hard half",
     ),
     entry(
         "X where {a = X} = {a = 1}",
-        Diagnosed("nyi/bind-unification"),
+        Diagnosed(Code::NyiBindUnification),
         "anonymous record = anonymous record — also the hard half",
     ),
     // ---- meaningless: parses, rejected with a clear diagnostic ----
     entry(
         "_ where test.Foo _",
-        Diagnosed("reject/wildcard-in-head"),
+        Diagnosed(Code::RejectWildcardInHead),
         "a wildcard head projects nothing",
     ),
     entry(
         "X where 42 = test.Foo _",
-        Diagnosed("reject/bind-lhs"),
+        Diagnosed(Code::RejectBindLhs),
         "a literal cannot be a bind target",
     ),
     entry(
         "X.value where X = test.Shadow _",
-        Diagnosed("reject/value-shadowed"),
+        Diagnosed(Code::RejectValueShadowed),
         "the predicate's key has a field named `value`, so `.value` is ambiguous",
     ),
     entry(
         "X where test.Foo {name = X, name = Y}",
-        Diagnosed("reject/duplicate-field"),
+        Diagnosed(Code::RejectDuplicateField),
         "record fields are a sorted set; a duplicate is an error, not a \
          last-one-wins overwrite",
     ),
     entry(
         "X where X = nosuch.Pred _",
-        Diagnosed("reject/unknown-predicate"),
+        Diagnosed(Code::RejectUnknownPredicate),
         "not in the schema",
     ),
     entry(
         "X where test.Foo {nosuch = X}",
-        Diagnosed("reject/unknown-field"),
+        Diagnosed(Code::RejectUnknownField),
         "not a field of the predicate's key",
     ),
     entry(
         "X where test.Foo {name = 42}",
-        Diagnosed("reject/type-mismatch"),
+        Diagnosed(Code::RejectTypeMismatch),
         "`name` is a string",
     ),
     entry(
         "X where test.Foo X.name",
-        Diagnosed("reject/unresolved-access"),
+        Diagnosed(Code::RejectUnresolvedAccess),
         "nothing binds `X`, so there is no type to read `name` from. Resolving it \
          would need row polymorphism; Phase 4's range-restriction check would reject \
          the query anyway",
     ),
     entry(
         "X.value where X = test.Bar _",
-        Diagnosed("reject/no-value"),
+        Diagnosed(Code::RejectNoValue),
         "`test.Bar` is key-only",
     ),
     // ---- malformed literals: lexed permissively, rejected in lowering ----
     entry(
         "X where X = test.Count 1__0",
-        Diagnosed("lit/int-underscore"),
+        Diagnosed(Code::LitIntUnderscore),
         "repeated separator",
     ),
     entry(
         "X where X = test.Count 1_",
-        Diagnosed("lit/int-underscore"),
+        Diagnosed(Code::LitIntUnderscore),
         "trailing separator",
     ),
     entry(
         "X where X = test.Count 007",
-        Diagnosed("lit/int-leading-zero"),
+        Diagnosed(Code::LitIntLeadingZero),
         "leading zero",
     ),
     entry(
         "X where X = test.Count 99999999999999999999",
-        Diagnosed("lit/int-range"),
+        Diagnosed(Code::LitIntRange),
         "does not fit i64 — an error, never a panicking parse",
     ),
     entry(
         "X where X = test.Count 9223372036854775808",
-        Diagnosed("lit/int-range"),
+        Diagnosed(Code::LitIntRange),
         "one past i64::MAX; only reachable with a minus in front of it",
     ),
     entry(
         r#"X where X = test.Name "\uD800""#,
-        Diagnosed("lit/string-escape"),
+        Diagnosed(Code::LitStringEscape),
         "an unpaired surrogate. The lexer's regex accepts the escape, so this is only \
          catchable when the string is decoded",
     ),
@@ -398,7 +401,7 @@ pub const CORPUS: &[Entry] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::parse::parse;
+    use crate::focus::{diag::Diagnostics, parse::parse};
 
     /// The phase's headline gate: every construct on the target surface parses,
     /// and only the entries that are genuinely not focus draw a parse error. An
@@ -416,14 +419,15 @@ mod tests {
             note,
         } in CORPUS
         {
-            let parsed = parse(source);
-            let diags: Vec<&String> = parsed.diagnostics().iter().map(|d| &d.message).collect();
+            let mut diagnostics = Diagnostics::new();
+            let _cst = parse(source, &mut diagnostics);
+            let diags: Vec<&String> = diagnostics.iter().map(|d| &d.message).collect();
 
             match expect {
-                Supported | Diagnosed(_) if parsed.has_errors() => {
+                Supported | Diagnosed(_) if diagnostics.has_errors() => {
                     gaps.push(format!("{source:?} must parse ({note}) — got {diags:?}"))
                 }
-                ParseError if !parsed.has_errors() => {
+                ParseError if !diagnostics.has_errors() => {
                     gaps.push(format!("{source:?} must be a parse error ({note})"))
                 }
                 _ => {}
@@ -464,9 +468,13 @@ mod tests {
 
             let got = compile(source);
             let got: Vec<&str> = got.iter().map(String::as_str).collect();
+            // Compared as rendered strings, not as `Code`s: reading `got` back into
+            // a `Code` would have to do something with a string that resolves to no
+            // variant, and every choice there hides an unexpected diagnostic — which
+            // is the one thing this gate exists to catch.
             let want: Vec<&str> = match expect {
                 Supported => vec![],
-                Diagnosed(code) => vec![code],
+                Diagnosed(code) => vec![code.as_str()],
                 ParseError => unreachable!(),
             };
 
@@ -493,21 +501,29 @@ mod tests {
     /// knows about: a code nobody expected has to be able to fail this gate, which is
     /// the whole point of comparing sets.
     fn compile(source: &str) -> Vec<String> {
-        use crate::focus::{lower::lower, parse::parse, schema::LocalInterner, ty};
+        use crate::focus::{cst::CstNode, lower::lower, parse::parse, schema::LocalInterner, ty};
 
         let schema = schema();
         let mut interner = LocalInterner::new(schema.interner().clone());
 
-        let parsed = parse(source);
-        let Some(root) = parsed.root() else {
+        // One sink from here on, as a compilation has. The parse's own diagnostics
+        // are the parse gate's business, so the codes counted below start after it.
+        let mut diagnostics = Diagnostics::new();
+        let Some(cst) = parse(source, &mut diagnostics) else {
             return vec![];
         };
+        let mark = diagnostics.len();
 
-        let (ast, lowering_diags) = lower(&root, &schema, &mut interner);
-        let (_typed, ty_diags) = ty::check(&ast, &schema, &interner);
+        let ast = lower(
+            &CstNode::new(&cst),
+            &schema,
+            &mut interner,
+            &mut diagnostics,
+        );
+        let _typed = ty::check(&ast, &schema, &interner, &mut diagnostics);
 
         let mut codes: Vec<String> = vec![];
-        for diag in lowering_diags.iter().chain(ty_diags.iter()) {
+        for diag in diagnostics.since(mark) {
             if let Some(code) = diag.code.as_deref()
                 && !codes.iter().any(|seen| seen == code)
             {

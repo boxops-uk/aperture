@@ -6,12 +6,12 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use codespan_reporting::diagnostic::{Label, Severity};
+use codespan_reporting::diagnostic::Label;
 
 use crate::focus::{
-    cst::CstNode,
+    diag::{Diagnostic, Diagnostics},
     lexer::{Token, tokenize},
-    parser::{Cst, Diagnostic, Lexed, Parser},
+    parser::{Cst, Lexed, Parser},
 };
 
 /// The deepest pattern nesting [`parse`] will hand to the parser.
@@ -40,54 +40,19 @@ const MAX_NEST_DEPTH: usize = 256;
 /// not do.
 const MAX_SOURCE_LEN: usize = u32::MAX as usize;
 
-/// The result of parsing: the tree, and every diagnostic the lexer and parser
-/// produced.
+/// Parse `source` into a lossless CST, reporting into `diagnostics`.
 ///
-/// Diagnostics accumulate rather than fail fast — permissive-grammar-narrow-later
-/// needs multi-error reporting. Phase 3 replaces this plain `Vec` with the
-/// compilation context's pooled sink; nothing here should assume one query.
-pub struct Parsed<'src> {
-    cst: Option<Cst<'src>>,
-    diagnostics: Vec<Diagnostic>,
-}
-
-impl<'src> Parsed<'src> {
-    /// The root of the tree, or `None` if parsing was refused outright (see
-    /// [`MAX_NEST_DEPTH`]).
-    pub fn root(&self) -> Option<CstNode<'_>> {
-        self.cst.as_ref().map(CstNode::new)
-    }
-
-    /// The raw tree — `Display`s as an indented rule/token listing, which is what
-    /// the grammar's structure tests assert against.
-    pub fn cst(&self) -> Option<&Cst<'src>> {
-        self.cst.as_ref()
-    }
-
-    pub fn diagnostics(&self) -> &[Diagnostic] {
-        &self.diagnostics
-    }
-
-    /// Whether anything error-or-worse was reported.
-    ///
-    /// Filtered by severity rather than asking whether the list is empty: the
-    /// sink is shared, and the first warning or note added to it must not start
-    /// reading as a failed parse.
-    pub fn has_errors(&self) -> bool {
-        self.diagnostics
-            .iter()
-            .any(|d| d.severity >= Severity::Error)
-    }
-
-    pub fn into_diagnostics(self) -> Vec<Diagnostic> {
-        self.diagnostics
-    }
-}
-
-/// Parse `source` into a lossless CST, collecting diagnostics as it goes.
-pub fn parse(source: &str) -> Parsed<'_> {
-    let mut diagnostics = vec![];
-
+/// `None` is a **refusal**: the source is unaddressable or nested past
+/// [`MAX_NEST_DEPTH`], and there is no tree at all — not "a tree with errors in
+/// it", which is the ordinary case and comes back as `Some` with diagnostics
+/// beside it. Lowering is built for holes; it is not built for nothing.
+///
+/// Diagnostics accumulate rather than failing fast, because
+/// permissive-grammar-narrow-later needs multi-error reporting, and they go into
+/// the caller's sink rather than a `Vec` of this function's own: a returned `Vec`
+/// is one a caller can drop, and every diagnostic reaching the user should not
+/// rest on each call site remembering to thread one out ([`Diagnostics`]).
+pub fn parse<'src>(source: &'src str, diagnostics: &mut Diagnostics) -> Option<Cst<'src>> {
     // Refused without a label: there is no span to point at that the renderer
     // could address, which is the whole reason for the limit.
     if source.len() > MAX_SOURCE_LEN {
@@ -95,15 +60,14 @@ pub fn parse(source: &str) -> Parsed<'_> {
             "source is {} bytes; the limit is {MAX_SOURCE_LEN}",
             source.len()
         )));
-        return Parsed {
-            cst: None,
-            diagnostics,
-        };
+        return None;
     }
 
     // Lexed once, here, because the nesting bound needs the token stream before
     // parsing; the tokens are then handed to the parser rather than lexed again.
-    let (tokens, spans) = tokenize(source, &mut diagnostics);
+    // `as_vec_mut` because `tokenize` and the generated parser both take a plain
+    // `Vec` — they are the two producers that build their own diagnostics.
+    let (tokens, spans) = tokenize(source, diagnostics.as_vec_mut());
 
     if let Some(idx) = nesting_overflow(&tokens) {
         let span = spans.get(idx).cloned().unwrap_or(0..source.len());
@@ -112,20 +76,15 @@ pub fn parse(source: &str) -> Parsed<'_> {
                 .with_message(format!("pattern nested deeper than {MAX_NEST_DEPTH}"))
                 .with_label(Label::primary((), span)),
         );
-        return Parsed {
-            cst: None,
-            diagnostics,
-        };
+        return None;
     }
 
     let lexed = Lexed {
         tokens: Some((tokens, spans)),
     };
-    let cst = Parser::new_with_context(source, &mut diagnostics, lexed).parse(&mut diagnostics);
-    Parsed {
-        cst: Some(cst),
-        diagnostics,
-    }
+
+    let sink = diagnostics.as_vec_mut();
+    Some(Parser::new_with_context(source, sink, lexed).parse(sink))
 }
 
 /// The index of the first token at which nesting exceeds [`MAX_NEST_DEPTH`].
@@ -196,8 +155,39 @@ fn nesting_overflow(tokens: &[Token]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::cst::CstKind;
+    use crate::focus::cst::{CstKind, CstNode};
     use proptest::prelude::*;
+
+    /// A parse and the diagnostics it drew, for tests that want both.
+    ///
+    /// The production shape is `parse(source, &mut sink)` against the
+    /// compilation's shared sink; these tests each parse one source in isolation,
+    /// so bundling the pair is what keeps them about parsing rather than about
+    /// threading a sink.
+    struct Parsed<'src> {
+        cst: Option<Cst<'src>>,
+        diagnostics: Diagnostics,
+    }
+
+    impl<'src> Parsed<'src> {
+        fn root(&self) -> Option<CstNode<'_>> {
+            self.cst.as_ref().map(CstNode::new)
+        }
+
+        fn has_errors(&self) -> bool {
+            self.diagnostics.has_errors()
+        }
+
+        fn diagnostics(&self) -> &Diagnostics {
+            &self.diagnostics
+        }
+    }
+
+    fn parsed(source: &str) -> Parsed<'_> {
+        let mut diagnostics = Diagnostics::new();
+        let cst = parse(source, &mut diagnostics);
+        Parsed { cst, diagnostics }
+    }
 
     /// Every token leaf's text, in order.
     fn token_text(node: &CstNode<'_>) -> String {
@@ -246,7 +236,7 @@ mod tests {
     }
 
     fn parse_clean(source: &str) -> Parsed<'_> {
-        let parsed = parse(source);
+        let parsed = parsed(source);
         assert!(
             !parsed.has_errors(),
             "{source:?} should parse, got {:?}",
@@ -279,7 +269,7 @@ mod tests {
 
     #[test]
     fn minimal_query_parses_without_diagnostics() {
-        let parsed = parse("X where X = test.Foo _");
+        let parsed = parsed("X where X = test.Foo _");
         assert!(
             !parsed.has_errors(),
             "unexpected diagnostics: {:?}",
@@ -298,7 +288,7 @@ mod tests {
     #[test]
     fn token_text_reproduces_the_source() {
         for source in SOURCES {
-            let parsed = parse(source);
+            let parsed = parsed(source);
             let root = parsed.root().expect("a tree");
             assert_eq!(&token_text(&root), source, "lost bytes for {source:?}");
         }
@@ -312,7 +302,7 @@ mod tests {
     /// tokens.
     #[test]
     fn a_lex_error_is_reported_once_per_bad_token() {
-        let parsed = parse("@ @");
+        let parsed = parsed("@ @");
         let invalid = parsed
             .diagnostics()
             .iter()
@@ -335,7 +325,7 @@ mod tests {
             "}".repeat(depth)
         );
 
-        let parsed = parse(&source);
+        let parsed = parsed(&source);
         assert!(parsed.root().is_none(), "the tree must be refused");
         assert!(
             parsed
@@ -360,7 +350,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("; ");
         let source = format!("X where {body}");
-        let parsed = parse(&source);
+        let parsed = parsed(&source);
         assert!(parsed.root().is_some());
     }
 
@@ -526,7 +516,7 @@ mod tests {
             .join(", ");
         let source = format!("X where X = {{{fields}}}");
 
-        let parsed = parse(&source);
+        let parsed = parsed(&source);
         assert!(
             parsed.root().is_some(),
             "a record of {} sibling fact patterns was refused as deeply nested",
@@ -540,7 +530,7 @@ mod tests {
     fn a_deep_application_chain_is_still_refused() {
         let source = format!("X where X = {}_", "test.Foo ".repeat(MAX_NEST_DEPTH + 1));
 
-        let parsed = parse(&source);
+        let parsed = parsed(&source);
         assert!(
             parsed.root().is_none(),
             "a chain of {} applications must be refused",
@@ -555,12 +545,12 @@ mod tests {
             .map(|_| "test.Foo _")
             .collect::<Vec<_>>()
             .join(" | ");
-        assert!(parse(&format!("X where {branches}")).root().is_some());
+        assert!(parsed(&format!("X where {branches}")).root().is_some());
 
         // Nested one level in, so the reset has to be per bracket level rather
         // than global.
         assert!(
-            parse(&format!("X where X = {{a = {branches}}}"))
+            parsed(&format!("X where X = {{a = {branches}}}"))
                 .root()
                 .is_some()
         );
@@ -571,7 +561,7 @@ mod tests {
     fn paren_depth_counts_toward_the_nesting_cap() {
         let depth = MAX_NEST_DEPTH + 1;
         let source = format!("X where X = {}_{}", "(".repeat(depth), ")".repeat(depth));
-        let parsed = parse(&source);
+        let parsed = parsed(&source);
         assert!(parsed.root().is_none(), "the tree must be refused");
     }
 
@@ -608,7 +598,7 @@ mod tests {
         /// panics the renderer downstream.
         #[test]
         fn parse_never_panics_and_spans_stay_in_bounds(source in arb_source()) {
-            let parsed = parse(&source);
+            let parsed = parsed(&source);
             for diag in parsed.diagnostics() {
                 for label in &diag.labels {
                     prop_assert!(

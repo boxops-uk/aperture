@@ -437,6 +437,8 @@ mod tests {
     use super::*;
     use crate::focus::{
         corpus,
+        cst::CstNode,
+        diag::Diagnostics,
         lower::lower,
         parse::parse,
         syntax::{proptest::arb_query_spec, source_range},
@@ -447,11 +449,17 @@ mod tests {
     fn tree(source: &str) -> (Ast, LocalInterner, Schema) {
         let schema = corpus::schema();
         let mut interner = LocalInterner::new(schema.interner().clone());
-        let parsed = parse(source);
-        assert!(!parsed.has_errors(), "{source:?} must parse");
-        let root = parsed.root().expect("a tree");
-        let (ast, diags) = lower(&root, &schema, &mut interner);
-        assert!(diags.is_empty(), "{source:?} must lower cleanly");
+        let mut diagnostics = Diagnostics::new();
+        let cst = parse(source, &mut diagnostics).expect("a tree");
+        assert!(!diagnostics.has_errors(), "{source:?} must parse");
+
+        let ast = lower(
+            &CstNode::new(&cst),
+            &schema,
+            &mut interner,
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty(), "{source:?} must lower cleanly");
         (ast, interner, schema)
     }
 
@@ -554,13 +562,20 @@ mod tests {
             let schema = corpus::schema();
             let mut interner = LocalInterner::new(schema.interner().clone());
 
-            let parsed = parse(entry.source);
-            let Some(root) = parsed.root() else { continue };
-            if parsed.has_errors() {
+            let mut diagnostics = Diagnostics::new();
+            let Some(cst) = parse(entry.source, &mut diagnostics) else {
+                continue;
+            };
+            if diagnostics.has_errors() {
                 continue;
             }
-            let (ast, diags) = lower(&root, &schema, &mut interner);
-            if !diags.is_empty() {
+            let ast = lower(
+                &CstNode::new(&cst),
+                &schema,
+                &mut interner,
+                &mut diagnostics,
+            );
+            if !diagnostics.is_empty() {
                 continue;
             }
 
@@ -569,21 +584,23 @@ mod tests {
             // Re-parse with a *fresh* interner, so the comparison cannot accidentally
             // depend on interning order.
             let mut reinterner = LocalInterner::new(schema.interner().clone());
-            let reparsed = parse(&text);
+            let mut rediagnostics = Diagnostics::new();
+            let recst = parse(&text, &mut rediagnostics);
             assert!(
-                !reparsed.has_errors(),
+                !rediagnostics.has_errors(),
                 "printing {:?} gave {text:?}, which does not parse: {:?}",
                 entry.source,
-                reparsed
-                    .diagnostics()
-                    .iter()
-                    .map(|d| &d.message)
-                    .collect::<Vec<_>>()
+                rediagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
-            let reroot = reparsed.root().expect("a tree");
-            let (reast, rediags) = lower(&reroot, &schema, &mut reinterner);
+
+            let reast = lower(
+                &CstNode::new(&recst.expect("a tree")),
+                &schema,
+                &mut reinterner,
+                &mut rediagnostics,
+            );
             assert!(
-                rediags.is_empty(),
+                rediagnostics.is_empty(),
                 "printing {:?} gave {text:?}, which does not lower cleanly",
                 entry.source
             );
@@ -607,13 +624,20 @@ mod tests {
         for entry in corpus::CORPUS {
             let schema = corpus::schema();
             let mut interner = LocalInterner::new(schema.interner().clone());
-            let parsed = parse(entry.source);
-            let Some(root) = parsed.root() else { continue };
-            if parsed.has_errors() {
+            let mut diagnostics = Diagnostics::new();
+            let Some(cst) = parse(entry.source, &mut diagnostics) else {
+                continue;
+            };
+            if diagnostics.has_errors() {
                 continue;
             }
-            let (ast, diags) = lower(&root, &schema, &mut interner);
-            if !diags.is_empty() {
+            let ast = lower(
+                &CstNode::new(&cst),
+                &schema,
+                &mut interner,
+                &mut diagnostics,
+            );
+            if !diagnostics.is_empty() {
                 continue;
             }
 
@@ -642,21 +666,27 @@ mod tests {
             let (ast, interner) = spec.build(&schema);
             let text = print(&ast, &schema, &interner);
 
-            let parsed = parse(&text);
+            let mut diagnostics = Diagnostics::new();
+            let cst = parse(&text, &mut diagnostics);
             prop_assert!(
-                !parsed.has_errors(),
+                !diagnostics.has_errors(),
                 "printed {text:?}, which does not parse: {:?}",
-                parsed.diagnostics().iter().map(|d| &d.message).collect::<Vec<_>>()
+                diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
-            let root = parsed.root().expect("a tree");
+            let cst = cst.expect("a tree");
 
             // A fresh interner: the comparison must not depend on interning order.
             let mut reinterner = LocalInterner::new(schema.interner().clone());
-            let (reast, diags) = lower(&root, &schema, &mut reinterner);
+            let reast = lower(
+                &CstNode::new(&cst),
+                &schema,
+                &mut reinterner,
+                &mut diagnostics,
+            );
             prop_assert!(
-                diags.is_empty(),
+                diagnostics.is_empty(),
                 "printed {text:?}, which does not lower cleanly: {:?}",
-                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+                diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
 
             prop_assert_eq!(
@@ -685,22 +715,28 @@ mod tests {
             let (ast, interner) = spec.build(&schema);
             let printed = spanned(&ast, &schema, &interner);
 
-            let parsed = parse(printed.text());
+            let mut diagnostics = Diagnostics::new();
+            let cst = parse(printed.text(), &mut diagnostics);
             prop_assert!(
-                !parsed.has_errors(),
+                !diagnostics.has_errors(),
                 "printed {:?}, which does not parse: {:?}",
                 printed.text(),
-                parsed.diagnostics().iter().map(|d| &d.message).collect::<Vec<_>>()
+                diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
-            let root = parsed.root().expect("a tree");
+            let cst = cst.expect("a tree");
 
             let mut reinterner = LocalInterner::new(schema.interner().clone());
-            let (reast, diags) = lower(&root, &schema, &mut reinterner);
+            let reast = lower(
+                &CstNode::new(&cst),
+                &schema,
+                &mut reinterner,
+                &mut diagnostics,
+            );
             prop_assert!(
-                diags.is_empty(),
+                diagnostics.is_empty(),
                 "printed {:?}, which does not lower cleanly: {:?}",
                 printed.text(),
-                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+                diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
 
             // The walk pairs nodes positionally, which only means anything if the two

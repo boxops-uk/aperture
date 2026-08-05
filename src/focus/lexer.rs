@@ -1,4 +1,7 @@
-use super::parser::{Diagnostic, Span};
+use super::{
+    diag::{Code, Diagnostic},
+    parser::Span,
+};
 use codespan_reporting::diagnostic::Label;
 use logos::Logos;
 
@@ -111,12 +114,12 @@ pub enum LiteralError {
 
 impl LiteralError {
     /// The diagnostic code, and so the identity the corpus asserts on.
-    pub fn code(self) -> &'static str {
+    pub fn code(self) -> Code {
         match self {
-            Self::IntSeparator => "lit/int-underscore",
-            Self::IntLeadingZero => "lit/int-leading-zero",
-            Self::IntRange => "lit/int-range",
-            Self::StringEscape => "lit/string-escape",
+            Self::IntSeparator => Code::LitIntUnderscore,
+            Self::IntLeadingZero => Code::LitIntLeadingZero,
+            Self::IntRange => Code::LitIntRange,
+            Self::StringEscape => Code::LitStringEscape,
         }
     }
 
