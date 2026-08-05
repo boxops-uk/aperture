@@ -164,7 +164,7 @@ fn demo(dir: &std::path::Path) -> Result<(), ApertureError> {
 
     let result = Executor::new(db.reader(), plan).enumerate(
         Vec::<Value>::new(),
-        |mut acc, row| {
+        |mut acc, mut row| {
             acc.push(row.to_value(&interner)?);
             Ok(Stream::Continue(acc))
         },

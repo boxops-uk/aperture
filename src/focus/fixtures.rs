@@ -73,7 +73,7 @@ pub fn collect_rows<S: FactStore>(
 
     let out = ex.enumerate(
         Vec::new(),
-        |mut acc, row| {
+        |mut acc, mut row| {
             acc.push(row.to_value(interner)?);
             Ok(Stream::Continue(acc))
         },
@@ -144,7 +144,7 @@ pub fn run_with_suspends<S: FactStore>(
 
         let out = ex.enumerate(
             (rows, emitted),
-            |(mut rows, n), row| {
+            |(mut rows, n), mut row| {
                 rows.push(row.to_value(interner)?);
                 let n = n + 1;
 

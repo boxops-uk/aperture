@@ -70,6 +70,35 @@ impl MachineState {
     }
 }
 
+/// Skip-counting probe for the D2 guard (`exec::projection_walks_each_field_once`).
+///
+/// Every `skip` performed to fill a field-offset cache bumps a thread-local
+/// counter; the guard asserts that projecting k fields of one row costs k skips
+/// rather than k(k+1)/2. Same shape as `tuple::decode_probe`. See
+/// `docs/testing.md`.
+#[cfg(any(test, feature = "proptest"))]
+pub mod skip_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SKIPS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Reset the skip counter to zero.
+    pub fn reset() {
+        SKIPS.with(|c| c.set(0));
+    }
+
+    /// Rows-worth of `skip` calls since the last [`reset`].
+    pub fn count() -> u64 {
+        SKIPS.with(Cell::get)
+    }
+
+    pub(crate) fn bump() {
+        SKIPS.with(|c| c.set(c.get() + 1));
+    }
+}
+
 const FIELD_OFFSETS_CAPACITY: usize = 16;
 
 /// Where each leading key field of **one specific row** ends.
@@ -87,13 +116,14 @@ const FIELD_OFFSETS_CAPACITY: usize = 16;
 /// — a wrong seek prefix (wrong join results) or an out-of-range slice. Reuse is
 /// therefore sound only while the row is fixed, which rests on three links:
 ///
-/// 1. A frame's caches are indexed by **register address**
-///    ([`StackFrame::field_offsets`]), so each one only ever describes the row
-///    held by that one register.
+/// 1. Caches are indexed by **register address** — the frame's for seek splices
+///    and residuals, the executor's for projection — so each one only ever
+///    describes the row held by that one register.
 /// 2. A generator only names registers bound at **strictly outer** levels, so
 ///    none of them can change while its own level is open.
-/// 3. [`StackFrame::open`] clears every cache, and a level is re-opened whenever
-///    an outer level advances.
+/// 3. Every cache is cleared when the row beneath it may have moved:
+///    [`StackFrame::open`] for the frame's, since a level is re-opened whenever an
+///    outer level advances, and [`Row::to_value`] for projection's, once a row.
 ///
 /// Link 2 is a property of the *plan*, which the executor does not verify, and
 /// link 3 was once missing — the regression is
@@ -156,6 +186,9 @@ impl FieldOffsets {
         let mut i = self.ends.len();
         let mut start = if i == 0 { 0 } else { self.ends[i - 1] };
         loop {
+            #[cfg(any(test, feature = "proptest"))]
+            skip_probe::bump();
+
             let end = skip(key, start, false)?;
             if i < FIELD_OFFSETS_CAPACITY {
                 self.ends.push(end);
@@ -179,8 +212,9 @@ impl FieldOffsets {
             Some(filled) => assert!(
                 filled == key,
                 "field-offset cache reused against a different row: filled from \
-                 {:02x?}, now read against {:02x?}. The cache must be cleared \
-                 (`StackFrame::open`) whenever the register it describes changes.",
+                 {:02x?}, now read against {:02x?}. A cache must be cleared whenever \
+                 the row it describes changes — `StackFrame::open` for the frame's, \
+                 `Row::to_value` for projection's.",
                 filled.as_ref(),
                 key.as_ref(),
             ),
@@ -198,6 +232,24 @@ impl FieldOffsets {
 /// work, so it happens on a stride rather than per row. The consequence is that a
 /// run shorter than the stride can complete despite a cancelled token — a bounded
 /// overrun, which is the trade the stride exists to make.
+/// The span of field `idx` of the row held by register `var`, through that
+/// register's slot in `field_offsets`.
+///
+/// Shared by the frame (seek splices and residuals) and by projection, so both
+/// index the cache by address and bounds-check it the same way.
+fn get_field_span(
+    field_offsets: &mut [FieldOffsets],
+    key: &ByteView,
+    var: Address,
+    idx: usize,
+) -> Result<Range<usize>, ApertureError> {
+    field_offsets
+        .get_mut(var.0)
+        .ok_or(ApertureError::AddressOutOfBounds(var))?
+        .get(key, idx)
+        .map_err(ApertureError::Decode)
+}
+
 pub const CANCELLATION_STRIDE: usize = 4096;
 
 /// Polls the cancellation token every [`CANCELLATION_STRIDE`] rows examined.
@@ -280,19 +332,6 @@ impl<S: FactStore> StackFrame<S> {
         Ok(())
     }
 
-    fn get_field_span(
-        field_offsets: &mut [FieldOffsets],
-        key: &ByteView,
-        var: Address,
-        idx: usize,
-    ) -> Result<Range<usize>, ApertureError> {
-        field_offsets
-            .get_mut(var.0)
-            .ok_or(ApertureError::AddressOutOfBounds(var))?
-            .get(key, idx)
-            .map_err(ApertureError::Decode)
-    }
-
     fn build_prefix(
         &mut self,
         state: &MachineState,
@@ -311,7 +350,7 @@ impl<S: FactStore> StackFrame<S> {
                             field_idx,
                         } => {
                             let key = state.get(*var_address)?.key();
-                            let span = Self::get_field_span(
+                            let span = get_field_span(
                                 &mut self.field_offsets,
                                 &key,
                                 *var_address,
@@ -400,12 +439,8 @@ impl<S: FactStore> StackFrame<S> {
                 } => {
                     let other = state.get(*var_address)?;
                     let other_key = other.key();
-                    let other_span = Self::get_field_span(
-                        frame_field_offsets,
-                        &other_key,
-                        *var_address,
-                        *field_idx,
-                    )?;
+                    let other_span =
+                        get_field_span(frame_field_offsets, &other_key, *var_address, *field_idx)?;
                     field == &other_key[other_span]
                 }
             };
@@ -423,6 +458,13 @@ pub struct Executor<S: FactStore> {
     state: MachineState,
     stack: Box<[StackFrame<S>]>,
     depth: usize,
+    /// One field-offset cache per register, for projection.
+    ///
+    /// Owned here rather than made per row: a fresh `Box<[_]>` for each row would
+    /// allocate on the hot path ([I9](../../docs/invariants.md#i9)). Cleared at
+    /// the top of [`Row::to_value`], which is the scope over which it is valid —
+    /// no register can change while `step` holds the row.
+    projection_offsets: Box<[FieldOffsets]>,
 }
 
 pub struct Cursor(Vec<Register>);
@@ -431,11 +473,27 @@ pub struct Row<'a, S: FactStore> {
     store: &'a S,
     state: &'a MachineState,
     plan: &'a Plan,
+    offsets: &'a mut [FieldOffsets],
 }
 
 impl<S: FactStore> Row<'_, S> {
-    pub fn to_value(&self, interner: &LocalInterner) -> Result<Value, ApertureError> {
-        project(interner, &self.plan.head, self.state, self.store)
+    /// Project this row through the plan's head.
+    ///
+    /// Clearing is done here, where the cache is used, so the precondition
+    /// belongs to the function that depends on it — and so calling this twice on
+    /// one row refills rather than reads another row's offsets.
+    pub fn to_value(&mut self, interner: &LocalInterner) -> Result<Value, ApertureError> {
+        for offsets in self.offsets.iter_mut() {
+            offsets.clear();
+        }
+
+        project(
+            interner,
+            &self.plan.head,
+            self.state,
+            self.store,
+            self.offsets,
+        )
     }
 }
 
@@ -444,6 +502,7 @@ fn project<S: FactStore>(
     p: &Project,
     state: &MachineState,
     store: &S,
+    offsets: &mut [FieldOffsets],
 ) -> Result<Value, ApertureError> {
     match p {
         Project::Lit(v) => Ok(v.clone()),
@@ -458,15 +517,11 @@ fn project<S: FactStore>(
             let reg = state.get(*address)?;
             let key = reg.key();
 
-            let mut offsets = FieldOffsets::new();
+            // Through the row's cache, so a head reading several fields of one
+            // register walks the row once between them all.
+            let span = get_field_span(offsets, &key, *address, *field_idx)?;
 
-            let span = offsets
-                .get(&key, *field_idx)
-                .map_err(ApertureError::Decode)?;
-
-            let field = &key[span];
-
-            decode_typed(interner, field, ty)
+            decode_typed(interner, &key[span], ty)
         }
 
         Project::Value { address, ty } => {
@@ -489,7 +544,7 @@ fn project<S: FactStore>(
                     .ok_or(ApertureError::UnknownSymbol(*field_name))?
                     .to_owned();
 
-                let value = project(interner, field_proj, state, store)?;
+                let value = project(interner, field_proj, state, store, offsets)?;
 
                 out.push((field_name, value));
             }
@@ -531,6 +586,7 @@ impl<S: FactStore> Executor<S> {
             state,
             stack,
             depth: 0,
+            projection_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
         }
     }
 
@@ -641,6 +697,7 @@ impl<S: FactStore> Executor<S> {
                     store: &self.store,
                     state: &self.state,
                     plan: &self.plan,
+                    offsets: &mut self.projection_offsets,
                 };
                 match step(acc, row)? {
                     Stream::Continue(next) => {
@@ -824,6 +881,66 @@ mod tests {
         assert_eq!(
             ApertureError::AddressOutOfBounds(Address::new(7)).to_string(),
             "r7 is not a register in this plan"
+        );
+    }
+
+    /// Projection walks a row **once**, not once per field.
+    ///
+    /// A record head reading k fields off one register built a fresh offset cache
+    /// for each and skipped from field 0 every time — k(k+1)/2 skips for k fields,
+    /// where the frame's own cache had long since stopped doing that for seeks and
+    /// residuals. Reading fields 0..=3 of one row must cost 4 skips, not 10.
+    #[test]
+    fn projection_walks_each_field_once() {
+        const FIELDS: usize = 4;
+
+        let p = PredicateId(0);
+        let mut store = MemStore::new();
+        store.insert(
+            p,
+            compose(&[&i64_field(1), &i64_field(2), &i64_field(3), &i64_field(4)]),
+            1,
+        );
+
+        let names = ["a", "b", "c", "d"];
+        let interner = interner_with(&names);
+        let head = Project::Record(
+            names
+                .iter()
+                .enumerate()
+                .map(|(idx, name)| {
+                    (
+                        interner.get(name).expect("interned above"),
+                        Project::RegisterField {
+                            address: Address::new(0),
+                            field_idx: idx,
+                            ty: PredicateTy::Int,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head,
+        };
+
+        // Nothing else in this plan reads a field: the seek is a bare prefix and
+        // there are no residuals, so every skip counted here is projection's.
+        skip_probe::reset();
+        let rows = collect_rows(store, plan, &interner).expect("run");
+        let skips = skip_probe::count();
+
+        assert_eq!(rows.len(), 1, "the plan must produce a row to measure");
+        assert_eq!(
+            skips,
+            FIELDS as u64,
+            "projecting {FIELDS} fields of one row took {skips} skips; walking the \
+             row once costs {FIELDS}, and once per field costs {}",
+            FIELDS * (FIELDS + 1) / 2
         );
     }
 
