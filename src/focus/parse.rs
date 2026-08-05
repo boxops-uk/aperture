@@ -11,7 +11,7 @@ use codespan_reporting::diagnostic::{Label, Severity};
 use crate::focus::{
     cst::CstNode,
     lexer::{Token, tokenize},
-    parser::{Cst, Diagnostic, Parser},
+    parser::{Cst, Diagnostic, Lexed, Parser},
 };
 
 /// The deepest pattern nesting [`parse`] will hand to the parser.
@@ -101,8 +101,8 @@ pub fn parse(source: &str) -> Parsed<'_> {
         };
     }
 
-    // Lexed here only to bound the nesting; `Parser::new` lexes again. Two
-    // passes over query text isn't worth a shared-token API.
+    // Lexed once, here, because the nesting bound needs the token stream before
+    // parsing; the tokens are then handed to the parser rather than lexed again.
     let (tokens, spans) = tokenize(source, &mut diagnostics);
 
     if let Some(idx) = nesting_overflow(&tokens) {
@@ -118,7 +118,10 @@ pub fn parse(source: &str) -> Parsed<'_> {
         };
     }
 
-    let cst = Parser::new(source, &mut diagnostics).parse(&mut diagnostics);
+    let lexed = Lexed {
+        tokens: Some((tokens, spans)),
+    };
+    let cst = Parser::new_with_context(source, &mut diagnostics, lexed).parse(&mut diagnostics);
     Parsed {
         cst: Some(cst),
         diagnostics,
@@ -299,6 +302,24 @@ mod tests {
             let root = parsed.root().expect("a tree");
             assert_eq!(&token_text(&root), source, "lost bytes for {source:?}");
         }
+    }
+
+    /// A lexer error is reported **once**.
+    ///
+    /// `parse` tokenizes up front to bound the nesting and the generated parser
+    /// tokenized again, both pushing into the same sink — so every invalid token
+    /// arrived twice, and `"@ @"` drew four "invalid token" diagnostics for two bad
+    /// tokens.
+    #[test]
+    fn a_lex_error_is_reported_once_per_bad_token() {
+        let parsed = parse("@ @");
+        let invalid = parsed
+            .diagnostics()
+            .iter()
+            .filter(|d| d.message == "invalid token")
+            .count();
+
+        assert_eq!(invalid, 2, "two bad tokens, so two diagnostics");
     }
 
     /// Nesting past the cap is refused with a diagnostic. The cap is a policy
