@@ -1,8 +1,13 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
-use itertools::Itertools;
 use lasso::{Rodeo, RodeoReader, Spur};
 
+/// A predicate's position in the schema, which **is** its id.
+///
+/// The field stays public, unlike [`FactId`](crate::focus::plan::FactId)'s, because
+/// there is no invariant here to protect: an id *is* a position, so building one
+/// from an index is the ordinary thing to do. The check that matters — that the id
+/// fits the fact-id tag — belongs where the tag is composed, and lives there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PredicateId(pub u32);
 
@@ -155,13 +160,32 @@ impl LocalInterner {
 pub struct Schema {
     interner: SchemaInterner,
     predicates: Arc<[Predicate]>,
+    /// `name → id`, built once at construction.
+    ///
+    /// A predicate's *position* is its id, so `predicates` is in id order and
+    /// cannot be searched by name. Lowering resolves a name for every fact
+    /// pattern in a query, and scanning every predicate in the schema for each one
+    /// is the wrong shape for something built once and then queried repeatedly.
+    by_name: Arc<BTreeMap<Spur, PredicateId>>,
 }
 
 impl Schema {
     pub fn new(reader: RodeoReader, predicates: Arc<[Predicate]>) -> Self {
+        let mut by_name = BTreeMap::new();
+
+        for (idx, predicate) in predicates.iter().enumerate() {
+            // First wins, as the linear scan this replaces did. Two predicates
+            // sharing a name is a schema error for Phase 8 to reject; until then,
+            // indexing them must not silently start preferring the other one.
+            by_name
+                .entry(predicate.name)
+                .or_insert(PredicateId(idx as u32));
+        }
+
         Schema {
             interner: SchemaInterner::new(reader),
             predicates,
+            by_name: Arc::new(by_name),
         }
     }
 
@@ -188,16 +212,56 @@ impl Schema {
         self.predicates.is_empty()
     }
 
+    /// The predicate called `name`, and its id.
     pub fn find_position(&self, name: &str) -> Option<(PredicateId, PredicateRef<'_>)> {
         let spur = self.interner.get_spur(name)?;
-        let (idx, inner) = self.predicates.iter().find_position(|p| p.name == spur)?;
-        Some((
-            PredicateId(idx as u32),
-            PredicateRef {
-                interner: &self.interner,
-                inner,
-            },
-        ))
+        let id = *self.by_name.get(&spur)?;
+        Some((id, self.get(id)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn schema_of(names: &[&str]) -> Schema {
+        let mut rodeo = Rodeo::new();
+        let predicates: Vec<Predicate> = names
+            .iter()
+            .map(|name| Predicate {
+                name: rodeo.get_or_intern(name),
+                key: PredicateTy::Int,
+                value: None,
+            })
+            .collect();
+
+        Schema::new(rodeo.into_reader(), Arc::from(predicates))
+    }
+
+    /// A name lookup is an index built at construction rather than a scan, and a
+    /// predicate's position is still its id.
+    #[test]
+    fn find_position_returns_the_declared_position() {
+        let schema = schema_of(&["a.One", "b.Two", "c.Three"]);
+
+        for (expected, name) in ["a.One", "b.Two", "c.Three"].iter().enumerate() {
+            let (id, found) = schema.find_position(name).expect(name);
+            assert_eq!(id, PredicateId(expected as u32));
+            assert_eq!(found.name(), *name);
+        }
+
+        assert!(schema.find_position("nosuch.Pred").is_none());
+    }
+
+    /// Two predicates sharing a name resolve to the **first**, as the linear scan
+    /// this index replaced did. A duplicate is a schema error for Phase 8 to
+    /// reject; indexing them must not quietly change which one a query gets.
+    #[test]
+    fn find_position_prefers_the_first_of_a_duplicated_name() {
+        let schema = schema_of(&["a.One", "dup.Pred", "b.Two", "dup.Pred"]);
+
+        let (id, _) = schema.find_position("dup.Pred").expect("dup.Pred");
+        assert_eq!(id, PredicateId(1));
     }
 }
 
