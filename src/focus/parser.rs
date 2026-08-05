@@ -1,7 +1,11 @@
 use super::lexer::{Token, tokenize};
 
 use codespan_reporting::diagnostic::Label;
-pub type Diagnostic = codespan_reporting::diagnostic::Diagnostic<()>;
+
+// Defined in `diag`, which owns diagnostics; re-exported because the generated
+// parser's callbacks name the type, and because `parser::Span` is the other half
+// of what a diagnostic here points at.
+pub use super::diag::Diagnostic;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
