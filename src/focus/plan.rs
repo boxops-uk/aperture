@@ -321,8 +321,13 @@ pub mod proptest {
     /// Field values come from a deliberately tiny domain so joins actually match.
     /// Drawn from the full `i64`/`String` range, every join would be empty and the
     /// battery would exercise nothing but backtracking.
+    ///
+    /// `"a"` and `"ab"` are deliberately in a **prefix relationship**: the front
+    /// end's generator writes string-prefix patterns, and a domain of
+    /// mutually-distinct one-character strings would make every prefix match
+    /// either exactly one value or all of them — never the interesting middle.
     const INTS: [i64; 4] = [0, 1, 2, 3];
-    const STRS: [&str; 3] = ["a", "b", "c"];
+    const STRS: [&str; 3] = ["a", "ab", "b"];
 
     /// Upper bound (exclusive) on every "pick" draw; resolution takes it modulo
     /// however many options are legal in context.

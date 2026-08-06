@@ -381,8 +381,9 @@ reorder (whose interface is built here). **Read it before this phase.**
 
 **Invariants in scope:**
 - *makes green:* the end-to-end property **"flattened plan run == expected rows"** (tier-3,
-  schema-first) — this exercises [I4](docs/invariants.md#i4)–[I9](docs/invariants.md#i9) via
-  the produced plans.
+  schema-first), run **to completion and resumed at every scheduled cut point, on `MemStore`
+  and on fjall** — so [I4](docs/invariants.md#i4) is guarded over the plan shapes *flatten*
+  emits, and [I5](docs/invariants.md#i5)–[I9](docs/invariants.md#i9) via the produced plans.
 - *upholds:* I1–I9.
 
 **Phase-specific decisions, as settled:**
@@ -417,6 +418,15 @@ reorder (whose interface is built here). **Read it before this phase.**
   algorithm sorts within; the `// TODO: Kahn + antichain + selectivity` seam is in place.
 - **4d.** ✅ Intra-row repeats decided and implemented: rejected, tested both ways (the repeat,
   and the repeated *read* that is supported).
+- **4e.** ✅ The tier-3 battery re-run **through the interruption schedule**, and against fjall.
+  Not scope creep — the phase claims I4 "via the produced plans", and `plan::proptest` draws
+  none of the shapes flatten emits: it only ever seeks by one whole spliced field from an empty
+  prefix, with at most one flat-path residual per level and no `Project::Value`. So resume and
+  the store differential had never seen a constant seek prefix, a several-part composite, a
+  `ResidualOp::Prefix`, a nested `FieldPath`, two residuals on one level, or a point read at
+  projection. A **census** (`the_generator_reaches_every_plan_shape`) asserts the battery
+  reaches all six — it failed on five of them, and string prefixes, nested record keys,
+  three-field keys, row binds and values were added to the generator until it passed.
 
 **Acceptance:**
 - [x] `plan(q)` produces a runnable `Plan` for the corpus, safety-checked (non-range-restricted
@@ -428,6 +438,9 @@ reorder (whose interface is built here). **Read it before this phase.**
       (tier-3), against a nested-loop model — and holds in **every permutation** of the body,
       which is the reorderability claim made executable.
 - [x] Intra-row repeats are rejected — tested, alongside the repeated read that is not.
+- [x] I4 holds over **compiled** plans — resume == the query's meaning at every scheduled cut
+      point, on `MemStore` and on fjall — with a census asserting the battery reaches the plan
+      shapes the executor's own generator never draws.
 
 **What the phase discovered:** the codebase had **two stored-key layouts** — flat (the codec
 chapter, `plan::proptest`, the offset cache) and record-wrapped (the demo shell's seeding) —

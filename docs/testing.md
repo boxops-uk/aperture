@@ -201,6 +201,16 @@ tests only the error path.
   change — which is what makes `reorder = identity` an argued choice rather than a shortcut
   ([chapter 7](07-compilation.md)). Its population is asserted too (statements, joins,
   constants, wildcards, rows produced), for the same reason the printer's is.
+- **The same battery carries [I4](invariants.md#i4) over *compiled* plans**, on `MemStore` and
+  on fjall: the query is also run with a suspend at every scheduled row and compared against
+  the model. This is not redundant with the executor's own resume battery, and the reason is a
+  generator-coverage argument worth remembering: `plan::proptest` draws plans that seek by one
+  whole spliced field from an empty prefix, with at most one flat-path residual per level and
+  no value projection — while flatten emits constant seek prefixes, several-part composites,
+  `ResidualOp::Prefix`, nested field paths, several residuals per level and `Project::Value`. A
+  **census** asserts the battery reaches each of those shapes, because otherwise the extra arm
+  would be a slower way of testing what was already covered. Written first, it failed on five
+  of the six.
 - **Regression examples** (specific past bugs, named edge cases) live alongside the
   properties as ordinary `#[test]`s — properties explore, examples pin.
 

@@ -1921,7 +1921,6 @@ mod tests {
         assert_eq!(answers[0].len(), 3);
     }
 }
-
 /// Schema-first `(query, store)` generator — the front end's tier-3 case.
 ///
 /// The executor's generator ([`plan::proptest`](crate::focus::plan::proptest))
@@ -1942,6 +1941,22 @@ mod tests {
 ///   ever appears in a key field, where whichever statement runs first captures it.
 ///   That is what lets the reorderability property enumerate *all* orders rather
 ///   than only the ones some analysis says are safe.
+///
+/// # What each construct is here to reach
+///
+/// The generator's job is to make flatten emit every shape a `Plan` can hold — the
+/// census (`the_generator_reaches_every_plan_shape`) is what says it does, and each
+/// of these was added because the census failed without it:
+///
+/// | construct drawn | plan shape it produces |
+/// |---|---|
+/// | a constant in the leading key field | `SeekKey::Prefix(non-empty)` |
+/// | a bound variable, then anything determined | a composite seek of several parts |
+/// | a string prefix (`"a"..`) behind an open field | `ResidualOp::Prefix` |
+/// | a **record-typed** key field given sub-field by sub-field | nested `FieldPath`s |
+/// | three-field keys | more than one residual on a level |
+/// | a **row bind** (`R0 = gen.P0 {…}`) | `Project::FactRef`, and a register a head reads through |
+/// | a predicate with a **value** | `Project::Value` — a point read at projection |
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use std::{collections::BTreeSet, sync::Arc};
@@ -1951,55 +1966,190 @@ pub mod proptest {
 
     use crate::focus::{
         mem_store::MemStore,
-        plan::proptest::{FieldTy, FieldVal},
+        plan::{
+            FactId,
+            proptest::{FieldTy, FieldVal},
+        },
         schema::{Predicate, PredicateId, PredicateTy, Schema},
-        tuple::Value,
+        tuple::{MARK_RECORD, MARK_TERM, Value},
     };
 
     /// Bounds are tight for the same reason the executor's are: the reorderability
-    /// property re-runs each case once per permutation of the body.
+    /// property re-runs each case once per permutation of the body, and the resume
+    /// property once per cut point.
     const MAX_PREDICATES: usize = 2;
-    const MAX_ARITY: usize = 2;
     const MAX_STMTS: usize = 3;
     const MAX_FACTS: usize = 5;
+
+    /// Up to three key fields. Three is not decoration: two determined fields
+    /// *behind* an open one is the only way a level gets more than one residual.
+    const MAX_ARITY: usize = 3;
+
+    /// Sub-fields in a record-typed key field. One level of nesting is enough —
+    /// a `FieldPath`'s steps are a loop, so depth 2 exercises what depth 5 would.
+    const NESTED: usize = 2;
 
     /// How many variables a query may use. Small on purpose — a wide pool means
     /// every join is unique and nothing ever matches twice.
     const VARS: usize = 3;
 
+    /// Row variables (`R0`, `R1`) — a whole row bound by `R = gen.P {…}`. A
+    /// separate pool from the field variables, because a row and a field value are
+    /// different types and mixing the namespaces would draw queries that cannot
+    /// typecheck.
+    const ROWS: usize = 2;
+
     /// Upper bound (exclusive) on every "pick" draw, resolved modulo the legal
     /// options in context.
     const PICKS: u8 = 4;
 
-    /// A key field as the query writes it.
+    /// Prefixes to draw for a string-prefix pattern. `""` matches every string and
+    /// `"a"` matches `"a"` and `"ab"` but not `"b"` — the domain
+    /// ([`plan::proptest`](crate::focus::plan::proptest)) is chosen so that middle
+    /// case exists.
+    const PREFIXES: [&str; 3] = ["", "a", "b"];
+
+    /// A generated key field's type: a scalar, or a record of scalars.
     #[derive(Debug, Clone)]
-    enum FieldPat {
-        /// Not mentioned at all — which the type checker reads as a wildcard.
+    enum GenTy {
+        Scalar(FieldTy),
+        Record(Vec<FieldTy>),
+    }
+
+    /// A value of a [`GenTy`].
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    enum GenVal {
+        Scalar(FieldVal),
+        Record(Vec<FieldVal>),
+    }
+
+    impl GenVal {
+        /// The field's stored bytes. A **record keeps its wrapper** — it is one
+        /// value among others inside the key, and has to be skippable as one
+        /// ([chapter 3](../../../docs/03-storage-model.md#a-stored-key-is-flat)).
+        fn encode(&self) -> Vec<u8> {
+            match self {
+                GenVal::Scalar(val) => val.encode(),
+                GenVal::Record(fields) => {
+                    let mut out = vec![MARK_RECORD];
+                    for field in fields {
+                        out.extend_from_slice(&field.encode());
+                    }
+                    out.push(MARK_TERM);
+                    out
+                }
+            }
+        }
+
+        /// This field as a projected row carries it. A record's field *names* come
+        /// from the schema, so the model has to agree with what the schema declares
+        /// — `g0`, `g1`, … in declaration order.
+        fn to_value(&self) -> Value {
+            match self {
+                GenVal::Scalar(val) => val.to_value(),
+                GenVal::Record(fields) => Value::Record(
+                    fields
+                        .iter()
+                        .enumerate()
+                        .map(|(g, field)| (format!("g{g}"), field.to_value()))
+                        .collect(),
+                ),
+            }
+        }
+
+        fn source(&self) -> String {
+            match self {
+                GenVal::Scalar(val) => val.source(),
+                GenVal::Record(fields) => format!(
+                    "{{{}}}",
+                    fields
+                        .iter()
+                        .enumerate()
+                        .map(|(g, field)| format!("g{g} = {}", field.source()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }
+        }
+
+        fn scalar(&self) -> Option<&FieldVal> {
+            match self {
+                GenVal::Scalar(val) => Some(val),
+                GenVal::Record(_) => None,
+            }
+        }
+    }
+
+    /// What a *leaf* position can be — a scalar key field, or one sub-field of a
+    /// record-typed one.
+    #[derive(Debug, Clone)]
+    enum Leaf {
+        /// Not written at all, which the type checker reads as a wildcard.
         Omitted,
         Wildcard,
-        Const(FieldVal),
+        Const(GenVal),
+        /// A string prefix, `"ab"..`. Only drawn for `Str` positions.
+        Prefix(&'static str),
         /// A variable. Whether this *captures* or *reads* depends on the order the
         /// statements run in, which is exactly why the spec does not say.
         Var(usize),
     }
 
+    /// A whole key field's pattern.
+    #[derive(Debug, Clone)]
+    enum FieldPat {
+        /// A scalar field, or a record field matched whole (as a constant).
+        Leaf(Leaf),
+        /// A record field, given sub-field by sub-field — which is what puts a
+        /// **nested path** in the plan.
+        Nested(Vec<Leaf>),
+    }
+
     #[derive(Debug, Clone)]
     struct StmtSpec {
         predicate: usize,
+        /// The row variable this statement binds, from `R = gen.P {…}`. At most one
+        /// statement binds any given row variable: binding one twice is
+        /// `nyi/bind-unification`, not a query this generator may draw.
+        row: Option<usize>,
         fields: Vec<FieldPat>,
+    }
+
+    /// One predicate: its key field types, and whether it has a value side.
+    #[derive(Debug, Clone)]
+    struct PredSpec {
+        fields: Vec<GenTy>,
+        value: Option<FieldTy>,
+    }
+
+    /// One fact: a key, and the value the predicate's type calls for.
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    struct Fact {
+        key: Vec<GenVal>,
+        value: Option<FieldVal>,
+    }
+
+    /// What the head projects.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum HeadItem {
+        /// A captured field variable → `Project::RegisterField`.
+        Var(usize),
+        /// A row variable → `Project::FactRef`, the row's identity.
+        Row(usize),
+        /// `R.value` → `Project::Value`, one point read per surviving row.
+        Value(usize),
+        /// `R.f{k}` → a field read *through* a bound row.
+        RowField(usize, usize),
     }
 
     /// A generated query, the store it runs against, and what it means.
     #[derive(Debug, Clone)]
     pub struct QueryAndStore {
-        /// `schema[p]` — predicate `p`'s key field types.
-        schema: Vec<Vec<FieldTy>>,
-        /// `facts[p]` — predicate `p`'s key tuples, deduplicated and sorted.
-        facts: Vec<Vec<Vec<FieldVal>>>,
+        schema: Vec<PredSpec>,
+        /// `facts[p]` — predicate `p`'s facts, deduplicated and sorted by key.
+        facts: Vec<Vec<Fact>>,
         stmts: Vec<StmtSpec>,
-        /// The variables the head projects, ascending — every variable the query
-        /// uses, so nothing is bound and then ignored.
-        head: Vec<usize>,
+        head: Vec<HeadItem>,
     }
 
     impl QueryAndStore {
@@ -2007,36 +2157,51 @@ pub mod proptest {
             self.stmts.len()
         }
 
-        /// The schema the query is written against: `gen.P0…`, fields `f0…`.
+        /// The schema the query is written against: `gen.P0…`, fields `f0…`, and
+        /// `g0…` inside a record-typed field.
         ///
         /// Field names are ascending so that sorted-by-name is also declaration
         /// order — a record's field order is part of its encoding
         /// ([chapter 6](../../../docs/06-types-and-schema.md)).
         pub fn schema(&self) -> Schema {
             let mut rodeo = Rodeo::new();
-            let names: Vec<_> = (0..MAX_ARITY)
+            let fields: Vec<_> = (0..MAX_ARITY)
                 .map(|f| rodeo.get_or_intern(format!("f{f}")))
+                .collect();
+            let nested: Vec<_> = (0..NESTED)
+                .map(|g| rodeo.get_or_intern(format!("g{g}")))
                 .collect();
 
             let predicates: Vec<Predicate> = self
                 .schema
                 .iter()
                 .enumerate()
-                .map(|(p, fields)| Predicate {
+                .map(|(p, spec)| Predicate {
                     name: rodeo.get_or_intern(format!("gen.P{p}")),
                     key: PredicateTy::Record(
-                        fields
+                        spec.fields
                             .iter()
                             .enumerate()
-                            .map(|(f, ty)| (names[f], ty.predicate_ty()))
+                            .map(|(f, ty)| {
+                                let ty = match ty {
+                                    GenTy::Scalar(scalar) => scalar.predicate_ty(),
+                                    GenTy::Record(subs) => PredicateTy::Record(
+                                        subs.iter()
+                                            .enumerate()
+                                            .map(|(g, sub)| (nested[g], sub.predicate_ty()))
+                                            .collect(),
+                                    ),
+                                };
+                                (fields[f], ty)
+                            })
                             .collect(),
                     ),
-                    value: None,
+                    value: spec.value.map(FieldTy::predicate_ty),
                 })
                 .collect();
 
             // The head's field names, which no declaration interns.
-            for h in 0..VARS {
+            for h in 0..VARS + ROWS * 2 {
                 rodeo.get_or_intern(format!("h{h}"));
             }
 
@@ -2072,7 +2237,15 @@ pub mod proptest {
                 .head
                 .iter()
                 .enumerate()
-                .map(|(h, var)| format!("h{h} = V{var}"))
+                .map(|(h, item)| {
+                    let item = match item {
+                        HeadItem::Var(var) => format!("V{var}"),
+                        HeadItem::Row(row) => format!("R{row}"),
+                        HeadItem::Value(row) => format!("R{row}.value"),
+                        HeadItem::RowField(row, field) => format!("R{row}.f{field}"),
+                    };
+                    format!("h{h} = {item}")
+                })
                 .collect();
 
             format!("{{{}}}", fields.join(", "))
@@ -2080,34 +2253,66 @@ pub mod proptest {
 
         fn statement_source(&self, stmt: usize) -> String {
             let spec = &self.stmts[stmt];
+
             let fields: Vec<String> = spec
                 .fields
                 .iter()
                 .enumerate()
                 .filter_map(|(f, pat)| match pat {
-                    FieldPat::Omitted => None,
-                    FieldPat::Wildcard => Some(format!("f{f} = _")),
-                    FieldPat::Const(val) => Some(format!("f{f} = {}", val.source())),
-                    FieldPat::Var(var) => Some(format!("f{f} = V{var}")),
+                    FieldPat::Leaf(leaf) => leaf_source(leaf).map(|text| format!("f{f} = {text}")),
+                    FieldPat::Nested(subs) => {
+                        let given: Vec<String> = subs
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(g, leaf)| {
+                                leaf_source(leaf).map(|text| format!("g{g} = {text}"))
+                            })
+                            .collect();
+
+                        Some(format!("f{f} = {{{}}}", given.join(", ")))
+                    }
                 })
                 .collect();
 
-            format!("gen.P{} {{{}}}", spec.predicate, fields.join(", "))
+            let bind = match spec.row {
+                Some(row) => format!("R{row} = "),
+                None => String::new(),
+            };
+
+            format!("{bind}gen.P{} {{{}}}", spec.predicate, fields.join(", "))
         }
 
-        /// The spec's facts in insertion order, numbered per predicate exactly as
-        /// the real allocator would ([I11](../../../docs/invariants.md#i11)).
+        /// The spec's facts in insertion order: `(predicate, key bytes, value bytes,
+        /// sequence within that predicate)`.
+        ///
+        /// One deterministic order, walked by every store this spec seeds — which is
+        /// what makes a `MemStore` and a fjall DB built from it agree fact for fact,
+        /// ids included, since the numbering matches what the real per-predicate
+        /// allocator hands out ([I11](../../../docs/invariants.md#i11)). A projected
+        /// `FactRef` is comparable against the model only because of that.
+        pub fn facts(&self) -> impl Iterator<Item = (PredicateId, Vec<u8>, Vec<u8>, u64)> + '_ {
+            self.facts
+                .iter()
+                .enumerate()
+                .flat_map(|(predicate, facts)| {
+                    facts.iter().enumerate().map(move |(i, fact)| {
+                        let key: Vec<u8> = fact.key.iter().flat_map(GenVal::encode).collect();
+                        let value = fact
+                            .value
+                            .as_ref()
+                            .map(FieldVal::encode)
+                            .unwrap_or_default();
+
+                        (PredicateId(predicate as u32), key, value, i as u64 + 1)
+                    })
+                })
+        }
+
         pub fn build_store(&self) -> MemStore {
             let mut store = MemStore::new();
 
-            for (predicate, keys) in self.facts.iter().enumerate() {
-                for (i, key) in keys.iter().enumerate() {
-                    store.insert(
-                        PredicateId(predicate as u32),
-                        crate::focus::plan::proptest::encode_key(key),
-                        i as u64 + 1,
-                    );
-                }
+            for (predicate, key, value, sequence) in self.facts() {
+                store.insert_valued(predicate, key, sequence, value);
             }
 
             store
@@ -2131,7 +2336,10 @@ pub mod proptest {
         /// go fast.
         pub fn expected_in_order(&self, order: &[usize]) -> Vec<Value> {
             let mut rows = vec![];
-            let mut env: Vec<Option<FieldVal>> = vec![None; VARS];
+            let mut env = Env {
+                vars: vec![None; VARS],
+                rows: vec![None; ROWS],
+            };
 
             self.walk(order, 0, &mut env, &mut rows);
 
@@ -2142,13 +2350,7 @@ pub mod proptest {
             self.expected_in_order(&self.identity())
         }
 
-        fn walk(
-            &self,
-            order: &[usize],
-            depth: usize,
-            env: &mut Vec<Option<FieldVal>>,
-            rows: &mut Vec<Value>,
-        ) {
+        fn walk(&self, order: &[usize], depth: usize, env: &mut Env, rows: &mut Vec<Value>) {
             if depth == order.len() {
                 rows.push(self.project(env));
                 return;
@@ -2156,10 +2358,13 @@ pub mod proptest {
 
             let spec = &self.stmts[order[depth]];
 
-            for fact in &self.facts[spec.predicate] {
+            for (index, fact) in self.facts[spec.predicate].iter().enumerate() {
                 let saved = env.clone();
 
                 if matches(spec, fact, env) {
+                    if let Some(row) = spec.row {
+                        env.rows[row] = Some((spec.predicate, index));
+                    }
                     self.walk(order, depth + 1, env, rows);
                 }
 
@@ -2167,7 +2372,7 @@ pub mod proptest {
             }
         }
 
-        fn project(&self, env: &[Option<FieldVal>]) -> Value {
+        fn project(&self, env: &Env) -> Value {
             if self.head.is_empty() {
                 return Value::Int(0);
             }
@@ -2176,14 +2381,61 @@ pub mod proptest {
                 self.head
                     .iter()
                     .enumerate()
-                    .map(|(h, var)| {
-                        let bound = env[*var]
-                            .as_ref()
-                            .expect("every projected variable is captured somewhere");
-                        (format!("h{h}"), bound.to_value())
-                    })
+                    .map(|(h, item)| (format!("h{h}"), self.project_item(item, env)))
                     .collect(),
             )
+        }
+
+        fn project_item(&self, item: &HeadItem, env: &Env) -> Value {
+            let row = |row: usize| {
+                env.rows[row].expect("every projected row variable is bound by a statement")
+            };
+
+            match item {
+                HeadItem::Var(var) => env.vars[*var]
+                    .as_ref()
+                    .expect("every projected variable is captured somewhere")
+                    .to_value(),
+
+                HeadItem::Row(r) => {
+                    let (predicate, index) = row(*r);
+                    Value::FactRef(
+                        FactId::new(PredicateId(predicate as u32), index as u64 + 1)
+                            .expect("a spec fact id"),
+                    )
+                }
+
+                HeadItem::Value(r) => {
+                    let (predicate, index) = row(*r);
+                    self.facts[predicate][index]
+                        .value
+                        .as_ref()
+                        .expect("a value is only projected where the predicate has one")
+                        .to_value()
+                }
+
+                HeadItem::RowField(r, field) => {
+                    let (predicate, index) = row(*r);
+                    self.facts[predicate][index].key[*field].to_value()
+                }
+            }
+        }
+    }
+
+    /// The model's bindings: field variables, and whole rows.
+    #[derive(Debug, Clone)]
+    struct Env {
+        vars: Vec<Option<FieldVal>>,
+        rows: Vec<Option<(usize, usize)>>,
+    }
+
+    fn leaf_source(leaf: &Leaf) -> Option<String> {
+        match leaf {
+            Leaf::Omitted => None,
+            Leaf::Wildcard => Some("_".to_owned()),
+            Leaf::Const(val) => Some(val.source()),
+            Leaf::Prefix(prefix) => Some(format!("{prefix:?}..")),
+            Leaf::Var(var) => Some(format!("V{var}")),
         }
     }
 
@@ -2192,27 +2444,58 @@ pub mod proptest {
     /// Leaves partial bindings behind on failure; the caller restores from its own
     /// copy, which is what makes backtracking here trivial and the model easy to
     /// believe.
-    fn matches(spec: &StmtSpec, fact: &[FieldVal], env: &mut [Option<FieldVal>]) -> bool {
+    fn matches(spec: &StmtSpec, fact: &Fact, env: &mut Env) -> bool {
         for (f, pat) in spec.fields.iter().enumerate() {
             match pat {
-                FieldPat::Omitted | FieldPat::Wildcard => {}
-                FieldPat::Const(val) => {
-                    if fact[f] != *val {
+                FieldPat::Leaf(leaf) => {
+                    if !matches_leaf(leaf, &fact.key[f], env) {
                         return false;
                     }
                 }
-                FieldPat::Var(var) => match &env[*var] {
-                    Some(bound) => {
-                        if fact[f] != *bound {
+                FieldPat::Nested(subs) => {
+                    let GenVal::Record(values) = &fact.key[f] else {
+                        return false;
+                    };
+
+                    for (g, leaf) in subs.iter().enumerate() {
+                        if !matches_leaf(leaf, &GenVal::Scalar(values[g].clone()), env) {
                             return false;
                         }
                     }
-                    None => env[*var] = Some(fact[f].clone()),
-                },
+                }
             }
         }
 
         true
+    }
+
+    fn matches_leaf(leaf: &Leaf, value: &GenVal, env: &mut Env) -> bool {
+        match leaf {
+            Leaf::Omitted | Leaf::Wildcard => true,
+
+            Leaf::Const(constant) => value == constant,
+
+            Leaf::Prefix(prefix) => match value.scalar() {
+                Some(FieldVal::Str(text)) => text.starts_with(prefix),
+                _ => false,
+            },
+
+            Leaf::Var(var) => {
+                // A variable only ever stands in a scalar position, so this cannot
+                // be a record.
+                let Some(scalar) = value.scalar() else {
+                    return false;
+                };
+
+                match &env.vars[*var] {
+                    Some(bound) => scalar == bound,
+                    None => {
+                        env.vars[*var] = Some(scalar.clone());
+                        true
+                    }
+                }
+            }
+        }
     }
 
     /// Every permutation of `items`, in a deterministic order.
@@ -2236,32 +2519,120 @@ pub mod proptest {
         out
     }
 
+    // ---- the draws ---------------------------------------------------------
+
     #[derive(Debug, Clone)]
     struct PredicateDraw {
         arity: usize,
-        field_tys: Vec<u8>,
+        /// Per field: whether it is a record, and the scalar type(s) inside it.
+        field_kinds: Vec<u8>,
+        field_tys: Vec<Vec<u8>>,
+        value: u8,
+    }
+
+    #[derive(Debug, Clone)]
+    struct LeafDraw {
+        kind: u8,
+        var: u8,
+        constant: u8,
+        prefix: u8,
     }
 
     #[derive(Debug, Clone)]
     struct FieldDraw {
-        kind: u8,
-        var: u8,
-        constant: u8,
+        /// Whether a record-typed field is matched whole or sub-field by sub-field.
+        whole: bool,
+        leaf: LeafDraw,
+        subs: Vec<LeafDraw>,
     }
 
     #[derive(Debug, Clone)]
     struct StmtDraw {
         predicate: u8,
+        row: u8,
         fields: Vec<FieldDraw>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct HeadDraw {
+        kind: u8,
+        which: u8,
+        field: u8,
     }
 
     /// A constant that actually occurs at that field of that predicate, so the
     /// statement matches something. Falls back to the domain for an empty
     /// predicate.
-    fn constant_for(facts: &[Vec<FieldVal>], field: usize, ty: FieldTy, pick: u8) -> FieldVal {
+    fn constant_for(facts: &[Fact], field: usize, ty: &GenTy, pick: u8) -> GenVal {
         match facts.len() {
-            0 => FieldVal::of(ty, pick),
-            len => facts[pick as usize % len][field].clone(),
+            0 => match ty {
+                GenTy::Scalar(scalar) => GenVal::Scalar(FieldVal::of(*scalar, pick)),
+                GenTy::Record(subs) => GenVal::Record(
+                    subs.iter()
+                        .map(|scalar| FieldVal::of(*scalar, pick))
+                        .collect(),
+                ),
+            },
+            len => facts[pick as usize % len].key[field].clone(),
+        }
+    }
+
+    /// One leaf position: its type, the facts it could match, and what was drawn.
+    struct Position<'a> {
+        ty: FieldTy,
+        /// The value at this position in each of the predicate's facts, for drawing
+        /// a constant that matches one of them.
+        occurring: Vec<FieldVal>,
+        used: &'a mut BTreeSet<usize>,
+        var_tys: &'a [FieldTy],
+    }
+
+    fn resolve_leaf(draw: &LeafDraw, position: Position<'_>) -> Leaf {
+        let Position {
+            ty,
+            occurring,
+            used,
+            var_tys,
+        } = position;
+
+        let constant = || match occurring.len() {
+            0 => GenVal::Scalar(FieldVal::of(ty, draw.constant)),
+            len => GenVal::Scalar(occurring[draw.constant as usize % len].clone()),
+        };
+
+        // Weighted towards the permissive: with three key fields, a statement that
+        // pins two of them matches nothing, and an empty answer tests less than a
+        // matched one. Two draws in six are a variable, which is the construct that
+        // makes a join.
+        match draw.kind % 6 {
+            0 => Leaf::Omitted,
+            1 => Leaf::Wildcard,
+            2 => Leaf::Const(constant()),
+
+            // A prefix only means anything on a string; on an integer this would
+            // otherwise become a second constant draw.
+            3 => match ty {
+                FieldTy::Str => Leaf::Prefix(PREFIXES[draw.prefix as usize % PREFIXES.len()]),
+                FieldTy::Int => Leaf::Wildcard,
+            },
+
+            // A variable, if one of this type is free in this statement. Variables
+            // are typed, so a mismatched one would not typecheck; a repeat *within*
+            // one statement is an intra-row equality, which Phase 4 rejects.
+            _ => {
+                let candidates: Vec<usize> = (0..VARS)
+                    .filter(|v| var_tys[*v] == ty && !used.contains(v))
+                    .collect();
+
+                match candidates.len() {
+                    0 => Leaf::Const(constant()),
+                    len => {
+                        let var = candidates[draw.var as usize % len];
+                        used.insert(var);
+                        Leaf::Var(var)
+                    }
+                }
+            }
         }
     }
 
@@ -2271,101 +2642,241 @@ pub mod proptest {
         facts: Vec<Vec<Vec<u8>>>,
         var_tys: Vec<u8>,
         stmts: Vec<StmtDraw>,
+        heads: Vec<HeadDraw>,
     ) -> QueryAndStore {
-        let schema: Vec<Vec<FieldTy>> = predicates
+        let schema: Vec<PredSpec> = predicates
             .iter()
             .take(npredicates)
-            .map(|draw| {
-                draw.field_tys
-                    .iter()
-                    .take(draw.arity)
-                    .map(|&pick| FieldTy::of(pick))
-                    .collect()
+            .map(|draw| PredSpec {
+                fields: (0..draw.arity)
+                    .map(|f| {
+                        // Every third field is a record, so nesting is reached
+                        // often without crowding out the flat case the cache
+                        // serves.
+                        if draw.field_kinds[f] % 3 == 0 {
+                            GenTy::Record(
+                                draw.field_tys[f]
+                                    .iter()
+                                    .take(NESTED)
+                                    .map(|&pick| FieldTy::of(pick))
+                                    .collect(),
+                            )
+                        } else {
+                            GenTy::Scalar(FieldTy::of(draw.field_tys[f][0]))
+                        }
+                    })
+                    .collect(),
+                // Two predicates in three carry a value, so `.value` is reachable
+                // without every predicate paying for one.
+                value: (draw.value % 3 != 0).then(|| FieldTy::of(draw.value)),
             })
             .collect();
 
-        let facts: Vec<Vec<Vec<FieldVal>>> = schema
+        let facts: Vec<Vec<Fact>> = schema
             .iter()
             .zip(facts)
-            .map(|(fields, drawn)| {
-                let mut keys: Vec<Vec<FieldVal>> = drawn
+            .map(|(spec, drawn)| {
+                let mut facts: Vec<Fact> = drawn
                     .iter()
-                    .map(|picks| {
-                        fields
+                    .map(|picks| Fact {
+                        key: spec
+                            .fields
                             .iter()
                             .enumerate()
-                            .map(|(f, &ty)| FieldVal::of(ty, picks[f]))
-                            .collect()
+                            .map(|(f, ty)| match ty {
+                                GenTy::Scalar(scalar) => {
+                                    GenVal::Scalar(FieldVal::of(*scalar, picks[f]))
+                                }
+                                GenTy::Record(subs) => GenVal::Record(
+                                    subs.iter()
+                                        .enumerate()
+                                        .map(|(g, scalar)| {
+                                            // A sub-field varies with its position
+                                            // so a record is not all one value.
+                                            FieldVal::of(*scalar, picks[f].wrapping_add(g as u8))
+                                        })
+                                        .collect(),
+                                ),
+                            })
+                            .collect(),
+                        value: None,
                     })
                     .collect();
 
                 // One key, one fact — a repeated draw would otherwise shadow an
                 // earlier fact.
-                keys.sort();
-                keys.dedup();
-                keys
+                facts.sort();
+                facts.dedup();
+
+                // The value follows from the fact's position, so it needs no draw
+                // of its own and cannot make two facts differ only in their value.
+                for (i, fact) in facts.iter_mut().enumerate() {
+                    fact.value = spec.value.map(|ty| FieldVal::of(ty, i as u8));
+                }
+
+                facts
             })
             .collect();
 
         let var_tys: Vec<FieldTy> = var_tys.iter().map(|&pick| FieldTy::of(pick)).collect();
 
-        let mut used = BTreeSet::new();
-        let mut resolved = Vec::with_capacity(stmts.len());
+        let mut used_vars = BTreeSet::new();
+        let mut bound_rows: Vec<Option<usize>> = vec![];
+        let mut resolved: Vec<StmtSpec> = Vec::with_capacity(stmts.len());
 
         for draw in &stmts {
             let predicate = draw.predicate as usize % schema.len();
-            let fields = &schema[predicate];
+            let spec = &schema[predicate];
 
-            // A variable may not repeat *within* one statement: that is an
-            // intra-row equality, which Phase 4 rejects, so a generator that drew
-            // one would be generating a rejected query.
+            // A row variable is bound by at most one statement: binding one twice
+            // is `nyi/bind-unification`.
+            let row = match draw.row % 2 {
+                0 => None,
+                _ => (0..ROWS).find(|r| !bound_rows.contains(&Some(*r))),
+            };
+            bound_rows.push(row);
+
             let mut here = BTreeSet::new();
-            let mut pats = Vec::with_capacity(fields.len());
+            let mut fields = Vec::with_capacity(spec.fields.len());
 
-            for (f, &ty) in fields.iter().enumerate() {
+            for (f, ty) in spec.fields.iter().enumerate() {
                 let draw = &draw.fields[f];
 
-                // Variables are typed, so only ones of this field's type are
-                // candidates — a variable used at two types would not typecheck.
-                let candidates: Vec<usize> = (0..VARS)
-                    .filter(|v| var_tys[*v] == ty && !here.contains(v))
-                    .collect();
+                let pat = match ty {
+                    GenTy::Scalar(scalar) => FieldPat::Leaf(resolve_leaf(
+                        &draw.leaf,
+                        Position {
+                            ty: *scalar,
+                            occurring: occurring_scalars(&facts[predicate], f, None),
+                            used: &mut here,
+                            var_tys: &var_tys,
+                        },
+                    )),
 
-                let pat = match draw.kind % 4 {
-                    0 => FieldPat::Omitted,
-                    1 => FieldPat::Wildcard,
-                    2 => FieldPat::Const(constant_for(&facts[predicate], f, ty, draw.constant)),
-                    _ => match candidates.len() {
-                        0 => FieldPat::Const(constant_for(&facts[predicate], f, ty, draw.constant)),
-                        len => {
-                            let var = candidates[draw.var as usize % len];
-                            here.insert(var);
-                            used.insert(var);
-                            FieldPat::Var(var)
-                        }
-                    },
+                    // A record field: matched whole as a constant (which can extend
+                    // a seek prefix), or field by field (which cannot, and puts
+                    // nested paths in the residuals).
+                    GenTy::Record(subs) if draw.whole => FieldPat::Leaf(Leaf::Const(constant_for(
+                        &facts[predicate],
+                        f,
+                        ty,
+                        draw.leaf.constant,
+                    ))),
+
+                    GenTy::Record(subs) => FieldPat::Nested(
+                        subs.iter()
+                            .enumerate()
+                            .map(|(g, scalar)| {
+                                resolve_leaf(
+                                    &draw.subs[g],
+                                    Position {
+                                        ty: *scalar,
+                                        occurring: occurring_scalars(&facts[predicate], f, Some(g)),
+                                        used: &mut here,
+                                        var_tys: &var_tys,
+                                    },
+                                )
+                            })
+                            .collect(),
+                    ),
                 };
 
-                pats.push(pat);
+                fields.push(pat);
             }
 
+            used_vars.extend(here);
             resolved.push(StmtSpec {
                 predicate,
-                fields: pats,
+                row,
+                fields,
             });
+        }
+
+        // The head: every variable the query captured (so nothing is bound and then
+        // ignored), plus whatever the draws ask of the rows that are bound.
+        let mut head: Vec<HeadItem> = used_vars.iter().map(|v| HeadItem::Var(*v)).collect();
+
+        for draw in &heads {
+            let rows: Vec<(usize, usize)> = resolved
+                .iter()
+                .enumerate()
+                .filter_map(|(stmt, spec)| spec.row.map(|row| (row, stmt)))
+                .collect();
+
+            if rows.is_empty() {
+                break;
+            }
+
+            let (row, stmt) = rows[draw.which as usize % rows.len()];
+            let spec = &schema[resolved[stmt].predicate];
+
+            let item = match draw.kind % 3 {
+                0 => HeadItem::Row(row),
+                // Only where the predicate has a value to read.
+                1 if spec.value.is_some() => HeadItem::Value(row),
+                1 => HeadItem::Row(row),
+                _ => HeadItem::RowField(row, draw.field as usize % spec.fields.len()),
+            };
+
+            if !head.contains(&item) {
+                head.push(item);
+            }
         }
 
         QueryAndStore {
             schema,
             facts,
             stmts: resolved,
-            head: used.into_iter().collect(),
+            head,
         }
     }
 
+    /// The scalar values occurring at one leaf position across a predicate's facts —
+    /// `field` for a scalar field, `field`'s sub-field `sub` for a record one.
+    fn occurring_scalars(facts: &[Fact], field: usize, sub: Option<usize>) -> Vec<FieldVal> {
+        facts
+            .iter()
+            .filter_map(|fact| match (&fact.key[field], sub) {
+                (GenVal::Scalar(val), None) => Some(val.clone()),
+                (GenVal::Record(values), Some(g)) => values.get(g).cloned(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn arb_leaf() -> impl Strategy<Value = LeafDraw> {
+        (0u8..6, 0u8..PICKS, 0u8..PICKS, 0u8..PICKS).prop_map(|(kind, var, constant, prefix)| {
+            LeafDraw {
+                kind,
+                var,
+                constant,
+                prefix,
+            }
+        })
+    }
+
+    fn arb_field() -> impl Strategy<Value = FieldDraw> {
+        (
+            any::<bool>(),
+            arb_leaf(),
+            prop::collection::vec(arb_leaf(), NESTED),
+        )
+            .prop_map(|(whole, leaf, subs)| FieldDraw { whole, leaf, subs })
+    }
+
     fn arb_predicate() -> impl Strategy<Value = PredicateDraw> {
-        (1..=MAX_ARITY, prop::collection::vec(0u8..PICKS, MAX_ARITY))
-            .prop_map(|(arity, field_tys)| PredicateDraw { arity, field_tys })
+        (
+            1..=MAX_ARITY,
+            prop::collection::vec(0u8..PICKS, MAX_ARITY),
+            prop::collection::vec(prop::collection::vec(0u8..PICKS, NESTED), MAX_ARITY),
+            0u8..PICKS,
+        )
+            .prop_map(|(arity, field_kinds, field_tys, value)| PredicateDraw {
+                arity,
+                field_kinds,
+                field_tys,
+                value,
+            })
     }
 
     /// Every predicate gets at least one fact: an empty one at the outermost level
@@ -2375,22 +2886,31 @@ pub mod proptest {
         prop::collection::vec(prop::collection::vec(0u8..PICKS, MAX_ARITY), 1..=MAX_FACTS)
     }
 
-    fn arb_field() -> impl Strategy<Value = FieldDraw> {
-        (0u8..4, 0u8..PICKS, 0u8..PICKS).prop_map(|(kind, var, constant)| FieldDraw {
+    fn arb_stmt() -> impl Strategy<Value = StmtDraw> {
+        (
+            0u8..PICKS,
+            0u8..PICKS,
+            prop::collection::vec(arb_field(), MAX_ARITY),
+        )
+            .prop_map(|(predicate, row, fields)| StmtDraw {
+                predicate,
+                row,
+                fields,
+            })
+    }
+
+    fn arb_head() -> impl Strategy<Value = HeadDraw> {
+        (0u8..3, 0u8..PICKS, 0u8..PICKS).prop_map(|(kind, which, field)| HeadDraw {
             kind,
-            var,
-            constant,
+            which,
+            field,
         })
     }
 
-    fn arb_stmt() -> impl Strategy<Value = StmtDraw> {
-        (0u8..PICKS, prop::collection::vec(arb_field(), MAX_ARITY))
-            .prop_map(|(predicate, fields)| StmtDraw { predicate, fields })
-    }
-
     /// A valid `(query, store)` pair: 1-, 2- or 3-statement queries over a small
-    /// generated schema, with captures, reads, constants and wildcards, against a
-    /// conforming store.
+    /// generated schema, with captures, reads, constants, wildcards, string
+    /// prefixes, nested record keys, row binds and values — against a conforming
+    /// store.
     pub fn arb_query_and_store() -> impl Strategy<Value = QueryAndStore> {
         (
             1..=MAX_PREDICATES,
@@ -2398,9 +2918,10 @@ pub mod proptest {
             prop::collection::vec(arb_predicate_facts(), MAX_PREDICATES),
             prop::collection::vec(0u8..PICKS, VARS),
             prop::collection::vec(arb_stmt(), 1..=MAX_STMTS),
+            prop::collection::vec(arb_head(), 0..=3),
         )
-            .prop_map(|(npredicates, predicates, facts, var_tys, stmts)| {
-                resolve(npredicates, predicates, facts, var_tys, stmts)
+            .prop_map(|(npredicates, predicates, facts, var_tys, stmts, heads)| {
+                resolve(npredicates, predicates, facts, var_tys, stmts, heads)
             })
     }
 }
@@ -2414,15 +2935,20 @@ mod battery {
     use crate::focus::{
         cst::CstNode,
         diag::Diagnostics,
-        fixtures::collect_rows,
+        fixtures::{collect_rows, run_with_suspends},
         lower::lower,
         parse::parse,
-        plan::Plan,
+        plan::{
+            FactId, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+            proptest::{arb_interruption_schedule, cut_points},
+        },
         schema::{LocalInterner, Schema},
+        store::FjallDb,
         tuple::Value,
         ty,
     };
     use ::proptest::prelude::*;
+    use tempfile::TempDir;
 
     /// Compile `source` against `schema`, in the given loop order.
     ///
@@ -2533,6 +3059,241 @@ mod battery {
             let (second, _) = plan_of(&schema, &source, &identity);
 
             prop_assert_eq!(format!("{first:?}"), format!("{second:?}"));
+        }
+    }
+
+    // ---- resume, over plans the compiler produced --------------------------
+    //
+    // [I4](../../docs/invariants.md#i4) is guarded over *hand-built* plan shapes
+    // (`plan::proptest`), which is where it belongs — the executor is what it is
+    // about. But flatten emits shapes that generator never draws: constant seek
+    // prefixes, composite seeks of several parts, `ResidualOp::Prefix`, nested
+    // field paths, more than one residual on a level, and `Project::Value`. A
+    // resume that mishandled any of them would be invisible to the executor's own
+    // battery, so the same property runs here over compiled plans — with a census
+    // (below) proving those shapes are actually reached rather than hoped for.
+
+    /// Which of flatten's plan shapes a run has produced.
+    #[derive(Debug, Default)]
+    struct Shapes {
+        constant_seek: bool,
+        multi_part_seek: bool,
+        constant_in_composite: bool,
+        prefix_residual: bool,
+        nested_path: bool,
+        several_residuals: bool,
+        value_projection: bool,
+        fact_ref_projection: bool,
+    }
+
+    impl Shapes {
+        fn missing(&self) -> Vec<&'static str> {
+            let mut out = vec![];
+
+            for (present, what) in [
+                (self.constant_seek, "a constant seek prefix"),
+                (self.multi_part_seek, "a composite seek of several parts"),
+                (
+                    self.constant_in_composite,
+                    "a constant inside a composite seek",
+                ),
+                (self.prefix_residual, "a `ResidualOp::Prefix`"),
+                (self.nested_path, "a nested field path"),
+                (self.several_residuals, "more than one residual on a level"),
+                (self.value_projection, "a `Project::Value`"),
+                (self.fact_ref_projection, "a `Project::FactRef`"),
+            ] {
+                if !present {
+                    out.push(what);
+                }
+            }
+
+            out
+        }
+
+        fn observe(&mut self, plan: &Plan) {
+            for generator in plan.body.iter() {
+                match &generator.access.seek_key {
+                    SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
+                    SeekKey::Composite(parts) => {
+                        self.multi_part_seek |= parts.len() > 1;
+
+                        for part in parts.iter() {
+                            match part {
+                                SeekKeyPart::Bytes(_) => self.constant_in_composite = true,
+                                SeekKeyPart::RegisterField { path, .. } => {
+                                    self.nested_path |= !path.is_flat();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                self.several_residuals |= generator.residuals.len() > 1;
+
+                for Residual { path, op } in generator.residuals.iter() {
+                    self.nested_path |= !path.is_flat();
+                    match op {
+                        ResidualOp::Prefix(_) => self.prefix_residual = true,
+                        ResidualOp::EqRegisterField { path, .. } => {
+                            self.nested_path |= !path.is_flat();
+                        }
+                        ResidualOp::EqConst(_) => {}
+                    }
+                }
+            }
+
+            self.observe_head(&plan.head);
+        }
+
+        fn observe_head(&mut self, head: &Project) {
+            match head {
+                Project::Value { .. } => self.value_projection = true,
+                Project::FactRef(_) => self.fact_ref_projection = true,
+                Project::RegisterField { path, .. } => self.nested_path |= !path.is_flat(),
+                Project::Record(fields) => {
+                    for (_, field) in fields.iter() {
+                        self.observe_head(field);
+                    }
+                }
+                Project::Lit(_) => {}
+            }
+        }
+    }
+
+    /// **The census.** Every plan shape flatten can emit is reached by the
+    /// generator — which is what licenses the resume property above it to claim
+    /// anything about those shapes.
+    ///
+    /// Written before the generator could produce most of them, and failing until
+    /// it could: string prefixes, nested record keys, three-field keys, row binds
+    /// and values were all added to satisfy this.
+    #[test]
+    fn the_generator_reaches_every_plan_shape() {
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 300;
+
+        let mut runner = TestRunner::deterministic();
+        let mut shapes = Shapes::default();
+
+        for _ in 0..RUNS {
+            let spec = arb_query_and_store()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+            let schema = spec.schema();
+            let (plan, _) = plan_of(&schema, &spec.source(), &spec.identity());
+
+            shapes.observe(&plan);
+        }
+
+        let missing = shapes.missing();
+        assert!(
+            missing.is_empty(),
+            "{RUNS} generated queries never produced: {}",
+            missing.join(", ")
+        );
+    }
+
+    proptest! {
+        // A case runs the plan once per cut point, so it is dearer than the
+        // completion property above — enough cases to be a real battery, given the
+        // shapes themselves are what the census pins.
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// **I4 over compiled plans: resume == the query's meaning.**
+        ///
+        /// Compared against the *model*, not against an uninterrupted run of the
+        /// same plan — which is strictly stronger, and says the same thing twice
+        /// over: suspending anywhere changes neither the rows nor their order.
+        ///
+        /// A case whose query matches nothing has no cut points and so says nothing
+        /// about resume; that most cases do match is what the population assertion
+        /// below is for.
+        #[test]
+        fn resume_of_a_compiled_plan_equals_the_query(
+            spec in arb_query_and_store(),
+            schedule in arb_interruption_schedule(),
+        ) {
+            let schema = spec.schema();
+            let (plan, interner) = plan_of(&schema, &spec.source(), &spec.identity());
+            let model = spec.expected();
+
+            let cuts = cut_points(&schedule, model.len());
+            let (rows, suspends) =
+                run_with_suspends(|| (spec.build_store(), plan.clone()), &interner, &cuts)
+                    .unwrap();
+
+            prop_assert_eq!(suspends, cuts.len(), "expected one suspend per scheduled row");
+            prop_assert_eq!(rows, model, "schedule {:?} changed the run", cuts);
+        }
+    }
+
+    /// Seed a fjall DB with a spec's facts, in the spec's order.
+    ///
+    /// The ids are asserted to be exactly what the spec numbers them, which pins
+    /// that the real per-predicate allocator and the generator's order agree —
+    /// without that, a projected `FactRef` would diverge from the model while every
+    /// row was otherwise right.
+    fn seed_fjall(spec: &QueryAndStore, path: &std::path::Path) -> FjallDb {
+        let db = FjallDb::open(path).expect("open");
+
+        for (predicate, key, value, sequence) in spec.facts() {
+            let id = db.put_fact(predicate, &key, &value).expect("put");
+            assert_eq!(
+                id,
+                FactId::new(predicate, sequence).expect("spec fact id"),
+                "the allocator diverged from the spec's fact order"
+            );
+        }
+
+        db
+    }
+
+    proptest! {
+        // A case builds a real DB — keyspace creation is fsync-bound at ~30 ms a
+        // tree — so this is a small battery over the same shapes the cheap one
+        // above covers exhaustively. What is under test here is the *store* beneath
+        // a compiled plan.
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        /// The same claim against **fjall**, because a compiled plan seeks
+        /// differently than a hand-built one.
+        ///
+        /// Phase 1 licensed every executor battery to run on `MemStore` by showing
+        /// the two stores agree on generated `(plan, store)` pairs — but those plans
+        /// only ever seek by a whole spliced field from an empty prefix. Flatten
+        /// emits constant prefixes, several-part composites and nested paths, so the
+        /// range bounds a scan is opened with (and re-opened with, on resume) are
+        /// shapes the differential has never seen on a real LSM store.
+        #[test]
+        fn a_compiled_plan_runs_the_same_on_fjall(
+            spec in arb_query_and_store(),
+            schedule in arb_interruption_schedule(),
+        ) {
+            let schema = spec.schema();
+            let (plan, interner) = plan_of(&schema, &spec.source(), &spec.identity());
+            let model = spec.expected();
+
+            let dir = TempDir::new().expect("tempdir");
+            let db = seed_fjall(&spec, dir.path());
+
+            // Run to completion...
+            let rows = collect_rows(db.reader(), plan.clone(), &interner).unwrap();
+            prop_assert_eq!(&rows, &model, "fjall and the model disagree");
+
+            // ...and again, suspending to bytes and resuming against a fresh
+            // snapshot at every scheduled row.
+            let cuts = cut_points(&schedule, model.len());
+            let (resumed, suspends) =
+                run_with_suspends(|| (db.reader(), plan.clone()), &interner, &cuts).unwrap();
+
+            prop_assert_eq!(suspends, cuts.len(), "expected one suspend per scheduled row");
+            prop_assert_eq!(resumed, model, "schedule {:?} changed the run on fjall", cuts);
         }
     }
 
