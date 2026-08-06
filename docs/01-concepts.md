@@ -19,7 +19,9 @@ Aperture is an **embedded, immutable fact database**. Two names to keep straight
   focus and run by Aperture.
 
 It is **inspired by [Glean](https://glean.software/), not a clone.** Where we diverge
-deliberately, the chapters say so.
+deliberately, the chapters say so — and
+[**what we take, what we changed, and what we have not answered**](glean-comparison.md) is
+one table, kept honest about which is which.
 
 ### Immutable, by design
 
@@ -51,7 +53,9 @@ A predicate's type (`PredicateTy`) has two parts:
 - an optional **value** — extra data carried by the fact, fetched only when you ask for it.
 
 Both key and value are typed: an integer, a string, a record (a sorted set of named
-fields), a reference to another fact, or (later) a union. Types are covered in
+fields), a reference to another fact, or (later) a union. That is a **deliberately narrow**
+type model next to Glean's — no arrays, enums, booleans or optionals — and what that costs is
+[accounted for here](glean-comparison.md). Types are covered in
 [chapter 6](06-types-and-schema.md).
 
 > **Why split key from value?** Queries seek and filter on keys without ever touching
@@ -97,12 +101,15 @@ structure — the **`Plan` IR** — and otherwise evolve independently.
   and text.
 - **typecheck / flatten / reorder** operate on a typed **`SyntaxTree` store** (a
   struct-of-arrays, `NodeId`-indexed tree) and produce the `Plan`.
-- **flatten** is the crux: it turns nested query structure into a flat, ordered list of
-  loop levels (**generators**). **reorder** then chooses a good loop order (a no-op at
-  first — see [chapter 7](07-compilation.md)).
+- **flatten** is the crux: it turns a query's statements into a flat, ordered list of loop
+  levels (**generators**) and decides, per key field, whether it seeks, splices or filters.
+  **reorder** then chooses the loop order — the identity for now, and *correct*, because
+  ordering is a performance choice and safety is the only thing correctness needs (see
+  [chapter 7](07-compilation.md)).
 
-There are three tree representations, each earning its place (façade → typed store → boxed
-ergonomic AST); chapter 7 explains why.
+Chapter 7 describes three tree representations and why each would earn its place; **two are
+built** (façade → typed store), and the boxed ergonomic AST is not, because nothing has
+needed it.
 
 ### The `Plan` IR (the contract)
 
@@ -150,21 +157,23 @@ Knowing which module is real saves hours:
     (`store.rs`), and the in-memory test store (`mem_store.rs`);
   - the executor and resume (`iter.rs`);
   - the schema and interners (`schema.rs`);
-  - the front end through typecheck — `grammar.llw`, `lexer.rs`, `parser.rs`, `cst.rs`,
-    `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs` — plus `print.rs`, which renders a tree back
-    to focus source and is what makes the front end round-trippable
-    ([chapter 7](07-compilation.md));
+  - the front end, all the way to a plan — `grammar.llw`, `lexer.rs`, `parser.rs`, `cst.rs`,
+    `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs`, `flatten.rs`, `reorder.rs`, driven by
+    `compile.rs` — plus `print.rs`, which renders a tree back to focus source and is what
+    makes the front end round-trippable ([chapter 7](07-compilation.md));
   - test support: `fixtures.rs` (shared store contracts and hand-built plans) and `corpus.rs`
     (the language surface as data — the acceptance gate for the grammar).
 - **`src/main.rs`** — the `aperture` binary: an interactive **focus shell** that lexes,
   parses, lowers and typechecks what you type against a real store seeded at startup. It is a
-  *scaffold* for the Phase 5 REPL, not the REPL — it cannot run a query, because flatten does
-  not exist. Useful for seeing the front end and the store behave; not a place to put logic.
+  *scaffold* for the Phase 5 REPL, not the REPL — it stops at a type, because calling the
+  driver's `plan()` at the prompt is Phase 5's task. Useful for seeing the front end and the
+  store behave; not a place to put logic.
 - **`src/lens/`** — a **superseded first attempt**, kept only for reference. It is *not
   compiled* (not declared in `lib.rs`) and targets an older, incompatible IR. Its front-end
   phases are the reference to **re-implement into `focus`**, and each file is deleted once
-  subsumed. What is left is `hoist.rs` (flatten, the Phase 4 reference), `query.rs` (the boxed
-  ergonomic AST, which `focus` has not needed yet), and the three files those depend on.
+  subsumed. What is left is `hoist.rs` — now the reference for the one piece of flatten Phase 4
+  deferred, **hoisting a nested generator** — plus `query.rs` (the boxed ergonomic AST, which
+  `focus` has not needed yet) and the three files those depend on.
 - **`src/focus.rs`** — the module list, and then a **graveyard of commented-out prototype
   code** (~20 live lines out of ~1,250). Kept only for the transport-codec sketch. Don't add
   code here.

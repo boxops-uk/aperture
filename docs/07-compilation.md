@@ -31,13 +31,15 @@ over-engineering; each earns its place by doing a job the others can't.
    represents constructs that are meaningless, to be rejected later with good diagnostics.
 
 2. **`SyntaxTree` store** — a **struct-of-arrays, `NodeId`-indexed** typed tree, in the
-   *recursion-schemes* style: one functor per phase (`ExprKind<NodeId>` before flatten →
-   `GroundKind<NodeId>` after), with a single generic `map`/`reduce`. This is what the
-   phases actually run on. Its properties:
+   *recursion-schemes* style: a functor per phase (`ExprKind<NodeId>`) with a single generic
+   `map`/`reduce`. This is what the phases actually run on. A *second* functor for the
+   post-flatten shape was designed and is **not built** — flatten produces a plan directly,
+   and the pass would have copied the tree unchanged. Its properties:
    - **`NodeId` gives stable cross-phase identity**, so typecheck writes a *side table*
      (`Vec<Ty>` indexed by `NodeId`) instead of mutating the tree. Annotate-without-mutate.
-   - **flatten is append-and-reindex** into a new store — a clean functor transform, not an
-     in-place rewrite.
+   - **flatten would be append-and-reindex** into a new store, were there a second functor —
+     a clean transform rather than an in-place rewrite. It goes straight to a `Plan` instead;
+     the property that matters (nothing mutates the tree) holds either way.
    - struct-of-arrays keeps nodes compact and cache-friendly.
 
 3. **Boxed, ergonomic AST** (`Query`/`Pattern`/`PatternKind`) — the human-facing shape,

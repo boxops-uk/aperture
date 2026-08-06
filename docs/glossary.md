@@ -87,8 +87,14 @@ row's key; never heap-spills ([I9](invariants.md#i9)). [ch4](04-executor.md).
 
 **fjall** — the LSM key–value store backing Aperture. [ch3](03-storage-model.md).
 
-**flatten** — the compiler phase that lowers a nested typed query to the flat
-`[Generator]` + `head` plan, running sargeability. [ch7](07-compilation.md).
+**FieldPath** — how a plan names a key field: a top-level field, plus one step per record it is
+nested inside. Flat is the fast path the field-offset cache serves; a stored key is *not* one
+field, so a whole record key has no path ([ch3](03-storage-model.md#a-stored-key-is-flat)).
+[ch7](07-compilation.md).
+
+**flatten** — the compiler phase that lowers a typed query to the flat `[Generator]` + `head`
+plan: collect statements, check range restriction, reorder, then run sargeability.
+[ch7](07-compilation.md).
 
 **focus** — Aperture's query and schema *language* (and the `src/focus/` module implementing
 the engine + language). [ch1](01-concepts.md).
@@ -114,8 +120,8 @@ fearless parallel ingest, and an O(1) wholesale drop. Costs ~30 ms per tree to c
 [ch3](03-storage-model.md).
 
 **lens** — `src/lens/`, the superseded first-attempt front end; not compiled; a reference to
-re-implement into `focus`, then delete file-by-file. Down to flatten (`hoist.rs`) and the boxed
-AST (`query.rs`). [ch1](01-concepts.md).
+re-implement into `focus`, then delete file-by-file. Down to **hoisting** (`hoist.rs` — the one
+piece of flatten Phase 4 deferred) and the boxed AST (`query.rs`). [ch1](01-concepts.md).
 
 **MachineState** — the register file: `Box<[Option<Register>]>`. [ch4](04-executor.md).
 
@@ -222,4 +228,4 @@ values. [ch2](02-tuple-codec.md).
 
 ---
 
-> [← Open decisions](open-decisions.md) · [Index](../README.md)
+> [← Aperture vs Glean](glean-comparison.md) · [Index](../README.md)

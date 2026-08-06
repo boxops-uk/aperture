@@ -14,6 +14,7 @@ invariants by number, and where to read the rest. It is deliberately tight.
 - Testing method & the coverage ledger: [`docs/testing.md`](docs/testing.md)
 - Conventions & anti-patterns: [`docs/conventions.md`](docs/conventions.md)
 - What's unsettled: [`docs/open-decisions.md`](docs/open-decisions.md)
+- Where we diverge from Glean, and what we have not decided: [`docs/glean-comparison.md`](docs/glean-comparison.md)
 - The build sequence: [`PLAN.md`](PLAN.md)
 
 **Module map.** `src/focus/` is the live engine + language — all new work lands here.
@@ -136,8 +137,11 @@ decoded data.
   ([Phase 6](PLAN.md)); everything else deferred is additive and must not reshape the machine.
   The **`FactRef` marker** was the other, and is **done**: its own marker `0x51` in the codec,
   so it gates nothing.
-- **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — **none left**;
-  it is now the record of what settled and why. Intra-row repeated variables are **rejected**
+- **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — two, both from
+  comparing the design against Glean: **multiplicity** (arrays vs one fact per element — decide
+  before the Phase 8 schema DSL fixes how schemas are written) and **primitives** (arithmetic,
+  string functions, conditionals: not built, not deferred, not ruled out). Everything the file
+  was originally opened for has settled: intra-row repeated variables are **rejected**
   (`nyi/repeated-variable`, Phase 4), the `pattern = pattern` *scope* is settled at typecheck
   (the feature itself stays deferred), and cancellation counting rows examined is settled in
   the executor.

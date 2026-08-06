@@ -287,6 +287,31 @@ fn flatten_ordered(
     diagnostics: &mut Diagnostics,
     order: Option<&[usize]>,
 ) -> Option<Plan> {
+    let mark = diagnostics.len();
+    let plan = flatten_reporting(ast, schema, interner, diagnostics, order);
+
+    // **No plan without a reason.** `plan()` promises that `None` always comes with
+    // a diagnostic, and several arms of the walk decline *quietly* on purpose —
+    // because the shape they saw was already reported by an earlier pass. That makes
+    // the promise a property of which passes ran, which is exactly the kind of claim
+    // that rots: relaxing one narrowing check turns a quiet `None` into a silent
+    // failure with an empty sink. Checked here, once, so every rejection test is
+    // also a test of the promise.
+    debug_assert!(
+        plan.is_some() || diagnostics.len() > mark,
+        "flatten declined to build a plan without reporting why"
+    );
+
+    plan
+}
+
+fn flatten_reporting(
+    ast: &Ast,
+    schema: &Schema,
+    interner: &LocalInterner,
+    diagnostics: &mut Diagnostics,
+    order: Option<&[usize]>,
+) -> Option<Plan> {
     let mut flattener = Flattener {
         ast,
         schema,
@@ -932,6 +957,12 @@ impl Flattener<'_> {
             ExprKind::Var(symbol) => self.lookup(*symbol),
 
             ExprKind::Access(FieldRef::Value, base) => {
+                // Only a *row* has a value side. A fact-typed field denotes a row
+                // too, and reading its value is a fetch — but a variable cannot be
+                // bound to one yet (`collect` reports `nyi/fact-field` first), so
+                // this returns quietly. Whoever allows that capture owes this arm a
+                // diagnostic; the `debug_assert` in `flatten_ordered` is what will
+                // say so.
                 let Slot::Row { address, predicate } = self.resolve(*base)? else {
                     return None;
                 };
@@ -978,6 +1009,8 @@ impl Flattener<'_> {
                         _ => None,
                     },
 
+                    // Reading a field of a scalar value: typecheck rejects it, since
+                    // a value's type has no fields.
                     Slot::Value { .. } => None,
                 }
             }

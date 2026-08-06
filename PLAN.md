@@ -476,9 +476,13 @@ already says it is.
 references (`demo.Knows {from : demo.Person}`), and both `:help` examples are nested
 generators over fact-typed fields — exactly what flatten defers as `nyi/nested-generator` and
 `nyi/fact-field`. They typecheck, so the shell's advice is honest today, but it will not
-*run*. Either the examples change to the runnable subset (a join through a scalar field), or
-Phase 5 pulls in the fact-id splice and `Access::Fetch` — which is a `Plan` IR change, and so
-a decision rather than a detail.
+*run*. Measured over the demo schema: entity lookups, `.value`, field captures, scalar-key
+seeks and whole-row scans of the relations all compile and run; **every join through a
+reference does not.** So Phase 5 either narrows the examples to what runs, or pulls in the
+first two items of ["Reaching a fact through a reference"](#reaching-a-fact-through-a-reference--three-sizes-listed-apart)
+— of which #1 is a small additive `Plan` IR change and #2 is one relaxed check plus the
+diagnostic that trap needs. Doing both is what makes the demo a fact database you can query
+rather than one you can enumerate; that is a scope decision, not a detail.
 
 **Acceptance:**
 - [ ] Typing a focus query returns rows (or a well-rendered diagnostic) against a fixture store, end-to-end, through the real compiler and executor.
@@ -662,6 +666,33 @@ Detail and kept seams: [`CLAUDE.md` scope](CLAUDE.md#scope-phases--open-decision
 [open decisions](docs/open-decisions.md), [operations §11](docs/aperture-cli-design.md). The
 two *non-additive* constructs — derived facts (Phase 6) and the now-resolved `FactRef` marker
 — are handled as deliberate changes above.
+
+### Reaching a fact through a reference — three sizes, listed apart
+
+Phase 4 defers everything to do with a fact-typed field under two codes, which makes three
+very differently-sized pieces of work look like one. **A schema built around references —
+which is what a fact database is for, and what the demo schema is — cannot be queried past a
+whole-row scan until at least the first lands.** Sizes measured against the demo schema:
+every join in it is blocked, while entity lookups, `.value`, captures and scalar-key seeks
+already run.
+
+| # | Work | Size | Unblocks | Today |
+|---|---|---|---|---|
+| 1 | **Fact-id splice / compare** — `SeekKeyPart::RegisterFactId(Address)` + `ResidualOp::EqRegisterFactId`, encoding `MARK_FACT_REF ++ id` off `Register::fact_id`. **No store read**, so [I6](docs/invariants.md#i6) stays structural. | small (~40 lines: `plan.rs`, `iter.rs`, `flatten.rs`) | `P = demo.Person {id = 1}; demo.Knows {from = P, to = X}` — every join through a reference | `nyi/fact-field` |
+| 2 | **Capture-and-project a reference** — narrow the rule from "a fact-typed field is deferred" to "**may be captured and projected, never navigated**". No IR change: `Project::RegisterField{ty: Fact}` already decodes to `Value::FactRef`, and the shell already renders it as the fact it names. | one relaxed check in flatten's narrowing pass, plus a diagnostic for the arm below | projecting *which* facts a relation points at | `nyi/fact-field` |
+| 3 | **Hoist a nested generator** — rewrite `demo.Knows {from = demo.Person {id = 1}}` into two statements. Flatten-local; `src/lens/hoist.rs` is the reference, and deleting it (with `query.rs`, the last `lens` files) is gated on this. Needs #1 to be worth anything. | medium, flatten-only | the idiomatic nested-pattern spelling, which is how one writes this query | `nyi/nested-generator` |
+
+**A trap to know about before doing #2.** `flatten::resolve`'s `.value`-on-a-non-row arm
+declines *quietly*, which is correct today only because `collect` reports `nyi/fact-field`
+before a variable can ever be bound to a fact-typed field. Allowing that capture makes the arm
+reachable, and `plan()` would then return `None` with an empty sink — breaking its documented
+promise that a refusal always has a reason. There is a `debug_assert` in `flatten_ordered` that
+fires on exactly that, so every rejection test is a test of the promise; it will catch this,
+but the diagnostic is part of #2's work, not an afterthought.
+
+Reading *through* a reference — `P.value` where `P` came out of a field — is the fourth and
+largest piece, and is the already-listed `Access::Fetch`: a point read per row and a new slot
+kind. It is what the shell's own `:help` examples need (see Phase 5).
 
 ---
 

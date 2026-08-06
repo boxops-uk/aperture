@@ -41,6 +41,13 @@ Each variant maps to a codec marker family from [chapter 2](02-tuple-codec.md), 
 why the type system and the codec must agree: a `Fact`-typed field encodes with
 `MARK_FACT_REF` and carries a `PredicateId` naming *which* predicate it points at.
 
+**Four constructors, and that is the whole model** — no arrays, enums, booleans, optionals, or
+a byte/nat distinction, all of which Glean's type system has. The codec has reserved marker
+bands for them ([chapter 2](02-tuple-codec.md#the-marker-table)), so the room is physically
+there; what is *not* settled is whether they are wanted, and multiplicity is the one that
+changes how schemas are written rather than just what they can hold. See
+[the Glean comparison](glean-comparison.md#the-type-model-is-narrower-than-gleans).
+
 ### Records are sorted slices, everywhere
 
 Record fields are a **sorted `[(Symbol, PredicateTy)]`** — in the schema, `Arc`-shared
@@ -155,8 +162,9 @@ reproducibility).
 
 > **Schema *syntax* and import/`mod`-tree resolution** (the schema DSL, Go-style import
 > edges, `schema_path` roots, redeclaration errors) are a front-end concern covered in
-> [Operations §7](aperture-cli-design.md) and built in Phase 6. This chapter is the *type
-> model and identity*; that chapter is *how schemas are written and resolved*.
+> [Operations §7](aperture-cli-design.md) and built in **Phase 8** ([`PLAN.md`](../PLAN.md)).
+> This chapter is the *type model and identity*; that chapter is *how schemas are written and
+> resolved*.
 
 ---
 

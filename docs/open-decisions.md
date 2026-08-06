@@ -10,8 +10,31 @@ with a pointer to where they now live.
 
 ## Still open
 
-**Nothing.** Every decision this file was opened for has settled; the list below is the
-record. New ones go here rather than into the chapters, which are the design *of record*.
+Every decision this file was *opened* for has settled — the record is below. What replaced them
+came out of stepping back and comparing the whole design against Glean
+([the comparison](glean-comparison.md) is the analysis; these two are the questions it left):
+
+### Multiplicity — arrays, or one fact per element?
+
+`PredicateTy` has no array type, so a one-to-many relationship is modelled as **one fact per
+element**. That is arguably the better answer for an index — every element is independently
+seekable, and nothing decodes a list to filter it — but it is a decision about **how every
+schema is written**, not just about what a type can hold.
+
+The codec reserves marker bands, so adding `[T]` later is not a one-way door in the *encoding*.
+Writing schemas without it is the thing that gets expensive to undo. **Decide before the schema
+DSL fixes what can be written** ([`PLAN.md`](../PLAN.md) Phase 8), and record the answer here
+either way. Related, and easier: `bool` and `maybe T` are sugar over a union once unions land;
+`nat`/`byte` are a range question, not a shape one.
+
+### Primitives in the query language
+
+Angle has `prim.*` — arithmetic, string operations, comparisons — and if-then-else. focus has
+string prefix matching, and **order comparisons** are deferred-with-a-seam (`ResidualOp` arms).
+Arithmetic, string functions and conditionals are in neither place: not built, not deferred,
+not ruled out. The seam that would carry them is Phase 6's derived binds (a pure function of
+the fact bindings), so this is additive whenever it is wanted — the open question is whether P0
+wants any of it, since a query language with no arithmetic pushes that work onto the caller.
 
 ---
 
@@ -123,4 +146,4 @@ machine/codec changes ([chapter 7](07-compilation.md), [chapter 2](02-tuple-code
 
 ---
 
-> [← Conventions](conventions.md) · [Index](../README.md) · [Glossary →](glossary.md)
+> [← Conventions](conventions.md) · [Index](../README.md) · [Aperture vs Glean →](glean-comparison.md)
