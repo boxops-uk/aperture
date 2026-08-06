@@ -10,7 +10,7 @@
 //!
 //! | Classification | Meaning |
 //! |---|---|
-//! | [`Expectation::Supported`] | parses, typechecks, and is implemented |
+//! | [`Expectation::Supported`] | parses, typechecks, is implemented, and **returns these rows** against the shared [`fixture`](crate::focus::fixture) |
 //! | [`Expectation::Diagnosed`] | parses, then draws **one specific diagnostic code** — either "not yet implemented" or a rejection of something meaningless |
 //! | [`Expectation::ParseError`] | not focus at all; a parse diagnostic is the correct answer |
 //!
@@ -34,164 +34,36 @@
 //! | `1__0`, `1_`, `007`, overflow | lexed silently | lexed permissively, rejected in lowering by code |
 //! | string escapes | lexed, never decoded | decoded in lowering |
 //!
-//! # The schema these entries are written against
+//! # The database these entries run against
 //!
-//! Phase 8 parses schemas; until then this is a hand-built fixture (see
-//! `focus::ty`). The corpus needs exactly:
-//!
-//! ```text
-//! predicate test.Foo    : { id : int, name : string } -> string
-//! predicate test.Bar    : { id : int }
-//! predicate test.Edge   : { from : int, to : int }
-//! predicate test.Node   : { id : int }
-//! predicate test.Nested : { outer : { inner : int } }
-//! predicate test.Name   : string
-//! predicate test.Count  : int
-//! predicate test.Shadow : { value : int }   // the `.value` shadowing case
-//! predicate test.Wide   : { outer : { extra : int, inner : int } }
-//! predicate test.Ref    : { of : test.Foo }         // a fact-typed field
-//! predicate test.Link   : { at : int, of : test.Foo }  // ...not in the leading field
-//! predicate test.Deep   : { via : test.Ref }        // ...and a chain of two hops
-//! ```
+//! The shared [`fixture`](crate::focus::fixture) — its schema, its facts, and the
+//! same rows the shell serves, so a corpus entry is something a person can type at
+//! the prompt. Every `Supported` entry records what it returns, and the gate below
+//! runs it against a **real** `FjallDb` to check.
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use std::sync::Arc;
-
-use lasso::Rodeo;
-
-use crate::focus::{
-    diag::Code,
-    schema::{Predicate, PredicateId, PredicateTy, Schema},
-};
+use crate::focus::{diag::Code, fixture, schema::Schema};
 use Expectation::{Diagnosed, ParseError, Supported};
 
-/// The schema the corpus is written against.
-///
-/// Hand-built: Phase 8 parses schemas. Field lists are sorted by name, as they are
-/// everywhere ([chapter 6]) — a record's field order is part of its encoding.
-///
-/// [chapter 6]: ../../../docs/06-types-and-schema.md
+/// The schema the corpus is written against — the shared
+/// [`fixture`](crate::focus::fixture), which the shell serves too.
+#[must_use]
 pub fn schema() -> Schema {
-    let mut names = Rodeo::new();
-    let mut sym = |s: &str| names.get_or_intern(s);
-
-    // Predicate order is predicate-id order; ids are what a `keys` row is prefixed
-    // with, so this is the one place the corpus fixes them.
-    let predicates = vec![
-        Predicate {
-            name: sym("test.Foo"),
-            key: PredicateTy::Record(Arc::from([
-                (sym("id"), PredicateTy::Int),
-                (sym("name"), PredicateTy::Str),
-            ])),
-            value: Some(PredicateTy::Str),
-        },
-        Predicate {
-            name: sym("test.Bar"),
-            key: PredicateTy::Record(Arc::from([(sym("id"), PredicateTy::Int)])),
-            value: None,
-        },
-        Predicate {
-            name: sym("test.Edge"),
-            key: PredicateTy::Record(Arc::from([
-                (sym("from"), PredicateTy::Int),
-                (sym("to"), PredicateTy::Int),
-            ])),
-            value: None,
-        },
-        Predicate {
-            name: sym("test.Node"),
-            key: PredicateTy::Record(Arc::from([(sym("id"), PredicateTy::Int)])),
-            value: None,
-        },
-        Predicate {
-            name: sym("test.Nested"),
-            key: PredicateTy::Record(Arc::from([(
-                sym("outer"),
-                PredicateTy::Record(Arc::from([(sym("inner"), PredicateTy::Int)])),
-            )])),
-            value: None,
-        },
-        Predicate {
-            name: sym("test.Name"),
-            key: PredicateTy::Str,
-            value: None,
-        },
-        Predicate {
-            name: sym("test.Count"),
-            key: PredicateTy::Int,
-            value: None,
-        },
-        // A key field literally named `value`, so `.value` is ambiguous on it —
-        // the `reject/value-shadowed` case.
-        Predicate {
-            name: sym("test.Shadow"),
-            key: PredicateTy::Record(Arc::from([(sym("value"), PredicateTy::Int)])),
-            value: None,
-        },
-        // Deliberately `test.Nested`'s field name carrying a differently-shaped
-        // record: the only way a query in the implemented subset can make two record
-        // *types* meet, which is what exercises unification's exact-arity rule.
-        // Appended last — a predicate's position is its id, and the tests assert on
-        // those, so inserting anywhere else renumbers them.
-        Predicate {
-            name: sym("test.Wide"),
-            key: PredicateTy::Record(Arc::from([(
-                sym("outer"),
-                PredicateTy::Record(Arc::from([
-                    (sym("extra"), PredicateTy::Int),
-                    (sym("inner"), PredicateTy::Int),
-                ])),
-            )])),
-            value: None,
-        },
-        // A **fact-typed key field**, which nothing else here has: it is what makes
-        // the deferred cross-fact cases reachable at all. A reference is a `FactId`
-        // and a register holds its own row, so matching or capturing one needs
-        // navigation the `Plan` IR does not have (`nyi/fact-field`), and a fact
-        // pattern written in the field is a nested generator. Also appended last.
-        Predicate {
-            name: sym("test.Ref"),
-            key: PredicateTy::Record(Arc::from([(sym("of"), PredicateTy::Fact(PredicateId(0)))])),
-            value: None,
-        },
-        // A reference that is **not** the leading key field, so a fact-id compare
-        // lands after the seek prefix has closed — the residual form of the splice
-        // `test.Ref` exercises. `at` sorts before `of`, so a capture at `at` is what
-        // closes it. Also appended last.
-        Predicate {
-            name: sym("test.Link"),
-            key: PredicateTy::Record(Arc::from([
-                (sym("at"), PredicateTy::Int),
-                (sym("of"), PredicateTy::Fact(PredicateId(0))),
-            ])),
-            value: None,
-        },
-        // A reference to a *referrer*, so a chain of them is two hops long — the only
-        // way a nested generator can nest inside a nested generator here, which is
-        // what makes hoisting's recursion testable. Also appended last.
-        Predicate {
-            name: sym("test.Deep"),
-            key: PredicateTy::Record(Arc::from([(sym("via"), PredicateTy::Fact(PredicateId(9)))])),
-            value: None,
-        },
-    ];
-
-    // Field and predicate names the corpus uses but that no declaration interns,
-    // so `LocalInterner`'s schema-first lookup can still resolve them.
-    for name in ["a", "b", "alt", "nosuch", "value"] {
-        sym(name);
-    }
-
-    Schema::new(names.into_reader(), Arc::from(predicates))
+    fixture::schema()
 }
 
 /// What the compiler must do with a corpus entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expectation {
-    /// Parses, typechecks, and is implemented end to end.
-    Supported,
+    /// Parses, typechecks, produces a plan, and running it against the
+    /// [`fixture`](crate::focus::fixture) returns exactly these rows.
+    ///
+    /// The rows are a *rendering* — `1`, `ann`, `{a = ann, b = 1}`,
+    /// `test.Foo#1` for a reference — joined by `"; "`, and empty for no rows.
+    /// Carried in the variant rather than beside it so that a newly-supported
+    /// construct cannot be marked supported without saying what it answers.
+    Supported(&'static str),
     /// Parses, then draws exactly this diagnostic code.
     ///
     /// The code — not the wording — is what tests assert on, so diagnostics can
@@ -223,126 +95,126 @@ pub const CORPUS: &[Entry] = &[
     // ---- the implemented subset: parses, typechecks, and Phase 4 flattens ----
     entry(
         "X where X = test.Foo _",
-        Supported,
+        Supported("test.Foo#1; test.Foo#2; test.Foo#3"),
         "scan a predicate and bind the whole row",
     ),
     entry(
         "X where test.Foo {name = X}",
-        Supported,
+        Supported("ann; bob; ann"),
         "implicit bind; capture a key field",
     ),
     entry(
         "{a = X, b = Y} where test.Foo {name = X, id = Y}",
-        Supported,
+        Supported("{a = ann, b = 1}; {a = bob, b = 2}; {a = ann, b = 3}"),
         "record head over two captured fields",
     ),
     entry(
         "X.name where X = test.Foo _",
-        Supported,
+        Supported("ann; bob; ann"),
         "field access on a bound row",
     ),
     entry(
         "X.value where X = test.Foo _",
-        Supported,
+        Supported("one; two; three"),
         "`.value` is the fact's value side — Project::Value",
     ),
     entry(
         "X where test.Edge {from = X, to = Y}; test.Node {id = Y}",
-        Supported,
+        Supported("1; 1; 2"),
         "two-level join through a shared variable",
     ),
     entry(
         "X where test.Nested {outer = {inner = X}}",
-        Supported,
+        Supported("1; 7"),
         "nested record pattern",
     ),
     entry(
         "X where X = test.Name \"abc\"..",
-        Supported,
+        Supported("test.Name#1"),
         "string prefix against a scalar string key — ResidualOp::Prefix",
     ),
     entry(
         "X where X = test.Count -42",
-        Supported,
+        Supported("test.Count#2"),
         "negative integer literal",
     ),
     entry(
         "X where X = test.Count -9223372036854775808",
-        Supported,
+        Supported("test.Count#1"),
         "i64::MIN — only reachable through the unary minus, so the literal itself \
          does not fit i64",
     ),
     entry(
         "X where X = test.Count 1_000",
-        Supported,
+        Supported("test.Count#4"),
         "underscore digit separator",
     ),
     entry(
         "Y where Y = test.Foo _; test.Name Y.name",
-        Supported,
+        Supported("test.Foo#1; test.Foo#2; test.Foo#3"),
         "dot binds tighter than application: this is `test.Name (Y.name)`. The \
          precedence itself is pinned structurally in `parse.rs`; this entry is here \
          to check the well-formed case typechecks",
     ),
     entry(
         "Y where Y = test.Foo _; test.Name (Y.name)",
-        Supported,
+        Supported("test.Foo#1; test.Foo#2; test.Foo#3"),
         "the same, parenthesised — a group is transparent",
     ),
     entry(
         "X where X = test.Foo _;",
-        Supported,
+        Supported("test.Foo#1; test.Foo#2; test.Foo#3"),
         "a trailing `;` is permitted by `stmt (';' [stmt])*`",
     ),
     entry(
         "X where X = test.Foo {id = 1}",
-        Supported,
+        Supported("test.Foo#1"),
         "a constant in the leading key field narrows the scan to a seek",
     ),
     entry(
-        "X where test.Foo {id = X, name = \"a\"}",
-        Supported,
+        "X where test.Foo {id = X, name = \"ann\"}",
+        Supported("1; 3"),
         "a capture cannot narrow the scan, so the constant behind it filters — \
          sargeability is order-dependent",
     ),
     entry(
         "Y where test.Count Y",
-        Supported,
+        Supported("-9223372036854775808; -42; 7; 1000"),
         "a scalar key is one field, so a variable may stand for the whole of it",
     ),
     entry(
         "X where test.Ref {of = X}",
-        Supported,
+        Supported("test.Foo#1; test.Foo#2"),
         "a fact-typed field may be captured and projected — the row it names is a \
          `Value::FactRef`, and reads no second fact to say so",
     ),
     entry(
         "P where P = test.Foo {id = 1}; test.Ref {of = P}",
-        Supported,
+        Supported("test.Foo#1"),
         "**a join through a reference**: the bound row's fact id is spliced into the \
          seek, so the reference is followed without a store read",
     ),
     entry(
         "P where P = test.Foo {id = 1}; test.Link {at = X, of = P}",
-        Supported,
+        Supported("test.Foo#1"),
         "the same compare once the seek prefix has closed — a capture at `at` closes \
          it, so `of` filters instead",
     ),
     entry(
         "X where X = test.Ref {of = test.Foo {id = 1}}",
-        Supported,
+        Supported("test.Ref#1"),
         "**the idiomatic spelling of that join**: a fact pattern inside another is a \
          generator, hoisted into a loop level of its own and matched by id",
     ),
     entry(
         "X where X = test.Deep {via = test.Ref {of = test.Foo {id = 1}}}",
-        Supported,
+        Supported("test.Deep#1"),
         "hoisting is recursive — innermost first, so each level is bound before the \
          one that names it",
     ),
     entry(
         "test.Bar {id = 1} where test.Foo _",
-        Supported,
+        Supported("test.Bar#1; test.Bar#1; test.Bar#1"),
         "a fact pattern in the **head** is the same construct: hoisted into the last \
          level, and projected as the fact it names",
     ),
@@ -567,7 +439,7 @@ mod tests {
             let diags: Vec<&String> = diagnostics.iter().map(|d| &d.message).collect();
 
             match expect {
-                Supported | Diagnosed(_) if diagnostics.has_errors() => {
+                Supported(_) | Diagnosed(_) if diagnostics.has_errors() => {
                     gaps.push(format!("{source:?} must parse ({note}) — got {diags:?}"))
                 }
                 ParseError if !diagnostics.has_errors() => {
@@ -612,7 +484,7 @@ mod tests {
             let (got, plan) = compile(source);
             let got: Vec<&str> = got.iter().map(String::as_str).collect();
 
-            if matches!(expect, Supported) && !plan {
+            if matches!(expect, Supported(_)) && !plan {
                 wrong.push(format!(
                     "{source:?}\n      is Supported but produced no plan  ({note})"
                 ));
@@ -623,7 +495,7 @@ mod tests {
             // variant, and every choice there hides an unexpected diagnostic — which
             // is the one thing this gate exists to catch.
             let want: Vec<&str> = match expect {
-                Supported => vec![],
+                Supported(_) => vec![],
                 Diagnosed(code) => vec![code.as_str()],
                 ParseError => unreachable!(),
             };
@@ -675,5 +547,164 @@ mod tests {
         }
 
         (codes, plan)
+    }
+
+    /// **The phase's headline gate: every supported entry runs, against a real
+    /// database, and returns the rows it says it does.**
+    ///
+    /// Until now `Supported` meant "produces a plan", which is not the same claim: a
+    /// plan that seeks the wrong prefix, filters on the wrong field or projects the
+    /// wrong path is still a plan. This runs each one through `enumerate` over a
+    /// [`FjallDb`] seeded from the shared fixture and compares the rows.
+    ///
+    /// One database for the whole corpus, not one per entry: creating a keyspace is
+    /// fsync-bound at tens of milliseconds a tree, and the queries only read.
+    ///
+    /// Rows are compared as a **rendering** rather than as `Value`s, so the expected
+    /// answer is something a person can read in the table and check by eye — and so a
+    /// reference is written as the fact it names rather than as a snowflake integer.
+    #[test]
+    fn every_supported_entry_returns_its_rows() {
+        use crate::focus::{compile::Compilation, fixture, plan::FactId, store::FjallDb};
+
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let db = FjallDb::open(dir.path()).expect("open");
+        let schema = schema();
+
+        for fixture::Fact {
+            predicate,
+            key,
+            value,
+            sequence,
+        } in fixture::facts()
+        {
+            let id = db.put_fact(predicate, &key, &value).expect("put");
+            assert_eq!(
+                id,
+                FactId::new(predicate, sequence).expect("a fixture fact id"),
+                "the store's allocator diverged from the fixture's numbering",
+            );
+        }
+
+        let mut wrong = vec![];
+
+        for Entry {
+            source,
+            expect,
+            note,
+        } in CORPUS
+        {
+            let Supported(want) = expect else { continue };
+
+            let mut compilation = Compilation::new(source, &schema);
+            let Some(plan) = compilation.plan() else {
+                // `every_entry_is_diagnosed_as_classified` owns this failure; saying
+                // it twice would only make the other one harder to read.
+                continue;
+            };
+
+            let got = match run(&db, plan, compilation.interner(), &schema) {
+                Ok(rows) => rows,
+                Err(error) => {
+                    wrong.push(format!(
+                        "{source:?}\n      failed to run: {error}  ({note})"
+                    ));
+                    continue;
+                }
+            };
+
+            if got != *want {
+                wrong.push(format!(
+                    "{source:?}\n      want {want:?}\n      got  {got:?}  ({note})"
+                ));
+            }
+        }
+
+        assert!(
+            wrong.is_empty(),
+            "{} of {} supported entries answer differently than recorded:\n    {}",
+            wrong.len(),
+            CORPUS
+                .iter()
+                .filter(|entry| matches!(entry.expect, Supported(_)))
+                .count(),
+            wrong.join("\n    "),
+        );
+    }
+
+    /// Run a plan to completion and render its rows.
+    fn run(
+        db: &crate::focus::store::FjallDb,
+        plan: crate::focus::plan::Plan,
+        interner: &crate::focus::schema::LocalInterner,
+        schema: &Schema,
+    ) -> Result<String, crate::focus::error::ApertureError> {
+        use crate::focus::iter::{Executor, Iteratee, Stream};
+        use tokio_util::sync::CancellationToken;
+
+        let executor = Executor::new(db.reader(), plan);
+        let rendered = executor.enumerate(
+            Vec::new(),
+            |mut rows: Vec<String>, mut row| {
+                rows.push(render(&row.to_value(interner)?, schema));
+                Ok(Stream::Continue(rows))
+            },
+            &CancellationToken::new(),
+        )?;
+
+        let rows = match rendered {
+            Iteratee::Done(rows) | Iteratee::Suspended(rows, _) => rows,
+        };
+
+        Ok(rows.join("; "))
+    }
+
+    /// A row as the corpus writes it: bare scalars, `{a = …}` for a record, and
+    /// `test.Foo#1` for a reference — the predicate it belongs to and its sequence
+    /// within it, which is also its position in the fixture.
+    fn render(value: &crate::focus::tuple::Value, schema: &Schema) -> String {
+        use crate::focus::tuple::Value;
+
+        match value {
+            Value::Int(n) => n.to_string(),
+            Value::Str(s) => s.clone(),
+            Value::FactRef(id) => {
+                let name = schema
+                    .get(id.predicate())
+                    .and_then(|predicate| predicate.name())
+                    .unwrap_or("?");
+
+                format!("{name}#{}", id.sequence())
+            }
+            Value::Record(fields) => format!(
+                "{{{}}}",
+                fields
+                    .iter()
+                    .map(|(name, field)| format!("{name} = {}", render(field, schema)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// Every example the shell offers is a corpus entry that **runs** — so the shell
+    /// cannot advertise a query the compiler has no plan for, which is exactly what it
+    /// was doing before this phase.
+    #[test]
+    fn every_shell_example_is_a_supported_entry() {
+        for example in crate::focus::fixture::EXAMPLES {
+            let entry = CORPUS.iter().find(|entry| entry.source == example);
+
+            let Some(entry) = entry else {
+                panic!("the shell offers {example:?}, which is not a corpus entry");
+            };
+
+            assert!(
+                matches!(entry.expect, Supported(_)),
+                "the shell offers {example:?}, which the corpus classifies {:?}",
+                entry.expect,
+            );
+        }
     }
 }

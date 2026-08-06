@@ -2,6 +2,7 @@ pub mod compile;
 pub mod cst;
 pub mod diag;
 pub mod error;
+pub mod fixture;
 pub mod flatten;
 pub mod iter;
 pub mod lower;

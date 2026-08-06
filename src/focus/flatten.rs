@@ -1253,7 +1253,8 @@ mod tests {
         compile::Compilation,
         corpus,
         cst::CstNode,
-        fixtures::{collect_rows, compose, fact_ref_field, i64_field, str_field},
+        fixture,
+        fixtures::{collect_rows, i64_field, str_field},
         lower::lower,
         mem_store::MemStore,
         parse::parse,
@@ -2138,87 +2139,21 @@ mod tests {
 
     // ---- running what it produced ------------------------------------------
 
-    /// Facts for the corpus schema, so a plan can be *run* rather than only
-    /// inspected.
-    ///
-    /// | predicate | facts |
-    /// |---|---|
-    /// | `test.Foo {id, name}` | `(1, "ann")`, `(2, "bob")`, `(3, "ann")` — values `"one"`, `"two"`, `"three"` |
-    /// | `test.Edge {from, to}` | `(1, 2)`, `(1, 3)`, `(2, 3)` |
-    /// | `test.Node {id}` | `2`, `3` |
-    /// | `test.Nested {outer = {inner}}` | `1`, `7` |
-    /// | `test.Name` | `"ann"`, `"anna"`, `"bob"` |
-    /// | `test.Count` | `-42`, `7` |
+    /// The shared [`fixture`](crate::focus::fixture)'s facts, in memory — the same
+    /// rows the corpus gate runs against a real store and the same rows the shell
+    /// serves, so a shape asserted here and an answer asserted there are about one
+    /// database.
     fn store() -> MemStore {
         let mut store = MemStore::new();
-        let schema = corpus::schema();
-        let id = |name: &str| schema.find_position(name).expect(name).0;
 
-        for (i, (n, name, value)) in [(1i64, "ann", "one"), (2, "bob", "two"), (3, "ann", "three")]
-            .into_iter()
-            .enumerate()
+        for fixture::Fact {
+            predicate,
+            key,
+            value,
+            sequence,
+        } in fixture::facts()
         {
-            store.insert_valued(
-                id("test.Foo"),
-                compose(&[&i64_field(n), &str_field(name)]),
-                i as u64 + 1,
-                str_field(value),
-            );
-        }
-
-        for (i, (from, to)) in [(1i64, 2i64), (1, 3), (2, 3)].into_iter().enumerate() {
-            store.insert(
-                id("test.Edge"),
-                compose(&[&i64_field(from), &i64_field(to)]),
-                i as u64 + 1,
-            );
-        }
-
-        for (i, n) in [2i64, 3].into_iter().enumerate() {
-            store.insert(id("test.Node"), i64_field(n), i as u64 + 1);
-        }
-
-        for (i, n) in [1i64, 7].into_iter().enumerate() {
-            let mut key = vec![crate::focus::tuple::MARK_RECORD];
-            key.extend_from_slice(&i64_field(n));
-            key.push(crate::focus::tuple::MARK_TERM);
-            store.insert(id("test.Nested"), key, i as u64 + 1);
-        }
-
-        for (i, s) in ["ann", "anna", "bob"].into_iter().enumerate() {
-            store.insert(id("test.Name"), str_field(s), i as u64 + 1);
-        }
-
-        for (i, n) in [-42i64, 7].into_iter().enumerate() {
-            store.insert(id("test.Count"), i64_field(n), i as u64 + 1);
-        }
-
-        // References into `test.Foo`, whose facts are sequences 1, 2 and 3 above.
-        // Nothing references `(3, "ann")`, so a join through a reference can come back
-        // empty as well as full.
-        //
-        // `test.Ref`'s whole key *is* the reference, and a fact's key is its identity
-        // — so it cannot hold two rows naming the same fact. `test.Link` carries an
-        // `at` as well, which is what lets one referenced fact have several referrers.
-        let foo = |sequence| fact_ref_field(FactId::new(id("test.Foo"), sequence).expect("id"));
-
-        for (i, of) in [1u64, 2].into_iter().enumerate() {
-            store.insert(id("test.Ref"), foo(of), i as u64 + 1);
-        }
-
-        for (i, (at, of)) in [(10i64, 1u64), (11, 2), (12, 2)].into_iter().enumerate() {
-            store.insert(
-                id("test.Link"),
-                compose(&[&i64_field(at), &foo(of)]),
-                i as u64 + 1,
-            );
-        }
-
-        // A second hop: `test.Deep` references the `test.Ref` facts just inserted,
-        // which are sequences 1 and 2 of their own predicate.
-        for (i, via) in [1u64, 2].into_iter().enumerate() {
-            let via = fact_ref_field(FactId::new(id("test.Ref"), via).expect("id"));
-            store.insert(id("test.Deep"), via, i as u64 + 1);
+            store.insert_valued(predicate, key, sequence, value);
         }
 
         store
@@ -2278,21 +2213,16 @@ mod tests {
             ints(&[1, 7])
         );
 
-        // A string prefix, as a narrowed scan.
-        assert_eq!(rows("X where X = test.Name \"ann\".."), {
-            let flattened = compile("X where X = test.Name \"ann\"..");
-            let plan = flattened.plan().clone();
-            let out = collect_rows(store(), plan, &flattened.interner).expect("run");
-            assert_eq!(out.len(), 2, "\"ann\" and \"anna\", not \"bob\"");
-            out
-        });
+        // A string prefix, as a narrowed scan: `"ann"` and `"anna"`, not `"abc"`
+        // before them or `"bob"` after.
+        assert_eq!(rows("X where X = test.Name \"ann\"..").len(), 2);
 
         // A negative literal, which the seek has to encode order-preservingly.
         assert_eq!(rows("X.value where X = test.Foo _").len(), 3);
         assert_eq!(
-            rows("Y where test.Count Y").len(),
-            2,
-            "a scalar key binds its one field"
+            rows("Y where test.Count Y"),
+            ints(&[i64::MIN, -42, 7, 1_000]),
+            "a scalar key binds its one field",
         );
 
         // A record head.
@@ -2345,11 +2275,13 @@ mod tests {
             strs(&["ann", "bob"]),
         );
 
-        // A generator in the head, which is a level like any other.
+        // A generator in the head, which is a level like any other — and one that
+        // matches nothing empties the answer, because it is a level.
+        assert_eq!(rows("test.Bar {id = 1} where test.Foo {id = 1}").len(), 1);
         assert_eq!(
-            rows("test.Bar {id = 1} where test.Foo {id = 1}"),
+            rows("test.Bar {id = 99} where test.Foo {id = 1}"),
             vec![],
-            "no `test.Bar` fact exists, so the head's generator matches nothing",
+            "no such `test.Bar` exists, so nothing survives the last level",
         );
     }
 
