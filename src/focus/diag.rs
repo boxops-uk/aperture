@@ -53,18 +53,26 @@ pub enum Code {
     // `nyi/` — deferred to a later phase.
     NyiBindUnification,
     NyiDisjunction,
+    NyiFactField,
     NyiNegation,
+    NyiNestedGenerator,
     NyiNever,
-    NyiFlatten,
+    NyiRepeatedVariable,
     NyiSubquery,
     NyiUnionSelect,
+    NyiValueBind,
+    NyiValueMatch,
+    NyiWholeKey,
 
     // `reject/` — meaningless, rejected for good.
     RejectBindLhs,
     RejectDuplicateField,
     RejectInfiniteType,
     RejectNoValue,
+    RejectNotAGenerator,
+    RejectNotProjectable,
     RejectTypeMismatch,
+    RejectUnboundVariable,
     RejectUnknownField,
     RejectUnknownPredicate,
     RejectUnresolvedAccess,
@@ -87,16 +95,24 @@ impl Code {
     pub const ALL: &'static [Code] = &[
         Code::NyiBindUnification,
         Code::NyiDisjunction,
-        Code::NyiFlatten,
+        Code::NyiFactField,
         Code::NyiNegation,
+        Code::NyiNestedGenerator,
         Code::NyiNever,
+        Code::NyiRepeatedVariable,
         Code::NyiSubquery,
         Code::NyiUnionSelect,
+        Code::NyiValueBind,
+        Code::NyiValueMatch,
+        Code::NyiWholeKey,
         Code::RejectBindLhs,
         Code::RejectDuplicateField,
         Code::RejectInfiniteType,
         Code::RejectNoValue,
+        Code::RejectNotAGenerator,
+        Code::RejectNotProjectable,
         Code::RejectTypeMismatch,
+        Code::RejectUnboundVariable,
         Code::RejectUnknownField,
         Code::RejectUnknownPredicate,
         Code::RejectUnresolvedAccess,
@@ -114,17 +130,25 @@ impl Code {
         match self {
             Code::NyiBindUnification => "nyi/bind-unification",
             Code::NyiDisjunction => "nyi/disjunction",
-            Code::NyiFlatten => "nyi/flatten",
+            Code::NyiFactField => "nyi/fact-field",
             Code::NyiNegation => "nyi/negation",
+            Code::NyiNestedGenerator => "nyi/nested-generator",
             Code::NyiNever => "nyi/never",
+            Code::NyiRepeatedVariable => "nyi/repeated-variable",
             Code::NyiSubquery => "nyi/subquery",
             Code::NyiUnionSelect => "nyi/union-select",
+            Code::NyiValueBind => "nyi/value-bind",
+            Code::NyiValueMatch => "nyi/value-match",
+            Code::NyiWholeKey => "nyi/whole-key",
 
             Code::RejectBindLhs => "reject/bind-lhs",
             Code::RejectDuplicateField => "reject/duplicate-field",
             Code::RejectInfiniteType => "reject/infinite-type",
             Code::RejectNoValue => "reject/no-value",
+            Code::RejectNotAGenerator => "reject/not-a-generator",
+            Code::RejectNotProjectable => "reject/not-projectable",
             Code::RejectTypeMismatch => "reject/type-mismatch",
+            Code::RejectUnboundVariable => "reject/unbound-variable",
             Code::RejectUnknownField => "reject/unknown-field",
             Code::RejectUnknownPredicate => "reject/unknown-predicate",
             Code::RejectUnresolvedAccess => "reject/unresolved-access",
@@ -145,17 +169,25 @@ impl Code {
         match self {
             Code::NyiBindUnification
             | Code::NyiDisjunction
-            | Code::NyiFlatten
+            | Code::NyiFactField
             | Code::NyiNegation
+            | Code::NyiNestedGenerator
             | Code::NyiNever
+            | Code::NyiRepeatedVariable
             | Code::NyiSubquery
-            | Code::NyiUnionSelect => Kind::Deferred,
+            | Code::NyiUnionSelect
+            | Code::NyiValueBind
+            | Code::NyiValueMatch
+            | Code::NyiWholeKey => Kind::Deferred,
 
             Code::RejectBindLhs
             | Code::RejectDuplicateField
             | Code::RejectInfiniteType
             | Code::RejectNoValue
+            | Code::RejectNotAGenerator
+            | Code::RejectNotProjectable
             | Code::RejectTypeMismatch
+            | Code::RejectUnboundVariable
             | Code::RejectUnknownField
             | Code::RejectUnknownPredicate
             | Code::RejectUnresolvedAccess
@@ -354,16 +386,24 @@ mod tests {
             match code {
                 Code::NyiBindUnification
                 | Code::NyiDisjunction
-                | Code::NyiFlatten
+                | Code::NyiFactField
                 | Code::NyiNegation
+                | Code::NyiNestedGenerator
                 | Code::NyiNever
+                | Code::NyiRepeatedVariable
                 | Code::NyiSubquery
                 | Code::NyiUnionSelect
+                | Code::NyiValueBind
+                | Code::NyiValueMatch
+                | Code::NyiWholeKey
                 | Code::RejectBindLhs
                 | Code::RejectDuplicateField
                 | Code::RejectInfiniteType
                 | Code::RejectNoValue
+                | Code::RejectNotAGenerator
+                | Code::RejectNotProjectable
                 | Code::RejectTypeMismatch
+                | Code::RejectUnboundVariable
                 | Code::RejectUnknownField
                 | Code::RejectUnknownPredicate
                 | Code::RejectUnresolvedAccess

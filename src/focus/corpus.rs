@@ -49,6 +49,7 @@
 //! predicate test.Count  : int
 //! predicate test.Shadow : { value : int }   // the `.value` shadowing case
 //! predicate test.Wide   : { outer : { extra : int, inner : int } }
+//! predicate test.Ref    : { of : test.Foo }         // a fact-typed field
 //! ```
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
@@ -59,7 +60,7 @@ use lasso::Rodeo;
 
 use crate::focus::{
     diag::Code,
-    schema::{Predicate, PredicateTy, Schema},
+    schema::{Predicate, PredicateId, PredicateTy, Schema},
 };
 use Expectation::{Diagnosed, ParseError, Supported};
 
@@ -141,6 +142,16 @@ pub fn schema() -> Schema {
                     (sym("inner"), PredicateTy::Int),
                 ])),
             )])),
+            value: None,
+        },
+        // A **fact-typed key field**, which nothing else here has: it is what makes
+        // the deferred cross-fact cases reachable at all. A reference is a `FactId`
+        // and a register holds its own row, so matching or capturing one needs
+        // navigation the `Plan` IR does not have (`nyi/fact-field`), and a fact
+        // pattern written in the field is a nested generator. Also appended last.
+        Predicate {
+            name: sym("test.Ref"),
+            key: PredicateTy::Record(Arc::from([(sym("of"), PredicateTy::Fact(PredicateId(0)))])),
             value: None,
         },
     ];
@@ -257,9 +268,25 @@ pub const CORPUS: &[Entry] = &[
         "the same, parenthesised — a group is transparent",
     ),
     entry(
-        "X where test.Foo _;",
+        "X where X = test.Foo _;",
         Supported,
         "a trailing `;` is permitted by `stmt (';' [stmt])*`",
+    ),
+    entry(
+        "X where X = test.Foo {id = 1}",
+        Supported,
+        "a constant in the leading key field narrows the scan to a seek",
+    ),
+    entry(
+        "X where test.Foo {id = X, name = \"a\"}",
+        Supported,
+        "a capture cannot narrow the scan, so the constant behind it filters — \
+         sargeability is order-dependent",
+    ),
+    entry(
+        "Y where test.Count Y",
+        Supported,
+        "a scalar key is one field, so a variable may stand for the whole of it",
     ),
     // ---- deferred constructs: parse, then say so by name ----
     entry(
@@ -386,6 +413,63 @@ pub const CORPUS: &[Entry] = &[
         "an unpaired surrogate. The lexer's regex accepts the escape, so this is only \
          catchable when the string is decoded",
     ),
+    // ---- deferred at flatten: parse, typecheck, then say so by name ----
+    entry(
+        "X where X = 42",
+        Diagnosed(Code::NyiValueBind),
+        "binding a variable to a value no generator produced is a derived bind \
+         (PLAN Phase 6), which needs the `Slot` value variant",
+    ),
+    entry(
+        "test.Bar {id = 1} where test.Foo _",
+        Diagnosed(Code::NyiNestedGenerator),
+        "a fact pattern away from the top level of a statement is a generator that \
+         has to be hoisted into its own loop level",
+    ),
+    entry(
+        "X where test.Ref {of = X}",
+        Diagnosed(Code::NyiFactField),
+        "a fact-typed field holds a reference; reading through it is cross-fact \
+         navigation (`Access::Fetch`), and matching one against a bound row needs a \
+         fact-id splice",
+    ),
+    entry(
+        "Y where Y = test.Foo _; test.Name Y.value",
+        Diagnosed(Code::NyiValueMatch),
+        "a value may be projected but not matched: I6 keeps `entities` out of the \
+         scan loop",
+    ),
+    entry(
+        "Y where test.Foo Y",
+        Diagnosed(Code::NyiWholeKey),
+        "a stored key is its fields with no wrapper, so a record key is not one \
+         field and has no path to project; name its fields instead",
+    ),
+    // ---- meaningless at flatten ----
+    entry(
+        "X where test.Foo _",
+        Diagnosed(Code::RejectUnboundVariable),
+        "range restriction: nothing captures `X`, so there are no values for it to \
+         range over",
+    ),
+    entry(
+        "X where test.Edge {from = X, to = X}",
+        Diagnosed(Code::NyiRepeatedVariable),
+        "an intra-row repeat needs a same-row `EqField` residual; the Phase 4 \
+         decision is to reject it for now rather than add an operator nothing else \
+         uses (docs/open-decisions.md)",
+    ),
+    entry(
+        "X where X = test.Foo _; 42",
+        Diagnosed(Code::RejectNotAGenerator),
+        "a statement that is not a fact pattern generates nothing and constrains \
+         nothing",
+    ),
+    entry(
+        "\"abc\".. where test.Foo _",
+        Diagnosed(Code::RejectNotProjectable),
+        "a string prefix is a pattern, not a value, so it cannot be a head",
+    ),
     // ---- not focus ----
     entry("where", ParseError, "no head, no body"),
     entry("X where", ParseError, "no statements"),
@@ -445,7 +529,7 @@ mod tests {
 
     /// The other half, and the phase's headline claim: each `Diagnosed` entry draws
     /// exactly the code it claims — and nothing else — while each `Supported` entry
-    /// draws nothing at all.
+    /// draws nothing at all **and produces a runnable plan**.
     ///
     /// Asserting the *set* of codes rather than "contains" is deliberate. A
     /// construct reported as not-yet-implemented must not also produce a type error
@@ -466,8 +550,15 @@ mod tests {
                 continue;
             }
 
-            let got = compile(source);
+            let (got, plan) = compile(source);
             let got: Vec<&str> = got.iter().map(String::as_str).collect();
+
+            if matches!(expect, Supported) && !plan {
+                wrong.push(format!(
+                    "{source:?}\n      is Supported but produced no plan  ({note})"
+                ));
+                continue;
+            }
             // Compared as rendered strings, not as `Code`s: reading `got` back into
             // a `Code` would have to do something with a string that resolves to no
             // variant, and every choice there hides an unexpected diagnostic — which
@@ -494,42 +585,36 @@ mod tests {
         );
     }
 
-    /// Every distinct diagnostic code `source` draws, in first-seen order, from
-    /// lowering and typecheck together.
+    /// Every distinct diagnostic code `source` draws, in first-seen order, and
+    /// whether it produced a plan.
+    ///
+    /// Driven through [`Compilation`] rather than by calling the phases by hand, so
+    /// the gate covers the **whole** front end — lowering, typecheck *and* flatten.
+    /// That is what makes `Supported` mean "runs" rather than "typechecks": every
+    /// entry in the implemented subset has to come out the far end as a plan.
     ///
     /// Codes are collected as they come, *not* filtered against the ones the corpus
     /// knows about: a code nobody expected has to be able to fail this gate, which is
     /// the whole point of comparing sets.
-    fn compile(source: &str) -> Vec<String> {
-        use crate::focus::{cst::CstNode, lower::lower, parse::parse, schema::LocalInterner, ty};
+    fn compile(source: &str) -> (Vec<String>, bool) {
+        use crate::focus::compile::Compilation;
 
         let schema = schema();
-        let mut interner = LocalInterner::new(schema.interner().clone());
+        let mut compilation = Compilation::new(source, &schema);
 
-        // One sink from here on, as a compilation has. The parse's own diagnostics
-        // are the parse gate's business, so the codes counted below start after it.
-        let mut diagnostics = Diagnostics::new();
-        let Some(cst) = parse(source, &mut diagnostics) else {
-            return vec![];
-        };
-        let mark = diagnostics.len();
-
-        let ast = lower(
-            &CstNode::new(&cst),
-            &schema,
-            &mut interner,
-            &mut diagnostics,
-        );
-        let _typed = ty::check(&ast, &schema, &interner, &mut diagnostics);
+        // A refused parse is the parse gate's business, and reports nothing here.
+        let plan = compilation.plan().is_some();
 
         let mut codes: Vec<String> = vec![];
-        for diag in diagnostics.since(mark) {
+        for diag in compilation.diagnostics() {
+            // Parse diagnostics carry no code, and the parse gate owns them.
             if let Some(code) = diag.code.as_deref()
                 && !codes.iter().any(|seen| seen == code)
             {
                 codes.push(code.to_owned());
             }
         }
-        codes
+
+        (codes, plan)
     }
 }

@@ -30,7 +30,8 @@ use codespan_reporting::{diagnostic::LabelStyle, files, files::SimpleFile, term}
 
 use super::{
     cst::CstNode,
-    diag::{Code, Diagnostic, Diagnostics},
+    diag::{Diagnostic, Diagnostics},
+    flatten::flatten,
     lower::lower,
     parse::parse,
     plan::Plan,
@@ -55,6 +56,8 @@ pub struct Compilation<'src> {
     /// `ast.is_some()`, because a refused parse produces no tree and must not
     /// re-run the phases on every call.
     checked: bool,
+    /// Whether [`plan`](Self::plan) has run — see there for why it runs once.
+    planned: bool,
 }
 
 impl<'src> Compilation<'src> {
@@ -68,6 +71,7 @@ impl<'src> Compilation<'src> {
             ast: None,
             typed: None,
             checked: false,
+            planned: false,
         }
     }
 
@@ -108,29 +112,38 @@ impl<'src> Compilation<'src> {
         self.typed.as_ref()
     }
 
-    /// Compile as far as a [`Plan`] — which is Phase 4, and does not exist.
+    /// Compile all the way to a [`Plan`] — the driver's terminal product.
     ///
-    /// The seam, so the driver has its terminal shape now and flatten drops into
-    /// one place. Until then it type-checks and then says what is missing, by
-    /// code, like any other unimplemented construct.
+    /// Type-checks first, and **stops if anything was reported**: flatten handles
+    /// the implemented subset, so a query with a deferred construct or a type error
+    /// in it has no plan to be missing, and running flatten over it would report
+    /// consequences of a fault the user already has.
+    ///
+    /// `None` means no plan, always with a reason in the sink
+    /// ([`flatten`](crate::focus::flatten)).
+    ///
+    /// **Produced once.** Flatten reports into the shared sink, so a second run
+    /// would report every fault it found a second time; a caller wanting the plan
+    /// twice keeps the one it was given. Asking again yields `None`.
     pub fn plan(&mut self) -> Option<Plan> {
         self.check()?;
 
-        if self.diagnostics.has_errors() {
+        if self.diagnostics.has_errors() || self.planned {
             return None;
         }
+        self.planned = true;
 
-        let span = self.ast.as_ref().map_or(0..self.source.len(), |ast| {
-            let span = ast.store().span(*ast.query().head());
-            span.start as usize..span.end as usize
-        });
+        // Destructured for the same reason `check` is: flatten reads the tree and
+        // the interner while reporting into the sink.
+        let Self {
+            schema,
+            interner,
+            diagnostics,
+            ast,
+            ..
+        } = self;
 
-        self.diagnostics.error(
-            Code::NyiFlatten,
-            "turning a typed query into a plan is not implemented yet",
-            span,
-        );
-        None
+        flatten(ast.as_ref()?, schema, interner, diagnostics)
     }
 
     /// The type of the query's head, once [`check`](Self::check) has run.
@@ -317,27 +330,61 @@ mod tests {
         assert_eq!(after_first, 1);
     }
 
-    /// `plan` reports what is missing rather than pretending, and only after the
-    /// query is otherwise clean — a query with a type error has no plan to be
-    /// missing.
+    /// `plan` runs the whole pipeline: a clean query comes back as a runnable plan
+    /// with nothing reported.
     #[test]
-    fn planning_reports_the_phase_that_does_not_exist() {
+    fn planning_a_clean_query_produces_a_plan() {
+        let schema = corpus::schema();
+        let mut compilation = Compilation::new("X where X = test.Foo _", &schema);
+
+        let plan = compilation.plan();
+        assert!(
+            compilation.diagnostics().is_empty(),
+            "{}",
+            compilation.render_to_string()
+        );
+
+        let plan = plan.expect("a plan");
+        assert_eq!(plan.body.len(), 1);
+        assert_eq!(plan.nvars, 1);
+    }
+
+    /// A query that does not typecheck has no plan, and flatten is not run over it
+    /// — so the only diagnostic is the one the user can act on.
+    #[test]
+    fn a_query_that_does_not_typecheck_is_not_flattened() {
         let schema = corpus::schema();
 
-        let mut clean = Compilation::new("X where X = test.Foo _", &schema);
-        assert!(clean.plan().is_none());
-        assert_eq!(
-            clean.diagnostics().codes().collect::<Vec<_>>(),
-            ["nyi/flatten"]
-        );
+        for (source, code) in [
+            ("X where X = nosuch.Pred _", "reject/unknown-predicate"),
+            ("X where X = never", "nyi/never"),
+            ("_ where test.Foo _", "reject/wildcard-in-head"),
+        ] {
+            let mut compilation = Compilation::new(source, &schema);
+            assert!(compilation.plan().is_none(), "{source:?}");
+            assert_eq!(
+                compilation.diagnostics().codes().collect::<Vec<_>>(),
+                [code],
+                "{source:?}",
+            );
+        }
+    }
 
-        let mut broken = Compilation::new("X where X = nosuch.Pred _", &schema);
-        assert!(broken.plan().is_none());
-        assert_eq!(
-            broken.diagnostics().codes().collect::<Vec<_>>(),
-            ["reject/unknown-predicate"],
-            "a query that does not typecheck has no plan to report as missing"
-        );
+    /// `plan` produces once. Flatten reports into the shared sink, so a second run
+    /// would say everything twice — the same reason the source is lexed once.
+    #[test]
+    fn planning_twice_does_not_report_twice() {
+        let schema = corpus::schema();
+
+        // A query flatten rejects, so there is a diagnostic that could be doubled.
+        let mut compilation = Compilation::new("X where test.Foo _", &schema);
+
+        assert!(compilation.plan().is_none());
+        let after_first = compilation.diagnostics().len();
+        assert!(compilation.plan().is_none());
+
+        assert_eq!(compilation.diagnostics().len(), after_first);
+        assert_eq!(after_first, 1);
     }
 
     proptest! {

@@ -1,10 +1,6 @@
 use std::{ops::Range, sync::Arc};
 
-use crate::focus::{
-    iter::Address,
-    plan::Project,
-    schema::{PredicateId, Symbol},
-};
+use crate::focus::schema::{PredicateId, Symbol};
 
 /// A byte range in the query's source text, as stored on a node.
 ///
@@ -92,45 +88,10 @@ pub enum Ty {
     Error,
 }
 
-pub enum GroundKind<T> {
-    Lit(Literal),
-    Var(Address),
-    Wildcard,
-    Prefix(Symbol),
-    Record(Box<[(usize, T)]>),
-}
-
 #[derive(Clone, Copy)]
 pub enum Literal {
     Int(i64),
     Str(Symbol),
-}
-
-#[derive(Debug)]
-pub enum FactSource {
-    Var(Address),
-    Field(Box<FactSource>, usize),
-}
-
-pub enum FlatAccess {
-    Scan(PredicateId, NodeId),
-    Fetch(PredicateId, FactSource),
-}
-
-// Front-end scaffolding not yet wired into the pipeline (Phases 2–4); the
-// fields are read once flatten/lowering lands.
-#[allow(dead_code)]
-pub struct FlatStmt {
-    out: Option<Address>,
-    access: FlatAccess,
-}
-
-#[allow(dead_code)]
-pub struct FlatPlan {
-    nvars: u32,
-    body: Box<[FlatStmt]>,
-    head: Project,
-    store: SyntaxTree<GroundKind<NodeId>>,
 }
 
 #[derive(Clone, Copy)]
@@ -272,26 +233,6 @@ impl<K: Recursive> SyntaxTree<K> {
 pub trait Recursive {
     type Base<R>;
     fn map<R, F: FnMut(NodeId) -> R>(&self, f: F) -> Self::Base<R>;
-}
-
-impl Recursive for GroundKind<NodeId> {
-    type Base<R> = GroundKind<R>;
-
-    fn map<R, F: FnMut(NodeId) -> R>(&self, mut f: F) -> Self::Base<R> {
-        match self {
-            GroundKind::Lit(lit) => GroundKind::Lit(*lit),
-            GroundKind::Var(var) => GroundKind::Var(*var),
-            GroundKind::Wildcard => GroundKind::Wildcard,
-            GroundKind::Prefix(symbol) => GroundKind::Prefix(*symbol),
-            GroundKind::Record(fields) => {
-                let new_fields = fields
-                    .iter()
-                    .map(|(idx, node_id)| (*idx, f(*node_id)))
-                    .collect();
-                GroundKind::Record(new_fields)
-            }
-        }
-    }
 }
 
 impl Recursive for ExprKind<NodeId> {
