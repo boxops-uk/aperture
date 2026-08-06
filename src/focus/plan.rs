@@ -1,3 +1,5 @@
+use std::fmt;
+
 use byteview::ByteView;
 use serde::{Serialize, Serializer};
 
@@ -116,50 +118,127 @@ impl Serialize for FactId {
     }
 }
 
-#[derive(Debug)]
+/// Where a field lives inside a stored key: a **top-level field**, then one step
+/// per record it is nested inside.
+///
+/// A stored key is the concatenation of the key type's top-level fields
+/// ([chapter 3]) — so a flat key's field is reached by the leading `field` alone,
+/// which is the **depth-1 fast path** the executor's field-offset cache holds.
+/// `nested` is the walk *inside* a record-typed field, which no cache covers and
+/// which re-derives its offsets per read.
+///
+/// The leading field is a separate component rather than the first element of one
+/// slice, so an *empty* path — a plan naming no field at all — cannot be spelled.
+///
+/// [chapter 3]: ../../../docs/03-storage-model.md
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldPath {
+    field: usize,
+    nested: Box<[usize]>,
+}
+
+impl FieldPath {
+    /// A top-level field of the key — the flat case.
+    #[must_use]
+    pub fn field(field: usize) -> Self {
+        Self {
+            field,
+            nested: Box::new([]),
+        }
+    }
+
+    /// A field of the record at top-level field `field`, `nested` steps down.
+    #[must_use]
+    pub fn nested(field: usize, nested: impl Into<Box<[usize]>>) -> Self {
+        Self {
+            field,
+            nested: nested.into(),
+        }
+    }
+
+    /// This path, then one step further in — reading a field of a record field.
+    #[must_use]
+    pub fn then(&self, step: usize) -> Self {
+        let mut nested = self.nested.to_vec();
+        nested.push(step);
+        Self::nested(self.field, nested)
+    }
+
+    /// The top-level key field this path starts at.
+    #[must_use]
+    pub fn field_idx(&self) -> usize {
+        self.field
+    }
+
+    /// The steps inside that field; empty on the fast path.
+    #[must_use]
+    pub fn steps(&self) -> &[usize] {
+        &self.nested
+    }
+
+    /// Whether this names a top-level field directly.
+    #[must_use]
+    pub fn is_flat(&self) -> bool {
+        self.nested.is_empty()
+    }
+}
+
+impl fmt::Display for FieldPath {
+    /// `1`, or `0.1` for a nested step — how a plan reads in a diagnostic or a
+    /// test's rendering of it.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.field)?;
+        for step in self.nested.iter() {
+            write!(f, ".{step}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum SeekKey {
     Prefix(Box<[u8]>),
     Composite(Box<[SeekKeyPart]>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SeekKeyPart {
     Bytes(Box<[u8]>),
-    RegisterField { address: Address, field_idx: usize },
+    RegisterField { address: Address, path: FieldPath },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Access {
     pub predicate_id: PredicateId,
     pub seek_key: SeekKey,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ResidualOp {
     EqConst(Box<[u8]>),
     Prefix(Box<[u8]>),
-    EqRegisterField { address: Address, field_idx: usize },
+    EqRegisterField { address: Address, path: FieldPath },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Residual {
-    pub field_idx: usize,
+    pub path: FieldPath,
     pub op: ResidualOp,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Generator {
     pub access: Access,
     pub binds: Box<[Address]>,
     pub residuals: Box<[Residual]>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Project {
     Lit(Value),
     RegisterField {
         address: Address,
-        field_idx: usize,
+        path: FieldPath,
         ty: PredicateTy,
     },
     FactRef(Address),
@@ -172,7 +251,7 @@ pub enum Project {
 
 /// The compiled query — the fixed contract between the front end and the
 /// executor.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Plan {
     pub nvars: usize,
     pub body: Box<[Generator]>,
@@ -221,12 +300,15 @@ pub mod proptest {
 
     use ::proptest::prelude::*;
 
-    use super::{Access, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart};
+    use super::{
+        Access, FieldPath, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+    };
     use crate::focus::{
         fixtures::{compose, i64_field, interner_with, str_field},
         iter::Address,
         mem_store::MemStore,
         schema::{LocalInterner, PredicateId, PredicateTy},
+        tuple::Value,
     };
 
     /// Bounds are deliberately tight: the resume battery re-runs a plan once per
@@ -260,7 +342,7 @@ pub mod proptest {
     }
 
     impl FieldTy {
-        fn of(pick: u8) -> Self {
+        pub fn of(pick: u8) -> Self {
             if pick.is_multiple_of(2) {
                 FieldTy::Int
             } else {
@@ -268,7 +350,7 @@ pub mod proptest {
             }
         }
 
-        fn predicate_ty(self) -> PredicateTy {
+        pub fn predicate_ty(self) -> PredicateTy {
             match self {
                 FieldTy::Int => PredicateTy::Int,
                 FieldTy::Str => PredicateTy::Str,
@@ -276,24 +358,51 @@ pub mod proptest {
         }
     }
 
+    /// One key field's value, drawn from the tiny domain above.
+    ///
+    /// Public because [`flatten::proptest`](crate::focus::flatten::proptest)
+    /// generates `(query, store)` pairs over the same vocabulary: the same field
+    /// types, the same value domain and the same encoding, so a query generator and
+    /// a plan generator cannot drift apart in what they consider a fact.
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    enum FieldVal {
+    pub enum FieldVal {
         Int(i64),
         Str(&'static str),
     }
 
     impl FieldVal {
-        fn of(ty: FieldTy, pick: u8) -> Self {
+        pub fn of(ty: FieldTy, pick: u8) -> Self {
             match ty {
                 FieldTy::Int => FieldVal::Int(INTS[pick as usize % INTS.len()]),
                 FieldTy::Str => FieldVal::Str(STRS[pick as usize % STRS.len()]),
             }
         }
 
-        fn encode(&self) -> Vec<u8> {
+        pub fn encode(&self) -> Vec<u8> {
             match self {
                 FieldVal::Int(i) => i64_field(*i),
                 FieldVal::Str(s) => str_field(s),
+            }
+        }
+
+        /// This value as a projected row would carry it — what a model oracle
+        /// compares the executor's output against.
+        #[must_use]
+        pub fn to_value(&self) -> Value {
+            match self {
+                FieldVal::Int(i) => Value::Int(*i),
+                FieldVal::Str(s) => Value::Str((*s).to_owned()),
+            }
+        }
+
+        /// This value as a **focus literal**, for writing the query that matches
+        /// it. The string domain holds no character needing an escape, so
+        /// quoting is all this has to do.
+        #[must_use]
+        pub fn source(&self) -> String {
+            match self {
+                FieldVal::Int(i) => i.to_string(),
+                FieldVal::Str(s) => format!("{s:?}"),
             }
         }
     }
@@ -404,7 +513,7 @@ pub mod proptest {
                             Some((ref_level, ref_field)) => {
                                 SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                                     address: Address::new(ref_level),
-                                    field_idx: ref_field,
+                                    path: FieldPath::field(ref_field),
                                 }]))
                             }
                         },
@@ -413,7 +522,7 @@ pub mod proptest {
                     residuals: match &spec.residual {
                         None => Box::new([]),
                         Some(ResidualSpec::EqConst { field, val }) => Box::new([Residual {
-                            field_idx: *field,
+                            path: FieldPath::field(*field),
                             op: ResidualOp::EqConst(val.encode().into_boxed_slice()),
                         }]),
                         Some(ResidualSpec::EqRegisterField {
@@ -421,10 +530,10 @@ pub mod proptest {
                             level: ref_level,
                             ref_field,
                         }) => Box::new([Residual {
-                            field_idx: *field,
+                            path: FieldPath::field(*field),
                             op: ResidualOp::EqRegisterField {
                                 address: Address::new(*ref_level),
-                                field_idx: *ref_field,
+                                path: FieldPath::field(*ref_field),
                             },
                         }]),
                     },
@@ -450,7 +559,7 @@ pub mod proptest {
                         HeadSpec::FactRef { level } => Project::FactRef(Address::new(*level)),
                         HeadSpec::Field { level, field } => Project::RegisterField {
                             address: Address::new(*level),
-                            field_idx: *field,
+                            path: FieldPath::field(*field),
                             ty: self.field_ty(*level, *field).predicate_ty(),
                         },
                     };
@@ -473,8 +582,9 @@ pub mod proptest {
     }
 
     /// A composite key is its encoded fields back-to-back — the encoding is
-    /// self-delimiting (I2), so no lengths or separators are needed.
-    fn encode_key(key: &[FieldVal]) -> Vec<u8> {
+    /// self-delimiting (I2), so no lengths or separators are needed, and no record
+    /// wrapper of its own ([chapter 3](../../../docs/03-storage-model.md)).
+    pub fn encode_key(key: &[FieldVal]) -> Vec<u8> {
         let fields: Vec<Vec<u8>> = key.iter().map(FieldVal::encode).collect();
         let fields: Vec<&[u8]> = fields.iter().map(Vec::as_slice).collect();
 

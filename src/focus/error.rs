@@ -38,6 +38,20 @@ pub enum ApertureError {
     #[error("resume key not found")]
     BadResumeKey,
 
+    /// A plan stepping *into* a key field that is not a record. The field's own
+    /// marker says what it is, so this is a plan disagreeing with the schema the
+    /// row was written under — reported rather than read as bytes that happen to
+    /// sit there.
+    #[error("a plan reads nested field {step} of a key field that is not a record")]
+    NotARecord { step: usize },
+
+    /// A plan naming a nested field the record does not have: its terminator came
+    /// first. A [`FieldPath`](crate::focus::plan::FieldPath) is checked against the
+    /// schema when the plan is built, so this is a malformed plan, not a query
+    /// answering nothing.
+    #[error("a plan reads nested field {step} of a record with fewer fields than that")]
+    NestedFieldOutOfRange { step: usize },
+
     #[error("dangling fact id {0:?}: key present but no entity in the `entities` column family")]
     DanglingFactId(FactId),
 

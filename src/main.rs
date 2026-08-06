@@ -14,24 +14,24 @@
 //!
 //! # What it cannot do yet
 //!
-//! **Run your query.** Turning a typed tree into a [`Plan`] is flatten, which is
-//! Phase 4 and does not exist — `focus::syntax::FlatPlan` is unwired scaffolding.
-//! So a query gets as far as a type and stops, and the shell says so rather than
-//! pretending. `:facts` runs a plan this program builds by hand, which is the
-//! honest way to show the store, executor and codec underneath all working.
+//! **Run your query.** Compiling one to a [`Plan`] and executing it — with the
+//! `:commands` that show a plan — is what Phase 5 wires up at this prompt; for now
+//! a query gets as far as a type and stops, and the shell says so rather than
+//! pretending. `:facts` runs a plan this program builds by hand, which is the honest
+//! way to show the store, executor and codec underneath all working.
 
 use std::{borrow::Cow, collections::BTreeMap, path::Path, sync::Arc};
 
 use aperture::focus::{
     compile::Compilation,
-    error::{ApertureError, StoreCodecError},
+    error::ApertureError,
     iter::{Address, Executor, Iteratee, Stream},
     lexer::{Token, tokenize},
-    plan::{Access, FactId, FactStore, Generator, Plan, Project, SeekKey},
-    schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner},
+    plan::{Access, FactId, FactStore, FieldPath, Generator, Plan, Project, SeekKey},
+    schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner, Symbol},
     store::{FjallDb, FjallStore},
     syntax::Ty,
-    tuple::{TupleEncoder, Value, decode_typed},
+    tuple::{TupleEncoder, Value, decode_key},
 };
 use codespan_reporting::term::{
     self,
@@ -132,18 +132,22 @@ fn put_field(enc: &mut TupleEncoder<'_>, field: &Field<'_>) {
 }
 
 /// Encode a record key — the shape of every predicate here bar `demo.City`.
-fn record_key(fields: &[Field<'_>]) -> Result<Vec<u8>, StoreCodecError> {
+///
+/// The fields go in **back to back, with no record wrapper of their own**: a
+/// stored key is a tuple of the key type's top-level fields
+/// ([chapter 3](../docs/03-storage-model.md)), which is what lets a seek extend a
+/// prefix by whole fields and lets the executor reach field *k* by skipping the *k*
+/// before it. A record *inside* a field does keep its wrapper, because there it is
+/// one value among others and has to be skippable as one.
+fn record_key(fields: &[Field<'_>]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut enc = TupleEncoder::new(&mut out);
 
-    enc.record(|enc| {
-        for field in fields {
-            put_field(enc, field);
-        }
-        Ok(())
-    })?;
+    for field in fields {
+        put_field(&mut enc, field);
+    }
 
-    Ok(out)
+    out
 }
 
 /// Encode a bare scalar, for a key or a value.
@@ -178,7 +182,7 @@ fn seed(db: &FjallDb) -> Result<usize, ApertureError> {
     ] {
         let fact = put(
             PERSON,
-            record_key(&[Field::Int(id)])?,
+            record_key(&[Field::Int(id)]),
             scalar(&Field::Str(name)),
         )?;
         people.insert(id, fact);
@@ -193,7 +197,7 @@ fn seed(db: &FjallDb) -> Result<usize, ApertureError> {
     for (from, to) in [(1, 2), (1, 3), (2, 3), (3, 4)] {
         put(
             KNOWS,
-            record_key(&[Field::Ref(people[&from]), Field::Ref(people[&to])])?,
+            record_key(&[Field::Ref(people[&from]), Field::Ref(people[&to])]),
             vec![],
         )?;
     }
@@ -206,7 +210,7 @@ fn seed(db: &FjallDb) -> Result<usize, ApertureError> {
     ] {
         put(
             LIVES_IN,
-            record_key(&[Field::Ref(cities[place]), Field::Ref(people[&id])])?,
+            record_key(&[Field::Ref(cities[place]), Field::Ref(people[&id])]),
             vec![],
         )?;
     }
@@ -411,7 +415,7 @@ fn render_ref(
     }
 
     match store.point(id) {
-        Ok(Some(entity)) => match decode_typed(interner, &entity.key, predicate.key().ty) {
+        Ok(Some(entity)) => match decode_key(interner, &entity.key, predicate.key().ty) {
             Ok(key) => format!(
                 "{name} {}",
                 render_value(store, schema, interner, &key, depth - 1)
@@ -470,7 +474,7 @@ fn check(source: &str, schema: &Schema) {
     match compilation.head_ty() {
         Some(head) => {
             println!("  : {}", render_ty(head, schema, compilation.interner()));
-            println!("  (typechecked — running it needs flatten, which is Phase 4)");
+            println!("  (typechecked — running it is Phase 5, which wires `plan()` in here)");
         }
         None => println!("  (the head was not annotated)"),
     }
@@ -522,20 +526,20 @@ fn print_schema(schema: &Schema) {
 /// A whole-predicate scan, projecting the key and — where there is one — the
 /// value.
 ///
-/// Hand-built, because flatten does not exist yet. `field_idx` indexes the key's
-/// *top-level* fields, and a key is one field however many parts it has, so field
-/// 0 is the whole key.
+/// Hand-built, because the shell cannot compile a query to a plan until Phase 5
+/// wires the driver's `plan()` in.
+///
+/// A stored key is its top-level fields back to back, so projecting the *whole* key
+/// is a record over one `RegisterField` per field: there is no single
+/// [`FieldPath`] that names all of them. That is the same asymmetry a query meets
+/// as `nyi/whole-key` — a scalar key *is* one field and needs no record.
 fn scan_plan(
     id: PredicateId,
     key_ty: PredicateTy,
     value_ty: Option<PredicateTy>,
     interner: &mut LocalInterner,
 ) -> Plan {
-    let key = Project::RegisterField {
-        address: Address::new(0),
-        field_idx: 0,
-        ty: key_ty,
-    };
+    let key = key_projection(&key_ty);
 
     let head = match value_ty {
         None => key,
@@ -568,6 +572,34 @@ fn scan_plan(
             residuals: Box::new([]),
         }]),
         head,
+    }
+}
+
+/// Project a whole stored key: one field per declared key field, in declaration
+/// order — which is also encoding order, since field lists are sorted by name.
+fn key_projection(key_ty: &PredicateTy) -> Project {
+    match key_ty {
+        PredicateTy::Record(fields) => Project::Record(
+            fields
+                .iter()
+                .enumerate()
+                .map(|(idx, (name, ty))| {
+                    (
+                        Symbol::Schema(*name),
+                        Project::RegisterField {
+                            address: Address::new(0),
+                            path: FieldPath::field(idx),
+                            ty: ty.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        scalar => Project::RegisterField {
+            address: Address::new(0),
+            path: FieldPath::field(0),
+            ty: scalar.clone(),
+        },
     }
 }
 
@@ -885,7 +917,7 @@ mod tests {
                         .expect("point")
                         .unwrap_or_else(|| panic!("dangling reference {}", fact.raw()));
 
-                    decode_typed(&interner, &entity.key, target.key().ty)
+                    decode_key(&interner, &entity.key, target.key().ty)
                         .expect("the referenced key decodes at the referenced predicate's type");
                     seen += 1;
                 }

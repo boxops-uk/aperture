@@ -815,6 +815,63 @@ pub fn decode_typed(
     Ok(value)
 }
 
+/// Decode a **stored key** — which is the key type's top-level fields back to
+/// back, with no record wrapper of its own ([chapter 3]).
+///
+/// That asymmetry is the layout, not an accident: a key is stored flat so a seek
+/// can extend a prefix by whole fields and the executor can reach field *k* by
+/// skipping the *k* before it, which is what the field-offset cache holds
+/// ([I2](../../docs/invariants.md#i2)). A *nested* record inside a field keeps its
+/// wrapper, because there it is one value among others and has to be skippable as
+/// one. So [`decode_typed`] reads a field or a value, and this reads a whole key;
+/// handing a record-keyed predicate's key to `decode_typed` looks for a
+/// `MARK_RECORD` that was never written.
+///
+/// [chapter 3]: ../../docs/03-storage-model.md
+pub fn decode_key(
+    interner: &LocalInterner,
+    bytes: &[u8],
+    ty: &PredicateTy,
+) -> Result<Value, ApertureError> {
+    let mut dec = TupleDecoder::new(bytes);
+
+    let value = match ty {
+        PredicateTy::Record(fields) => {
+            let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
+
+            for (name, field_ty) in fields.iter() {
+                let value = decode_typed_at(interner, &mut dec, field_ty)?;
+
+                let symbol = Symbol::Schema(*name);
+                let field_name = interner
+                    .try_resolve(symbol)
+                    .ok_or(ApertureError::UnknownSymbol(symbol))?
+                    .to_owned();
+
+                out.push((field_name, value));
+            }
+
+            Value::Record(out.into_boxed_slice())
+        }
+
+        scalar => decode_typed_at(interner, &mut dec, scalar)?,
+    };
+
+    // As for a field: a key that decoded "successfully" while leaving bytes unread
+    // is a key of a different shape than the schema says.
+    if !dec.remaining().is_empty() {
+        let mark = dec
+            .remaining()
+            .first()
+            .copied()
+            .ok_or(StoreCodecError::UnexpectedEof)?;
+
+        return Err(ApertureError::Decode(StoreCodecError::UnexpectedMark(mark)));
+    }
+
+    Ok(value)
+}
+
 pub fn decode_typed_at(
     interner: &LocalInterner,
     dec: &mut TupleDecoder<'_>,
@@ -1844,6 +1901,87 @@ pub(crate) mod tests {
         // ...and `decode_typed` round-trips it (interner unused for a fact ref).
         let interner = LocalInterner::new(SchemaInterner::new(Rodeo::new().into_reader()));
         assert_eq!(decode_typed(&interner, &bytes, &ty).unwrap(), value);
+    }
+
+    // ---- a stored key is flat, a nested record is not ----------------------
+
+    /// A key is its top-level fields back to back; a record *inside* a field keeps
+    /// its wrapper. That is the layout the whole read path assumes — a seek extends
+    /// a prefix by whole fields, and field *k* is reached by skipping the *k*
+    /// before it — so it is pinned here, in bytes, next to the codec it is a
+    /// property of.
+    #[test]
+    fn a_stored_key_is_its_fields_with_no_wrapper_of_its_own() {
+        use crate::focus::schema::SchemaInterner;
+        use lasso::Rodeo;
+        use std::sync::Arc;
+
+        let mut rodeo = Rodeo::new();
+        let (outer, inner, id) = (
+            rodeo.get_or_intern("outer"),
+            rodeo.get_or_intern("inner"),
+            rodeo.get_or_intern("id"),
+        );
+        let schema = SchemaInterner::new(rodeo.into_reader());
+        let interner = LocalInterner::new(schema);
+
+        // `{ id : int, outer : { inner : str } }` — fields sorted by name.
+        let key_ty = PredicateTy::Record(Arc::from([
+            (id, PredicateTy::Int),
+            (
+                outer,
+                PredicateTy::Record(Arc::from([(inner, PredicateTy::Str)])),
+            ),
+        ]));
+
+        let mut bytes = Vec::new();
+        put_i64(&mut bytes, 7);
+        bytes.push(MARK_RECORD);
+        put_str(&mut bytes, "x");
+        bytes.push(MARK_TERM);
+
+        // The top level has no `MARK_RECORD`: the first byte is the first field's.
+        assert_ne!(bytes[0], MARK_RECORD, "a stored key carries no wrapper");
+
+        // Two top-level fields, reachable by skipping.
+        let first = skip(&bytes, 0, false).unwrap();
+        assert_eq!(&bytes[..first], i64_field_bytes(7).as_slice());
+        assert_eq!(skip(&bytes, first, false).unwrap(), bytes.len());
+
+        // And the whole key decodes as the record its type says it is.
+        let decoded = decode_key(&interner, &bytes, &key_ty).expect("decode a stored key");
+        assert_eq!(
+            decoded,
+            Value::Record(Box::new([
+                ("id".to_owned(), Value::Int(7)),
+                (
+                    "outer".to_owned(),
+                    Value::Record(Box::new([("inner".to_owned(), Value::Str("x".to_owned()))]))
+                ),
+            ]))
+        );
+
+        // A scalar key is one field, and decodes the same way either function
+        // would read it.
+        let mut scalar = Vec::new();
+        put_str(&mut scalar, "abc");
+        assert_eq!(
+            decode_key(&interner, &scalar, &PredicateTy::Str).unwrap(),
+            Value::Str("abc".to_owned())
+        );
+
+        // Trailing bytes are a fault, as they are for a field: a key that decodes
+        // "successfully" while leaving bytes unread hides a schema mismatch.
+        let mut trailing = bytes.clone();
+        put_i64(&mut trailing, 1);
+        assert!(decode_key(&interner, &trailing, &key_ty).is_err());
+    }
+
+    /// One encoded i64, for comparing bytes above.
+    fn i64_field_bytes(v: i64) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_i64(&mut out, v);
+        out
     }
 
     proptest! {

@@ -7,10 +7,11 @@ use tokio_util::sync::CancellationToken;
 use crate::focus::{
     error::{ApertureError, StoreCodecError, StoreError},
     plan::{
-        FactId, FactStore, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+        FactId, FactStore, FieldPath, Generator, Plan, Project, Residual, ResidualOp, SeekKey,
+        SeekKeyPart,
     },
     schema::{LocalInterner, PREDICATE_ID_SIZE},
-    tuple::{Value, decode_typed, skip, strinc},
+    tuple::{MARK_ESCAPE, MARK_RECORD, MARK_TERM, Value, decode_typed, skip, strinc},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,8 +233,80 @@ impl FieldOffsets {
 /// work, so it happens on a stride rather than per row. The consequence is that a
 /// run shorter than the stride can complete despite a cancelled token — a bounded
 /// overrun, which is the trade the stride exists to make.
-/// The span of field `idx` of the row held by register `var`, through that
-/// register's slot in `field_offsets`.
+/// The span of `path` within `key`: the cache resolves the top-level field, and
+/// any nested steps are walked inside it.
+///
+/// Only the top level is cached — the **depth-1 fast path**
+/// ([`FieldPath`](crate::focus::plan::FieldPath)). A nested step re-derives its
+/// offsets on every read, which is the trade a cache per record would have to
+/// earn; flat keys are what the hot loop sees.
+fn field_span(
+    offsets: &mut FieldOffsets,
+    key: &ByteView,
+    path: &FieldPath,
+) -> Result<Range<usize>, ApertureError> {
+    let mut span = offsets
+        .get(key, path.field_idx())
+        .map_err(ApertureError::Decode)?;
+
+    for &step in path.steps() {
+        span = nested_field_span(key, span, step)?;
+    }
+
+    Ok(span)
+}
+
+/// The span of field `step` of the record occupying `outer` of `key`.
+///
+/// A record is `MARK_RECORD <element>… MARK_TERM` ([chapter 2]), so the walk is:
+/// step over the marker, then skip `step` elements — in *nested* mode, where a
+/// null element is escaped and a bare terminator ends the record. Bounded to
+/// `outer`, so a malformed row cannot walk into the field that follows.
+///
+/// [chapter 2]: ../../docs/02-tuple-codec.md
+fn nested_field_span(
+    key: &[u8],
+    outer: Range<usize>,
+    step: usize,
+) -> Result<Range<usize>, ApertureError> {
+    if key.get(outer.start) != Some(&MARK_RECORD) {
+        return Err(ApertureError::NotARecord { step });
+    }
+
+    // Bounded to the field, so a malformed row cannot walk out of this record and
+    // into the one that follows it.
+    let bytes = key
+        .get(..outer.end)
+        .ok_or(ApertureError::Decode(StoreCodecError::UnexpectedEof))?;
+
+    let mut start = outer.start + 1;
+
+    for _ in 0..step {
+        if at_record_end(bytes, start) {
+            return Err(ApertureError::NestedFieldOutOfRange { step });
+        }
+        start = skip(bytes, start, true).map_err(ApertureError::Decode)?;
+    }
+
+    if at_record_end(bytes, start) {
+        return Err(ApertureError::NestedFieldOutOfRange { step });
+    }
+
+    let end = skip(bytes, start, true).map_err(ApertureError::Decode)?;
+
+    Ok(start..end)
+}
+
+/// Whether `at` is a record's terminator rather than a null element — the one
+/// place `0x00` is ambiguous, resolved by the `0x00 0xFF` escape ([chapter 2]).
+///
+/// [chapter 2]: ../../docs/02-tuple-codec.md
+fn at_record_end(bytes: &[u8], at: usize) -> bool {
+    bytes.get(at) == Some(&MARK_TERM) && bytes.get(at + 1) != Some(&MARK_ESCAPE)
+}
+
+/// The span of `path` in the row held by register `var`, through that register's
+/// slot in `field_offsets`.
 ///
 /// Shared by the frame (seek splices and residuals) and by projection, so both
 /// index the cache by address and bounds-check it the same way.
@@ -241,13 +314,13 @@ fn get_field_span(
     field_offsets: &mut [FieldOffsets],
     key: &ByteView,
     var: Address,
-    idx: usize,
+    path: &FieldPath,
 ) -> Result<Range<usize>, ApertureError> {
-    field_offsets
+    let offsets = field_offsets
         .get_mut(var.0)
-        .ok_or(ApertureError::AddressOutOfBounds(var))?
-        .get(key, idx)
-        .map_err(ApertureError::Decode)
+        .ok_or(ApertureError::AddressOutOfBounds(var))?;
+
+    field_span(offsets, key, path)
 }
 
 pub const CANCELLATION_STRIDE: usize = 4096;
@@ -347,15 +420,11 @@ impl<S: FactStore> StackFrame<S> {
                         SeekKeyPart::Bytes(bytes) => prefix.extend_from_slice(bytes.as_ref()),
                         SeekKeyPart::RegisterField {
                             address: var_address,
-                            field_idx,
+                            path,
                         } => {
                             let key = state.get(*var_address)?.key();
-                            let span = get_field_span(
-                                &mut self.field_offsets,
-                                &key,
-                                *var_address,
-                                *field_idx,
-                            )?;
+                            let span =
+                                get_field_span(&mut self.field_offsets, &key, *var_address, path)?;
                             prefix.extend_from_slice(&key[span]);
                         }
                     }
@@ -425,9 +494,7 @@ impl<S: FactStore> StackFrame<S> {
         let mut row_field_offsets = FieldOffsets::new();
 
         for residual in residuals.iter() {
-            let span = row_field_offsets
-                .get(&key, residual.field_idx)
-                .map_err(ApertureError::Decode)?;
+            let span = field_span(&mut row_field_offsets, &key, &residual.path)?;
             let field = &key[span];
 
             let ok = match &residual.op {
@@ -435,12 +502,12 @@ impl<S: FactStore> StackFrame<S> {
                 ResidualOp::Prefix(prefix_bytes) => field.starts_with(prefix_bytes.as_ref()),
                 ResidualOp::EqRegisterField {
                     address: var_address,
-                    field_idx,
+                    path,
                 } => {
                     let other = state.get(*var_address)?;
                     let other_key = other.key();
                     let other_span =
-                        get_field_span(frame_field_offsets, &other_key, *var_address, *field_idx)?;
+                        get_field_span(frame_field_offsets, &other_key, *var_address, path)?;
                     field == &other_key[other_span]
                 }
             };
@@ -509,17 +576,13 @@ fn project<S: FactStore>(
 
         Project::FactRef(address) => Ok(Value::FactRef(state.get(*address)?.fact_id)),
 
-        Project::RegisterField {
-            address,
-            field_idx,
-            ty,
-        } => {
+        Project::RegisterField { address, path, ty } => {
             let reg = state.get(*address)?;
             let key = reg.key();
 
             // Through the row's cache, so a head reading several fields of one
             // register walks the row once between them all.
-            let span = get_field_span(offsets, &key, *address, *field_idx)?;
+            let span = get_field_span(offsets, &key, *address, path)?;
 
             decode_typed(interner, &key[span], ty)
         }
@@ -756,13 +819,13 @@ mod tests {
         },
         mem_store::MemStore,
         plan::{
-            Access, Entity, FactId, Generator, Plan, Project, Residual, ResidualOp, SeekKey,
-            SeekKeyPart,
+            Access, Entity, FactId, FieldPath, Generator, Plan, Project, Residual, ResidualOp,
+            SeekKey, SeekKeyPart,
             proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
         schema::{PredicateId, PredicateTy},
         store::FjallDb,
-        tuple::{Value, decode_probe},
+        tuple::{MARK_NULL, Value, decode_probe},
     };
     use ::proptest::prelude::*;
     use std::{collections::BTreeSet, sync::atomic::Ordering};
@@ -869,6 +932,181 @@ mod tests {
         let _ = offsets.get(&other, 1);
     }
 
+    // ---- nested field paths ------------------------------------------------
+    //
+    // A stored key is its top-level fields back to back, so those are reached by
+    // the cache alone. A *record-typed* field keeps its own `MARK_RECORD … TERM`
+    // wrapper ([chapter 2]), and a plan reaches inside it with a
+    // [`FieldPath`](crate::focus::plan::FieldPath). These pin that walk, including
+    // both ways it can be asked for something the row does not have — which are
+    // plan faults, and so must be errors rather than bytes that happen to sit
+    // there (conventions: errors, not panics, on data paths).
+
+    /// A record field as a key holds it: `{outer = {inner = …, extra = …}}`.
+    fn record_field(fields: &[&[u8]]) -> Vec<u8> {
+        let mut out = vec![MARK_RECORD];
+        out.extend_from_slice(&fields.concat());
+        out.push(MARK_TERM);
+        out
+    }
+
+    /// Each step of a path lands on exactly the field it names, at any depth, and
+    /// beside a flat field that is reached by the fast path.
+    #[test]
+    fn a_path_walks_into_a_nested_record() {
+        // key: field 0 = int, field 1 = {a = str, b = {c = int}}
+        let inner = record_field(&[&i64_field(9)]);
+        let nested = record_field(&[&str_field("x"), &inner]);
+        let key = key_of(&[&i64_field(7), &nested]);
+
+        let mut offsets = FieldOffsets::new();
+
+        let flat = field_span(&mut offsets, &key, &FieldPath::field(0)).expect("flat field");
+        assert_eq!(&key[flat], i64_field(7).as_slice());
+
+        let whole =
+            field_span(&mut offsets, &key, &FieldPath::field(1)).expect("the record field whole");
+        assert_eq!(
+            &key[whole],
+            nested.as_slice(),
+            "a record field keeps its wrapper"
+        );
+
+        let one = field_span(&mut offsets, &key, &FieldPath::nested(1, [0])).expect("1.0");
+        assert_eq!(&key[one], str_field("x").as_slice());
+
+        let two = field_span(&mut offsets, &key, &FieldPath::nested(1, [1])).expect("1.1");
+        assert_eq!(&key[two], inner.as_slice());
+
+        let deep = field_span(&mut offsets, &key, &FieldPath::nested(1, [1, 0])).expect("1.1.0");
+        assert_eq!(&key[deep], i64_field(9).as_slice());
+    }
+
+    /// A null *element* inside a record is `0x00 0xFF`, and a bare `0x00` is the
+    /// terminator — so the walk has to read the escape rather than stop at the
+    /// first zero byte, or every field after a null would be unreachable.
+    #[test]
+    fn a_path_walks_past_an_escaped_null_element() {
+        let nested = record_field(&[&[MARK_NULL, MARK_ESCAPE], &i64_field(5)]);
+        let key = key_of(&[&nested]);
+
+        let mut offsets = FieldOffsets::new();
+        let second = field_span(&mut offsets, &key, &FieldPath::nested(0, [1])).expect("0.1");
+
+        assert_eq!(&key[second], i64_field(5).as_slice());
+    }
+
+    /// Stepping into a field that is not a record is a plan disagreeing with the
+    /// schema, and says so.
+    #[test]
+    fn a_path_into_a_scalar_field_is_an_error() {
+        let key = key_of(&[&i64_field(7)]);
+        let mut offsets = FieldOffsets::new();
+
+        assert!(matches!(
+            field_span(&mut offsets, &key, &FieldPath::nested(0, [0])),
+            Err(ApertureError::NotARecord { step: 0 })
+        ));
+    }
+
+    /// A step past the record's last field stops at the terminator rather than
+    /// reading the bytes of whatever follows the field.
+    #[test]
+    fn a_path_past_the_last_nested_field_is_an_error() {
+        let nested = record_field(&[&i64_field(1)]);
+        // A second top-level field, so an overrun would find real bytes to decode.
+        let key = key_of(&[&nested, &i64_field(2)]);
+        let mut offsets = FieldOffsets::new();
+
+        assert!(matches!(
+            field_span(&mut offsets, &key, &FieldPath::nested(0, [1])),
+            Err(ApertureError::NestedFieldOutOfRange { step: 1 })
+        ));
+    }
+
+    /// The whole machine through a nested path: a residual filters on a field
+    /// inside a record, a seek splices one, and the head projects one.
+    ///
+    /// The unit tests above pin the walk; this pins that every place a plan can
+    /// name a field passes the path through rather than only the flat index it
+    /// used to carry.
+    #[test]
+    fn a_plan_seeks_filters_and_projects_through_a_nested_path() {
+        let (nested, ints) = (PredicateId(0), PredicateId(1));
+
+        let mut store = MemStore::new();
+        // `nested`: one field, a record `{inner = i, tag = str}`.
+        for (i, tag) in [(1i64, "a"), (2, "b"), (3, "a")] {
+            store.insert(
+                nested,
+                record_field(&[&i64_field(i), &str_field(tag)]),
+                i as u64,
+            );
+        }
+        // `ints`: a scalar key, joined against the nested `inner` field.
+        for i in [2i64, 3] {
+            store.insert(ints, i64_field(i), i as u64);
+        }
+
+        let interner = interner_with(&["n"]);
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                Generator {
+                    access: Access {
+                        predicate_id: nested,
+                        seek_key: SeekKey::Prefix(Box::new([])),
+                    },
+                    binds: Box::new([Address::new(0)]),
+                    // `tag = "a"`, one step inside the record.
+                    residuals: Box::new([Residual {
+                        path: FieldPath::nested(0, [1]),
+                        op: ResidualOp::EqConst(str_field("a").into_boxed_slice()),
+                    }]),
+                },
+                Generator {
+                    access: Access {
+                        predicate_id: ints,
+                        // ...seeking on `inner`, also one step inside.
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                            address: Address::new(0),
+                            path: FieldPath::nested(0, [0]),
+                        }])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([]),
+                },
+            ]),
+            head: Project::Record(Box::new([(
+                interner.get("n").expect("interned above"),
+                Project::RegisterField {
+                    address: Address::new(0),
+                    path: FieldPath::nested(0, [0]),
+                    ty: PredicateTy::Int,
+                },
+            )])),
+        };
+
+        let rows = collect_rows(store, plan, &interner).expect("run");
+
+        // Of the three nested rows, `tag = "a"` keeps 1 and 3; of those, only 3
+        // has an `ints` fact to join with.
+        assert_eq!(
+            rows,
+            vec![Value::Record(Box::new([("n".to_owned(), Value::Int(3))]))]
+        );
+    }
+
+    /// A path renders as the field it names, which is what a plan reads as.
+    #[test]
+    fn a_path_renders_as_its_steps() {
+        assert_eq!(FieldPath::field(2).to_string(), "2");
+        assert_eq!(FieldPath::nested(1, [0, 3]).to_string(), "1.0.3");
+        assert!(FieldPath::field(0).is_flat());
+        assert!(!FieldPath::nested(0, [0]).is_flat());
+        assert_eq!(FieldPath::field(1).then(2), FieldPath::nested(1, [2]));
+    }
+
     /// A register renders as an index, not a machine address. `Address(0)` used to
     /// reach a diagnostic as `0x0000000000000000`.
     #[test]
@@ -913,7 +1151,7 @@ mod tests {
                         interner.get(name).expect("interned above"),
                         Project::RegisterField {
                             address: Address::new(0),
-                            field_idx: idx,
+                            path: FieldPath::field(idx),
                             ty: PredicateTy::Int,
                         },
                     )
@@ -1081,7 +1319,7 @@ mod tests {
                         predicate_id: knows,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
-                            field_idx: 0,
+                            path: FieldPath::field(0),
                         }])),
                     },
                     binds: Box::new([Address::new(1)]),
@@ -1137,13 +1375,13 @@ mod tests {
                 },
                 binds: Box::new([Address::new(0)]),
                 residuals: Box::new([Residual {
-                    field_idx: 0,
+                    path: FieldPath::field(0),
                     op: ResidualOp::EqConst(str_field("beta").into_boxed_slice()),
                 }]),
             }]),
             head: Project::RegisterField {
                 address: Address::new(0),
-                field_idx: 0,
+                path: FieldPath::field(0),
                 ty: PredicateTy::Str,
             },
         };
@@ -1229,7 +1467,7 @@ mod tests {
             body: Box::new([scan_all(p, 0)]),
             head: Project::RegisterField {
                 address: Address::new(0),
-                field_idx: 0,
+                path: FieldPath::field(0),
                 ty: PredicateTy::Int,
             },
         };
@@ -1265,13 +1503,13 @@ mod tests {
                 },
                 binds: Box::new([Address::new(0)]),
                 residuals: Box::new([Residual {
-                    field_idx: 0,
+                    path: FieldPath::field(0),
                     op: ResidualOp::Prefix(prefix.into_boxed_slice()),
                 }]),
             }]),
             head: Project::RegisterField {
                 address: Address::new(0),
-                field_idx: 0,
+                path: FieldPath::field(0),
                 ty: PredicateTy::Str,
             },
         };
@@ -1314,7 +1552,7 @@ mod tests {
                         predicate_id: knows,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
-                            field_idx: 0,
+                            path: FieldPath::field(0),
                         }])),
                     },
                     binds: Box::new([Address::new(1)]),
@@ -1326,7 +1564,7 @@ mod tests {
                     a,
                     Project::RegisterField {
                         address: Address::new(0),
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1334,7 +1572,7 @@ mod tests {
                     b,
                     Project::RegisterField {
                         address: Address::new(1),
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1400,16 +1638,16 @@ mod tests {
                         predicate_id: inner,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
-                            field_idx: 0,
+                            path: FieldPath::field(0),
                         }])),
                     },
                     binds: Box::new([Address::new(1)]),
                     // Fills this frame's offset cache for register 0 mid-scan.
                     residuals: Box::new([Residual {
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         op: ResidualOp::EqRegisterField {
                             address: Address::new(0),
-                            field_idx: 1,
+                            path: FieldPath::field(1),
                         },
                     }]),
                 },
@@ -1419,7 +1657,7 @@ mod tests {
                     interner.get("a").unwrap(),
                     Project::RegisterField {
                         address: Address::new(0),
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         ty: PredicateTy::Str,
                     },
                 ),
@@ -1427,7 +1665,7 @@ mod tests {
                     interner.get("b").unwrap(),
                     Project::RegisterField {
                         address: Address::new(1),
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         ty: PredicateTy::Str,
                     },
                 ),
@@ -1435,7 +1673,7 @@ mod tests {
                     interner.get("c").unwrap(),
                     Project::RegisterField {
                         address: Address::new(1),
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1485,7 +1723,7 @@ mod tests {
         let seek_first_on = |reg: usize| {
             SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                 address: Address::new(reg),
-                field_idx: 0,
+                path: FieldPath::field(0),
             }]))
         };
 
@@ -1507,7 +1745,7 @@ mod tests {
                         // splice r1's second field (b) into the inner prefix.
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(1),
-                            field_idx: 1,
+                            path: FieldPath::field(1),
                         }])),
                     },
                     binds: Box::new([Address::new(2)]),
@@ -1519,7 +1757,7 @@ mod tests {
                     a,
                     Project::RegisterField {
                         address: Address::new(0),
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1527,7 +1765,7 @@ mod tests {
                     b,
                     Project::RegisterField {
                         address: Address::new(1),
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1535,7 +1773,7 @@ mod tests {
                     c,
                     Project::RegisterField {
                         address: Address::new(2),
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1581,10 +1819,10 @@ mod tests {
                     binds: Box::new([Address::new(1)]),
                     // inner.field0 == outer(r0).field1
                     residuals: Box::new([Residual {
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         op: ResidualOp::EqRegisterField {
                             address: Address::new(0),
-                            field_idx: 1,
+                            path: FieldPath::field(1),
                         },
                     }]),
                 },
@@ -1594,7 +1832,7 @@ mod tests {
                     a,
                     Project::RegisterField {
                         address: Address::new(0),
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1602,7 +1840,7 @@ mod tests {
                     b,
                     Project::RegisterField {
                         address: Address::new(1),
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1741,7 +1979,7 @@ mod tests {
             body: Box::new([scan_all(p, 0)]),
             head: Project::RegisterField {
                 address: Address::new(0),
-                field_idx: 0,
+                path: FieldPath::field(0),
                 ty: PredicateTy::Int,
             },
         };
@@ -1773,7 +2011,7 @@ mod tests {
                         predicate_id: knows,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
-                            field_idx: 0,
+                            path: FieldPath::field(0),
                         }])),
                     },
                     binds: Box::new([Address::new(1)]),
@@ -1785,7 +2023,7 @@ mod tests {
                     interner.get("a").unwrap(),
                     Project::RegisterField {
                         address: Address::new(0),
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1793,7 +2031,7 @@ mod tests {
                     interner.get("b").unwrap(),
                     Project::RegisterField {
                         address: Address::new(1),
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1828,7 +2066,7 @@ mod tests {
         let seek_on = |reg: usize, field_idx: usize| {
             SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                 address: Address::new(reg),
-                field_idx,
+                path: FieldPath::field(field_idx),
             }]))
         };
 
@@ -1858,7 +2096,7 @@ mod tests {
                     interner.get("a").unwrap(),
                     Project::RegisterField {
                         address: Address::new(0),
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1866,7 +2104,7 @@ mod tests {
                     interner.get("b").unwrap(),
                     Project::RegisterField {
                         address: Address::new(1),
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1874,7 +2112,7 @@ mod tests {
                     interner.get("c").unwrap(),
                     Project::RegisterField {
                         address: Address::new(2),
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1906,10 +2144,10 @@ mod tests {
                     },
                     binds: Box::new([Address::new(1)]),
                     residuals: Box::new([Residual {
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         op: ResidualOp::EqRegisterField {
                             address: Address::new(0),
-                            field_idx: 1,
+                            path: FieldPath::field(1),
                         },
                     }]),
                 },
@@ -1919,7 +2157,7 @@ mod tests {
                     interner.get("a").unwrap(),
                     Project::RegisterField {
                         address: Address::new(0),
-                        field_idx: 0,
+                        path: FieldPath::field(0),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -1927,7 +2165,7 @@ mod tests {
                     interner.get("b").unwrap(),
                     Project::RegisterField {
                         address: Address::new(1),
-                        field_idx: 1,
+                        path: FieldPath::field(1),
                         ty: PredicateTy::Int,
                     },
                 ),
@@ -2135,7 +2373,7 @@ mod tests {
             body: Box::new([scan_all(p, 0)]),
             head: Project::RegisterField {
                 address: Address::new(0),
-                field_idx: 1,
+                path: FieldPath::field(1),
                 ty: PredicateTy::Int,
             },
         };
@@ -2169,13 +2407,13 @@ mod tests {
                 },
                 binds: Box::new([Address::new(0)]),
                 residuals: Box::new([Residual {
-                    field_idx: 0,
+                    path: FieldPath::field(0),
                     op: ResidualOp::EqConst(i64_field(2).into_boxed_slice()),
                 }]),
             }]),
             head: Project::RegisterField {
                 address: Address::new(0),
-                field_idx: 0,
+                path: FieldPath::field(0),
                 ty: PredicateTy::Int,
             },
         };

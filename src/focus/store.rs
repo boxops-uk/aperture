@@ -517,8 +517,8 @@ mod tests {
         iter::{Address, CANCELLATION_STRIDE, Executor, Iteratee, Stream},
         mem_store::MemStore,
         plan::{
-            Access, Generator, MAX_FACT_SEQUENCE, Plan, Project, Residual, ResidualOp, SeekKey,
-            SeekKeyPart,
+            Access, FieldPath, Generator, MAX_FACT_SEQUENCE, Plan, Project, Residual, ResidualOp,
+            SeekKey, SeekKeyPart,
         },
         schema::PredicateTy,
         tuple::strinc,
@@ -1279,7 +1279,7 @@ mod tests {
                         predicate_id: inner,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
-                            field_idx: 0,
+                            path: FieldPath::field(0),
                         }])),
                     },
                     binds: Box::new([Address::new(1)]),
@@ -1288,7 +1288,7 @@ mod tests {
             ]),
             head: Project::RegisterField {
                 address: Address::new(0),
-                field_idx: 0,
+                path: FieldPath::field(0),
                 ty: PredicateTy::Int,
             },
         }
@@ -1434,13 +1434,13 @@ mod tests {
                 // Matches only the final key, so the run skips every other row
                 // and trips the poll on the way.
                 residuals: Box::new([Residual {
-                    field_idx: 0,
+                    path: FieldPath::field(0),
                     op: ResidualOp::EqConst(i64_field(last).into_boxed_slice()),
                 }]),
             }]),
             head: Project::RegisterField {
                 address: Address::new(0),
-                field_idx: 0,
+                path: FieldPath::field(0),
                 ty: PredicateTy::Int,
             },
         };
