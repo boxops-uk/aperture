@@ -13,11 +13,11 @@ ingestion is "fearless."
 
 > **Status.** Being taken from prototype to production. In `src/focus/`: the engine spine
 > (codec, executor, resume, projection) and the fjall store are built and guarded, and the
-> front end is live through typecheck — focus text parses, lowers and typechecks, with every
-> construct deferred to a later phase drawing a diagnostic that names it. **Not yet built:**
-> flatten/reorder, so no query compiles to a `Plan` and nothing runs end to end yet; then
-> ingestion, schema parsing, and the operational layer. See [`PLAN.md`](PLAN.md) for the
-> sequence and current state.
+> **front end now reaches the `Plan`** — focus text parses, lowers, typechecks and flattens,
+> so a query compiles to a plan the executor runs, with every construct deferred to a later
+> phase drawing a diagnostic that names it. **Not yet built:** running one at the prompt
+> (Phase 5 wires `plan()` into the shell), then derived facts, ingestion, schema parsing and
+> the operational layer. See [`PLAN.md`](PLAN.md) for the sequence and current state.
 
 ---
 

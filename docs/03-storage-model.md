@@ -37,6 +37,33 @@ facts of predicate `P`, scan the half-open byte range `[P, strinc(P))`:
 **The scan hot loop touches only `keys`.** Nothing else. That is a load-bearing
 performance property — see [I6](invariants.md#i6) below and [chapter 4](04-executor.md).
 
+<a id="a-stored-key-is-flat"></a>
+#### A stored key is **flat**: its top-level fields, back to back
+
+`tuple_encoded_key` above is the key type's top-level fields concatenated, with **no record
+wrapper of its own** — even when the key type is a record. A record *inside* a field does
+keep its `MARK_RECORD … MARK_TERM` wrapper, because there it is one value among others and
+has to be skippable as one ([chapter 2](02-tuple-codec.md#records-and-the-nullterminator-subtlety)).
+
+Three things rest on that asymmetry, which is why it is written down rather than left to the
+encoder that happens to run first:
+
+- **A seek extends a prefix by whole fields** (above). With a wrapper, every seek would carry
+  a constant leading byte and no seek could stop before the terminator.
+- **Field *k* costs *k* skips**, which is what the executor's field-offset cache holds. Under
+  a wrapper the top level has exactly one field, and every key-field read would be a nested
+  walk the cache cannot serve.
+- **A key is therefore not *a* field.** A plan addresses key fields with a
+  [`FieldPath`](07-compilation.md#flatten--the-crux) — a top-level field plus a step per
+  record nested inside it — and there is no path that names a whole record key. Projecting one
+  is a record over its fields; binding a variable to one is `nyi/whole-key`.
+
+Settled in Phase 4, because flatten is the first thing that has to *choose*: the executor
+never learns which convention wrote a row, so both encodings "work" until a plan reads a
+field, and then one of them reads the wrong bytes silently. Pinned by
+`codec::a_stored_key_is_its_fields_with_no_wrapper_of_its_own` and by `tuple::decode_key`,
+which is how a whole key is read back (`decode_typed` reads a field or a value).
+
 ### `entities` — identity (answers "what is this fact?")
 
 ```

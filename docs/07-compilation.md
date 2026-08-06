@@ -9,12 +9,14 @@ only at the `Plan`. Covered here: the three tree representations and why each ex
 distinction, and **derived facts** — the one place a feature is allowed to change the core
 machine.
 
-> **Status.** `lex → parse → lower → typecheck` is live in `src/focus/` (`grammar.llw`,
-> `lexer.rs`, `cst.rs`, `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs`) as of
-> [`PLAN.md`](../PLAN.md) Phase 2, with the boxed ergonomic AST (representation 3 below) not
-> yet built because nothing needs it. **Flatten and reorder are not built** — `src/lens/hoist.rs`
-> is their reference. The compilation driver below is Phase 3; flatten is Phase 4. This chapter
-> is the *design*.
+> **Status.** The whole pipeline is live in `src/focus/`: `lex → parse → lower → typecheck`
+> ([`PLAN.md`](../PLAN.md) Phase 2), the compilation driver (Phase 3), and **flatten →
+> reorder** (`flatten.rs`, `reorder.rs`, Phase 4) — so `Compilation::plan` produces a `Plan`
+> the executor runs. Two of the three tree representations exist: the boxed ergonomic AST
+> (representation 3 below) is not built because nothing needs it, and neither is a
+> post-flatten `GroundKind` store, because flatten produces a plan directly and a functor
+> pass that copied the tree unchanged would be a representation nothing reads. What flatten
+> defers is listed [below](#what-flatten-defers-and-why).
 
 ---
 
@@ -165,17 +167,65 @@ Flatten lowers the typed, nested query into the flat `Plan`: an ordered `[Genera
   can't seek — it's an output, not an input; a field bound by an earlier level becomes a
   splice; a constant becomes a seek prefix or an `EqConst` residual.
 
+### How sargeability actually decides (Phase 4, as built)
+
+A seek is a **byte prefix of the stored key**, and a stored key is its top-level fields back
+to back ([chapter 3](03-storage-model.md#a-stored-key-is-flat)). So the seek is built by
+walking the key type's fields **in declared order** — which is encoding order — and it can
+only be extended while every field so far is fully determined. The first field that isn't
+**closes** it, and everything after that filters instead:
+
+| the field's pattern | while the prefix is open | once it is closed |
+|---|---|---|
+| a constant (literal, or a record of them) | a seek component | `EqConst` residual |
+| a string prefix (`"ab"..`) | a seek component, and closes the prefix *after* itself | `Prefix` residual |
+| a variable bound at an outer level, or a field read of one (`Y.name`) | a **splice** — `SeekKeyPart::RegisterField` | `EqRegisterField` residual |
+| a variable bound *here* (a capture) | closes it — an output cannot narrow | — |
+| a wildcard, or a field the pattern omits | closes it | — |
+| a record giving only *some* of its fields | closes it, and its given fields become residuals one step deeper | — |
+
+Two consequences worth stating, because both look like details and are not:
+
+- **A key whose every field is an input becomes a point match.** `test.Node {id = X}; test.Edge
+  {from = X, to = X}` splices both fields, so the inner level seeks the single row rather than
+  scanning and filtering.
+- **A prefix can end a seek but never sit inside one.** The bytes after a string prefix are
+  not that field's, so a constant record containing one is not a constant at all
+  (`Const::Prefix` inside a record is refused, and the field falls back to residuals).
+
+A plan addresses a field with a **`FieldPath`**: a top-level field, plus a step per record it
+is nested inside. Flat is the fast path — the executor's field-offset cache holds exactly
+those — and a nested step re-derives its offsets per read. `FieldPath` is why
+`test.Nested {outer = {inner = X}}` can be projected at all, and why a *whole* record key
+cannot: it is not one field, so there is no path that names it.
+
 ### reorder — identity now, real later
 
 `reorder` chooses the loop order. **In P0 it is the identity function** — and that's
 *correct*, not a stub, because of the safety/ordering split below. Its interface, though, is
 built for the real algorithm and for [derived facts](#derived-facts): it takes a
-**dependency DAG**. The eventual algorithm (build later, not now):
+**dependency graph**. The eventual algorithm (build later, not now):
 
 > **Kahn's topological sort** over the dependency graph, layered into **antichains** of
 > independently-orderable statements, with a **selectivity heuristic** within each antichain
 > (point-matches before prefix-matches before full scans, à la Glean's `Reorder`).
 > Negations/conditionals move after their non-locals are bound.
+
+**The graph is over variables, not edges between statements**, and that turned out to be
+load-bearing rather than a modelling preference. Which statement *captures* a shared variable
+depends on the order chosen: in `test.Edge {from = X, to = Y}; test.Node {id = Y}` either
+statement can capture `Y` — whichever runs first — and reversing them is a valid plan with a
+different seek. An edge list fixes that choice *before* the order is picked, and so forbids
+orders that are perfectly correct. So `Deps` records, per statement, the variables it **can
+capture** (a bare variable at a key field) and the ones it can only **read** (the base of an
+access chain — `Y.name` reads `Y` and can never bind it); edges fall out of an order rather
+than constraining it, `respects(order)` is the one property an order must have, and
+`antichains()` layers what a selectivity heuristic would be free to sort. A derived bind is
+the same shape: reads it cannot satisfy itself, one capture it offers.
+
+Whatever `reorder` returns is checked, in flatten's safety pass, against the order it
+actually chose — so a future reorderer that returns an order violating the reads reports it
+rather than emitting a plan that reads an unbound register.
 
 ---
 
@@ -193,7 +243,39 @@ A subtle but load-bearing distinction:
 
 **Topological sort becomes *required* only with derived binds** — they consume variables and
 can't capture them, so they impose hard ordering edges (and a cycle is a compile error).
-That's the next section, and it's why the reorder interface takes a DAG from day one.
+That's the next section, and it's why the reorder interface takes a graph from day one.
+
+The claim is *tested*, not asserted: the tier-3 battery generates a `(query, store)` pair and
+runs it in **every permutation** of the body, against a model that reads the query as slow
+nested loops ([testing](testing.md)). The plans differ — one seeks where another filters —
+and the rows do not. One order is not free, and the graph is what says so: a statement that
+can only *read* a variable (`test.Name Y.name`) has to follow the one that binds it, and an
+order putting it first is refused rather than compiled.
+
+<a id="what-flatten-defers-and-why"></a>
+### What flatten defers, and why
+
+Everything below **parses and typechecks**, then draws one specific `nyi/…` naming it — the
+permissive-early promise, now checked all the way through the driver: the corpus gate runs
+`Compilation::plan`, so `Supported` means *produces a plan*, and each of these has an entry.
+
+| construct | code | what it needs |
+|---|---|---|
+| `X = 42`, `X = Y`, `X = Y.name` | `nyi/value-bind` | a **derived bind** — the `Slot` value variant ([Phase 6](#derived-facts)) |
+| a fact pattern in the head, or in a key field | `nyi/nested-generator` | **hoisting** it into its own loop level (`src/lens/hoist.rs` is the reference) |
+| matching or capturing a fact-typed field | `nyi/fact-field` | cross-fact navigation (`Access::Fetch`) and a fact-id splice |
+| `test.Name Y.value` — a value in a key position | `nyi/value-match` | a residual class over the fetched value buffer, never in the scan ([I6](invariants.md#i6)) |
+| `test.Foo Y` — a variable for a whole record key | `nyi/whole-key` | a key is not one field ([chapter 3](03-storage-model.md#a-stored-key-is-flat)) |
+| `Edge {from = X, to = X}` | `nyi/repeated-variable` | a same-row `EqField` residual — the [Phase 4 decision](open-decisions.md) |
+
+`nyi/fact-field` is the one that would have been dangerous to leave implicit. A register holds
+*its own* row's key bytes, and a fact-typed field holds a `FactId` — so splicing the register
+into that field would compare a key against an id and quietly match nothing. Rejecting it is
+what makes the missing feature visible instead of wrong.
+
+Three rejections are permanent rather than deferred: `reject/unbound-variable` (range
+restriction), `reject/not-a-generator` (a statement that matches nothing), and
+`reject/not-projectable` (a head that is a pattern, not a value).
 
 ---
 

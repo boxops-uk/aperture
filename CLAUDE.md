@@ -18,9 +18,9 @@ invariants by number, and where to read the rest. It is deliberately tight.
 
 **Module map.** `src/focus/` is the live engine + language — all new work lands here.
 `src/main.rs` is the `aperture` shell: a scaffold for the Phase 5 REPL that typechecks what
-you type against a real store, and cannot run a query until flatten exists — keep logic out of
-it. `src/lens/` is a superseded first attempt (not compiled) kept only as a reference to
-re-implement into `focus`, then delete file-by-file. `src/focus.rs` is the module list plus a
+you type against a real store, and stops at a type because calling `plan()` at the prompt is
+Phase 5's task — keep logic out of it. `src/lens/` is a superseded first attempt (not
+compiled) kept only as a reference to re-implement into `focus`, then delete file-by-file. `src/focus.rs` is the module list plus a
 commented-out graveyard (~20 live lines; only the transport-codec sketch is worth keeping).
 See [chapter 1](docs/01-concepts.md).
 
@@ -136,7 +136,13 @@ decoded data.
   ([Phase 6](PLAN.md)); everything else deferred is additive and must not reshape the machine.
   The **`FactRef` marker** was the other, and is **done**: its own marker `0x51` in the codec,
   so it gates nothing.
-- **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — one left, for
-  Phase 4: intra-row repeated variables (`EqField` vs reject). The `pattern = pattern` *scope*
-  is settled at typecheck (the feature itself stays deferred), and cancellation counting rows
-  examined is settled in the executor.
+- **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — **none left**;
+  it is now the record of what settled and why. Intra-row repeated variables are **rejected**
+  (`nyi/repeated-variable`, Phase 4), the `pattern = pattern` *scope* is settled at typecheck
+  (the feature itself stays deferred), and cancellation counting rows examined is settled in
+  the executor.
+- **What flatten defers** — a value bind, a nested generator, a fact-typed field, matching on a
+  value, a whole record key — each has a code and a corpus entry
+  ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). `nyi/fact-field` is the
+  load-bearing one: a register holds its own row, so splicing it into a field that holds a
+  `FactId` would compare a key against an id and quietly match nothing.

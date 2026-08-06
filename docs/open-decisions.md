@@ -10,17 +10,31 @@ with a pointer to where they now live.
 
 ## Still open
 
-### Intra-row repeated variables — `EqField` vs reject
-
-A pattern like `Edge{from = X, to = X}` constrains two fields of the *same* row to be equal.
-That needs a same-row `ResidualOp::EqField` (distinct from the cross-slot
-`EqRegisterField`), **or** an explicit rejection. Decide the P0 scope in Phase 4
-([`PLAN.md`](../PLAN.md) task 4d) — either tested `EqField` semantics or a tested rejection
-diagnostic.
+**Nothing.** Every decision this file was opened for has settled; the list below is the
+record. New ones go here rather than into the chapters, which are the design *of record*.
 
 ---
 
 ## Settled — recorded so they aren't reopened
+
+### Intra-row repeated variables — **rejected in Phase 4**, by name
+
+A pattern like `Edge{from = X, to = X}` constrains two fields of the *same* row to be equal,
+which needs a same-row `ResidualOp::EqField` — distinct from the cross-level
+`EqRegisterField`, because there is no outer register to compare against.
+
+**Decided: reject it for now.** `nyi/repeated-variable`, with a corpus entry and a message
+saying what it would need. Deferred rather than *meaningless*, so the code carries the `nyi/`
+prefix: the pattern means something perfectly ordinary, and the reason not to support it is
+that adding an operator the executor has no other use for buys a machine change for one
+construct. `EqField` is additive when something wants it.
+
+The neighbouring case that *is* supported, and is what makes the distinction worth a test:
+repeated **reads** of a variable bound at an outer level (`test.Node {id = X}; test.Edge {from
+= X, to = X}`) are two ordinary splices — and since every field is then an input, the seek
+becomes a point match. Only a repeated *capture* is refused. Flatten detects it structurally:
+the second occurrence resolves to a slot on the level currently being emitted
+(`flatten::an_intra_row_repeat_is_rejected`).
 
 ### Cancellation counts rows *examined* — settled as the book already said
 

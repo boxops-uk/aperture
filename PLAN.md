@@ -47,10 +47,18 @@ The engine spine exists in `src/focus/`:
   diagnostic-code gate over it), **`parse ∘ print == id` on generated trees** (`focus::print`
   renders a tree back to focus source, so the corpus is worked examples rather than the whole
   specification), and **a node's span is where the printer emitted it** — the half spans are
-  checkable at all, since a tree comparison is blind to them. **Flatten is not built** —
-  `src/lens/hoist.rs` remains its reference, along with `query.rs` (the boxed AST
-  representation, which nothing needs yet) and the three files those depend on; the other
-  seven `lens` files are deleted.
+  checkable at all, since a tree comparison is blind to them.
+- **Flatten → reorder** (`flatten.rs`, `reorder.rs`, Phase 4 done) — `Compilation::plan`
+  produces a runnable `Plan`, so the two halves of the system meet. Sargeability builds seeks,
+  splices and residuals over the chosen order; `reorder` is a verified identity taking a
+  graph over *variables* (not edges between statements — which statement captures a shared
+  variable depends on the order, so edges would forbid correct orders). The headline gate is
+  tier-3: a generated `(query, store)` pair run against a nested-loop model, in **every**
+  permutation of the body. What flatten defers has a code and a corpus entry each
+  ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). `src/lens/hoist.rs`
+  survives as the reference for the one piece deferred with a seam — hoisting a nested
+  generator — along with `query.rs` (the boxed AST, which nothing needs yet) and the three
+  files those depend on; the other seven `lens` files are deleted.
 - **The compilation driver** (`focus::compile`, Phase 3 done) — one `Compilation` carrying
   the source, schema, interner, diagnostics sink and the trees the phases produce. A phase
   reports by pushing into the sink and cannot return diagnostics; codes are a `Code` enum
@@ -58,8 +66,8 @@ The engine spine exists in `src/focus/`:
 - **A focus shell** (`src/main.rs`) — reads a query, highlights it from the compiler's own
   lexer, and reports what the front end makes of it against a real `FjallDb` seeded at
   startup; `:facts` runs a hand-built plan through the executor. It compiles only through the
-  driver, and **cannot run a query** (that needs flatten) and says so. Phase 5 scaffold,
-  landed early — see that phase.
+  driver, and stops at a type: calling `plan()` at the prompt is Phase 5's task. Phase 5
+  scaffold, landed early — see that phase.
 - **Store** (`store.rs`) — the fjall store is complete and guarded (Phase 1 done): a pair of
   keyspaces per predicate (`keys.<id>`, `entities.<id>`), `scan`/`point`, and an atomic
   `put_fact` over a snowflake [`FactId`](docs/03-storage-model.md#factid-allocation-i11) with
@@ -80,9 +88,9 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
 ```
 0  guard matrix & harness ─┬─▶ 1  fjall store ✅ (I8, I11, I12 green; resume battery re-run on fjall)
                            │
-                           └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ─┬─▶ 5  REPL  (→ remote-only later)
-                                                                              ├─▶ 6  derived facts  (deliberate machine change; own resume battery)
-                                                                              └─▶ 7  ingestion ─▶ 8  schema ─▶ 9  operations
+                           └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ✅ ─┬─▶ 5  REPL  (→ remote-only later)
+                                                                                    ├─▶ 6  derived facts  (deliberate machine change; own resume battery)
+                                                                                    └─▶ 7  ingestion ─▶ 8  schema ─▶ 9  operations
 
 Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends on 1 (store + atomic put_fact).
               Derived-*and-stored* persistence (part of 6) integrates operationally with 7 + 9 (ops-I8 phased derivation).
@@ -330,7 +338,9 @@ rendering.
 - **3c.** ✅ `focus::compile::Compilation` — source, schema, interner, sink, tree and side
   tables in one context; `check()` sequences the phases; rendering lives here. The CST is
   deliberately not stored (it borrows the source; storing it buys a self-referential struct).
-- **3d.** ✅ `plan()` as the Phase 4 seam: type-checks, then reports `nyi/flatten`.
+- **3d.** ✅ `plan()` as the Phase 4 seam: type-checks, then reported `nyi/flatten`
+  (superseded — Phase 4 replaced that report with the flatten pass itself, and the code is
+  gone from the taxonomy).
 - **3e.** ✅ `src/main.rs` compiles only through the driver.
 
 **Acceptance:**
@@ -338,8 +348,9 @@ rendering.
       signatures are the check, so there is nothing to test and nothing to remember.
 - [x] One context carries diagnostics + interning + the typed store through the pipeline, and
       is the only thing the shell calls.
-- [x] `plan(q)` sequences the phases and reports `nyi/flatten` (a query that does not
-      typecheck has no plan to report as missing).
+- [x] `plan(q)` sequences the phases (then reporting `nyi/flatten`; now flattening), and a
+      query that does not typecheck has no plan — flatten is not run over it, so the only
+      diagnostic is the one the user can act on.
 - [x] Multi-error diagnostics render via `codespan-reporting`, **in source order**, tested
       against a buffer — `compile::one_sink_holds_every_phase_and_rendering_sorts_it` and the
       shell's own `a_line_wrong_twice_prints_both_faults_in_source_order`.
@@ -374,29 +385,56 @@ reorder (whose interface is built here). **Read it before this phase.**
   the produced plans.
 - *upholds:* I1–I9.
 
-**Phase-specific decision:** intra-row repeated variables (`Edge{from=X,to=X}`) need a
-same-row `ResidualOp::EqField` (distinct from cross-slot `EqRegisterField`) **or** explicit
-rejection ([open decisions](docs/open-decisions.md)) — task 4d. `FieldPath` (not flat
-`FieldIdx`) in plan types for nested-record access, depth-1 fast path only for now.
+**Phase-specific decisions, as settled:**
+
+- **Intra-row repeated variables (`Edge{from=X,to=X}`): rejected**, as `nyi/repeated-variable`
+  — deferred rather than meaningless, since the pattern means something ordinary and `EqField`
+  is additive when something wants it ([open decisions](docs/open-decisions.md)). Repeated
+  *reads* of an outer-level variable are supported, and make the seek a point match.
+- **`FieldPath`** (not a flat `FieldIdx`) in the plan types: a top-level field plus a step per
+  nested record, with the flat case the fast path the field-offset cache serves.
+- **A stored key is flat** — its top-level fields back to back, no wrapper of its own. Forced
+  here, because flatten is the first thing that has to *choose*; the codec chapter and
+  `plan::proptest` already assumed it and the demo shell's seeding did not
+  ([chapter 3](docs/03-storage-model.md#a-stored-key-is-flat)).
+- **Flatten reads types from the schema, not from typecheck's side table**: a plan needs
+  declared `PredicateTy`, walked along the path it will read at run time, so a projection
+  cannot disagree with the bytes it decodes. Phase 6 is the first thing that needs the table.
+- **No hoisting.** A fact pattern away from the top level of a statement is
+  `nyi/nested-generator`; `src/lens/hoist.rs` stays as its reference.
 
 **Tasks:**
-- **4a.** Flatten the implemented subset (scans, joins, scalar/record heads) to `Plan`;
-  safety check (range-restriction) with clear rejection. *Done:* text→plan for the corpus,
-  and the executor runs the produced plans to the expected rows (differential vs Phase 0's
-  hand-built plans).
-- **4b.** Sargeability over source order (seek vs residual vs splice). *Done:* produced plans
-  use seeks where expected (tested against known-sargeable queries).
-- **4c.** Reorder step as identity, taking the interface the real reorderer *and* Phase 6's
-  derived binds will use (dependency edges available, antichain representable). *Done:*
-  identity reorder verified by plan-equality; interface compiles with a
-  `// TODO: Kahn + antichain + selectivity` seam.
-- **4d.** Decide + implement intra-row repeats (`EqField`) or reject them (tested either way).
+- **4a.** ✅ Flatten the implemented subset (scans, joins, scalar/record heads, nested captures)
+  to `Plan`; range-restriction safety over the *chosen* order, so it also checks whatever
+  `reorder` returned. text→plan→run for the corpus and for hand-written worked examples.
+- **4b.** ✅ Sargeability over the chosen order (seek · splice · residual · capture), with the
+  decision table in [chapter 7](docs/07-compilation.md#how-sargeability-actually-decides-phase-4-as-built).
+  A string prefix seeks in the leading field and filters elsewhere; a fully-input key becomes a
+  point match.
+- **4c.** ✅ Reorder as a verified identity, taking a graph over **variables** rather than edges
+  between statements — because which statement captures a shared variable depends on the order,
+  so edges would forbid correct orders. `Deps::respects` / `Deps::antichains` are what the real
+  algorithm sorts within; the `// TODO: Kahn + antichain + selectivity` seam is in place.
+- **4d.** ✅ Intra-row repeats decided and implemented: rejected, tested both ways (the repeat,
+  and the repeated *read* that is supported).
 
 **Acceptance:**
-- [ ] `plan(q)` produces a runnable `Plan` for the corpus, safety-checked (non-range-restricted queries rejected with a clear error).
-- [ ] Reorder is a verified identity with the real (DAG-taking) interface in place.
-- [ ] "flattened plan run == expected rows" holds over generated `(query, store)` pairs (tier-3).
-- [ ] Intra-row repeats are either supported (`EqField`) or rejected — tested.
+- [x] `plan(q)` produces a runnable `Plan` for the corpus, safety-checked (non-range-restricted
+      queries rejected with a clear error). The corpus gate now runs the whole driver, so
+      `Supported` means *produces a plan*, and every construct flatten defers has an entry
+      naming it.
+- [x] Reorder is a verified identity with the real (graph-taking) interface in place.
+- [x] "flattened plan run == expected rows" holds over generated `(query, store)` pairs
+      (tier-3), against a nested-loop model — and holds in **every permutation** of the body,
+      which is the reorderability claim made executable.
+- [x] Intra-row repeats are rejected — tested, alongside the repeated read that is not.
+
+**What the phase discovered:** the codebase had **two stored-key layouts** — flat (the codec
+chapter, `plan::proptest`, the offset cache) and record-wrapped (the demo shell's seeding) —
+and both "worked", because the executor never learns which convention wrote a row. Only a
+*plan* has to choose, and choosing wrong reads the wrong bytes with no error. That is the
+shape of bug this project's testing discipline exists for, and it was invisible until two
+halves of the system had to agree.
 
 ---
 
@@ -428,11 +466,19 @@ drives a query string through the REPL path and asserts the printed rows.
 highlighting from the compiler's own lexer, codespan diagnostic rendering, a real `FjallDb`
 seeded at startup, and `:schema` / `:facts` — the latter driving a hand-built plan through
 `enumerate` and printing projected `Value`s, with fact references resolved to the facts they
-name. What is missing is the compile step in the middle: it stops at a type, because flatten
-does not exist. So Phase 5 owes the `plan(query)` call and the `:commands` that show a plan —
-not the shell around it. It earned its place early by finding a double-reported lexer
-diagnostic that only a live front end makes obvious; treat it as the scaffold this phase
+name. What is missing is the compile step in the middle: it stops at a type. Flatten exists as
+of Phase 4, so Phase 5 owes the `plan(query)` call, running the plan, and the `:commands` that
+show one — not the shell around it. It earned its place early by finding a double-reported
+lexer diagnostic that only a live front end makes obvious; treat it as the scaffold this phase
 already says it is.
+
+**One thing to decide at pickup, found by Phase 4:** the demo schema is built around fact
+references (`demo.Knows {from : demo.Person}`), and both `:help` examples are nested
+generators over fact-typed fields — exactly what flatten defers as `nyi/nested-generator` and
+`nyi/fact-field`. They typecheck, so the shell's advice is honest today, but it will not
+*run*. Either the examples change to the runnable subset (a join through a scalar field), or
+Phase 5 pulls in the fact-id splice and `Access::Fetch` — which is a `Plan` IR change, and so
+a decision rather than a detail.
 
 **Acceptance:**
 - [ ] Typing a focus query returns rows (or a well-rendered diagnostic) against a fixture store, end-to-end, through the real compiler and executor.
@@ -448,7 +494,7 @@ changes** (it promotes `Register` to a `Slot` sum type and touches resume), done
 the machine is still small and the resume battery is fresh — rather than after ingestion and
 schema pile onto the current register shape.
 
-**Depends on:** Phase 4 (flatten + the DAG-taking reorder interface) and the resume battery
+**Depends on:** Phase 4 (flatten + the graph-taking reorder interface) and the resume battery
 (Phases 0/1). *Derived-and-stored persistence* additionally needs Phase 7 (a store to write
 to) and integrates operationally in Phase 9 (ops-I8 phased derivation).
 
