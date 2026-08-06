@@ -204,7 +204,21 @@ pub enum SeekKey {
 #[derive(Debug, Clone)]
 pub enum SeekKeyPart {
     Bytes(Box<[u8]>),
-    RegisterField { address: Address, path: FieldPath },
+    RegisterField {
+        address: Address,
+        path: FieldPath,
+    },
+    /// A **fact-typed** field, filled from the register's identity: the encoding of
+    /// the row's [`FactId`], not of its key.
+    ///
+    /// That distinction is the whole point. A register holds the key bytes of the row
+    /// it is bound to, and a field declared `Fact(p)` holds a reference to a row —
+    /// so splicing the key where the reference belongs compares two different things
+    /// and matches nothing, silently. The id is already in the register, so following
+    /// a reference reads nothing from `entities` and [I6] stays structural.
+    ///
+    /// [I6]: ../../../docs/invariants.md#i6
+    RegisterFactId(Address),
 }
 
 #[derive(Debug, Clone)]
@@ -217,7 +231,12 @@ pub struct Access {
 pub enum ResidualOp {
     EqConst(Box<[u8]>),
     Prefix(Box<[u8]>),
-    EqRegisterField { address: Address, path: FieldPath },
+    EqRegisterField {
+        address: Address,
+        path: FieldPath,
+    },
+    /// The [`SeekKeyPart::RegisterFactId`] compare, once the seek prefix has closed.
+    EqRegisterFactId(Address),
 }
 
 #[derive(Debug, Clone)]

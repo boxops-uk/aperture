@@ -22,7 +22,7 @@ use crate::focus::{
     plan::{Entity, FactId, FactStore, Plan},
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId, SchemaInterner},
     store::predicate_of,
-    tuple::{Value, put_i64, put_str, strinc},
+    tuple::{TupleEncoder, Value, put_i64, put_str, strinc},
 };
 
 /// Encode a single i64 key field.
@@ -36,6 +36,21 @@ pub fn i64_field(v: i64) -> Vec<u8> {
 pub fn str_field(s: &str) -> Vec<u8> {
     let mut b = Vec::new();
     put_str(&mut b, s);
+    b
+}
+
+/// Encode a single fact-typed key field: the reference marker, then the id.
+///
+/// The marker is what makes this *not* the referenced row's key bytes — the
+/// distinction a fact-id splice exists to keep ([chapter 2]). Takes a whole
+/// [`FactId`] rather than a sequence, because a reference names a fact of a
+/// *particular* predicate and the id carries which ([I11]).
+///
+/// [chapter 2]: ../../../docs/02-tuple-codec.md
+/// [I11]: ../../../docs/invariants.md#i11
+pub fn fact_ref_field(id: FactId) -> Vec<u8> {
+    let mut b = Vec::new();
+    TupleEncoder::new(&mut b).put_fact_id(id);
     b
 }
 

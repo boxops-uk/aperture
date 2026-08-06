@@ -11,7 +11,9 @@ use crate::focus::{
         SeekKeyPart,
     },
     schema::{LocalInterner, PREDICATE_ID_SIZE},
-    tuple::{MARK_ESCAPE, MARK_RECORD, MARK_TERM, Value, decode_typed, skip, strinc},
+    tuple::{
+        MARK_ESCAPE, MARK_RECORD, MARK_TERM, Value, decode_typed, fact_ref_bytes, skip, strinc,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +429,12 @@ impl<S: FactStore> StackFrame<S> {
                                 get_field_span(&mut self.field_offsets, &key, *var_address, path)?;
                             prefix.extend_from_slice(&key[span]);
                         }
+                        // The register's *identity*, encoded as a fact-typed field
+                        // holds it — never its key bytes (see the variant).
+                        SeekKeyPart::RegisterFactId(var_address) => {
+                            let fact_id = state.get(*var_address)?.fact_id;
+                            prefix.extend_from_slice(&fact_ref_bytes(fact_id));
+                        }
                     }
                 }
             }
@@ -509,6 +517,13 @@ impl<S: FactStore> StackFrame<S> {
                     let other_span =
                         get_field_span(frame_field_offsets, &other_key, *var_address, path)?;
                     field == &other_key[other_span]
+                }
+                // The bound row's id *encoded*, rather than the field decoded: a
+                // reference is a marker and eight fixed bytes, so this is a nine-byte
+                // compare against a stack buffer — no decode, and no allocation in
+                // the scan loop ([I9]).
+                ResidualOp::EqRegisterFactId(var_address) => {
+                    field == fact_ref_bytes(state.get(*var_address)?.fact_id)
                 }
             };
             if !ok {
@@ -814,8 +829,8 @@ mod tests {
     use super::*;
     use crate::focus::{
         fixtures::{
-            FrozenStore, PointSpy, collect_rows, compose, count_rows, i64_field, interner_with,
-            run_with_suspends, str_field,
+            FrozenStore, PointSpy, collect_rows, compose, count_rows, fact_ref_field, i64_field,
+            interner_with, run_with_suspends, str_field,
         },
         mem_store::MemStore,
         plan::{
@@ -1696,6 +1711,159 @@ mod tests {
                 str_row("abc", "abc", 3),
                 str_row("b", "b", 4),
             ]
+        );
+    }
+
+    // ---- following a reference ---------------------------------------------
+
+    /// A fact-typed field holds an **id**, not a key, so the splice is off
+    /// `Register::fact_id`.
+    ///
+    /// The fixture separates the two on purpose: the outer keys are 10, 20, 30 while
+    /// its fact ids are 1, 2, 3, and an integer field and a fact reference differ
+    /// only in their leading marker byte (`0x48` against `0x51`). Splicing the key
+    /// bytes therefore seeks a well-formed prefix that matches nothing — a silently
+    /// empty answer, which is the trap this operator exists to close.
+    #[test]
+    fn seek_splices_a_bound_rows_fact_id() {
+        let (person, refs) = (PredicateId(0), PredicateId(1));
+        let person_fact = |sequence| FactId::new(person, sequence).unwrap();
+
+        let mut store = MemStore::new();
+        for (i, key) in [10i64, 20, 30].into_iter().enumerate() {
+            store.insert(person, i64_field(key), i as u64 + 1);
+        }
+        // Keyed `(of, tag)`, so the splice is a *prefix* of a longer key and one
+        // outer row can match several inner ones.
+        for (i, (of, tag)) in [(1u64, 7i64), (1, 8), (3, 9)].into_iter().enumerate() {
+            store.insert(
+                refs,
+                compose(&[&fact_ref_field(person_fact(of)), &i64_field(tag)]),
+                i as u64 + 1,
+            );
+        }
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                scan_all(person, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: refs,
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterFactId(
+                            Address::new(0),
+                        )])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([]),
+                },
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let interner = interner_with(&[]);
+        assert_eq!(
+            collect_rows(store, plan, &interner).unwrap(),
+            vec![Value::Int(10), Value::Int(10), Value::Int(30)],
+            "two references name fact 1 (key 10) and one names fact 3 (key 30); \
+             nothing names fact 2",
+        );
+    }
+
+    /// The same compare once the seek prefix has closed: the field's bytes are
+    /// checked against the bound row's id as the rows come.
+    #[test]
+    fn residual_compares_a_bound_rows_fact_id() {
+        let (person, links) = (PredicateId(0), PredicateId(1));
+        let person_fact = |sequence| FactId::new(person, sequence).unwrap();
+
+        let mut store = MemStore::new();
+        for (i, key) in [10i64, 20, 30].into_iter().enumerate() {
+            store.insert(person, i64_field(key), i as u64 + 1);
+        }
+        for (i, (at, of)) in [(7i64, 1u64), (8, 1), (9, 99)].into_iter().enumerate() {
+            store.insert(
+                links,
+                compose(&[&i64_field(at), &fact_ref_field(person_fact(of))]),
+                i as u64 + 1,
+            );
+        }
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                scan_all(person, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: links,
+                        seek_key: SeekKey::Prefix(Box::new([])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([Residual {
+                        path: FieldPath::field(1),
+                        op: ResidualOp::EqRegisterFactId(Address::new(0)),
+                    }]),
+                },
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(1),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let interner = interner_with(&[]);
+        assert_eq!(
+            collect_rows(store, plan, &interner).unwrap(),
+            vec![Value::Int(7), Value::Int(8)],
+            "only fact 1 (key 10) is referenced; `of = 99` dangles and matches nobody",
+        );
+    }
+
+    /// A reference splice reads no second fact — [I6](../../../docs/invariants.md#i6)
+    /// stays structural. The id is already in the register, so following a reference
+    /// costs the scan it narrows and nothing else.
+    #[test]
+    fn following_a_reference_fetches_no_entity() {
+        let (person, refs) = (PredicateId(0), PredicateId(1));
+
+        let mut store = MemStore::new();
+        store.insert(person, i64_field(10), 1);
+        store.insert(refs, fact_ref_field(FactId::new(person, 1).unwrap()), 1);
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                scan_all(person, 0),
+                Generator {
+                    access: Access {
+                        predicate_id: refs,
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterFactId(
+                            Address::new(0),
+                        )])),
+                    },
+                    binds: Box::new([Address::new(1)]),
+                    residuals: Box::new([]),
+                },
+            ]),
+            head: Project::FactRef(Address::new(1)),
+        };
+
+        let (spy, point_calls) = PointSpy::new(store);
+        let interner = interner_with(&[]);
+
+        assert_eq!(
+            collect_rows(spy, plan, &interner).unwrap(),
+            vec![Value::FactRef(FactId::new(refs, 1).unwrap())],
+        );
+        assert_eq!(
+            point_calls.load(Ordering::Relaxed),
+            0,
+            "a fact-id splice must not read `entities`",
         );
     }
 

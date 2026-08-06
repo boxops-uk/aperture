@@ -50,6 +50,7 @@
 //! predicate test.Shadow : { value : int }   // the `.value` shadowing case
 //! predicate test.Wide   : { outer : { extra : int, inner : int } }
 //! predicate test.Ref    : { of : test.Foo }         // a fact-typed field
+//! predicate test.Link   : { at : int, of : test.Foo }  // ...not in the leading field
 //! ```
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
@@ -152,6 +153,18 @@ pub fn schema() -> Schema {
         Predicate {
             name: sym("test.Ref"),
             key: PredicateTy::Record(Arc::from([(sym("of"), PredicateTy::Fact(PredicateId(0)))])),
+            value: None,
+        },
+        // A reference that is **not** the leading key field, so a fact-id compare
+        // lands after the seek prefix has closed — the residual form of the splice
+        // `test.Ref` exercises. `at` sorts before `of`, so a capture at `at` is what
+        // closes it. Also appended last.
+        Predicate {
+            name: sym("test.Link"),
+            key: PredicateTy::Record(Arc::from([
+                (sym("at"), PredicateTy::Int),
+                (sym("of"), PredicateTy::Fact(PredicateId(0))),
+            ])),
             value: None,
         },
     ];
@@ -287,6 +300,24 @@ pub const CORPUS: &[Entry] = &[
         "Y where test.Count Y",
         Supported,
         "a scalar key is one field, so a variable may stand for the whole of it",
+    ),
+    entry(
+        "X where test.Ref {of = X}",
+        Supported,
+        "a fact-typed field may be captured and projected — the row it names is a \
+         `Value::FactRef`, and reads no second fact to say so",
+    ),
+    entry(
+        "P where P = test.Foo {id = 1}; test.Ref {of = P}",
+        Supported,
+        "**a join through a reference**: the bound row's fact id is spliced into the \
+         seek, so the reference is followed without a store read",
+    ),
+    entry(
+        "P where P = test.Foo {id = 1}; test.Link {at = X, of = P}",
+        Supported,
+        "the same compare once the seek prefix has closed — a capture at `at` closes \
+         it, so `of` filters instead",
     ),
     // ---- deferred constructs: parse, then say so by name ----
     entry(
@@ -427,11 +458,18 @@ pub const CORPUS: &[Entry] = &[
          has to be hoisted into its own loop level",
     ),
     entry(
-        "X where test.Ref {of = X}",
+        "X.name where test.Ref {of = X}",
         Diagnosed(Code::NyiFactField),
-        "a fact-typed field holds a reference; reading through it is cross-fact \
-         navigation (`Access::Fetch`), and matching one against a bound row needs a \
-         fact-id splice",
+        "**reading through** a reference: `X` holds a fact id, and its fields are in \
+         another fact's key, so this needs cross-fact navigation (`Access::Fetch`). \
+         Capturing and projecting the reference itself is supported",
+    ),
+    entry(
+        "X.value where test.Ref {of = X}",
+        Diagnosed(Code::NyiFactField),
+        "the same through the value side, and the arm that used to decline *quietly* \
+         — reachable only once a reference can be captured, which is what makes the \
+         `flatten_ordered` promise-guard load-bearing here",
     ),
     entry(
         "Y where Y = test.Foo _; test.Name Y.value",

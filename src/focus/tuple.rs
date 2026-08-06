@@ -22,6 +22,15 @@ pub const MARK_INT_POS_MAX: u8 = 0x50;
 
 pub const MARK_FACT_REF: u8 = 0x51;
 
+/// The encoded width of a fact-typed field: the marker, then a fixed-width id.
+///
+/// Fixed-width rather than the integer codec's variable width, so a reference sorts
+/// as a band of its own after every integer ([I1]) and can be compared without a
+/// decode.
+///
+/// [I1]: ../../../docs/invariants.md#i1
+pub const FACT_REF_FIELD_LEN: usize = 1 + size_of::<u64>();
+
 pub const MARK_TERM: u8 = 0x00;
 pub const MARK_ESCAPE: u8 = 0xFF;
 
@@ -34,6 +43,19 @@ pub const NULL: u8 = 0x00;
 #[inline]
 pub fn int_width(mag: u64) -> usize {
     8 - (mag.leading_zeros() / 8) as usize
+}
+
+/// A fact reference as a key field, on the stack.
+///
+/// The single definition of the encoding — [`TupleEncoder::put_fact_id`] writes these
+/// bytes, and the executor's residual compares against them without allocating, which
+/// is what keeps the hot loop allocation-free ([I9](../../../docs/invariants.md#i9)).
+#[must_use]
+pub fn fact_ref_bytes(id: FactId) -> [u8; FACT_REF_FIELD_LEN] {
+    let mut out = [0u8; FACT_REF_FIELD_LEN];
+    out[0] = MARK_FACT_REF;
+    out[1..].copy_from_slice(&id.raw().to_be_bytes());
+    out
 }
 
 pub fn put_i64(out: &mut Vec<u8>, val: i64) {
@@ -476,8 +498,7 @@ impl<'a> TupleEncoder<'a> {
     }
 
     pub fn put_fact_id(&mut self, id: FactId) {
-        self.out.push(MARK_FACT_REF);
-        self.out.extend_from_slice(&id.raw().to_be_bytes());
+        self.out.extend_from_slice(&fact_ref_bytes(id));
     }
 
     pub fn record<R>(
