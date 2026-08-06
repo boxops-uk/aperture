@@ -525,13 +525,17 @@ impl Flattener<'_> {
             return false;
         }
 
+        self.report_fact_field(node);
+        true
+    }
+
+    fn report_fact_field(&mut self, node: NodeId) {
         self.report(
             node,
             Code::NyiFactField,
             "matching or capturing a field that holds a fact reference is not \
              implemented yet; it needs cross-fact navigation",
         );
-        true
     }
 
     fn nested_generator(&mut self, node: NodeId) {
@@ -859,10 +863,7 @@ impl Flattener<'_> {
             // Both are reported by `collect`, which sees the field's declared type
             // before any of this; reported here too so that no path can decline to
             // build a plan without saying why.
-            Slot::Row { .. } => {
-                let ty = PredicateTy::Fact(PredicateId(0));
-                self.fact_field(node, &ty);
-            }
+            Slot::Row { .. } => self.report_fact_field(node),
             Slot::Value { .. } => self.report(
                 node,
                 Code::NyiValueMatch,
