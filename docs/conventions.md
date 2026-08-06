@@ -81,6 +81,13 @@ Each breaks a specific invariant — the reference is the point.
   no more byte-resume.
 - **Writing one column family without the other, or outside a batch.** Breaks
   [I12](invariants.md#i12) — half-present facts are silent corruption.
+- **Hand-encoding a fact's key to reach `put_fact`.** Three of its preconditions fail
+  *silently* — a record key is flat, the field order is the schema's, and only the schema
+  says whether there is a value side — so the fact is written and then never found. Write a
+  `focus::fact::Fact` and use `FjallDb::put`, which resolves the fields by name
+  ([chapter 3](03-storage-model.md#writing-a-fact-by-hand)). In particular `encode_typed` is
+  *not* the key encoder: it keeps a record's wrapper, which is right for a value and wrong
+  for a key.
 - **Renumbering markers or union discriminants after data exists.** Breaks
   [I3](invariants.md#i3)/[I10](invariants.md#i10) — an on-disk migration. Likewise ingesting
   fact-typed fields before the [`FactRef` marker](open-decisions.md) was decided.

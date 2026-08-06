@@ -687,24 +687,4 @@ mod tests {
             other => format!("{other:?}"),
         }
     }
-
-    /// Every example the shell offers is a corpus entry that **runs** — so the shell
-    /// cannot advertise a query the compiler has no plan for, which is exactly what it
-    /// was doing before this phase.
-    #[test]
-    fn every_shell_example_is_a_supported_entry() {
-        for example in crate::focus::fixture::EXAMPLES {
-            let entry = CORPUS.iter().find(|entry| entry.source == example);
-
-            let Some(entry) = entry else {
-                panic!("the shell offers {example:?}, which is not a corpus entry");
-            };
-
-            assert!(
-                matches!(entry.expect, Supported(_)),
-                "the shell offers {example:?}, which the corpus classifies {:?}",
-                entry.expect,
-            );
-        }
-    }
 }

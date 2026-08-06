@@ -50,8 +50,9 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
 
 use crate::focus::{
     error::{ApertureError, StoreError},
+    fact::{self, Fact},
     plan::{Entity, FactId, FactStore, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
-    schema::{PREDICATE_ID_SIZE, PredicateId},
+    schema::{PREDICATE_ID_SIZE, PredicateId, Schema},
 };
 
 /// Width of a stored `FactId`, as a `keys` value and as an `entities` key.
@@ -240,12 +241,34 @@ impl FjallDb {
         Ok(handle)
     }
 
-    /// Write one fact, allocating its id, with both column families in a single
-    /// batch ([I11](../../docs/invariants.md#i11),
+    /// Write a **well-typed value** as a fact, checked against the schema.
+    ///
+    /// The way to write a fact by hand: name the predicate and its fields, and let
+    /// [`fact`](crate::focus::fact) resolve them — a field the predicate does not
+    /// declare, one left out, one of the wrong shape, or a value side that should not
+    /// be there is an error rather than bytes nobody can read back. See that module for
+    /// why naming the fields is the point.
+    ///
+    /// The returned id is what a *reference* to this fact is, so the next fact that
+    /// points at it takes this value.
+    ///
+    /// # Errors
+    ///
+    /// [`ApertureError::Fact`] if the value does not fit the schema, and whatever
+    /// [`put_fact`](Self::put_fact) reports otherwise.
+    pub fn put<F: Fact>(&self, schema: &Schema, fact: &F) -> Result<FactId, ApertureError> {
+        let (predicate, key, value) = fact::encode(schema, fact)?;
+        self.put_fact(predicate, &key, &value)
+    }
+
+    /// Write one fact from **encoded bytes**, allocating its id, with both column
+    /// families in a single batch ([I11](../../docs/invariants.md#i11),
     /// [I12](../../docs/invariants.md#i12)).
     ///
-    /// This is the single-fact seeding primitive; Phase 7's bulk path allocates
-    /// blocks of sequences and writes through the same layout.
+    /// The primitive under [`put`](Self::put), and the one Phase 7's bulk path will
+    /// build on — it allocates blocks of sequences and writes through the same layout.
+    /// A caller holding a fact rather than bytes wants `put`, which cannot get a
+    /// record's field order wrong.
     ///
     /// # A key is written once
     ///

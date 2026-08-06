@@ -12,6 +12,9 @@ pub enum ApertureError {
     #[error("decode error: {0}")]
     Decode(#[from] StoreCodecError),
 
+    #[error("cannot write this fact: {0}")]
+    Fact(#[from] FactError),
+
     #[error("{0} was read before anything was bound to it")]
     UseBeforeBind(Address),
 
@@ -112,8 +115,39 @@ pub enum StoreError {
     },
 }
 
+/// A fault in a **write**: a fact that does not fit the schema it is being written
+/// under. Distinct from [`StoreCodecError`], which is bytes that do not decode — this
+/// is a well-formed value in the wrong shape, caught before any bytes exist.
 #[derive(Debug, Error)]
 #[non_exhaustive]
+pub enum FactError {
+    #[error("no predicate called `{0}`")]
+    UnknownPredicate(String),
+
+    #[error("`{predicate}` declares no field called `{field}`")]
+    UnknownField { predicate: String, field: String },
+
+    #[error("`{predicate}` declares a field `{field}` that this fact does not set")]
+    MissingField { predicate: String, field: String },
+
+    #[error("`{predicate}` expects {expected} here, but this fact offers {got}")]
+    TypeMismatch {
+        predicate: String,
+        expected: String,
+        got: String,
+    },
+
+    #[error("`{0}` has no value side, but this fact offers one")]
+    UnexpectedValue(String),
+
+    #[error("`{0}` declares a value side, but this fact offers none")]
+    MissingValue(String),
+
+    #[error("{0}")]
+    Codec(#[from] StoreCodecError),
+}
+
+#[derive(Debug, Error)]
 pub enum StoreCodecError {
     #[error("unexpected end of input")]
     UnexpectedEof,

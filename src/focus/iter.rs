@@ -23,6 +23,13 @@ impl Address {
     pub fn new(i: usize) -> Self {
         Self(i)
     }
+
+    /// Which register this is, as an index into the plan's levels — a plan binds one
+    /// register per level, so this also says which generator bound it.
+    #[must_use]
+    pub fn index(self) -> usize {
+        self.0
+    }
 }
 
 impl fmt::Display for Address {

@@ -1,12 +1,15 @@
-//! The **one fixture database**: the schema queries are written against, the facts
-//! they run against, and the examples the shell offers.
+//! The **fixture database** the tests share: the schema queries are written against
+//! and the facts they run against.
 //!
-//! Not test-gated, and that is the point. The [`corpus`](crate::focus::corpus) says
-//! what the compiler must do with a snippet and the shell lets a person type one —
-//! and until this module existed those were two different databases, so a corpus
-//! entry was not something you could run at the prompt. Now they are the same
-//! schema and the same rows, which makes [`EXAMPLES`] checkable: every query the
-//! shell prints is a corpus entry that produces a plan and returns these rows.
+//! Shared, and that is the point. The [`corpus`](crate::focus::corpus) says what the
+//! compiler must do with a snippet *and what it answers*, and the flatten batteries
+//! assert plan shapes over the same rows — so a shape asserted in one place and an
+//! answer asserted in the other are about one database rather than two that have
+//! drifted.
+//!
+//! The **shell** has its own (`src/main.rs`): a demo wants a schema someone recognises,
+//! and this one is built out of the compiler's awkward cases rather than out of
+//! anything.
 //!
 //! Phase 8 parses schemas; until then this is hand-built.
 //!
@@ -258,20 +261,6 @@ pub fn facts() -> Vec<Fact> {
 
     out
 }
-
-/// Queries the shell offers, and what makes them worth offering: each is a
-/// [`corpus`](crate::focus::corpus) entry classified `Supported`, so each is checked
-/// to compile *and* to return the rows recorded there.
-///
-/// A shell that printed examples it could not run is exactly what this phase found:
-/// the previous set were nested generators over fact-typed fields, which typechecked
-/// and then had no plan.
-pub const EXAMPLES: [&str; 4] = [
-    "X.value where X = test.Foo _",
-    "X where test.Edge {from = X, to = Y}; test.Node {id = Y}",
-    "X where X = test.Ref {of = test.Foo {id = 1}}",
-    "X where X = test.Deep {via = test.Ref {of = test.Foo {id = 1}}}",
-];
 
 /// An id in this fixture: a predicate and a 1-based sequence.
 fn fact(predicate: PredicateId, sequence: u64) -> FactId {

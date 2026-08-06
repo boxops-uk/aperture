@@ -113,18 +113,35 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
         out.push('\n');
     }
 
-    let _ = write!(out, "  head {}", projection(&plan.head, schema, interner));
+    let _ = write!(
+        out,
+        "  head {}",
+        projection(plan, &plan.head, schema, interner)
+    );
     out
 }
 
 /// One projection, as the row it produces reads.
-fn projection(project: &Project, schema: &Schema, interner: &LocalInterner) -> String {
+///
+/// Takes the whole plan because a projection names a field of a *register*, and which
+/// predicate that register holds is recorded by the level that binds it — so the field
+/// has a name here as much as in a seek, just one indirection further away.
+fn projection(plan: &Plan, project: &Project, schema: &Schema, interner: &LocalInterner) -> String {
+    let key_of = |address: &Address| {
+        plan.body
+            .get(address.index())
+            .and_then(|generator| schema.get(generator.access.predicate_id))
+    };
+
     match project {
         Project::Lit(value) => format!("{value:?}"),
         // A row's identity, which is what a reference to it holds.
         Project::FactRef(address) => format!("{address}#"),
         Project::RegisterField { address, path, .. } => {
-            format!("{address}.{}", field_name(None, path, schema))
+            let predicate = key_of(address);
+            let key_ty = predicate.as_ref().map(|p| p.key().ty);
+
+            format!("{address}.{}", field_name(key_ty, path, schema))
         }
         Project::Value { address, .. } => format!("{address}.value"),
         Project::Record(fields) => format!(
@@ -134,7 +151,7 @@ fn projection(project: &Project, schema: &Schema, interner: &LocalInterner) -> S
                 .map(|(name, field)| format!(
                     "{} = {}",
                     interner.try_resolve(*name).unwrap_or("?"),
-                    projection(field, schema, interner)
+                    projection(plan, field, schema, interner)
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -144,9 +161,9 @@ fn projection(project: &Project, schema: &Schema, interner: &LocalInterner) -> S
 
 /// A field path as the schema names it — `of`, or `outer.inner` for a nested step.
 ///
-/// Falls back to the indices when the type is not to hand: a projection names a field
-/// of whichever register it reads, and the plan does not record which predicate that
-/// was. Naming what can be named is still worth more than naming nothing.
+/// Falls back to the indices when the type is not to hand — a malformed plan naming a
+/// register no level binds, or a field past the key's arity. Naming what can be named
+/// is worth more than naming nothing.
 fn field_name(key_ty: Option<&PredicateTy>, path: &FieldPath, schema: &Schema) -> String {
     let Some(mut ty) = key_ty else {
         return path.to_string();

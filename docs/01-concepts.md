@@ -161,18 +161,24 @@ Knowing which module is real saves hours:
     `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs`, `flatten.rs`, `reorder.rs`, driven by
     `compile.rs` — plus `print.rs`, which renders a tree back to focus source and is what
     makes the front end round-trippable ([chapter 7](07-compilation.md));
-  - `fixture.rs` — **the one fixture database**: the schema, the facts and the example queries
-    that the corpus, the test batteries and the shell all share. Not test-gated, because the
-    shell is not a test: it is what makes a corpus entry something a person can type at the
-    prompt.
+  - `fact.rs` — **how a fact is written by hand**: a well-typed Rust value naming its
+    predicate and its key fields, resolved against the schema so that the three silent
+    preconditions of `put_fact` (a flat key, declared field order, whether there is a value
+    side at all) are checked rather than assumed
+    ([chapter 3](03-storage-model.md#writing-a-fact-by-hand)).
+  - `fixture.rs` — the fixture database the corpus and the test batteries share: one schema
+    and one set of facts, so a plan shape asserted in one place and an answer asserted in the
+    other are about the same rows.
   - test support: `fixtures.rs` (shared store contracts and hand-built plans) and `corpus.rs`
     (the language surface as data — the acceptance gate for the grammar, which now runs each
     supported entry against a real store and compares its rows).
 - **`src/main.rs`** — the `aperture` binary: an interactive **focus shell** that lexes,
   parses, lowers, typechecks, **compiles and runs** what you type against a real store seeded
-  from `fixture.rs`, with `:plan` to show the plan without running it. Useful for seeing the
-  whole system behave; not a place to put logic — the plan renderer it needed went into
-  `print.rs`.
+  with a **code index** — files, modules, declarations, references, imports — which is the
+  canonical shape for a fact database and the one that makes reference joins worth watching.
+  `:plan` shows the plan without running it. Useful for seeing the whole system behave; not a
+  place to put logic — the plan renderer it needed went into `print.rs`, and its facts are
+  written through `fact.rs`.
 - **`src/focus.rs`** — the module list, and then a **graveyard of commented-out prototype
   code** (~20 live lines out of ~1,250). Kept only for the transport-codec sketch. Don't add
   code here.

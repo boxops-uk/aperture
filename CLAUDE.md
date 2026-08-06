@@ -19,10 +19,13 @@ invariants by number, and where to read the rest. It is deliberately tight.
 
 **Module map.** `src/focus/` is the live engine + language — all new work lands here.
 `src/main.rs` is the `aperture` shell: it compiles and runs what you type against a real store
-seeded from `focus::fixture`, with `:plan` to show the plan — keep logic out of it (the plan
-renderer it needed lives in `focus::print`). **`focus::fixture` is the one fixture database**
-— schema, facts and example queries — shared by the corpus, the batteries and the shell, and
-deliberately *not* test-gated so a corpus entry is something you can type at the prompt.
+seeded with a **code index** (files → modules → declarations → references), written through the
+fact API; `:plan` shows the plan. Keep logic out of it — the plan renderer it needed lives in
+`focus::print`. **`focus::fact` is how a fact is written by hand**: a well-typed value whose
+key fields are named, resolved against the schema (`FjallDb::put`), because `put_fact` takes
+bytes and three of its preconditions fail silently — see
+[chapter 3](docs/03-storage-model.md#writing-a-fact-by-hand). `focus::fixture` is the fixture
+database the corpus and the batteries share.
 `src/focus.rs` is the module list plus a commented-out graveyard (~20 live lines; only the
 transport-codec sketch is worth keeping). See [chapter 1](docs/01-concepts.md).
 

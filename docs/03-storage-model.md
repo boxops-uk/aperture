@@ -265,6 +265,38 @@ batch is the only thing standing between "immutable, self-consistent store" and
 
 ---
 
+## Writing a fact by hand
+
+`put_fact(predicate, key_bytes, value_bytes)` is the primitive, and it is the wrong thing to
+hand a person. Three of its preconditions are invisible at the call site, and each fails
+*silently* — the write succeeds and the fact is simply never found:
+
+| what a caller has to know | what happens if they don't |
+|---|---|
+| a record key is **flat**; only a record *inside* a field keeps its wrapper | the seek builds the flat form and never meets the wrapped one |
+| field order is the **schema's declaration order**, which a Rust struct has no reason to share | fields land in the wrong positions and decode as each other |
+| only the schema says whether a predicate has a value side at all | a value written where none is expected, or missing where one is |
+
+So `FjallDb::put(&schema, &fact)` takes a **well-typed value** instead: a type implementing
+`focus::fact::Fact` names its predicate and gives its key fields *by name*, and the write
+resolves those against the schema — reordering into declared order and reporting an unknown
+field, a missing one, a wrong shape or a stray value side before any bytes exist. A fact whose
+fields are listed in whatever order reads well still writes a findable fact, which is the whole
+point.
+
+The id it returns **is** what a reference to that fact is, so a fact pointing at another takes
+the value the earlier write handed back. Referential integrity is then a consequence of write
+order rather than a check: nothing can point at a fact that has not been written, because
+there is no id for it yet.
+
+Two things this is deliberately not. It is **not bulk ingestion** — it materialises a value per
+fact, which is right for a deriver writing thousands and wrong for a loader writing millions;
+Phase 7's fact-file path wants a streaming form. And it is **not a `serde` derive**, though it
+is the layer one would sit on: serde's data model has no fact reference, and its struct fields
+arrive in declaration order, so a derive would still need the schema resolution above.
+
+---
+
 ## Snapshots and immutability
 
 A query reads a consistent **snapshot**. For a Complete (immutable) DB this is trivial —
