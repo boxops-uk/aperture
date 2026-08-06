@@ -119,10 +119,6 @@ over it *are* predicate queries; the only CF the scan hot loop touches. [ch3](03
 fearless parallel ingest, and an O(1) wholesale drop. Costs ~30 ms per tree to create.
 [ch3](03-storage-model.md).
 
-**lens** — `src/lens/`, the superseded first-attempt front end; not compiled; a reference to
-re-implement into `focus`, then delete file-by-file. Down to **hoisting** (`hoist.rs` — the one
-piece of flatten Phase 4 deferred) and the boxed AST (`query.rs`). [ch1](01-concepts.md).
-
 **MachineState** — the register file: `Box<[Option<Register>]>`. [ch4](04-executor.md).
 
 **marker** — the leading byte of an encoded value; determines sort position and skip shape;

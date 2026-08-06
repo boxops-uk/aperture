@@ -258,22 +258,39 @@ order putting it first is refused rather than compiled.
 ### What flatten defers, and why
 
 Everything below **parses and typechecks**, then draws one specific `nyi/…` naming it — the
-permissive-early promise, now checked all the way through the driver: the corpus gate runs
-`Compilation::plan`, so `Supported` means *produces a plan*, and each of these has an entry.
+permissive-early promise, now checked all the way through the driver *and past it*: the corpus
+gate runs `Compilation::plan` and then runs the plan against a real store, so `Supported`
+means **returns these rows**, and each of these has an entry.
 
 | construct | code | what it needs |
 |---|---|---|
 | `X = 42`, `X = Y`, `X = Y.name` | `nyi/value-bind` | a **derived bind** — the `Slot` value variant ([Phase 6](#derived-facts)) |
-| a fact pattern in the head, or in a key field | `nyi/nested-generator` | **hoisting** it into its own loop level (`src/lens/hoist.rs` is the reference) |
-| matching or capturing a fact-typed field | `nyi/fact-field` | cross-fact navigation (`Access::Fetch`) and a fact-id splice |
+| `X.name`, `X.value` where `X` came out of a reference field | `nyi/fact-field` | cross-fact navigation: a second lookup, which is a new `Access` kind (`Access::Fetch`) |
 | `test.Name Y.value` — a value in a key position | `nyi/value-match` | a residual class over the fetched value buffer, never in the scan ([I6](invariants.md#i6)) |
 | `test.Foo Y` — a variable for a whole record key | `nyi/whole-key` | a key is not one field ([chapter 3](03-storage-model.md#a-stored-key-is-flat)) |
 | `Edge {from = X, to = X}` | `nyi/repeated-variable` | a same-row `EqField` residual — the [Phase 4 decision](open-decisions.md) |
 
-`nyi/fact-field` is the one that would have been dangerous to leave implicit. A register holds
-*its own* row's key bytes, and a fact-typed field holds a `FactId` — so splicing the register
-into that field would compare a key against an id and quietly match nothing. Rejecting it is
-what makes the missing feature visible instead of wrong.
+**Reaching a fact through a reference** is the one that would have been dangerous to leave
+implicit, and it is now split at exactly the line the danger falls on. *Following* a reference
+is supported: a register holds the fact id of the row it is bound to, and
+`SeekKeyPart::RegisterFactId` splices that — so a join through a reference costs no store read
+and [I6](invariants.md#i6) stays structural. What is still deferred is reaching the fact the
+reference *names*, its key fields or its value, which is a second lookup.
+
+The trap the split closes is that a register also holds its own row's **key bytes**, and those
+are not the referenced fact's. Splicing them where an id belongs compares two different things
+and matches nothing — a silently empty answer rather than an error, which is why the operator
+is defined off `Register::fact_id` and the executor's guard fixture separates a row's key from
+its id on purpose (an integer field and a reference differ only in their marker byte).
+
+**Hoisting is not deferred either.** A fact pattern denotes the facts matching it, so it is a
+generator wherever it is written — in a key field, in the head, under a field read. Flatten
+gives each nested one the name the query did not and appends it as a level *before* whatever
+named it, innermost first. Everything downstream — the dependency graph, the safety check,
+sargeability, projection — then sees an ordinary row bind, which is what keeps hoisting
+flatten-local. The claim that it is a *spelling* rather than a second way to run a query is
+tested by plan equality: the nested form and the two-statement form compile to the same plan,
+not merely to the same rows.
 
 Three rejections are permanent rather than deferred: `reject/unbound-variable` (range
 restriction), `reject/not-a-generator` (a statement that matches nothing), and

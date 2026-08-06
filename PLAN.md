@@ -55,19 +55,18 @@ The engine spine exists in `src/focus/`:
   variable depends on the order, so edges would forbid correct orders). The headline gate is
   tier-3: a generated `(query, store)` pair run against a nested-loop model, in **every**
   permutation of the body. What flatten defers has a code and a corpus entry each
-  ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). `src/lens/hoist.rs`
-  survives as the reference for the one piece deferred with a seam — hoisting a nested
-  generator — along with `query.rs` (the boxed AST, which nothing needs yet) and the three
-  files those depend on; the other seven `lens` files are deleted.
+  ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). Phase 5 added **following
+  a fact reference** (a fact-id splice and compare) and **hoisting a nested generator**, which
+  retired the last of `src/lens/`.
 - **The compilation driver** (`focus::compile`, Phase 3 done) — one `Compilation` carrying
   the source, schema, interner, diagnostics sink and the trees the phases produce. A phase
   reports by pushing into the sink and cannot return diagnostics; codes are a `Code` enum
   rather than strings; rendering sorts into source order while the sink keeps arrival order.
-- **A focus shell** (`src/main.rs`) — reads a query, highlights it from the compiler's own
-  lexer, and reports what the front end makes of it against a real `FjallDb` seeded at
-  startup; `:facts` runs a hand-built plan through the executor. It compiles only through the
-  driver, and stops at a type: calling `plan()` at the prompt is Phase 5's task. Phase 5
-  scaffold, landed early — see that phase.
+- **A focus shell** (`src/main.rs`, Phase 5 done) — reads a query, highlights it from the
+  compiler's own lexer, **compiles it through the driver and runs it** against a real `FjallDb`
+  seeded from `focus::fixture`; `:plan` shows the plan without running it and `:facts` scans a
+  predicate. Its database is the corpus's, so anything the corpus classifies `Supported` is
+  typeable at the prompt and returns the rows recorded there.
 - **Store** (`store.rs`) — the fjall store is complete and guarded (Phase 1 done): a pair of
   keyspaces per predicate (`keys.<id>`, `entities.<id>`), `scan`/`point`, and an atomic
   `put_fact` over a snowflake [`FactId`](docs/03-storage-model.md#factid-allocation-i11) with
@@ -75,6 +74,9 @@ The engine spine exists in `src/focus/`:
   oracle. [I8](docs/invariants.md#i8), [I11](docs/invariants.md#i11),
   [I12](docs/invariants.md#i12) green — the I12 crash case aborts a child process mid-write,
   and the I8 guard cross-checks a drop probe against fjall's own open-snapshot count.
+- **One fixture database** (`focus::fixture`) — the schema, the facts and the example queries
+  the corpus, the batteries and the shell all share, deliberately not test-gated. Before it
+  there were two databases and a corpus entry was not something a person could run.
 - **Unbuilt:** ingestion, schema parsing, the wire protocol, and the operational layer.
   `schema.rs` holds Phase 8's guards, written up front and `#[ignore]`d — the only pending
   entries left in the coverage ledger.
@@ -88,7 +90,7 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
 ```
 0  guard matrix & harness ─┬─▶ 1  fjall store ✅ (I8, I11, I12 green; resume battery re-run on fjall)
                            │
-                           └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ✅ ─┬─▶ 5  REPL  (→ remote-only later)
+                           └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ✅ ─┬─▶ 5  REPL ✅  (→ remote-only later)
                                                                                     ├─▶ 6  derived facts  (deliberate machine change; own resume battery)
                                                                                     └─▶ 7  ingestion ─▶ 8  schema ─▶ 9  operations
 
@@ -230,8 +232,9 @@ single-fact seeding primitive — the bulk pipeline (Phase 7) builds on the same
 deferring "not-yet-implemented" to later phases via clear diagnostics — so no grammar
 reshape is needed as features land.
 
-**Depends on:** nothing engine-side (parallel with Phase 1). Uses `src/lens/` as the
-reference to **re-implement into `focus`** (against the `Plan` IR), then delete file-by-file.
+**Depends on:** nothing engine-side (parallel with Phase 1). Used `src/lens/` as the
+reference to **re-implement into `focus`** (against the `Plan` IR), deleting it file-by-file;
+the last of it went with hoisting in Phase 5.
 
 **Design of record:** [chapter 7](docs/07-compilation.md) (three tree layers; permissive-
 early principle). **Phase-specific — grammar/lexer resolutions, as settled** (build detail,
@@ -402,7 +405,7 @@ reorder (whose interface is built here). **Read it before this phase.**
   declared `PredicateTy`, walked along the path it will read at run time, so a projection
   cannot disagree with the bytes it decodes. Phase 6 is the first thing that needs the table.
 - **No hoisting.** A fact pattern away from the top level of a statement is
-  `nyi/nested-generator`; `src/lens/hoist.rs` stays as its reference.
+  `nyi/nested-generator`. *(Superseded: Phase 5 hoists, and the code is gone.)*
 
 **Tasks:**
 - **4a.** ✅ Flatten the implemented subset (scans, joins, scalar/record heads, nested captures)
@@ -451,7 +454,7 @@ halves of the system had to agree.
 
 ---
 
-## Phase 5 — REPL: experiment by executing
+## Phase 5 — REPL: experiment by executing ✅
 
 **Goal.** A simple interactive REPL to *run* queries end-to-end (parse → compile → plan →
 execute → project), for testing and demo. First moment the whole pipeline is exercised by a
@@ -470,36 +473,41 @@ Phase 9; don't build in state a wire shell can't reproduce.
 
 **Invariants in scope:** none made green; *upholds* the full engine set by exercising it.
 
-**Tasks:** REPL loop + line editing + diagnostic rendering (reuse `codespan-reporting`); seed
-a store with fixtures; run compiled plans via `enumerate` and print projected `Value`s;
-`:commands` (show flattened plan, show diagnostics). *Done per task:* an integration test
-drives a query string through the REPL path and asserts the printed rows.
+**Tasks:**
+- **5a.** ✅ The `plan(query)` call at the prompt, running it via `enumerate`, printing
+  projected `Value`s with references resolved to the facts they name; `:plan` shows the plan
+  without running it. The loop, line editing, highlighting and codespan rendering already
+  existed from Phase 2.
+- **5b.** ✅ **One fixture database** (`focus::fixture`): the schema, the facts and the example
+  queries the corpus, the batteries and the shell share. Not test-gated, because the shell is
+  not a test.
+- **5c.** ✅ Rendering a `Plan` for a person, in `focus::print` beside the two renderings of a
+  tree it already owned — fields named from the schema, since `of = r0#` is the answer to "did
+  it follow the reference?" and `1 = r0#` is not.
+- **5d.** ✅ Both halves of ["reaching a fact through a
+  reference"](#reaching-a-fact-through-a-reference--three-sizes-listed-apart) that a demo needs
+  — the fact-id splice/compare and hoisting — see the scope note below.
 
-**Part of this already exists, from Phase 2** (`src/main.rs`): the loop, line editing, live
-highlighting from the compiler's own lexer, codespan diagnostic rendering, a real `FjallDb`
-seeded at startup, and `:schema` / `:facts` — the latter driving a hand-built plan through
-`enumerate` and printing projected `Value`s, with fact references resolved to the facts they
-name. What is missing is the compile step in the middle: it stops at a type. Flatten exists as
-of Phase 4, so Phase 5 owes the `plan(query)` call, running the plan, and the `:commands` that
-show one — not the shell around it. It earned its place early by finding a double-reported
-lexer diagnostic that only a live front end makes obvious; treat it as the scaffold this phase
-already says it is.
+**The scope decision this phase faced, and how it went.** Phase 4 left the shell advertising
+two examples that typechecked and had no plan, because every join through a reference was
+`nyi/fact-field` and the idiomatic spelling of one was `nyi/nested-generator`. The options were
+to narrow the examples or to pull in the reference items; **all three items landed**, which is
+what turned the demo from a database you can enumerate into one you can query. The three sizes
+were estimated in that table and held: #1 was ~40 lines of IR plus executor, #2 was one relaxed
+check plus the diagnostic its trap needed, #3 was flatten-local. What it cost beyond the
+estimate was *test* work rather than implementation: the census would not go green on unit
+tests, so the query generator had to learn fact-typed fields.
 
-**One thing to decide at pickup, found by Phase 4:** the demo schema is built around fact
-references (`demo.Knows {from : demo.Person}`), and both `:help` examples are nested
-generators over fact-typed fields — exactly what flatten defers as `nyi/nested-generator` and
-`nyi/fact-field`. They typecheck, so the shell's advice is honest today, but it will not
-*run*. Measured over the demo schema: entity lookups, `.value`, field captures, scalar-key
-seeks and whole-row scans of the relations all compile and run; **every join through a
-reference does not.** So Phase 5 either narrows the examples to what runs, or pulls in the
-first two items of ["Reaching a fact through a reference"](#reaching-a-fact-through-a-reference--three-sizes-listed-apart)
-— of which #1 is a small additive `Plan` IR change and #2 is one relaxed check plus the
-diagnostic that trap needs. Doing both is what makes the demo a fact database you can query
-rather than one you can enumerate; that is a scope decision, not a detail.
+**What "runnable" turned out to mean.** `Supported` in the corpus meant "produces a plan", and
+the module doc claimed it meant "runs" — a different claim, since a plan that seeks the wrong
+prefix is still a plan. It now carries **the rows the entry answers with**, checked against a
+real `FjallDb`, and a `Supported` entry cannot be added without saying what it returns.
 
 **Acceptance:**
-- [ ] Typing a focus query returns rows (or a well-rendered diagnostic) against a fixture store, end-to-end, through the real compiler and executor.
-- [ ] Diagnostics from typecheck/flatten render nicely (source spans).
+- [x] Typing a focus query returns rows (or a well-rendered diagnostic) against a fixture store, end-to-end, through the real compiler and executor.
+- [x] Diagnostics from typecheck/flatten render nicely (source spans).
+- [x] Every `Supported` corpus entry runs against a real store and returns its recorded rows.
+- [x] Every example the shell offers is a corpus entry that runs.
 
 ---
 
@@ -680,32 +688,37 @@ Detail and kept seams: [`CLAUDE.md` scope](CLAUDE.md#scope-phases--open-decision
 two *non-additive* constructs — derived facts (Phase 6) and the now-resolved `FactRef` marker
 — are handled as deliberate changes above.
 
-### Reaching a fact through a reference — three sizes, listed apart
+### Reaching a fact through a reference — three sizes, listed apart ✅ (Phase 5)
 
-Phase 4 defers everything to do with a fact-typed field under two codes, which makes three
-very differently-sized pieces of work look like one. **A schema built around references —
-which is what a fact database is for, and what the demo schema is — cannot be queried past a
-whole-row scan until at least the first lands.** Sizes measured against the demo schema:
-every join in it is blocked, while entity lookups, `.value`, captures and scalar-key seeks
-already run.
+Phase 4 deferred everything to do with a fact-typed field under two codes, which made three
+very differently-sized pieces of work look like one — and left a schema built around
+references, which is what a fact database is for, unqueryable past a whole-row scan. All three
+landed in Phase 5; the sizes are kept because they held, and because the fourth piece below is
+still open and is estimated against them.
 
-| # | Work | Size | Unblocks | Today |
-|---|---|---|---|---|
-| 1 | **Fact-id splice / compare** — `SeekKeyPart::RegisterFactId(Address)` + `ResidualOp::EqRegisterFactId`, encoding `MARK_FACT_REF ++ id` off `Register::fact_id`. **No store read**, so [I6](docs/invariants.md#i6) stays structural. | small (~40 lines: `plan.rs`, `iter.rs`, `flatten.rs`) | `P = demo.Person {id = 1}; demo.Knows {from = P, to = X}` — every join through a reference | `nyi/fact-field` |
-| 2 | **Capture-and-project a reference** — narrow the rule from "a fact-typed field is deferred" to "**may be captured and projected, never navigated**". No IR change: `Project::RegisterField{ty: Fact}` already decodes to `Value::FactRef`, and the shell already renders it as the fact it names. | one relaxed check in flatten's narrowing pass, plus a diagnostic for the arm below | projecting *which* facts a relation points at | `nyi/fact-field` |
-| 3 | **Hoist a nested generator** — rewrite `demo.Knows {from = demo.Person {id = 1}}` into two statements. Flatten-local; `src/lens/hoist.rs` is the reference, and deleting it (with `query.rs`, the last `lens` files) is gated on this. Needs #1 to be worth anything. | medium, flatten-only | the idiomatic nested-pattern spelling, which is how one writes this query | `nyi/nested-generator` |
+| # | Work | Size | Unblocked |
+|---|---|---|---|
+| 1 | **Fact-id splice / compare** — `SeekKeyPart::RegisterFactId(Address)` + `ResidualOp::EqRegisterFactId`, encoding `MARK_FACT_REF ++ id` off `Register::fact_id`. **No store read**, so [I6](docs/invariants.md#i6) stays structural. | small (~40 lines: `plan.rs`, `iter.rs`, `flatten.rs`) — held | `P = test.Foo {id = 1}; test.Ref {of = P}` — every join through a reference |
+| 2 | **Capture-and-project a reference** — the rule narrowed from "a fact-typed field is deferred" to "**may be captured, projected and matched, never navigated**". No IR change: `Project::RegisterField{ty: Fact}` already decoded to `Value::FactRef`. | one relaxed check plus the diagnostic the trap below needs — held | projecting *which* facts a relation points at |
+| 3 | **Hoist a nested generator** — `test.Ref {of = test.Foo {id = 1}}` becomes its own loop level, bound to a name the query did not write. Flatten-local. Needed #1 to be worth anything. | medium, flatten-only — held | the idiomatic nested-pattern spelling, which is how one writes this query |
 
-**A trap to know about before doing #2.** `flatten::resolve`'s `.value`-on-a-non-row arm
-declines *quietly*, which is correct today only because `collect` reports `nyi/fact-field`
-before a variable can ever be bound to a fact-typed field. Allowing that capture makes the arm
-reachable, and `plan()` would then return `None` with an empty sink — breaking its documented
-promise that a refusal always has a reason. There is a `debug_assert` in `flatten_ordered` that
-fires on exactly that, so every rejection test is a test of the promise; it will catch this,
-but the diagnostic is part of #2's work, not an afterthought.
+**The trap #2 walked into, as predicted.** `flatten::resolve`'s `.value`-on-a-non-row arm
+declined *quietly*, which was correct only while `collect` reported `nyi/fact-field` before a
+variable could be bound to a fact-typed field. Allowing the capture made the arm reachable and
+`plan()` would have returned `None` with an empty sink — breaking its documented promise that a
+refusal always has a reason. The `debug_assert` in `flatten_ordered` is what would have caught
+it; the diagnostic was written as part of #2 rather than after it, and both arms of "reading
+through a reference" are now corpus entries.
 
-Reading *through* a reference — `P.value` where `P` came out of a field — is the fourth and
-largest piece, and is the already-listed `Access::Fetch`: a point read per row and a new slot
-kind. It is what the shell's own `:help` examples need (see Phase 5).
+**What was not predicted** is that the census made this test work rather than implementation
+work. A new plan shape has to be *reached by the generator*, or the resume battery says nothing
+about it — so the `(query, store)` generator grew fact-typed fields, and reaching the residual
+form reliably took a deliberate draw rather than a chance one (2 in 300 left to chance).
+
+**Still open: reading *through* a reference** — `P.name` or `P.value` where `P` came out of a
+field. `nyi/fact-field`, and the fourth and largest piece: the already-listed `Access::Fetch`,
+a point read per row and a new slot kind. Everything in the table above is a compare against an
+id already in a register, which is why none of it needed one.
 
 ---
 
@@ -720,5 +733,6 @@ kind. It is what the shell's own `:help` examples need (see Phase 5).
 - **VM / ISA design** (external note) — a fixed-width 64-bit ISA from rewriting Glean's C++
   query VM. Relevant *only if* Aperture ever moves to a bytecode VM (currently a deliberate
   divergence — we implement the abstract machine directly). Not needed for any current phase.
-- **`src/lens/`** — the disconnected first-attempt front end; reference for re-implementing
-  parse/typecheck/lower into `focus` (Phases 2–4), then delete.
+- **`src/lens/`** — the disconnected first-attempt front end, which was the reference for
+  re-implementing parse/typecheck/lower/flatten into `focus` (Phases 2–5). **Deleted**, its last
+  file retired by hoisting. Recoverable from git history if a later phase wants to look.

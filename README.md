@@ -13,11 +13,13 @@ ingestion is "fearless."
 
 > **Status.** Being taken from prototype to production. In `src/focus/`: the engine spine
 > (codec, executor, resume, projection) and the fjall store are built and guarded, and the
-> **front end now reaches the `Plan`** — focus text parses, lowers, typechecks and flattens,
-> so a query compiles to a plan the executor runs, with every construct deferred to a later
-> phase drawing a diagnostic that names it. **Not yet built:** running one at the prompt
-> (Phase 5 wires `plan()` into the shell), then derived facts, ingestion, schema parsing and
-> the operational layer. See [`PLAN.md`](PLAN.md) for the sequence and current state.
+> **front end reaches the `Plan`** — focus text parses, lowers, typechecks and flattens, with
+> every construct deferred to a later phase drawing a diagnostic that names it. A query is now
+> **answerable end to end**: `aperture` compiles what you type and runs it against a real
+> store, joins *through fact references* included, and every supported construct in the corpus
+> is checked against the rows it returns rather than only against the plan it produced.
+> **Not yet built:** derived facts, ingestion, schema parsing and the operational layer. See
+> [`PLAN.md`](PLAN.md) for the sequence and current state.
 
 ---
 
@@ -97,7 +99,6 @@ cargo fmt
 - [`PLAN.md`](PLAN.md) — the living phase tree: the build sequence and current state.
 
 Module map: `src/focus/` is the live engine and language — all new work lands there.
-`src/main.rs` is the `aperture` focus shell (a Phase 5 scaffold: it typechecks, it cannot yet
-run a query). `src/lens/` is a superseded first attempt (not compiled) kept only as a reference
-to re-implement into `focus`. `src/focus.rs` is a commented-out graveyard. See
+`src/main.rs` is the `aperture` focus shell, which compiles and runs what you type against a
+real store. `src/focus.rs` is a commented-out graveyard. See
 [Concepts](docs/01-concepts.md) for detail.

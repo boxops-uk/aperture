@@ -102,15 +102,20 @@ nearest thing is Phase 6's derived binds, which are the machinery a computed exp
 run on. **Status: undecided.** The seam exists (a derived bind is a pure function of the fact
 bindings), so this is additive when wanted.
 
-### The idiomatic spelling of a join is deferred
+### The idiomatic spelling of a join — closed
 
 In Angle, nested fact patterns — `Knows { from = Person { id = 1 }}` — are *the* way one writes
-a traversal. Aperture parses and typechecks that and then defers it, in three pieces of very
-different size, enumerated in
-[`PLAN.md`](../PLAN.md#reaching-a-fact-through-a-reference--three-sizes-listed-apart). This is
-the gap most likely to be mistaken for a decision: it is not that references are a bad idea —
-the whole demo schema is built on them — it is that Phase 4 shipped without the splice that
-makes them queryable. **Status: scheduled to be decided at Phase 5 pickup.**
+a traversal. Phase 4 parsed and typechecked that and then deferred it, in three pieces of very
+different size; **Phase 5 landed all three**
+([`PLAN.md`](../PLAN.md#reaching-a-fact-through-a-reference--three-sizes-listed-apart)), so the
+nested spelling now compiles — to the *same plan* as the two-statement form, which is the sense
+in which it is a spelling rather than a second way to run a query.
+
+Aperture and Angle agree on the mechanism, too: a reference is followed by its **id**, so a
+join through one reads no second fact. What Aperture still defers is reaching *through* a
+reference to a field or value of the fact it names (`nyi/fact-field`), which is a lookup rather
+than a compare. Angle does that freely; here it needs the `Access::Fetch` kind the IR has not
+grown yet.
 
 ### What no aggregation means
 

@@ -18,12 +18,13 @@ invariants by number, and where to read the rest. It is deliberately tight.
 - The build sequence: [`PLAN.md`](PLAN.md)
 
 **Module map.** `src/focus/` is the live engine + language — all new work lands here.
-`src/main.rs` is the `aperture` shell: a scaffold for the Phase 5 REPL that typechecks what
-you type against a real store, and stops at a type because calling `plan()` at the prompt is
-Phase 5's task — keep logic out of it. `src/lens/` is a superseded first attempt (not
-compiled) kept only as a reference to re-implement into `focus`, then delete file-by-file. `src/focus.rs` is the module list plus a
-commented-out graveyard (~20 live lines; only the transport-codec sketch is worth keeping).
-See [chapter 1](docs/01-concepts.md).
+`src/main.rs` is the `aperture` shell: it compiles and runs what you type against a real store
+seeded from `focus::fixture`, with `:plan` to show the plan — keep logic out of it (the plan
+renderer it needed lives in `focus::print`). **`focus::fixture` is the one fixture database**
+— schema, facts and example queries — shared by the corpus, the batteries and the shell, and
+deliberately *not* test-gated so a corpus entry is something you can type at the prompt.
+`src/focus.rs` is the module list plus a commented-out graveyard (~20 live lines; only the
+transport-codec sketch is worth keeping). See [chapter 1](docs/01-concepts.md).
 
 ---
 
@@ -145,8 +146,10 @@ decoded data.
   (`nyi/repeated-variable`, Phase 4), the `pattern = pattern` *scope* is settled at typecheck
   (the feature itself stays deferred), and cancellation counting rows examined is settled in
   the executor.
-- **What flatten defers** — a value bind, a nested generator, a fact-typed field, matching on a
-  value, a whole record key — each has a code and a corpus entry
+- **What flatten defers** — a value bind, reading *through* a fact reference, matching on a
+  value, a whole record key, an intra-row repeat — each has a code and a corpus entry
   ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). `nyi/fact-field` is the
-  load-bearing one: a register holds its own row, so splicing it into a field that holds a
-  `FactId` would compare a key against an id and quietly match nothing.
+  load-bearing one, and it is now a *split* rather than a blanket: **following** a reference is
+  supported (the splice is off `Register::fact_id`), reaching the fact it names is not. The
+  danger the split guards is that a register also holds its own row's key bytes — splicing
+  those where an id belongs would compare a key against an id and quietly match nothing.

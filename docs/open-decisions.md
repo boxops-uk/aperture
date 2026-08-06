@@ -110,8 +110,10 @@ splices" rationale was found overstated (splices work with a distinct marker too
 
 The engine-side effect (the [Phase 7 gate](../PLAN.md) "resolve `FactRef` before ingesting
 fact-typed fields") is satisfied by the marker existing, and `CLAUDE.md` no longer lists it as
-open. A fact-typed field is now written end to end by the demo shell (`src/main.rs`), whose
-`demo.LivesIn` references the `demo.City` and `demo.Person` facts it is about.
+open. A fact-typed field is written end to end by the shared fixture (`focus::fixture`), and as
+of Phase 5 it is also **queried** end to end: `test.Ref {of = test.Foo {id = 1}}` follows the
+reference by splicing the id the marker distinguishes, which is the use the distinct marker was
+doubted to support.
 
 ### Storage codec vs transport (wire) codec — settled
 

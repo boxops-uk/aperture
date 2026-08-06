@@ -165,16 +165,24 @@ tests only the error path.
 - **Schema:** fingerprint order-independence (tier 2) + incompatible-schema rejection at
   ingest ([I13](invariants.md#i13)).
 - **Front end:** the **target-feature corpus** (`focus::corpus`) — the language surface as
-  *data*, each snippet classified `Supported` / `Diagnosed(code)` / `ParseError`, with two
-  gates over it: every entry parses as classified, and every entry draws exactly the
-  diagnostic codes it claims. This is the acceptance artifact for
+  *data*, each snippet classified `Supported(rows)` / `Diagnosed(code)` / `ParseError`, with
+  three gates over it: every entry parses as classified, every entry draws exactly the
+  diagnostic codes it claims, and **every supported entry runs against a real `FjallDb` and
+  returns the rows it records**. This is the acceptance artifact for
   "[permissive grammar, narrow later](07-compilation.md)": a construct deferred to a later
   phase must be reported *by name*, never as a parse error or a panic. Diagnostics carry
   codes (`nyi/…`, `reject/…`, `lit/…`) precisely so the gate asserts identity rather than
-  wording. Both gates accumulate rather than failing on the first entry, so one run lists
+  wording. The gates accumulate rather than failing on the first entry, so one run lists
   everything outstanding — which is how the Phase 2 audit was taken in the first place.
   Parse and lowering additionally have no-panic properties over generated token soup, because
   a tree with holes in it is the ordinary input to lowering, not an edge case.
+
+  The rows live *in the classification* rather than beside it, so a construct cannot be marked
+  supported without saying what it answers. That distinction is the whole of what Phase 5 added
+  here: `Supported` had meant "produces a plan", and a plan that seeks the wrong prefix or
+  projects the wrong path is still a plan. The database is `focus::fixture`, shared with the
+  shell — which is what makes `every_shell_example_is_a_supported_entry` possible, and what
+  caught a shell advertising two queries the compiler had no plan for.
 - **Front end, tier 1:** **`parse ∘ print == id` on trees** — generate a tree
   (`syntax::proptest`), print it as focus source (`focus::print`), parse and lower the text, and
   the tree must come back structurally identical. This is what stops the corpus being the *whole*
