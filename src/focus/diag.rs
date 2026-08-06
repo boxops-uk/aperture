@@ -55,7 +55,6 @@ pub enum Code {
     NyiDisjunction,
     NyiFactField,
     NyiNegation,
-    NyiNestedGenerator,
     NyiNever,
     NyiRepeatedVariable,
     NyiSubquery,
@@ -97,7 +96,6 @@ impl Code {
         Code::NyiDisjunction,
         Code::NyiFactField,
         Code::NyiNegation,
-        Code::NyiNestedGenerator,
         Code::NyiNever,
         Code::NyiRepeatedVariable,
         Code::NyiSubquery,
@@ -132,7 +130,6 @@ impl Code {
             Code::NyiDisjunction => "nyi/disjunction",
             Code::NyiFactField => "nyi/fact-field",
             Code::NyiNegation => "nyi/negation",
-            Code::NyiNestedGenerator => "nyi/nested-generator",
             Code::NyiNever => "nyi/never",
             Code::NyiRepeatedVariable => "nyi/repeated-variable",
             Code::NyiSubquery => "nyi/subquery",
@@ -171,7 +168,6 @@ impl Code {
             | Code::NyiDisjunction
             | Code::NyiFactField
             | Code::NyiNegation
-            | Code::NyiNestedGenerator
             | Code::NyiNever
             | Code::NyiRepeatedVariable
             | Code::NyiSubquery
@@ -388,7 +384,6 @@ mod tests {
                 | Code::NyiDisjunction
                 | Code::NyiFactField
                 | Code::NyiNegation
-                | Code::NyiNestedGenerator
                 | Code::NyiNever
                 | Code::NyiRepeatedVariable
                 | Code::NyiSubquery

@@ -10,7 +10,10 @@
 //!
 //! 1. **Collect** the statements into generators. A statement is a fact pattern —
 //!    `test.Foo {…}`, optionally bound to a variable by `X = test.Foo {…}` — and
-//!    each becomes one loop level holding one register.
+//!    each becomes one loop level holding one register. A fact pattern written
+//!    *inside* another is a generator too, and is **hoisted** into a level of its
+//!    own, bound to a name the query did not write; everything after this point
+//!    sees an ordinary row bind.
 //! 2. **Safety.** Every variable a seek, residual or the head *reads* must be
 //!    **captured** by some generator's key pattern. That is the whole of what
 //!    correctness needs — see [`reorder`](crate::focus::reorder) for why it is not
@@ -27,19 +30,14 @@
 //!
 //! # What it does not do
 //!
-//! **Hoist nested generators.** A fact pattern is a generator wherever it appears,
-//! so one written inside a key field or in the head would have to become a loop
-//! level of its own. In the implemented subset that can only arise through a
-//! fact-typed field or a head that is itself a fact pattern; both draw
-//! `nyi/nested-generator`, and this is the seam hoisting lands at.
-//!
-//! **Reach through a fact reference.** A fact-typed key field holds a `FactId`, so
-//! matching one against a bound row, or capturing one and reading *its* fields,
-//! needs cross-fact navigation (`Access::Fetch`) and a fact-id splice — neither of
-//! which the `Plan` IR has. `nyi/fact-field`. Getting this wrong silently is the
-//! trap it exists to close: a register holds its own row's key bytes, which are not
-//! the referenced fact's, and comparing them would give wrong answers rather than
-//! an error.
+//! **Read *through* a fact reference.** A fact-typed key field holds a `FactId`, and
+//! that id is enough to *follow* a reference — [`SeekKeyPart::RegisterFactId`] splices
+//! it, so a join through one costs no store read. Reaching the fact it names is the
+//! other half: `X.name` or `X.value` where `X` came out of a reference field needs a
+//! second lookup the `Plan` IR has no access kind for (`nyi/fact-field`). Getting the
+//! first half wrong *silently* is the trap the split exists to close — a register
+//! holds its own row's key bytes, which are not the referenced fact's, and comparing
+//! them would give wrong answers rather than an error.
 //!
 //! **Bind a computed value.** `X = 42`, `X = Y`, `X = Y.name` bind a variable to
 //! something no generator produced. That is a *derived bind* and needs the value
@@ -229,7 +227,7 @@ impl Level {
 pub fn flatten(
     ast: &Ast,
     schema: &Schema,
-    interner: &LocalInterner,
+    interner: &mut LocalInterner,
     diagnostics: &mut Diagnostics,
 ) -> Option<Plan> {
     flatten_ordered(ast, schema, interner, diagnostics, None)
@@ -249,7 +247,7 @@ pub fn flatten(
 pub fn flatten_in_order(
     ast: &Ast,
     schema: &Schema,
-    interner: &LocalInterner,
+    interner: &mut LocalInterner,
     diagnostics: &mut Diagnostics,
     order: &[usize],
 ) -> Option<Plan> {
@@ -266,7 +264,7 @@ pub fn flatten_in_order(
 pub fn dependencies(
     ast: &Ast,
     schema: &Schema,
-    interner: &LocalInterner,
+    interner: &mut LocalInterner,
     diagnostics: &mut Diagnostics,
 ) -> Option<Deps> {
     let mut flattener = Flattener {
@@ -275,6 +273,7 @@ pub fn dependencies(
         interner,
         diagnostics,
         bindings: vec![],
+        hoisted: vec![],
     };
 
     Some(flattener.collect()?.deps)
@@ -283,7 +282,7 @@ pub fn dependencies(
 fn flatten_ordered(
     ast: &Ast,
     schema: &Schema,
-    interner: &LocalInterner,
+    interner: &mut LocalInterner,
     diagnostics: &mut Diagnostics,
     order: Option<&[usize]>,
 ) -> Option<Plan> {
@@ -308,7 +307,7 @@ fn flatten_ordered(
 fn flatten_reporting(
     ast: &Ast,
     schema: &Schema,
-    interner: &LocalInterner,
+    interner: &mut LocalInterner,
     diagnostics: &mut Diagnostics,
     order: Option<&[usize]>,
 ) -> Option<Plan> {
@@ -318,6 +317,7 @@ fn flatten_reporting(
         interner,
         diagnostics,
         bindings: vec![],
+        hoisted: vec![],
     };
 
     let collected = flattener.collect()?;
@@ -347,13 +347,21 @@ fn flatten_reporting(
 struct Flattener<'a> {
     ast: &'a Ast,
     schema: &'a Schema,
-    interner: &'a LocalInterner,
+    interner: &'a mut LocalInterner,
     diagnostics: &'a mut Diagnostics,
     /// Variable → where its value lives, as the levels are emitted in order.
     ///
     /// Append-only, and searched from the back: a variable is bound once, at its
     /// first occurrence in the chosen order, and every later occurrence reads it.
     bindings: Vec<(Symbol, Slot)>,
+    /// Nested fact pattern → the row variable it was **hoisted** to.
+    ///
+    /// A generator written inside another has no name, and everything downstream —
+    /// the dependency graph, the safety check, sargeability, projection — is written
+    /// in terms of variables. Rather than give each of those a second code path, the
+    /// hoist invents the name the user did not write and the rest of the pass sees an
+    /// ordinary row bind.
+    hoisted: Vec<(NodeId, Symbol)>,
 }
 
 impl Flattener<'_> {
@@ -374,6 +382,7 @@ impl Flattener<'_> {
             match stmt {
                 QueryStmt::Implicit(node) => {
                     if let Some(generator) = self.generator(*node, None) {
+                        self.hoist_within(generator.key, &mut stmts);
                         stmts.push(generator);
                     }
                 }
@@ -388,6 +397,7 @@ impl Flattener<'_> {
 
                     if matches!(self.ast.store().kind(*rhs), ExprKind::Fact(..)) {
                         if let Some(generator) = self.generator(*rhs, row) {
+                            self.hoist_within(generator.key, &mut stmts);
                             stmts.push(generator);
                         }
                     } else {
@@ -415,6 +425,11 @@ impl Flattener<'_> {
         // *row* variable is a capture like any other — it is bound by the level
         // running, which is what a seek splicing it depends on.
         let mut deps = Vec::with_capacity(stmts.len());
+
+        // The head last, and after every statement: a generator in the head is read by
+        // the projection, which runs once every level has bound, and nothing reads it.
+        let head = *self.ast.query().head();
+        self.hoist_node(head, &mut stmts);
 
         // Which variables name a whole row. A bare variable at a *fact-typed* field
         // is capturable like any other — the field holds a reference and a reference
@@ -451,6 +466,79 @@ impl Flattener<'_> {
             deps: Deps::new(deps),
             head_reads: head.reads,
         })
+    }
+
+    // ---- hoisting -----------------------------------------------------------
+
+    /// Hoist every fact pattern **inside** `node` into a generator of its own.
+    ///
+    /// A fact pattern denotes the facts matching it, so it is a generator wherever it
+    /// is written — in a key field, in the head, under a field read. Only the one a
+    /// statement *is* stays where it is; the rest become levels, appended here so that
+    /// each precedes whatever named it.
+    fn hoist_within(&mut self, node: NodeId, stmts: &mut Vec<Gen>) {
+        match self.ast.store().kind(node) {
+            ExprKind::Record(fields) => {
+                for (_, value) in fields.clone().iter() {
+                    self.hoist_node(*value, stmts);
+                }
+            }
+
+            ExprKind::Access(_, base) | ExprKind::Select(_, base) => {
+                self.hoist_node(*base, stmts);
+            }
+
+            // A fact pattern reached directly is the caller's own statement — or a
+            // whole-key pattern, which `scan_key` reports. Either way it is not
+            // hoisted from here; `hoist_node` is the entry point that does that.
+            _ => {}
+        }
+    }
+
+    /// [`hoist_within`](Self::hoist_within), and `node` itself if it is a generator.
+    fn hoist_node(&mut self, node: NodeId, stmts: &mut Vec<Gen>) {
+        let ExprKind::Fact(predicate, key) = *self.ast.store().kind(node) else {
+            self.hoist_within(node, stmts);
+            return;
+        };
+
+        // Innermost first: a generator nested inside this one has to be a level
+        // *before* it, because this one's key reads what that one binds.
+        self.hoist_within(key, stmts);
+
+        let row = self.fresh(stmts.len());
+        stmts.push(Gen {
+            predicate,
+            key,
+            row: Some(row),
+            span: self.ast.store().span(node),
+        });
+        self.hoisted.push((node, row));
+    }
+
+    /// A name for a hoisted row that no source can collide with: the lexer has no
+    /// rule producing `%`, and no schema declares one.
+    fn fresh(&mut self, level: usize) -> Symbol {
+        self.interner.get_or_intern(&format!("%h{level}"))
+    }
+
+    /// The slot a hoisted generator's row is in, once its level has been emitted.
+    fn hoisted_slot(&self, node: NodeId) -> Option<Slot> {
+        let row = self
+            .hoisted
+            .iter()
+            .find(|(hoisted, _)| *hoisted == node)
+            .map(|(_, row)| *row)?;
+
+        self.lookup(row)
+    }
+
+    /// The row variable a hoisted generator was given, for recording the read of it.
+    fn hoisted_row(&self, node: NodeId) -> Option<Symbol> {
+        self.hoisted
+            .iter()
+            .find(|(hoisted, _)| *hoisted == node)
+            .map(|(_, row)| *row)
     }
 
     /// One statement as a generator, or a report that it is not one.
@@ -543,14 +631,18 @@ impl Flattener<'_> {
             ),
 
             ExprKind::Access(FieldRef::Key(_), _) | ExprKind::Select(..) => {
-                match self.ast.store().kind(self.chain_root(node)) {
+                let root = self.chain_root(node);
+
+                match self.ast.store().kind(root) {
                     ExprKind::Var(symbol) => occurrences.read(*symbol),
-                    ExprKind::Fact(..) => self.nested_generator(node),
+                    ExprKind::Fact(..) => self.read_hoisted(root, occurrences),
                     _ => {}
                 }
             }
 
-            ExprKind::Fact(..) => self.nested_generator(node),
+            // Hoisted into its own level by now, and read from here like the row bind
+            // it became.
+            ExprKind::Fact(..) => self.read_hoisted(node, occurrences),
 
             // Deferred constructs, all of which typecheck has already reported.
             ExprKind::Never
@@ -577,13 +669,11 @@ impl Flattener<'_> {
         );
     }
 
-    fn nested_generator(&mut self, node: NodeId) {
-        self.report(
-            node,
-            Code::NyiNestedGenerator,
-            "a fact pattern here would be a generator of its own, which is not \
-             implemented yet; write it as its own statement",
-        );
+    /// Record the read of a hoisted generator's row.
+    fn read_hoisted(&mut self, node: NodeId, occurrences: &mut Occurrences) {
+        if let Some(row) = self.hoisted_row(node) {
+            occurrences.read(row);
+        }
     }
 
     /// Walk the head for the variables it reads, reporting anything unprojectable.
@@ -603,14 +693,16 @@ impl Flattener<'_> {
             }
 
             ExprKind::Access(..) | ExprKind::Select(..) => {
-                match self.ast.store().kind(self.chain_root(node)) {
+                let root = self.chain_root(node);
+
+                match self.ast.store().kind(root) {
                     ExprKind::Var(symbol) => occurrences.read(*symbol),
-                    ExprKind::Fact(..) => self.nested_generator(node),
+                    ExprKind::Fact(..) => self.read_hoisted(root, occurrences),
                     _ => self.not_projectable(node),
                 }
             }
 
-            ExprKind::Fact(..) => self.nested_generator(node),
+            ExprKind::Fact(..) => self.read_hoisted(node, occurrences),
 
             // A prefix is a pattern, not a value; a wildcard was rejected at
             // typecheck; the rest are deferred constructs it also reported.
@@ -798,7 +890,7 @@ impl Flattener<'_> {
                 Some(slot) => self.matched(node, &slot, ty, address, path, level),
             },
 
-            ExprKind::Access(..) | ExprKind::Select(..) => {
+            ExprKind::Access(..) | ExprKind::Select(..) | ExprKind::Fact(..) => {
                 if let Some(slot) = self.resolve(node) {
                     self.matched(node, &slot, ty, address, path, level);
                 }
@@ -1003,6 +1095,9 @@ impl Flattener<'_> {
         match self.ast.store().kind(node) {
             ExprKind::Var(symbol) => self.lookup(*symbol),
 
+            // A hoisted generator, which by now is a level with a row of its own.
+            ExprKind::Fact(..) => self.hoisted_slot(node),
+
             ExprKind::Access(FieldRef::Value, base) => {
                 // Only a *row* has a value side that is one point read away. A
                 // captured reference denotes a row too, but reaching its value means
@@ -1092,15 +1187,17 @@ impl Flattener<'_> {
                 Some(Project::Record(out.into()))
             }
 
-            ExprKind::Var(_) | ExprKind::Access(..) => match self.resolve(node)? {
-                // A variable bound to a whole row projects its identity: the row
-                // itself is not bytes in the register, the fact id is.
-                Slot::Row { address, .. } => Some(Project::FactRef(address)),
-                Slot::Field { address, path, ty } => {
-                    Some(Project::RegisterField { address, path, ty })
+            ExprKind::Var(_) | ExprKind::Access(..) | ExprKind::Fact(..) => {
+                match self.resolve(node)? {
+                    // A variable bound to a whole row projects its identity: the row
+                    // itself is not bytes in the register, the fact id is.
+                    Slot::Row { address, .. } => Some(Project::FactRef(address)),
+                    Slot::Field { address, path, ty } => {
+                        Some(Project::RegisterField { address, path, ty })
+                    }
+                    Slot::Value { address, ty } => Some(Project::Value { address, ty }),
                 }
-                Slot::Value { address, ty } => Some(Project::Value { address, ty }),
-            },
+            }
 
             _ => None,
         }
@@ -1215,8 +1312,8 @@ mod tests {
         );
 
         let plan = match order {
-            None => flatten(&ast, &schema, &interner, &mut diagnostics),
-            Some(order) => flatten_in_order(&ast, &schema, &interner, &mut diagnostics, order),
+            None => flatten(&ast, &schema, &mut interner, &mut diagnostics),
+            Some(order) => flatten_in_order(&ast, &schema, &mut interner, &mut diagnostics, order),
         };
 
         Flattened {
@@ -1250,7 +1347,7 @@ mod tests {
         let _typed = ty::check(&ast, &schema, &interner, &mut diagnostics);
         assert!(!diagnostics.has_errors(), "{source:?} must typecheck");
 
-        dependencies(&ast, &schema, &interner, &mut diagnostics).expect("a collectable query")
+        dependencies(&ast, &schema, &mut interner, &mut diagnostics).expect("a collectable query")
     }
 
     // ---- rendering a plan --------------------------------------------------
@@ -1714,6 +1811,156 @@ mod tests {
         assert!(deps.respects(&[1, 0]));
     }
 
+    // ---- hoisting a nested generator ----------------------------------------
+
+    /// A fact pattern written *inside* another is a generator of its own, so it
+    /// becomes **its own loop level**, bound to a row nobody named, and the field it
+    /// stood in matches that row's id.
+    ///
+    /// The hoisted level comes first: the field reads it, so it has to be bound by
+    /// then — which is the same rule every other read follows.
+    #[test]
+    fn a_nested_fact_pattern_becomes_its_own_level() {
+        assert_eq!(
+            shape("X where X = test.Ref {of = test.Foo {id = 1}}"),
+            lines(&[
+                "r0 <- test.Foo seek[k]",
+                "r1 <- test.Ref seek[r0#]",
+                "head r1",
+            ]),
+        );
+    }
+
+    /// Hoisting is **recursive**, innermost first: each generator is a level before
+    /// the one that names it, so a two-hop chain reads outwards.
+    #[test]
+    fn hoisting_nests() {
+        assert_eq!(
+            shape("X where X = test.Deep {via = test.Ref {of = test.Foo {id = 1}}}"),
+            lines(&[
+                "r0 <- test.Foo seek[k]",
+                "r1 <- test.Ref seek[r0#]",
+                "r2 <- test.Deep seek[r1#]",
+                "head r2",
+            ]),
+        );
+    }
+
+    /// A hoisted generator is a pattern like any other, so it can capture — and what
+    /// it captures is projectable.
+    #[test]
+    fn a_hoisted_generator_captures_its_own_fields() {
+        assert_eq!(
+            shape("X where test.Ref {of = test.Foo {name = X}}"),
+            lines(&[
+                "r0 <- test.Foo scan",
+                "r1 <- test.Ref seek[r0#]",
+                "head r0.1:str",
+            ]),
+        );
+    }
+
+    /// ...and it can *read* an outer capture, which orders it after the statement
+    /// that binds one.
+    #[test]
+    fn a_hoisted_generator_may_read_an_outer_capture() {
+        assert_eq!(
+            shape("X where test.Node {id = X}; test.Ref {of = test.Foo {id = X}}"),
+            lines(&[
+                "r0 <- test.Node scan",
+                "r1 <- test.Foo seek[r0.0]",
+                "r2 <- test.Ref seek[r1#]",
+                "head r0.0:int",
+            ]),
+            "the hoisted level lands between the statement it reads and the one that \
+             names it",
+        );
+    }
+
+    /// **A fact pattern in the head** is the same construct in the other position:
+    /// hoisted into a level, and projected as the fact it names.
+    #[test]
+    fn a_fact_pattern_in_the_head_is_hoisted_too() {
+        assert_eq!(
+            shape("test.Bar {id = 1} where test.Foo _"),
+            lines(&["r0 <- test.Foo scan", "r1 <- test.Bar seek[k]", "head r1",]),
+            "the head's generator is the last level: it can read every capture, and \
+             nothing reads it",
+        );
+        assert_eq!(
+            shape("{a = test.Bar {id = 1}} where test.Foo _"),
+            lines(&[
+                "r0 <- test.Foo scan",
+                "r1 <- test.Bar seek[k]",
+                "head {a = r1}",
+            ]),
+        );
+    }
+
+    /// A field read *of* a hoisted generator, which is how one writes "the name of
+    /// the fact matching this" without a second variable.
+    ///
+    /// Parenthesised because dot binds tighter than application: without the group
+    /// this is `test.Foo ({id = 1}.name)`, and the field is looked for on the record.
+    #[test]
+    fn a_hoisted_generators_field_may_be_read() {
+        assert_eq!(
+            shape("(test.Foo {id = 1}).name where test.Bar _"),
+            lines(&[
+                "r0 <- test.Bar scan",
+                "r1 <- test.Foo seek[k]",
+                "head r1.1:str",
+            ]),
+        );
+    }
+
+    /// **Hoisting is exactly the rewrite it claims to be.** The nested spelling and
+    /// the two-statement spelling of the same query compile to the *same plan*, down
+    /// to which field seeks and which register each level reads.
+    ///
+    /// This is the whole warrant for hoisting being flatten-local: if the two agreed
+    /// only on their answers, the nested form would be a second way of running a
+    /// query. They agree on the plan, so it is a spelling.
+    #[test]
+    fn the_nested_spelling_is_the_two_statement_one() {
+        assert_eq!(
+            shape("X where X = test.Ref {of = test.Foo {id = 1}}"),
+            shape("X where P = test.Foo {id = 1}; X = test.Ref {of = P}"),
+        );
+        assert_eq!(
+            shape("X where test.Ref {of = test.Foo {name = X}}"),
+            shape("X where P = test.Foo {name = X}; test.Ref {of = P}"),
+        );
+        assert_eq!(
+            shape("X where X = test.Deep {via = test.Ref {of = test.Foo {id = 1}}}"),
+            shape(
+                "X where P = test.Foo {id = 1}; Q = test.Ref {of = P}; \
+                 X = test.Deep {via = Q}"
+            ),
+        );
+
+        // ...and the same rows, which is the claim a reader actually cares about.
+        assert_eq!(
+            rows("X where test.Ref {of = test.Foo {name = X}}"),
+            rows("X where P = test.Foo {name = X}; test.Ref {of = P}"),
+        );
+    }
+
+    /// The hoisted row is a **read** of the level it introduces, so the dependency
+    /// graph says the order is forced rather than free.
+    #[test]
+    fn a_hoisted_generator_constrains_the_order() {
+        let deps = deps_of("X where X = test.Ref {of = test.Foo {id = 1}}");
+
+        assert_eq!(deps.len(), 2, "one statement became two levels");
+        assert_eq!(deps.antichains(), Some(vec![vec![0], vec![1]]));
+        assert!(deps.respects(&[0, 1]));
+        assert!(!deps.respects(&[1, 0]));
+
+        let flattened = compile_in_order("X where X = test.Ref {of = test.Foo {id = 1}}", &[1, 0]);
+        assert_eq!(flattened.codes(), ["reject/unbound-variable"]);
+    }
+
     // ---- safety, and the four rejections ------------------------------------
 
     /// **Range restriction.** A variable no generator captures has no values to
@@ -1793,22 +2040,6 @@ mod tests {
             "X where X = test.Foo _; Y = X.name; test.Name Y",
         ] {
             assert_eq!(compile(source).codes(), ["nyi/value-bind"], "{source:?}");
-        }
-    }
-
-    /// A fact pattern away from the top level of a statement is a generator that
-    /// would have to be hoisted into its own loop level.
-    #[test]
-    fn a_nested_generator_is_not_implemented_yet() {
-        for source in [
-            "test.Bar {id = 1} where test.Foo _",
-            "X where test.Ref {of = test.Foo _}",
-        ] {
-            assert_eq!(
-                compile(source).codes(),
-                ["nyi/nested-generator"],
-                "{source:?}"
-            );
         }
     }
 
@@ -1983,6 +2214,13 @@ mod tests {
             );
         }
 
+        // A second hop: `test.Deep` references the `test.Ref` facts just inserted,
+        // which are sequences 1 and 2 of their own predicate.
+        for (i, via) in [1u64, 2].into_iter().enumerate() {
+            let via = fact_ref_field(FactId::new(id("test.Ref"), via).expect("id"));
+            store.insert(id("test.Deep"), via, i as u64 + 1);
+        }
+
         store
     }
 
@@ -2093,6 +2331,26 @@ mod tests {
             Value::FactRef(FactId::new(predicate, sequence).expect("id"))
         };
         assert_eq!(rows("X where test.Ref {of = X}"), vec![foo(1), foo(2)]);
+
+        // A nested generator, hoisted: the idiomatic spelling of the join above.
+        assert_eq!(
+            rows("X where test.Ref {of = test.Foo {name = X}}"),
+            strs(&["ann", "bob"]),
+            "`(3, \"ann\")` is referenced by nothing, so its name is not a row",
+        );
+
+        // Two hops, innermost first.
+        assert_eq!(
+            rows("X where test.Deep {via = test.Ref {of = test.Foo {name = X}}}"),
+            strs(&["ann", "bob"]),
+        );
+
+        // A generator in the head, which is a level like any other.
+        assert_eq!(
+            rows("test.Bar {id = 1} where test.Foo {id = 1}"),
+            vec![],
+            "no `test.Bar` fact exists, so the head's generator matches nothing",
+        );
     }
 
     /// **Every order of the body gives the same rows** — the executable form of
@@ -3314,7 +3572,7 @@ mod battery {
             diagnostics.codes().collect::<Vec<_>>()
         );
 
-        let plan = flatten_in_order(&ast, schema, &interner, &mut diagnostics, order);
+        let plan = flatten_in_order(&ast, schema, &mut interner, &mut diagnostics, order);
 
         assert!(
             !diagnostics.has_errors(),

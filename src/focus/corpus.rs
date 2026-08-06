@@ -51,6 +51,7 @@
 //! predicate test.Wide   : { outer : { extra : int, inner : int } }
 //! predicate test.Ref    : { of : test.Foo }         // a fact-typed field
 //! predicate test.Link   : { at : int, of : test.Foo }  // ...not in the leading field
+//! predicate test.Deep   : { via : test.Ref }        // ...and a chain of two hops
 //! ```
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
@@ -165,6 +166,14 @@ pub fn schema() -> Schema {
                 (sym("at"), PredicateTy::Int),
                 (sym("of"), PredicateTy::Fact(PredicateId(0))),
             ])),
+            value: None,
+        },
+        // A reference to a *referrer*, so a chain of them is two hops long — the only
+        // way a nested generator can nest inside a nested generator here, which is
+        // what makes hoisting's recursion testable. Also appended last.
+        Predicate {
+            name: sym("test.Deep"),
+            key: PredicateTy::Record(Arc::from([(sym("via"), PredicateTy::Fact(PredicateId(9)))])),
             value: None,
         },
     ];
@@ -319,6 +328,24 @@ pub const CORPUS: &[Entry] = &[
         "the same compare once the seek prefix has closed — a capture at `at` closes \
          it, so `of` filters instead",
     ),
+    entry(
+        "X where X = test.Ref {of = test.Foo {id = 1}}",
+        Supported,
+        "**the idiomatic spelling of that join**: a fact pattern inside another is a \
+         generator, hoisted into a loop level of its own and matched by id",
+    ),
+    entry(
+        "X where X = test.Deep {via = test.Ref {of = test.Foo {id = 1}}}",
+        Supported,
+        "hoisting is recursive — innermost first, so each level is bound before the \
+         one that names it",
+    ),
+    entry(
+        "test.Bar {id = 1} where test.Foo _",
+        Supported,
+        "a fact pattern in the **head** is the same construct: hoisted into the last \
+         level, and projected as the fact it names",
+    ),
     // ---- deferred constructs: parse, then say so by name ----
     entry(
         "X where test.Foo {id = X} | test.Bar {id = X}",
@@ -450,12 +477,6 @@ pub const CORPUS: &[Entry] = &[
         Diagnosed(Code::NyiValueBind),
         "binding a variable to a value no generator produced is a derived bind \
          (PLAN Phase 6), which needs the `Slot` value variant",
-    ),
-    entry(
-        "test.Bar {id = 1} where test.Foo _",
-        Diagnosed(Code::NyiNestedGenerator),
-        "a fact pattern away from the top level of a statement is a generator that \
-         has to be hoisted into its own loop level",
     ),
     entry(
         "X.name where test.Ref {of = X}",
