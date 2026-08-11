@@ -1254,7 +1254,7 @@ mod tests {
         corpus,
         cst::CstNode,
         fixture,
-        fixtures::{collect_rows, i64_field, str_field},
+        fixtures::{collect_rows, i64_field, run_with_suspends, str_field},
         lower::lower,
         mem_store::MemStore,
         parse::parse,
@@ -2283,6 +2283,107 @@ mod tests {
             vec![],
             "no such `test.Bar` exists, so nothing survives the last level",
         );
+    }
+
+    // ---- Phase 6: derived binds (red, pending the `Slot` promotion) ---------
+    //
+    // Phase 6's acceptance criteria, as tests, written before the machine that
+    // satisfies them ([`PLAN.md`](../../PLAN.md) Phase 6). They are deliberately
+    // written **through the driver** — focus text in, rows out — and name no plan
+    // type that does not exist yet, so they compile today, fail today for the
+    // right reason (`nyi/value-bind`, reported by `collect`), and go green when
+    // the feature lands rather than when a test is rewritten. That also means the
+    // still-open question of *how* a derived bind sits in the `Plan` IR cannot be
+    // pre-judged by its own acceptance test.
+    //
+    // Un-ignore each as its leaf lands; the ledger
+    // (`cargo test -- --ignored --list`) is what says the phase is unfinished.
+
+    /// The smallest derived bind there is: a variable bound to a value no
+    /// generator produced.
+    ///
+    /// Also the shape with **no generator at all**, which is the edge the
+    /// executor's `EmptyPlan` check currently rejects — a plan whose whole body is
+    /// a derived bind has no loop level to iterate, and must still answer one row.
+    #[test]
+    #[ignore = "PLAN Phase 6 — derived binds; needs the Slot value variant"]
+    fn a_value_bind_returns_the_value() {
+        assert_eq!(rows("X where X = 42"), ints(&[42]));
+        assert_eq!(rows("X where X = \"ann\""), strs(&["ann"]));
+    }
+
+    /// A derived bind **feeding a seek**: the value slot's bytes are spliced into
+    /// the scan prefix exactly as an outer row's field would be.
+    ///
+    /// This is the case that decides the derived bind has to be computable
+    /// *before* the level that reads it opens — the ordering constraint chapter 7
+    /// calls "the hard topological ordering the reorder interface was built for".
+    #[test]
+    #[ignore = "PLAN Phase 6 — derived binds; needs the Slot value variant"]
+    fn a_derived_bind_feeds_a_seek() {
+        assert_eq!(rows("Z where Z = 1; test.Bar {id = Z}"), ints(&[1]));
+        assert_eq!(
+            rows("Z where Z = 99; test.Bar {id = Z}"),
+            vec![],
+            "no `test.Bar` has id 99, so the spliced seek finds nothing",
+        );
+        assert_eq!(
+            rows("X where Z = 1; test.Edge {from = Z, to = X}"),
+            ints(&[2, 3]),
+            "edges (1,2) and (1,3), reached by a seek on a derived value",
+        );
+    }
+
+    /// **The new invariant's guard: derived binds are pure functions of the fact
+    /// bindings.**
+    ///
+    /// Chapter 7 specifies the guard as a resume battery, and that is not an
+    /// approximation of purity — it is the operational content of it. A derived
+    /// bind is not a loop level and the [`Cursor`](crate::focus::iter::Cursor)
+    /// does not store it, so a resume *recomputes* it from the fact-slots it
+    /// re-binds. If a derived bind were impure — if it iterated, or read state the
+    /// cursor does not carry — the recomputed value would differ from the one the
+    /// uninterrupted run had, and the row sequences would diverge at exactly the
+    /// cut point.
+    ///
+    /// So this asserts resume == uninterrupted over plans *containing* a derived
+    /// bind, at every cut point. The generated form comes with the query
+    /// generator's derived-bind draw; these are the worked examples.
+    #[test]
+    #[ignore = "PLAN Phase 6 — the purity invariant; needs the Slot value variant"]
+    fn a_derived_bind_is_recomputed_on_resume() {
+        for source in [
+            // Recomputed with no fact bindings to recompute it from.
+            "X where X = 42",
+            // Recomputed before the level whose seek splices it.
+            "X where Z = 1; test.Edge {from = Z, to = X}",
+            // Recomputed at a level *under* a fact binding, so the cut points fall
+            // either side of a backtrack.
+            "{a = X, b = Z} where test.Edge {from = X, to = _}; Z = 7",
+        ] {
+            let flattened = compile(source);
+            let plan = flattened.plan().clone();
+            let interner = &flattened.interner;
+
+            let model = collect_rows(store(), plan.clone(), interner).expect("run");
+            assert!(
+                !model.is_empty(),
+                "{source:?} must produce rows for a cut point to mean anything",
+            );
+
+            for k in 1..=model.len() {
+                let mut mk = || (store(), plan.clone());
+                let cuts = std::collections::BTreeSet::from([k]);
+                let (rows, suspends) = run_with_suspends(&mut mk, interner, &cuts).expect("resume");
+
+                assert_eq!(suspends, 1, "{source:?}: schedule {{{k}}} never suspended");
+                assert_eq!(
+                    rows, model,
+                    "{source:?}: suspending after row {k} changed the run — the \
+                     derived bind did not recompute to the same value",
+                );
+            }
+        }
     }
 
     /// **Every order of the body gives the same rows** — the executable form of

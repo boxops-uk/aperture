@@ -60,8 +60,27 @@ impl Register {
     }
 }
 
+/// What a register holds: a **stored row**, or a **computed value**.
+///
+/// The fact case is the original register and the one
+/// [I5](../../docs/invariants.md#i5) is about — the whole row, fields decoded
+/// lazily at a read site. The value case is a *derived bind*'s output
+/// ([chapter 7](../../docs/07-compilation.md#derived-facts)): a pure function of
+/// the fact slots, which is exactly why the [`Cursor`] does not store one and a
+/// resume recomputes it instead.
+///
+/// The two are kept apart at the type level rather than unified behind "some
+/// bytes" because splicing a value where an id belongs — or the reverse — compares
+/// the wrong encoding and quietly matches nothing, which is the same class of
+/// silent fault the `FactRef` marker split guards against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Slot {
+    Fact(Register),
+    Value(Value),
+}
+
 pub struct MachineState {
-    pub registers: Box<[Option<Register>]>,
+    pub registers: Box<[Option<Slot>]>,
 }
 
 impl MachineState {
@@ -71,7 +90,37 @@ impl MachineState {
         }
     }
 
-    pub fn get(&self, address: Address) -> Result<&Register, ApertureError> {
+    /// The row bound to `address`.
+    ///
+    /// Reading a *value* slot here is a malformed plan, not a data condition: the
+    /// compiler knows which addresses derived binds write, so a seek splicing one
+    /// as a row is a compiler fault. It still reports rather than panics, because
+    /// a plan can also arrive off the wire.
+    pub fn fact(&self, address: Address) -> Result<&Register, ApertureError> {
+        match self.get(address)? {
+            Slot::Fact(register) => Ok(register),
+            Slot::Value(_) => Err(ApertureError::SlotKindMismatch {
+                address,
+                wanted: "a fact row",
+                held: "a computed value",
+            }),
+        }
+    }
+
+    /// The computed value bound to `address`, for a plan step reading a derived
+    /// bind's output.
+    pub fn value(&self, address: Address) -> Result<&Value, ApertureError> {
+        match self.get(address)? {
+            Slot::Value(value) => Ok(value),
+            Slot::Fact(_) => Err(ApertureError::SlotKindMismatch {
+                address,
+                wanted: "a computed value",
+                held: "a fact row",
+            }),
+        }
+    }
+
+    fn get(&self, address: Address) -> Result<&Slot, ApertureError> {
         self.registers
             .get(address.0)
             .ok_or(ApertureError::AddressOutOfBounds(address))?
@@ -431,7 +480,7 @@ impl<S: FactStore> StackFrame<S> {
                             address: var_address,
                             path,
                         } => {
-                            let key = state.get(*var_address)?.key();
+                            let key = state.fact(*var_address)?.key();
                             let span =
                                 get_field_span(&mut self.field_offsets, &key, *var_address, path)?;
                             prefix.extend_from_slice(&key[span]);
@@ -439,7 +488,7 @@ impl<S: FactStore> StackFrame<S> {
                         // The register's *identity*, encoded as a fact-typed field
                         // holds it — never its key bytes (see the variant).
                         SeekKeyPart::RegisterFactId(var_address) => {
-                            let fact_id = state.get(*var_address)?.fact_id;
+                            let fact_id = state.fact(*var_address)?.fact_id;
                             prefix.extend_from_slice(&fact_ref_bytes(fact_id));
                         }
                     }
@@ -519,7 +568,7 @@ impl<S: FactStore> StackFrame<S> {
                     address: var_address,
                     path,
                 } => {
-                    let other = state.get(*var_address)?;
+                    let other = state.fact(*var_address)?;
                     let other_key = other.key();
                     let other_span =
                         get_field_span(frame_field_offsets, &other_key, *var_address, path)?;
@@ -530,7 +579,7 @@ impl<S: FactStore> StackFrame<S> {
                 // compare against a stack buffer — no decode, and no allocation in
                 // the scan loop ([I9]).
                 ResidualOp::EqRegisterFactId(var_address) => {
-                    field == fact_ref_bytes(state.get(*var_address)?.fact_id)
+                    field == fact_ref_bytes(state.fact(*var_address)?.fact_id)
                 }
             };
             if !ok {
@@ -596,10 +645,10 @@ fn project<S: FactStore>(
     match p {
         Project::Lit(v) => Ok(v.clone()),
 
-        Project::FactRef(address) => Ok(Value::FactRef(state.get(*address)?.fact_id)),
+        Project::FactRef(address) => Ok(Value::FactRef(state.fact(*address)?.fact_id)),
 
         Project::RegisterField { address, path, ty } => {
-            let reg = state.get(*address)?;
+            let reg = state.fact(*address)?;
             let key = reg.key();
 
             // Through the row's cache, so a head reading several fields of one
@@ -613,7 +662,7 @@ fn project<S: FactStore>(
             // The value lives in the `entities` CF, not in the register (which
             // holds `predicate_id ++ key`). Fetch it by fact id — the one place
             // a value is read (I6) — and decode the value bytes.
-            let reg = state.get(*address)?;
+            let reg = state.fact(*address)?;
             let entity = store
                 .point(reg.fact_id)?
                 .ok_or(ApertureError::DanglingFactId(reg.fact_id))?;
@@ -734,7 +783,7 @@ impl<S: FactStore> Executor<S> {
             }
 
             for var_address in generator.binds.iter() {
-                ex.state.registers[var_address.0] = Some(row.clone());
+                ex.state.registers[var_address.0] = Some(Slot::Fact(row.clone()));
             }
             frame.current = Some(row);
         }
@@ -813,7 +862,7 @@ impl<S: FactStore> Executor<S> {
                             .registers
                             .get_mut(var_address.0)
                             .ok_or(ApertureError::AddressOutOfBounds(*var_address))?;
-                        *slot = Some(register.clone());
+                        *slot = Some(Slot::Fact(register.clone()));
                     }
                     frame.current = Some(register);
                     self.depth += 1;
@@ -1374,6 +1423,239 @@ mod tests {
             Executor::resume(seed(), one_level, cursor),
             Err(ApertureError::CursorPlanMismatch { cursor: 2, plan: 1 })
         ));
+    }
+
+    // ---- the register file and the cursor, at the seams --------------------
+    //
+    // These pin the three contracts the `Register → Slot` promotion (PLAN Phase
+    // 6) rewrites: what [`MachineState::get`] does when a register is not there,
+    // what `resume` does when a saved row is not the row it saved, and that a
+    // [`Cursor`] is exactly one **detached** row per level. Each was reachable
+    // only by inspection before — `an_address_reads_as_a_register` asserts how
+    // the two register faults *render*, which is a different claim from the
+    // machine producing them.
+
+    /// Reading a register no generator binds must come back as `UseBeforeBind`,
+    /// not unwrap a `None`.
+    ///
+    /// Flatten cannot emit this — range-restriction rejects it first — which is
+    /// precisely why it needs a guard here rather than there: the plan this
+    /// protects against arrives from somewhere else, hand-built today and
+    /// wire-decoded later, and `MachineState::get` is the one funnel both go
+    /// through.
+    #[test]
+    fn reading_an_unbound_register_is_an_error_not_a_panic() {
+        let p = PredicateId(0);
+        let mut store = MemStore::new();
+        store.insert(p, i64_field(1), 1);
+
+        // Two registers, one generator binding r0: nothing ever binds r1.
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(1)),
+        };
+
+        assert!(matches!(
+            collect_rows(store, plan, &interner_with(&[])),
+            Err(ApertureError::UseBeforeBind(a)) if a == Address::new(1)
+        ));
+    }
+
+    /// Reading a register the plan does not have at all is `AddressOutOfBounds` —
+    /// the arm above it in `get`, and a different fault: out of range rather than
+    /// in range and empty.
+    #[test]
+    fn reading_a_register_past_the_plan_is_an_error_not_a_panic() {
+        let p = PredicateId(0);
+        let mut store = MemStore::new();
+        store.insert(p, i64_field(1), 1);
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(7)),
+        };
+
+        assert!(matches!(
+            collect_rows(store, plan, &interner_with(&[])),
+            Err(ApertureError::AddressOutOfBounds(a)) if a == Address::new(7)
+        ));
+    }
+
+    /// Reading a register as the **wrong kind of slot** reports rather than
+    /// panics, in both directions.
+    ///
+    /// This is the fault the [`Slot`] split exists to make impossible to ignore:
+    /// a value spliced where a row's bytes belong (or the reverse) compares two
+    /// different encodings and would quietly match nothing — the same silent shape
+    /// as the `FactRef` marker trap. A plan from the compiler cannot do this,
+    /// since flatten knows which addresses a derived bind writes; a plan off the
+    /// wire can, which is why it is an error and not a `debug_assert`.
+    #[test]
+    fn reading_a_register_as_the_wrong_kind_of_slot_is_an_error() {
+        let mut state = MachineState::new(2);
+        state.registers[0] = Some(Slot::Value(Value::Int(42)));
+        state.registers[1] = Some(Slot::Fact(Register {
+            fact_id: FactId::new(PredicateId(0), 1).expect("id"),
+            bytes: ByteView::from(vec![0, 0, 0, 0]),
+        }));
+
+        assert!(matches!(
+            state.fact(Address::new(0)),
+            Err(ApertureError::SlotKindMismatch {
+                address,
+                wanted: "a fact row",
+                held: "a computed value",
+            }) if address == Address::new(0)
+        ));
+        assert!(matches!(
+            state.value(Address::new(1)),
+            Err(ApertureError::SlotKindMismatch {
+                wanted: "a computed value",
+                held: "a fact row",
+                ..
+            })
+        ));
+
+        // ...and reads the right kind without complaint.
+        assert_eq!(
+            state.value(Address::new(0)).expect("a value"),
+            &Value::Int(42)
+        );
+        assert!(state.fact(Address::new(1)).is_ok());
+
+        // The two faults above are distinct from *absence*, which the addresses
+        // beyond these two still report as before.
+        assert!(matches!(
+            state.fact(Address::new(9)),
+            Err(ApertureError::AddressOutOfBounds(_))
+        ));
+    }
+
+    /// A one-level plan suspended after its first row, as the cursor tests below
+    /// need it. Returns the cursor and the model rows.
+    fn suspend_after_first_row(store: MemStore, plan: Plan) -> Cursor {
+        let out = Executor::new(store, plan)
+            .enumerate(
+                (),
+                |(), _row| Ok(Stream::Suspend(())),
+                &CancellationToken::new(),
+            )
+            .expect("run");
+
+        match out {
+            Iteratee::Suspended((), cursor) => cursor,
+            Iteratee::Done(()) => panic!("the plan was supposed to suspend"),
+        }
+    }
+
+    /// **The resume integrity check.** A cursor's saved key must still resolve to
+    /// the *same fact*, and when it does not, resume must refuse rather than carry
+    /// on against a row it never saw.
+    ///
+    /// This is what [I11](../../docs/invariants.md#i11) buys the executor: ids are
+    /// never reused, so a key that now names a different id means the cursor and
+    /// the store disagree about the world — a stale portal against a rebuilt DB.
+    /// Resuming anyway would emit a row the uninterrupted run never produced,
+    /// which is exactly the failure [I4](../../docs/invariants.md#i4) forbids and
+    /// the one the row-sequence comparison cannot see, because the run it is
+    /// compared against no longer exists.
+    #[test]
+    fn resume_refuses_a_cursor_whose_key_now_names_another_fact() {
+        let p = PredicateId(0);
+
+        let plan = || Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let mut original = MemStore::new();
+        original.insert(p, i64_field(1), 1);
+        let cursor = suspend_after_first_row(original, plan());
+
+        // The same key, a different id — what a rebuilt DB looks like from the
+        // outside. The bytes resume seeks by are byte-identical, so only the id
+        // check can catch this.
+        let mut rebuilt = MemStore::new();
+        rebuilt.insert(p, i64_field(1), 99);
+
+        assert!(matches!(
+            Executor::resume(rebuilt, plan(), cursor),
+            Err(ApertureError::BadResumeKey)
+        ));
+    }
+
+    /// The other arm of the same check: the saved key is gone entirely, so the
+    /// replay scan yields nothing where it must yield the saved row.
+    #[test]
+    fn resume_refuses_a_cursor_whose_key_is_gone() {
+        let p = PredicateId(0);
+
+        let plan = || Plan {
+            nvars: 1,
+            body: Box::new([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let mut original = MemStore::new();
+        original.insert(p, i64_field(1), 1);
+        let cursor = suspend_after_first_row(original, plan());
+
+        assert!(matches!(
+            Executor::resume(MemStore::new(), plan(), cursor),
+            Err(ApertureError::BadResumeKey)
+        ));
+    }
+
+    /// A cursor is **one row per level, every level, and it owns its bytes**.
+    ///
+    /// Two claims in one test because they are the same claim from either end.
+    /// *One per level:* `build_cursor` collects whichever frames hold a row and
+    /// `debug_assert`s that this is `depth + 1` of them; a suspend only ever
+    /// happens at a full row, so the count is the level count — which is what
+    /// makes `resume`'s replay-by-position sound. Phase 6 must keep this exact
+    /// number: a derived bind is not a loop level and adds no cursor entry.
+    /// *Owns its bytes:* the store is dropped here before the cursor is read, so
+    /// a view still pointing into it would be reading freed memory — the whole
+    /// reason [`Register::to_detached`] exists on the suspend path.
+    #[test]
+    fn a_cursor_holds_one_detached_row_per_level() {
+        let interner = interner_with(&["a", "b", "c"]);
+
+        for (levels, mk) in [
+            (1usize, &one_level_scan as &dyn Fn() -> (MemStore, Plan)),
+            (2, &|| two_level_seek_join(&interner)),
+            (3, &|| three_level_seek_join(&interner)),
+        ] {
+            let (store, plan) = mk();
+            let cursor = suspend_after_first_row(store, plan);
+
+            assert_eq!(
+                cursor.0.len(),
+                levels,
+                "a {levels}-level plan suspended with {} cursor entr(ies)",
+                cursor.0.len()
+            );
+
+            // Every entry names a real fact and carries its whole row —
+            // `predicate_id ++ key`, so at least the id is present. Read *after*
+            // the store that produced the bytes has been dropped.
+            for (level, saved) in cursor.0.iter().enumerate() {
+                assert!(
+                    saved.bytes.len() > PREDICATE_ID_SIZE,
+                    "level {level}'s saved row is {} byte(s) — no key follows the \
+                     predicate id",
+                    saved.bytes.len()
+                );
+                assert_ne!(
+                    saved.fact_id.raw(),
+                    0,
+                    "level {level} saved the reserved fact id, which is never a fact"
+                );
+            }
+        }
     }
 
     // A residual on a key field is evaluated against the field's value (the

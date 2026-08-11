@@ -348,7 +348,22 @@ pub const CORPUS: &[Entry] = &[
         "X where X = 42",
         Diagnosed(Code::NyiValueBind),
         "binding a variable to a value no generator produced is a derived bind \
-         (PLAN Phase 6), which needs the `Slot` value variant",
+         (PLAN Phase 6), which needs the `Slot` value variant. This one has **no \
+         generator at all**, so its plan has no loop level to iterate",
+    ),
+    entry(
+        "Z where Z = 1; test.Bar {id = Z}",
+        Diagnosed(Code::NyiValueBind),
+        "the same bind **feeding a seek**: the value has to be computed before the \
+         level that splices it opens, which is the topological ordering derived \
+         binds impose (PLAN Phase 6)",
+    ),
+    entry(
+        "{a = X, b = Z} where test.Edge {from = X, to = _}; Z = 7",
+        Diagnosed(Code::NyiValueBind),
+        "and the same bind *under* a fact binding, so a resume's cut points fall \
+         either side of a backtrack — the three shapes Phase 6 has to recompute, \
+         listed apart because one of them regressing is invisible in the others",
     ),
     entry(
         "X.name where test.Ref {of = X}",

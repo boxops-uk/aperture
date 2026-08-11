@@ -18,6 +18,13 @@ pub enum ApertureError {
     #[error("{0} was read before anything was bound to it")]
     UseBeforeBind(Address),
 
+    #[error("{address} holds {held} where the plan wanted {wanted}")]
+    SlotKindMismatch {
+        address: Address,
+        wanted: &'static str,
+        held: &'static str,
+    },
+
     #[error("{0} is not a register in this plan")]
     AddressOutOfBounds(Address),
 
