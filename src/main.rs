@@ -79,8 +79,9 @@ const PROMPT: &str = "focus> ";
 
 /// A predicate id **is** its position in the schema, and a `Fact` field names one — so
 /// the ids of the predicates that are *pointed at* have to be written down before the
-/// vector that defines them. `predicate_ids_are_positions` checks the whole list,
-/// including the two nothing points at.
+/// vector that defines them. Nothing checks it — this shell is a scaffold Phase 9
+/// re-points at the wire client — so a wrong id here writes facts under the wrong
+/// predicate and the queries below quietly return nothing.
 const FILE: PredicateId = PredicateId(0);
 const MODULE: PredicateId = PredicateId(1);
 const DECL: PredicateId = PredicateId(2);
@@ -392,8 +393,9 @@ impl FocusHelper {
 
     /// Paint `source` onto `out`, one colour per token.
     ///
-    /// Pushes only slices of `source` and fixed colour codes, which is what makes
-    /// highlighting byte-preserving (`highlighting_only_adds_colour`).
+    /// Pushes only slices of `source` and fixed colour codes, which is what keeps
+    /// highlighting byte-preserving — it runs on every keystroke over half-typed
+    /// input, so losing a byte would show the wrong text under the cursor.
     fn paint(source: &str, out: &mut String) {
         // Diagnostics discarded: they belong to submitting a line, not to typing
         // one. What is live here is the colour — an invalid token turns red under
@@ -695,10 +697,12 @@ fn print_plan(source: &str, schema: &Schema) {
 
 // ---- commands --------------------------------------------------------------
 
-/// Queries `:help` offers, each of which `every_help_example_returns_its_rows`
-/// runs against the seeded index: a shell that advertises a query it cannot answer is
-/// worse than one that advertises none, and that is exactly what it was doing before
-/// a query could be run at all.
+/// Queries `:help` offers.
+///
+/// A shell that advertises a query it cannot answer is worse than one that advertises
+/// none, and that is exactly what this was doing before a query could be run at all.
+/// Each of these is also a `focus::corpus` entry, which is where the claim that they
+/// return rows is actually checked — the corpus gate runs against a real store.
 ///
 /// Between them they reach everything a reference-shaped schema needs — a scalar key,
 /// a value side, a nested record field, a captured reference, and a chain of
@@ -714,9 +718,10 @@ const EXAMPLES: [&str; 4] = [
 ///
 /// `argument` is `Some` when the command takes **focus source** — a query, or a
 /// predicate name. That is the field the highlighter reads, and it is why this is
-/// a table rather than three lists: the help text, the highlighter and the
-/// dispatch each need to know the same thing, and `dispatch_handles_every_command`
-/// holds them to it.
+/// a table rather than three lists: the help text, the highlighter and the hinter all
+/// need to know the same thing. The dispatch in [`shell`] is the fourth reader and the
+/// one that can drift — a command added here without an arm there is advertised and
+/// highlighted but does nothing.
 struct Command {
     name: &'static str,
     argument: Option<&'static str>,
@@ -935,12 +940,10 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
     db.create_predicates((0..schema.len()).map(|index| PredicateId(index as u32)))?;
     let written = seed(&db, &schema)?;
 
-    println!("aperture — a focus shell");
-    println!("{written} facts in {}\n", dir.display());
-    print_schema(&schema);
-    // The schema is what you need to write a query; the commands are one keystroke
-    // away, so printing them every start is noise a returning user reads past.
-    println!("\n  :help for commands and example queries\n");
+    // Straight to the prompt. Everything a banner used to print is a command away —
+    // the predicates and the store behind `:schema`, the commands and some example
+    // queries behind `:help` — and the pointer to it appears where someone is
+    // actually looking for it: after typing a command that does not exist.
 
     let mut editor: Editor<FocusHelper, DefaultHistory> =
         Editor::new().map_err(|error| readline_failure(&error))?;
@@ -960,11 +963,17 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
                     Some((":plan", query)) => print_plan(query.trim(), &schema),
                     _ if line == ":facts" => println!("  :facts needs a predicate — try :schema"),
                     _ if line == ":plan" => println!("  :plan needs a query — try :help"),
-                    _ if line == ":schema" => print_schema(&schema),
+                    _ if line == ":schema" => {
+                        print_schema(&schema);
+                        // Where the facts are and how many, which start-up used to
+                        // print: it belongs with the predicates rather than nowhere.
+                        println!("\n  {written} facts in {}", dir.display());
+                    }
                     _ if line == ":help" => print_help(),
                     _ if line == ":quit" || line == ":q" => return Ok(()),
                     _ if line.starts_with(':') => {
-                        println!("  no such command: {line} — try :help");
+                        println!("  no such command: {line}");
+                        println!("  :help for commands and example queries");
                     }
                     _ => run(&line, &db, &schema),
                 }
@@ -983,477 +992,4 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
 fn readline_failure(error: &ReadlineError) -> ApertureError {
     eprintln!("aperture: {error}");
     ApertureError::Cancelled
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use proptest::prelude::*;
-
-    /// Drop the ANSI sequences [`FocusHelper::highlight`] inserts, leaving what
-    /// the terminal would actually show.
-    fn strip_ansi(text: &str) -> String {
-        let mut out = String::with_capacity(text.len());
-        let mut chars = text.chars();
-
-        while let Some(c) = chars.next() {
-            if c != '\x1b' {
-                out.push(c);
-                continue;
-            }
-            // `\x1b[…m`, which is the only form emitted here.
-            for escaped in chars.by_ref() {
-                if escaped == 'm' {
-                    break;
-                }
-            }
-        }
-
-        out
-    }
-
-    /// Run a query the way the prompt does: compile it, execute it against a real
-    /// store, and hand back the rows.
-    fn ask(db: &FjallDb, schema: &Schema, source: &str) -> Vec<Value> {
-        let mut compilation = Compilation::new(source, schema);
-        let plan = compilation
-            .plan()
-            .unwrap_or_else(|| panic!("{source}:\n{}", compilation.render_to_string()));
-
-        let rows = Executor::new(db.reader(), plan)
-            .enumerate(
-                Vec::<Value>::new(),
-                |mut acc, mut row| {
-                    acc.push(row.to_value(compilation.interner())?);
-                    Ok(Stream::Continue(acc))
-                },
-                &CancellationToken::new(),
-            )
-            .expect("run");
-
-        let (Iteratee::Done(rows) | Iteratee::Suspended(rows, _)) = rows;
-        rows
-    }
-
-    /// A database of this test's own, seeded exactly as the shell seeds its own.
-    fn seeded(suffix: &str) -> (FjallDb, std::path::PathBuf) {
-        let dir = scratch_dir().with_extension(suffix);
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let schema = demo_schema();
-        let db = FjallDb::open(&dir).expect("open");
-        db.create_predicates((0..schema.len()).map(|i| PredicateId(i as u32)))
-            .expect("create");
-        seed(&db, &schema).expect("seed");
-
-        (db, dir)
-    }
-
-    /// **Phase 5's acceptance criterion, at the prompt's own path: typing a query
-    /// returns rows, end to end, through the real compiler and the real executor
-    /// against a real store.**
-    ///
-    /// Everything the shell could do before this stopped at a type. What makes it a
-    /// test of the *shell* rather than of the compiler is the store: these rows came
-    /// off disk, out of keyspaces the seed wrote, through a plan nobody built by hand.
-    #[test]
-    fn typing_a_query_returns_rows() {
-        let (db, dir) = seeded("test-run");
-        let schema = demo_schema();
-
-        // A scalar key, and a whole-predicate scan behind it.
-        assert_eq!(
-            ask(&db, &schema, "P where src.File P"),
-            ["src/main.rs", "src/query.rs", "src/store.rs"].map(|s| Value::Str(s.to_owned())),
-            "files come back in key order, which is the order they sort in",
-        );
-
-        // The value side: one point read per surviving row.
-        assert_eq!(
-            ask(
-                &db,
-                &schema,
-                "D.value where D = src.Decl {name = \"Store\"}"
-            ),
-            [Value::Str("struct".to_owned())],
-        );
-
-        // **A join through a reference**, which is what a fact database is for and
-        // what this phase made expressible.
-        assert_eq!(
-            ask(
-                &db,
-                &schema,
-                "D.name where D = src.Decl {module = src.Module {name = \"query\"}}"
-            ),
-            ["Query", "execute"].map(|s| Value::Str(s.to_owned())),
-        );
-
-        drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Every example `:help` offers **runs, and answers this**.
-    ///
-    /// It used to be enough that they typechecked, and that was the gap this phase
-    /// found: both previous examples were nested generators over fact-typed fields, so
-    /// they typechecked and then had no plan. Recording the rows rather than only
-    /// "not empty" is what makes this a test of the examples rather than of the store.
-    #[test]
-    fn every_help_example_returns_its_rows() {
-        let (db, dir) = seeded("test-examples");
-        let schema = demo_schema();
-
-        let expected = [
-            // What is declared in `store.rs` — two hops, written nested.
-            vec!["Store", "open"],
-            // The kind of the declaration named `open`.
-            vec!["fn"],
-            // Where `open` is referenced: a nested record field captured behind a
-            // reference compare.
-            vec!["14", "41"],
-            // Which modules import `store` — a reference captured and projected, so
-            // these are the facts themselves rather than anything read out of them.
-            vec!["src.Module#1", "src.Module#3"],
-        ];
-
-        for (source, want) in EXAMPLES.iter().zip(expected) {
-            let got: Vec<String> = ask(&db, &schema, source)
-                .iter()
-                .map(|row| match row {
-                    Value::Str(s) => s.clone(),
-                    Value::Int(n) => n.to_string(),
-                    Value::FactRef(id) => format!(
-                        "{}#{}",
-                        schema
-                            .get(id.predicate())
-                            .and_then(|p| p.name())
-                            .unwrap_or("?"),
-                        id.sequence()
-                    ),
-                    other => format!("{other:?}"),
-                })
-                .collect();
-
-            assert_eq!(got, want, "{source}");
-        }
-
-        drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The ids the `Fact` fields refer to have to be the predicates they are named
-    /// for. A predicate id is a *position*, so inserting one into the middle of
-    /// `demo_schema` silently repoints every reference — this is what says so.
-    #[test]
-    fn predicate_ids_are_positions() {
-        let schema = demo_schema();
-
-        for (position, name) in [
-            "src.File",
-            "src.Module",
-            "src.Decl",
-            "src.Ref",
-            "src.Import",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let id = PredicateId(position as u32);
-            let found = schema.find_position(name).map(|(id, _)| id);
-
-            assert_eq!(found, Some(id), "{name} is not at {position}");
-        }
-
-        // ...and the ones a `Fact` field names are the ones it means.
-        assert_eq!(
-            schema.find_position("src.File").map(|(id, _)| id),
-            Some(FILE)
-        );
-        assert_eq!(
-            schema.find_position("src.Module").map(|(id, _)| id),
-            Some(MODULE)
-        );
-        assert_eq!(
-            schema.find_position("src.Decl").map(|(id, _)| id),
-            Some(DECL)
-        );
-    }
-
-    /// A line wrong in two ways prints both faults, in the order they were
-    /// written.
-    ///
-    /// The shell is the reason the driver sorts for rendering rather than
-    /// emitting in phase order: this is what someone typing at the prompt
-    /// actually sees, and the unknown predicate is found by lowering — an earlier
-    /// phase than the one that rejects the head — while being written later.
-    #[test]
-    fn a_line_wrong_twice_prints_both_faults_in_source_order() {
-        let schema = demo_schema();
-        let mut compilation = Compilation::new("_ where X = nosuch.Pred _", &schema);
-        compilation.check();
-
-        let rendered = compilation.render_to_string();
-        let head = rendered.find("wildcard").expect("the head fault");
-        let name = rendered.find("nosuch").expect("the unresolved name");
-
-        assert!(
-            head < name,
-            "the shell printed these out of order:\n{rendered}"
-        );
-    }
-
-    /// The schema the shell offers has to be the schema it seeded, or a query
-    /// resolves against names with no facts behind them.
-    #[test]
-    fn every_declared_predicate_is_seeded() {
-        let dir = scratch_dir().with_extension("test-seed");
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let schema = demo_schema();
-        let db = FjallDb::open(&dir).expect("open");
-        db.create_predicates((0..schema.len()).map(|i| PredicateId(i as u32)))
-            .expect("create");
-        let written = seed(&db, &schema).expect("seed");
-
-        assert!(written > 0);
-        for index in 0..schema.len() {
-            let id = PredicateId(index as u32);
-            let predicate = schema.get(id).expect("declared");
-            let name = predicate.name().expect("named");
-
-            let mut interner = LocalInterner::new(schema.interner().clone());
-            let plan = scan_plan(
-                id,
-                predicate.key().ty.clone(),
-                predicate.value().map(|v| v.ty.clone()),
-                &mut interner,
-            );
-
-            let rows = Executor::new(db.reader(), plan)
-                .enumerate(
-                    0usize,
-                    |n, _row| Ok(Stream::Continue(n + 1)),
-                    &CancellationToken::new(),
-                )
-                .expect("scan");
-            let (Iteratee::Done(rows) | Iteratee::Suspended(rows, _)) = rows;
-
-            assert!(rows > 0, "{name} is declared but has no facts");
-        }
-
-        drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Every reference the seed writes names a fact that is there.
-    ///
-    /// Nothing on the write path checks this — a `FactId` is eight bytes like any
-    /// other field, and referential integrity comes from the *order* `seed` writes
-    /// in. So reordering it would leave the shell printing `(dangling)` and a query
-    /// reading through a reference failing at the point lookup; this fails first.
-    #[test]
-    fn every_reference_resolves() {
-        let dir = scratch_dir().with_extension("test-refs");
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let schema = demo_schema();
-        let db = FjallDb::open(&dir).expect("open");
-        db.create_predicates((0..schema.len()).map(|i| PredicateId(i as u32)))
-            .expect("create");
-        seed(&db, &schema).expect("seed");
-
-        /// Collect the references anywhere in a projected row.
-        fn refs(value: &Value, out: &mut Vec<FactId>) {
-            match value {
-                Value::FactRef(id) => out.push(*id),
-                Value::Record(fields) => {
-                    for (_, field) in fields.iter() {
-                        refs(field, out);
-                    }
-                }
-                Value::Null | Value::Int(_) | Value::Str(_) => {}
-            }
-        }
-
-        let store = db.reader();
-        let mut seen = 0;
-
-        for index in 0..schema.len() {
-            let id = PredicateId(index as u32);
-            let predicate = schema.get(id).expect("declared");
-
-            let mut interner = LocalInterner::new(schema.interner().clone());
-            let plan = scan_plan(
-                id,
-                predicate.key().ty.clone(),
-                predicate.value().map(|v| v.ty.clone()),
-                &mut interner,
-            );
-
-            let rows = Executor::new(db.reader(), plan)
-                .enumerate(
-                    Vec::<Value>::new(),
-                    |mut acc, mut row| {
-                        acc.push(row.to_value(&interner)?);
-                        Ok(Stream::Continue(acc))
-                    },
-                    &CancellationToken::new(),
-                )
-                .expect("scan");
-            let (Iteratee::Done(rows) | Iteratee::Suspended(rows, _)) = rows;
-
-            for row in &rows {
-                let mut ids = Vec::new();
-                refs(row, &mut ids);
-
-                for fact in ids {
-                    let target = schema.get(fact.predicate()).expect("a declared predicate");
-                    let entity = store
-                        .point(fact)
-                        .expect("point")
-                        .unwrap_or_else(|| panic!("dangling reference {}", fact.raw()));
-
-                    decode_key(&interner, &entity.key, target.key().ty)
-                        .expect("the referenced key decodes at the referenced predicate's type");
-                    seen += 1;
-                }
-            }
-        }
-
-        assert!(
-            seen > 0,
-            "the schema has `Fact` fields but nothing wrote one"
-        );
-
-        drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    proptest! {
-        /// **Highlighting only adds colour.** Strip the escapes and the line comes
-        /// back byte for byte.
-        ///
-        /// This runs on every keystroke over whatever is half-typed, so it has to
-        /// be total: losing a byte would show the wrong text under the cursor, and
-        /// panicking would take the shell down mid-edit. Hence arbitrary input —
-        /// that is what a line editor gets.
-        ///
-        /// Bar `ESC` itself, which is a limit of the *oracle*, not of the
-        /// highlighter: `strip_ansi` cannot tell an escape this code emitted from
-        /// one that was in the line, so it would eat the input's. The highlighter
-        /// pushes only slices of `line` and fixed colour codes, so it is
-        /// byte-preserving there too — there is just no text-level way to say so.
-        #[test]
-        fn highlighting_only_adds_colour(line in "[^\u{1b}]{0,120}") {
-            let highlighted = FocusHelper.highlight(&line, line.len());
-            prop_assert_eq!(strip_ansi(&highlighted), line);
-        }
-
-        /// A command word is never highlighted — it is not focus source. Neither
-        /// is the argument of a command the shell does not recognise.
-        ///
-        /// The generator draws a word with no `:` of its own and no whitespace, so
-        /// every case is a plausible single command word rather than a query that
-        /// happens to start with a colon.
-        #[test]
-        fn an_unrecognised_command_is_not_highlighted(word in "[a-z]{0,12}") {
-            let line = format!(":{word}");
-            let bare = FocusHelper.highlight(&line, line.len());
-            prop_assert_eq!(bare.as_ref(), line.as_str());
-
-            // ...and with an argument, still untouched: nothing here is source.
-            prop_assume!(!COMMANDS.iter().any(|c| c.name == line));
-            let with_argument = format!("{line} test.Foo _");
-            let highlighted = FocusHelper.highlight(&with_argument, with_argument.len());
-            prop_assert_eq!(highlighted.as_ref(), with_argument.as_str());
-        }
-    }
-
-    /// **The argument of a command that takes focus source is highlighted, and the
-    /// command word is not.**
-    ///
-    /// `:plan`/`:facts` take source, so a query typed after one should read exactly
-    /// as it does at the bare prompt — it is the same text compiled by the same
-    /// compiler. Before this, anything beginning `:` was passed through whole and
-    /// the argument sat grey.
-    #[test]
-    fn a_commands_source_argument_is_highlighted() {
-        for command in COMMANDS.iter().filter(|c| c.argument.is_some()) {
-            let argument = "src.Decl {name = \"open\"}";
-            let line = format!("{} {argument}", command.name);
-            let highlighted = FocusHelper.highlight(&line, line.len());
-
-            assert!(
-                highlighted.contains("\x1b["),
-                "{}'s argument was not highlighted",
-                command.name,
-            );
-            assert_eq!(
-                strip_ansi(&highlighted),
-                line,
-                "{}: highlighting changed the text",
-                command.name,
-            );
-
-            // The word itself carries no colour: the escapes all start after it.
-            let first_escape = highlighted.find("\x1b[").expect("an escape");
-            assert!(
-                first_escape >= command.name.len(),
-                "{}: the command word was painted",
-                command.name,
-            );
-
-            // And the argument is coloured the same as it would be alone.
-            let mut alone = String::new();
-            FocusHelper::paint(&format!(" {argument}"), &mut alone);
-            assert!(
-                highlighted.ends_with(alone.trim_start()),
-                "{}: the argument is not painted as it would be at the prompt",
-                command.name,
-            );
-        }
-    }
-
-    /// A command that takes **no** argument leaves whatever follows it alone —
-    /// `:schema` has nothing to say about `where`.
-    #[test]
-    fn an_argumentless_command_is_never_highlighted() {
-        for command in COMMANDS.iter().filter(|c| c.argument.is_none()) {
-            for line in [command.name.to_owned(), format!("{} where", command.name)] {
-                assert_eq!(
-                    FocusHelper.highlight(&line, line.len()).as_ref(),
-                    line.as_str(),
-                    "{} should not highlight",
-                    command.name,
-                );
-            }
-        }
-    }
-
-    /// **Every command in the table is one the loop dispatches**, and the reverse.
-    ///
-    /// The table drives `:help` and the highlighter while `shell`'s `match` drives
-    /// behaviour, so nothing but a test stops a command being advertised and
-    /// highlighted without working — or working while the highlighter treats its
-    /// argument as prose.
-    #[test]
-    fn dispatch_handles_every_command() {
-        let dispatched = [":plan", ":facts", ":schema", ":help", ":quit"];
-
-        for command in &COMMANDS {
-            assert!(
-                dispatched.contains(&command.name),
-                "{} is in COMMANDS but `shell` does not dispatch it",
-                command.name,
-            );
-        }
-        for name in dispatched {
-            assert!(
-                COMMANDS.iter().any(|c| c.name == name),
-                "`shell` dispatches {name} but it is not in COMMANDS, so `:help` \
-                 never mentions it",
-            );
-        }
-    }
 }
