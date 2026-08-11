@@ -141,6 +141,14 @@ decoded data.
   ([Phase 6](PLAN.md)); everything else deferred is additive and must not reshape the machine.
   The **`FactRef` marker** was the other, and is **done**: its own marker `0x51` in the codec,
   so it gates nothing.
+- **Additive is not the same as small.** The constructs that parse and typecheck-as-deferred
+  but have no engine — `|`, `never`, `!`, subqueries — are **[Phase 6b](PLAN.md)**, and
+  **union types** are [Phase 8](PLAN.md) (a union cannot be declared before schemas parse, and
+  [I10](docs/invariants.md#i10) freezes its discriminants on disk once one is written). Neither
+  reshapes the machine, but disjunction extends the resume `Cursor`, so both carry acceptance
+  criteria rather than a bullet. Phase 6b is sequenced *after* Phase 6 on purpose: `Cursor` is
+  `Vec<Register>` and Phase 6 makes it `Vec<Slot>` — edit the token once, re-prove
+  [I4](docs/invariants.md#i4) once.
 - **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — two, both from
   comparing the design against Glean: **multiplicity** (arrays vs one fact per element — decide
   before the Phase 8 schema DSL fixes how schemas are written) and **primitives** (arithmetic,

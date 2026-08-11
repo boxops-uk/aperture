@@ -156,8 +156,10 @@ streaming, and per-stream cancellation directly on this — see
 [Operations](aperture-cli-design.md).
 
 Later features extend the cursor without reshaping it: **disjunction** (`|`) adds a
-per-branch discriminant to the token; keep the `Cursor` type extensible to that (see
-[scope](../PLAN.md) and [open decisions](open-decisions.md)).
+per-branch discriminant to the token; keep the `Cursor` type extensible to that
+([`PLAN.md`](../PLAN.md) Phase 6b owns it, sequenced immediately after the `Register → Slot`
+promotion of Phase 6 so the token — and [I4](invariants.md#i4) with it — is settled once
+rather than twice).
 
 ---
 

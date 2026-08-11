@@ -107,7 +107,7 @@ bindings), so this is additive when wanted.
 In Angle, nested fact patterns — `Knows { from = Person { id = 1 }}` — are *the* way one writes
 a traversal. Phase 4 parsed and typechecked that and then deferred it, in three pieces of very
 different size; **Phase 5 landed all three**
-([`PLAN.md`](../PLAN.md#reaching-a-fact-through-a-reference--three-sizes-listed-apart)), so the
+([`PLAN.md`](../PLAN.md#reaching-a-fact-through-a-reference--three-sizes-listed-apart--phase-5)), so the
 nested spelling now compiles — to the *same plan* as the two-statement form, which is the sense
 in which it is a spelling rather than a second way to run a query.
 

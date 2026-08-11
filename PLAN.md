@@ -77,7 +77,17 @@ The engine spine exists in `src/focus/`:
 - **One fixture database** (`focus::fixture`) — the schema, the facts and the example queries
   the corpus, the batteries and the shell all share, deliberately not test-gated. Before it
   there were two databases and a corpus entry was not something a person could run.
-- **Unbuilt:** ingestion, schema parsing, the wire protocol, and the operational layer.
+- **Writing a fact by hand** (`focus::fact`) — `FjallDb::put(&schema, &fact)` takes a
+  **well-typed value** whose key fields are *named* and resolved against the schema, because
+  `put_fact` takes bytes and three of its preconditions fail **silently**: a stored key is
+  flat, field order is the schema's declaration order, and only the schema says whether a
+  predicate has a value side at all. Each one writes a fact that is simply never found. The id
+  `put` returns **is** what a reference to that fact is, so referential integrity follows from
+  write order rather than a check ([I11](docs/invariants.md#i11)). Deliberately *not* bulk
+  ingestion (a `Value` per fact) and *not* a `serde` derive — both recorded in
+  [chapter 3](docs/03-storage-model.md#writing-a-fact-by-hand). This is the seam Phase 7's
+  fact-file path builds **beside**, not on.
+- **Unbuilt:** bulk ingestion, schema parsing, the wire protocol, and the operational layer.
   `schema.rs` holds Phase 8's guards, written up front and `#[ignore]`d — the only pending
   entries left in the coverage ledger.
 
@@ -92,12 +102,17 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
                            │
                            └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ✅ ─┬─▶ 5  REPL ✅  (→ remote-only later)
                                                                                     ├─▶ 6  derived facts  (deliberate machine change; own resume battery)
-                                                                                    └─▶ 7  ingestion ─▶ 8  schema ─▶ 9  operations
+                                                                                    │      └─▶ 6b  deferred query surface  (`|`, never, `!`, subquery)
+                                                                                    └─▶ 7  ingestion ─▶ 8  schema (+ union types) ─▶ 9  operations
 
 Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends on 1 (store + atomic put_fact).
               Derived-*and-stored* persistence (part of 6) integrates operationally with 7 + 9 (ops-I8 phased derivation).
+              6b depends on 6 for the **Cursor**: it is `Vec<Register>` today and `Vec<Slot>` after 6, and
+              disjunction adds a per-branch discriminant to the same token — edit it once, re-prove I4 once.
+              Nothing in 7–9 depends on 6b, so its position *before* 7 is a choice, not a constraint.
 Gates:        Codec I1–I3 green.  Executor I4–I7, I9 green on MemStore.  I8/I11/I12 at Phase 1.  I10/I13 at Phase 8.
               FactRef marker — resolved (own marker 0x51, already in the codec); no longer gates ingestion.
+              Union types gate on the schema DSL (8), not on 6b: a union cannot be declared before it can be written down.
 ```
 
 The **`Plan` IR is the fixed point** everything aims at ([chapter 4](docs/04-executor.md)):
@@ -114,8 +129,10 @@ re-validated against a *real snapshotting store* in Phase 1 — the only place
 [I8](docs/invariants.md#i8) is testable. Then build the front end (2–4) up to the `Plan` IR
 the executor already consumes, so the halves meet in the middle. Then run it by hand (REPL,
 5). Do the one invariant-critical **machine change** (derived facts, 6) while the machine is
-still small and the resume battery is fresh. Then make it writable (ingestion, 7), remove
-the last hardcoded piece (schema, 8), and harden (operations, 9).
+still small and the resume battery is fresh — and take the rest of the **cursor-format work
+with it** (6b), because disjunction extends the same token derived binds do and
+[I4](docs/invariants.md#i4) is expensive to re-establish twice. Then make it writable
+(ingestion, 7), remove the last hardcoded piece (schema, 8), and harden (operations, 9).
 
 ---
 
@@ -485,7 +502,7 @@ Phase 9; don't build in state a wire shell can't reproduce.
   tree it already owned — fields named from the schema, since `of = r0#` is the answer to "did
   it follow the reference?" and `1 = r0#` is not.
 - **5d.** ✅ Both halves of ["reaching a fact through a
-  reference"](#reaching-a-fact-through-a-reference--three-sizes-listed-apart) that a demo needs
+  reference"](#reaching-a-fact-through-a-reference--three-sizes-listed-apart--phase-5) that a demo needs
   — the fact-id splice/compare and hoisting — see the scope note below.
 
 **The scope decision this phase faced, and how it went.** Phase 4 left the shell advertising
@@ -547,6 +564,99 @@ type/guard; `DerivedAndStored` gating (persistence deferred to integrate with Ph
 
 ---
 
+## Phase 6b — The deferred query surface
+
+**Goal.** Implement the four constructs that **parse and typecheck-as-deferred today but have
+no engine behind them**: disjunction (`|`), the empty pattern (`never`), statement negation
+(`!`) and a subquery as a pattern. Each is a `nyi/` code `ty.rs` reports *before flatten ever
+runs* (`ty.rs:269`, `:256`, `:147`, `:276`), so each is a query a person would naturally write
+that can only be answered by rephrasing it. **Union types are deliberately not here** — they
+moved to Phase 8, for the reasons below.
+
+**Why this is a phase and not a bullet.** These sat in [deferred
+features](#deferred-features-additive--must-not-reshape-the-machine) under the heading
+"additive — must not reshape the machine". That claim is *true and was never a claim about
+size*: three of the four need a new plan operator or frame kind, and disjunction changes the
+`Cursor` format. Left in a bullet list they had no acceptance criteria and no invariant
+accounting, which is the one thing this plan exists to prevent.
+
+**Depends on:** Phase 6. Not semantically — negation and subqueries would compile against
+today's machine — but structurally: `Cursor` is `Vec<Register>` (`iter.rs:559`), Phase 6
+rewrites it to `Vec<Slot>`, and disjunction adds a per-branch discriminant to the same token.
+Doing 6b first means editing the resume token twice and re-establishing
+[I4](docs/invariants.md#i4) twice, which is the most expensive battery here.
+
+**Design of record:** [chapter 7 — flatten](docs/07-compilation.md) (disjunction survives as a
+`FlatDisjunction` union-of-streams node, **never DNF-expanded across sibling conjuncts** —
+that's exponential blow-up; the one bounded exception is Glean's "PLAN-B", distributing an `|`
+only *within a single seek's pattern*) and [chapter 5 — the seam to the
+wire](docs/05-resume.md) ("later features extend the cursor without reshaping it: disjunction
+adds a per-branch discriminant to the token" — this phase is what that sentence was kept for).
+Negation prefixing a *statement* rather than a pattern is Phase 2's grammar resolution, with
+the recorded consequence that `(!A) | B` is inexpressible unless `!` moves into `branch`.
+
+**Invariants in scope:**
+- *upholds, and must re-prove:* [I4](docs/invariants.md#i4) — the cursor grows a per-branch
+  discriminant, so resume == uninterrupted run has to be re-established over plans *containing*
+  a disjunction, including a cut point taken mid-branch. [I7](docs/invariants.md#i7) — a
+  union-of-streams operator is a new **frame kind**, never a recursive call.
+- *at risk, to be settled here:* [I6](docs/invariants.md#i6) — see the negation decision below.
+- *makes green:* no new invariant, unless the negation decision adds one.
+
+**Decisions this phase must settle at pickup (deliberately not pre-made):**
+
+- **Does negation read the store inside the row loop — and is that I6?** `!test.Bar {id = X}`
+  per outer row is a probe: *does this seek find nothing*. [I6](docs/invariants.md#i6) is about
+  **values** — residuals on key fields are checked against the `keys` CF only — so a key-only
+  probe does not breach it as written. But it is the same shape as the deferred
+  `Access::Fetch`, which this plan treats as real work with a new slot kind. Decide explicitly
+  between a probe in the scan loop, a semijoin frame, and deferring negation again; do **not**
+  inherit "additive" as an answer.
+- **Does `never` get a type?** Phase 2 declined `Ty::Never` because a type for it would be
+  speculative. Disjunction is exactly what makes it non-speculative — `never` is the identity
+  of `|` — so the decision belongs *inside* 6b-a, not before it. `never` implemented alone is a
+  keyword with no consumer.
+- **Is a subquery inlined?** Phase 2 made group and subquery **one grammar rule** so that "a
+  subquery is the same shape as a query, so lowering reuses the query algebra". If a subquery in
+  a generating position inlines its statements into the enclosing generator list, this is
+  flatten-local and needs no operator at all. Confirm that before budgeting a nested executor.
+
+**Tasks (coarse — decompose at pickup, per the rule at the top of this file):**
+- **6b-a. Disjunction.** `FlatDisjunction` as a union-of-streams frame; the per-branch
+  discriminant on `Cursor`; `ty.rs` gives `|` a type; `never` decided alongside it. No DNF
+  expansion across conjuncts.
+- **6b-b. Range-restriction safety across branches.** Every branch must bind the same variable
+  set, or the head reads a register the taken branch never wrote. Flatten's safety check is
+  over the *chosen order* today; it now also has to be over *branches*, and the failure must be
+  a diagnostic, not a run-time `UseBeforeBind`.
+- **6b-c. The I4 battery over disjunctive plans**, and the **census** extended. Phase 4's
+  lesson stands: a plan shape the generator never draws is a shape the resume battery says
+  nothing about, so `the_generator_reaches_every_plan_shape` must assert it reaches a
+  disjunction and a mid-branch cut — and the draw must be deliberate, not left to chance.
+- **6b-d. Negation**, per the decision above.
+- **6b-e. Subquery**, per the decision above.
+- **6b-f. Corpus reclassification.** The five entries at `corpus.rs:224`–`246` move from
+  `Diagnosed(code)` to `Supported(rows)` — which is the real gate, since a `Supported` entry
+  cannot be added without saying what it returns (Phase 5). Retire each code from `Code::ALL`
+  as it goes; `every_code_is_in_all` is the reminder.
+
+**Acceptance:**
+- [ ] Disjunction compiles to a `FlatDisjunction` and runs — with a test that a query whose DNF
+      expansion would be exponential produces a plan **linear** in the branches.
+- [ ] [I4](docs/invariants.md#i4) holds over plans containing a disjunction, at every scheduled
+      cut point, on `MemStore` **and** fjall, with the census asserting the battery reaches a
+      disjunctive plan and a cut taken mid-branch.
+- [ ] A branch binding a different variable set is rejected with a clear diagnostic naming the
+      variable — never a run-time error.
+- [ ] `never`, negation and subqueries each either run, or draw a **narrowed** diagnostic
+      naming what is still missing — never a parse error and never a panic.
+- [ ] Every reclassified corpus entry returns its recorded rows against a real `FjallDb`, and no
+      retired `nyi/` code is left in `Code::ALL`.
+- [ ] All prior engine guards green — the cursor format changed, so this is the claim that
+      matters.
+
+---
+
 ## Phase 7 — Transport codec + fact writing (ingestion)
 
 **Goal.** Write facts programmatically and from files so the DB isn't hardcoded — a
@@ -560,6 +670,15 @@ fact-file format + sync markers, and the wire COPY path are specified in
 reproducibility). The storage-vs-transport codec split is
 [chapter 3](docs/03-storage-model.md#storage-codec-vs-transport-codec). **Read those; don't
 restate them.**
+
+**What already exists, and what this phase must *not* do to it.** `focus::fact` +
+`FjallDb::put` are the **single-fact** seam ([chapter
+3](docs/03-storage-model.md#writing-a-fact-by-hand)): a well-typed value, key fields resolved
+against the schema by name. It materialises a `Value` per fact, which is right for a deriver
+writing thousands and wrong for a loader writing millions — so the fact-file path wants a
+**streaming** form that never builds the value, built *beside* this one rather than replacing
+it. The schema resolution it does (declared field order, unknown/missing field, stray value
+side) is the part the streaming path still owes, by a different mechanism.
 
 **Invariants in scope:**
 - *strengthens (at scale):* [I11](docs/invariants.md#i11), [I12](docs/invariants.md#i12).
@@ -590,7 +709,14 @@ ingest-then-query returns the ingested facts.
 ## Phase 8 — Schema parsing (new grammar)
 
 **Goal.** Parse schemas so predicate/type definitions aren't hardcoded — a separate schema
-DSL feeding the same type model the query compiler uses.
+DSL feeding the same type model the query compiler uses. **Union types land here**, not in
+[Phase 6b](#phase-6b--the-deferred-query-surface), for three reasons that all point the same
+way: `PredicateTy` (`schema.rs:23`) has four variants and no `Union`; there is no way to
+*declare* one until this phase, because the schema is hardcoded Rust; and
+[I10](docs/invariants.md#i10) freezes discriminants **the moment union data is written** —
+chapter 6's "get it right *before* writing any union facts — after that it's an on-disk
+migration". Implementing union select early would mean taking this phase's hardest one-way door
+with no syntax for anyone to walk through it.
 
 **Depends on:** Phase 7 (ingest validates against a real, parsed schema) + Phase 2 (the
 permissive-then-narrow grammar discipline it reuses).
@@ -613,12 +739,23 @@ resolution, `schema_path` roots, and redeclaration errors are
 **Tasks:** schema lexer/parser; lower to the schema/type model; canonical form +
 fingerprints; validate the freeze-invariants (stable discriminants, marker ordering); wire
 the query compiler to load schema from parsed input instead of hardcoded fixtures.
+**Union types, as their own thread:** a `PredicateTy::Union` variant with explicit
+append-only discriminants; the declaration syntax for them; **a new codec marker** — the table
+stops at `MARK_FACT_REF = 0x51`, so a union takes `0x52`, *appended* (which
+[I3](docs/invariants.md#i3) permits) with the golden marker test edited deliberately, never
+renumbered; and `X.alt?` lowering to a `ResidualOp::DiscriminantEq(n)` **plus a payload bind**
+([chapter 6](docs/06-types-and-schema.md)). The payload bind is why this waits for Phase 6
+rather than only for the DSL: a union payload is not a fact row, so it needs the `Slot` value
+variant.
 
 **Acceptance:**
 - [ ] Parse a schema file and run a query against it end-to-end (test).
 - [ ] Fingerprint order-independence green (tier-2: two source orderings → identical fingerprint).
 - [ ] Ingest rejects a fact file whose schema fingerprint isn't subset-compatible (I13).
 - [ ] Invariant-violating schema edits (renumbered discriminant, reordered marker) are rejected at load (I10/I3, tested).
+- [ ] A union declares, ingests, round-trips through the codec, and `X.alt?` selects an
+      alternative and binds its payload — the `nyi/union-select` corpus entry reclassified to
+      `Supported` with its rows, and the code retired from `Code::ALL`.
 
 ---
 
@@ -679,14 +816,21 @@ a big-bang restructure ahead of need.
 
 ## Deferred features (additive — must not reshape the machine)
 
-Not on the critical path; each is additive: cross-fact navigation (`Access::Fetch`); order
-comparisons (`ResidualOp` arms); unions-as-data then the `FlatDisjunction` union-of-streams
-operator (per-branch discriminant on `Cursor`); negation/subqueries; `pattern = pattern` full
-unification (easy half in Phase 4, reject the three hard cases); `evolves`; cross-DB query.
-Detail and kept seams: [`CLAUDE.md` scope](CLAUDE.md#scope-phases--open-decisions),
+Not on the critical path; each is additive: cross-fact navigation (`Access::Fetch` — reading
+*through* a reference, the fourth piece in the table below); order comparisons (`ResidualOp`
+arms); `pattern = pattern` full unification (easy half in Phase 4, reject the three hard
+cases); `evolves`; cross-DB query. Detail and kept seams:
+[`CLAUDE.md` scope](CLAUDE.md#scope-phases--open-decisions),
 [open decisions](docs/open-decisions.md), [operations §11](docs/aperture-cli-design.md). The
 two *non-additive* constructs — derived facts (Phase 6) and the now-resolved `FactRef` marker
 — are handled as deliberate changes above.
+
+**Five items left this list and took phases**, because "additive" was a claim about the
+*machine* and never one about size: disjunction, `never`, negation and subqueries are
+[Phase 6b](#phase-6b--the-deferred-query-surface), and unions-as-data is
+[Phase 8](#phase-8--schema-parsing-new-grammar). What they had in common as bullets was no
+acceptance criteria and no invariant accounting — while one of them changes the resume token
+and one of them freezes bytes on disk.
 
 ### Reaching a fact through a reference — three sizes, listed apart ✅ (Phase 5)
 

@@ -140,11 +140,17 @@ with the seam kept.)
 Features that are *designed-for and additive* (a new enum arm, a new access kind) aren't
 "open decisions" — they have a settled shape and a kept seam, listed in
 [`PLAN.md`](../PLAN.md) "Deferred features" and [Operations §11](aperture-cli-design.md):
-order comparisons (`ResidualOp` arms), cross-fact navigation (`Access::Fetch`), unions-as-
-data then the disjunction union-of-streams operator (with a per-branch `Cursor`
-discriminant), negation/subqueries, `evolves`, cross-DB queries. The two that are *not*
-additive — derived facts and (now-resolved) the `FactRef` marker — are handled as deliberate
-machine/codec changes ([chapter 7](07-compilation.md), [chapter 2](02-tuple-codec.md)).
+order comparisons (`ResidualOp` arms), cross-fact navigation (`Access::Fetch`), `evolves`,
+cross-DB queries. The two that are *not* additive — derived facts and (now-resolved) the
+`FactRef` marker — are handled as deliberate machine/codec changes
+([chapter 7](07-compilation.md), [chapter 2](02-tuple-codec.md)).
+
+**Additive is not the same as small**, and five features that were on that list now have
+phases of their own to say so: disjunction, `never`, negation and subqueries are
+[`PLAN.md`](../PLAN.md) Phase 6b, and unions-as-data is Phase 8. None of them reshapes the
+machine — but disjunction extends the resume `Cursor` with a per-branch discriminant, and a
+union freezes its discriminants on disk the moment one is written
+([I10](invariants.md#i10)), so both need acceptance criteria rather than a bullet.
 
 ---
 

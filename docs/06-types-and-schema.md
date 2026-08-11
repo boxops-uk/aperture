@@ -87,7 +87,10 @@ at plan-build time so the executor is interner-free ([conventions](conventions.m
 ## Unions and stable discriminants ([I10](invariants.md#i10))
 
 Unions ("sum types" / tagged alternatives) are **designed-for but not yet in
-`PredicateTy`**. When they land, the load-bearing rule is:
+`PredicateTy`**. They land with the schema DSL ([`PLAN.md`](../PLAN.md) Phase 8) rather than
+with the rest of the deferred query surface (Phase 6b), because a union cannot be *declared*
+until schemas are parsed — and the freeze below is a reason to want the declaration first, not
+a reason to rush the type in. When they land, the load-bearing rule is:
 
 > **I10 — union alternative discriminants are stable and append-only.** Like protobuf field
 > numbers: each alternative has an explicit discriminant, assigned once, never reused, new

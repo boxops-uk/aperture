@@ -17,8 +17,11 @@ ingestion is "fearless."
 > every construct deferred to a later phase drawing a diagnostic that names it. A query is now
 > **answerable end to end**: `aperture` compiles what you type and runs it against a real
 > store, joins *through fact references* included, and every supported construct in the corpus
-> is checked against the rows it returns rather than only against the plan it produced.
-> **Not yet built:** derived facts, ingestion, schema parsing and the operational layer. See
+> is checked against the rows it returns rather than only against the plan it produced. Facts
+> are **written by hand as well-typed values** whose fields are resolved against the schema, so
+> the shell's store is a code index built through the same API a deriver would use.
+> **Not yet built:** derived facts, the rest of the query surface (`|`, `never`, `!`,
+> subqueries, unions), bulk ingestion, schema parsing and the operational layer. See
 > [`PLAN.md`](PLAN.md) for the sequence and current state.
 
 ---
@@ -38,7 +41,9 @@ about one subsystem.
 2. [**The tuple codec**](docs/02-tuple-codec.md) — how values become order-preserving,
    self-delimiting bytes. The marker table and why it's frozen. *(Invariants I1–I3.)*
 3. [**The storage model**](docs/03-storage-model.md) — the two column families, one
-   keyspace per predicate, `FactId` allocation, and the atomic two-CF write. *(I11–I12.)*
+   keyspace per predicate, `FactId` allocation, the atomic two-CF write, and how a fact is
+   **written by hand** (the three silent traps in `put_fact` that `focus::fact` exists to
+   close). *(I11–I12.)*
 4. [**The executor (the VM)**](docs/04-executor.md) — the plan IR, the register file, and
    the `enumerate` nested-loop driver. Why it's a defunctionalised state machine. *(I5–I7,
    I9.)*
