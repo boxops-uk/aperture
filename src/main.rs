@@ -41,7 +41,12 @@
 //! Phase 9 re-points the interactive front at the wire client, and everything here
 //! survives that except which store it opens.
 
-use std::{borrow::Cow, path::Path, sync::Arc};
+use std::{
+    borrow::Cow,
+    io::IsTerminal,
+    path::Path,
+    sync::{Arc, OnceLock},
+};
 
 use aperture::focus::{
     compile::Compilation,
@@ -591,27 +596,93 @@ fn render_ref(
     }
 }
 
+/// Whether to emit colour: stdout is a terminal, and `NO_COLOR` is unset.
+///
+/// Mirrors what `ColorChoice::Auto` decides for the diagnostics, so a rendered
+/// schema and a rendered error agree about whether a person or a pipe is reading.
+/// Resolved once — it cannot change under a running shell.
+fn colours_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED
+        .get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
+}
+
+/// What a fragment of a rendered schema *is*, for colouring.
+///
+/// **The schema has no lexer** — the DSL is Phase 8 — so `:schema` is coloured by
+/// hand, and this is that hand-written tokenisation. What it deliberately is not is a
+/// second palette: every role resolves through [`colour`] with the token a schema
+/// grammar would emit, so the two renderings can drift in *what* they colour but
+/// never in the colours themselves, and the mapping is already written down for
+/// whoever writes that grammar.
+///
+/// [`Role::Keyword`] is the one outright guess, and worth knowing about: under the
+/// *query* lexer `int` comes out an `LId`, indistinguishable from a field name. A
+/// schema grammar would almost certainly make the primitive type names reserved
+/// words, and separating types from field names is the whole reason to colour this at
+/// all — so they are painted as keywords on that assumption.
+#[derive(Clone, Copy)]
+enum Role {
+    /// A predicate name, or a reference to one — `src.Decl`.
+    Predicate,
+    /// A record field name — `line`.
+    Field,
+    /// A primitive type name — `int`, `str`.
+    Keyword,
+    /// Structure: `:`, `,`, `{`, `}`, `->`.
+    Punctuation,
+}
+
+impl Role {
+    /// The token a schema lexer would produce for this role.
+    fn token(self) -> Token {
+        match self {
+            Role::Predicate => Token::QId,
+            Role::Field => Token::LId,
+            Role::Keyword => Token::Where,
+            Role::Punctuation => Token::Comma,
+        }
+    }
+
+    fn paint(self, text: &str) -> String {
+        if !colours_enabled() {
+            return text.to_owned();
+        }
+        format!("\x1b[{}m{text}\x1b[0m", colour(self.token()))
+    }
+}
+
 fn render_predicate_ty(ty: &PredicateTy, schema: &Schema, interner: &SchemaInterner) -> String {
     match ty {
-        PredicateTy::Int => "int".to_owned(),
-        PredicateTy::Str => "str".to_owned(),
-        PredicateTy::Fact(predicate) => schema
-            .get(*predicate)
-            .and_then(|p| p.name())
-            .map_or_else(|| "fact".to_owned(), str::to_owned),
+        PredicateTy::Int => Role::Keyword.paint("int"),
+        PredicateTy::Str => Role::Keyword.paint("str"),
+        // A reference is painted as the predicate it names, because that is what it
+        // is: the same yellow `src.Decl` gets at the top of its own line.
+        PredicateTy::Fact(predicate) => Role::Predicate.paint(
+            schema
+                .get(*predicate)
+                .and_then(|p| p.name())
+                .unwrap_or("fact"),
+        ),
         PredicateTy::Record(fields) => {
             let rendered = fields
                 .iter()
                 .map(|(name, field)| {
                     format!(
-                        "{} : {}",
-                        interner.resolve(*name).unwrap_or("?"),
+                        "{} {} {}",
+                        Role::Field.paint(interner.resolve(*name).unwrap_or("?")),
+                        Role::Punctuation.paint(":"),
                         render_predicate_ty(field, schema, interner)
                     )
                 })
                 .collect::<Vec<_>>()
-                .join(", ");
-            format!("{{{rendered}}}")
+                .join(&Role::Punctuation.paint(", "));
+
+            format!(
+                "{}{rendered}{}",
+                Role::Punctuation.paint("{"),
+                Role::Punctuation.paint("}")
+            )
         }
     }
 }
@@ -786,12 +857,17 @@ fn print_schema(schema: &Schema) {
         let key = render_predicate_ty(predicate.key().ty, schema, schema.interner());
         let value = predicate.value().map_or_else(String::new, |value| {
             format!(
-                " -> {}",
+                "{}{}",
+                Role::Punctuation.paint(" -> "),
                 render_predicate_ty(value.ty, schema, schema.interner())
             )
         });
 
-        println!("  {} : {key}{value}", predicate.name().unwrap_or("?"));
+        println!(
+            "  {} {} {key}{value}",
+            Role::Predicate.paint(predicate.name().unwrap_or("?")),
+            Role::Punctuation.paint(":"),
+        );
     }
 }
 
