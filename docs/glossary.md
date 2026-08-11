@@ -52,7 +52,10 @@ not a loop level, recomputed on resume; must be a pure function of the fact bind
 [ch7](07-compilation.md#derived-facts).
 
 **derived fact / derived predicate** — a predicate whose facts are computed by a query
-(`… = KEY where <query>`) rather than stored. Requires the `Register→Slot` machine change.
+(`… = KEY where <query>`) rather than stored. **Two different features share the name:**
+*stored* derivation writes the facts at build time and the executor never knows the difference
+(PLAN Phase 8b, gated on the schema DSL); *dynamic* derivation computes a value while a query
+runs, and is what the `Register→Slot` machine change was for (Phase 6).
 [ch7](07-compilation.md#derived-facts).
 
 **discriminant** — the explicit, append-only tag identifying a union alternative
@@ -92,9 +95,14 @@ nested inside. Flat is the fast path the field-offset cache serves; a stored key
 field, so a whole record key has no path ([ch3](03-storage-model.md#a-stored-key-is-flat)).
 [ch7](07-compilation.md).
 
-**flatten** — the compiler phase that lowers a typed query to the flat `[Generator]` + `head`
+**flatten** — the compiler phase that lowers a typed query to the flat `[Step]` + `head`
 plan: collect statements, check range restriction, reorder, then run sargeability.
 [ch7](07-compilation.md).
+
+**folding** — substituting a variable bound to a constant (`X = 42`, or a record of constants) at
+every use, rather than giving it a register and a plan step. A folded bind reaches a key field as
+the literal written in place would, and takes no space in the machine.
+[ch7](07-compilation.md#folding-a-constant-bind).
 
 **focus** — Aperture's query and schema *language* (and the `src/focus/` module implementing
 the engine + language). [ch1](01-concepts.md).
@@ -119,7 +127,8 @@ over it *are* predicate queries; the only CF the scan hot loop touches. [ch3](03
 fearless parallel ingest, and an O(1) wholesale drop. Costs ~30 ms per tree to create.
 [ch3](03-storage-model.md).
 
-**MachineState** — the register file: `Box<[Option<Register>]>`. [ch4](04-executor.md).
+**MachineState** — the register file: `Box<[Option<Slot>]>`, indexed by `Address`. Reads name
+the kind they want (`fact` / `value`); a mismatch is a reported error. [ch4](04-executor.md).
 
 **marker** — the leading byte of an encoded value; determines sort position and skip shape;
 frozen once data exists ([I3](invariants.md#i3)). [ch2](02-tuple-codec.md).
@@ -136,8 +145,9 @@ annotate via side tables without mutating the tree. [ch7](07-compilation.md).
 **order-preserving** — `memcmp(encode(a), encode(b)) == cmp(a, b)`; the codec's defining
 property ([I1](invariants.md#i1)). [ch2](02-tuple-codec.md).
 
-**Plan** — the IR the executor consumes: `{ nvars, body: [Generator], head }`. The fixed
-contract between front end and back end. [ch4](04-executor.md).
+**Plan** — the IR the executor consumes: `{ nvars, body: [Step], head }`. The fixed
+contract between front end and back end. `body.len()` counts **steps**; `Plan::levels()` counts
+loop levels, and a `Cursor` holds one row per level. [ch4](04-executor.md#the-plan-ir).
 
 **point** — the `FactStore` operation that looks up a fact's `entities` row by `FactId`; must
 not be called during a key-only scan ([I6](invariants.md#i6)). [ch3](03-storage-model.md).
@@ -148,14 +158,14 @@ not be called during a key-only scan ([I6](invariants.md#i6)). [ch3](03-storage-
 **PredicateTy** — a type: `Int | Str | Fact(PredicateId) | Record(sorted fields)` (union
 later). [ch6](06-types-and-schema.md).
 
-**Project** — a projection node: `Lit | RegisterField | FactRef | Value | Record`.
+**Project** — a projection node: `Lit | RegisterField | FactRef | Value | Computed | Record`.
 [ch4](04-executor.md).
 
 **range restriction** — the safety check flatten enforces: every used variable is captured in
 some generator's key pattern; makes bind-before-use automatic in any order. [ch7](07-compilation.md).
 
-**Register** — a bound row in a register slot: `{ fact_id, bytes }` (the whole row, not a
-field — [I5](invariants.md#i5)). [ch4](04-executor.md).
+**Register** — a bound row: `{ fact_id, bytes }` (the whole row, not a field —
+[I5](invariants.md#i5)). The fact case of a [`Slot`](#). [ch4](04-executor.md).
 
 **reorder** — the compiler phase choosing loop order; identity in P0 (safe because ordering is
 performance-only); eventually Kahn topo-sort + antichains + selectivity. [ch7](07-compilation.md).
@@ -184,8 +194,10 @@ annotations without mutating the tree. [ch7](07-compilation.md).
 **skip** — advance past one encoded value using only its marker (schema-free), landing
 exactly at the next value ([I2](invariants.md#i2)). [ch2](02-tuple-codec.md).
 
-**Slot** — the sum type `Register` becomes when derived facts land: a fact variant or a
-computed-value variant. [ch7](07-compilation.md#derived-facts).
+**Slot** — what a register holds: `Fact(Register)`, a stored row, or `Value`, a derived bind's
+computed output. Kept apart at the type level because splicing one where the other belongs
+compares two encodings and quietly matches nothing.
+[ch4](04-executor.md#the-register-file-and-the-row-slot-model-i5).
 
 **snapshot** — a query's consistent read view; trivial for an immutable DB, but a fjall
 iterator pins one, so it's dropped at suspend ([I8](invariants.md#i8)). [ch5](05-resume.md).
@@ -195,6 +207,11 @@ scan to rows matching the outer row (how a join works). [ch4](04-executor.md).
 
 **StackFrame** — one loop level's execution state: `{ scan, current, field_offsets }`.
 [ch4](04-executor.md).
+
+**Step** — one position in a plan's body: `Scan(Generator)`, a loop level, or
+`Derive(DerivedBind)`, a value to compute. One ordered sequence, because `reorder` produces one
+order. A derive step is a *one-row* generator and contributes nothing to a `Cursor`
+([I14](invariants.md#i14)). [ch4](04-executor.md#the-plan-ir).
 
 **strinc** — the prefix-successor: the smallest byte string greater than all strings with a
 given prefix; the exclusive upper bound of a prefix scan. [ch3](03-storage-model.md).

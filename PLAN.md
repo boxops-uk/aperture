@@ -87,7 +87,17 @@ The engine spine exists in `src/focus/`:
   ingestion (a `Value` per fact) and *not* a `serde` derive — both recorded in
   [chapter 3](docs/03-storage-model.md#writing-a-fact-by-hand). This is the seam Phase 7's
   fact-file path builds **beside**, not on.
-- **Unbuilt:** bulk ingestion, schema parsing, the wire protocol, and the operational layer.
+- **Dynamic derivation** (`iter.rs`, `plan.rs`, `flatten.rs`, Phase 6 done) — a register holds a
+  `Slot` (a stored row **or** a computed value), and a plan's body is a sequence of `Step`s (a
+  scan to iterate, or a value to compute) rather than a list of levels. `body.len()` counts
+  steps; `Plan::levels()` counts loops, and the difference is load-bearing — a `Cursor` holds one
+  row per *level*, and a derive step is recomputed on restore instead of saved
+  ([I14](docs/invariants.md#i14)). A **constant bind folds** rather than becoming a step, so
+  `X where X = 42` compiles to no steps at all and a plan with no levels is the unit relation.
+  Nothing in focus lowers a derive step yet: the machinery is exercised by hand-built plans, and
+  its first producer will be a primitive or a subquery.
+- **Unbuilt:** bulk ingestion, schema parsing, **stored** derivation (gated on the schema DSL —
+  [Phase 8b](#phase-8b--stored-derivation)), the wire protocol, and the operational layer.
   `schema.rs` holds Phase 8's guards, written up front and `#[ignore]`d — the only pending
   entries left in the coverage ledger.
 
@@ -101,12 +111,14 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
 0  guard matrix & harness ─┬─▶ 1  fjall store ✅ (I8, I11, I12 green; resume battery re-run on fjall)
                            │
                            └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ✅ ─┬─▶ 5  REPL ✅  (→ remote-only later)
-                                                                                    ├─▶ 6  derived facts  (deliberate machine change; own resume battery)
+                                                                                    ├─▶ 6  dynamic derivation ✅ (machine change; I14 green)
                                                                                     │      └─▶ 6b  deferred query surface  (`|`, never, `!`, subquery)
-                                                                                    └─▶ 7  ingestion ─▶ 8  schema (+ union types) ─▶ 9  operations
+                                                                                    └─▶ 7  ingestion ─▶ 8  schema (+ union types) ─▶ 8b  stored derivation ─▶ 9  operations
 
 Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends on 1 (store + atomic put_fact).
-              Derived-*and-stored* persistence (part of 6) integrates operationally with 7 + 9 (ops-I8 phased derivation).
+              8b (stored derivation) is gated on **8**: a derived predicate cannot be built before it can be
+              declared. It needs 7 to write through and 6 to run the query, and shares ops-I8's lifecycle with 9.
+              It needs nothing from 6's machine change — a stored derived predicate is facts, scanned like any other.
               6b depends on 6 for the **Cursor**: it is `Vec<Register>` today and `Vec<Slot>` after 6, and
               disjunction adds a per-branch discriminant to the same token — edit it once, re-prove I4 once.
               Nothing in 7–9 depends on 6b, so its position *before* 7 is a choice, not a constraint.
@@ -132,7 +144,9 @@ the executor already consumes, so the halves meet in the middle. Then run it by 
 still small and the resume battery is fresh — and take the rest of the **cursor-format work
 with it** (6b), because disjunction extends the same token derived binds do and
 [I4](docs/invariants.md#i4) is expensive to re-establish twice. Then make it writable
-(ingestion, 7), remove the last hardcoded piece (schema, 8), and harden (operations, 9).
+(ingestion, 7), remove the last hardcoded piece (schema, 8) — which is what finally unlocks
+**stored** derivation (8b), since a derived predicate cannot be built before it can be declared —
+and harden (operations, 9).
 
 ---
 
@@ -528,39 +542,93 @@ real `FjallDb`, and a `Supported` entry cannot be added without saying what it r
 
 ---
 
-## Phase 6 — Derived facts (a deliberate machine change)
+## Phase 6 — Dynamic derivation: the machine change ✅
 
-**Goal.** Support derived predicates — `predicate P : … = KEY where <query>` — that compute
-facts from a query, plus `DerivedAndStored`. This is one of the **two sanctioned machine
-changes** (it promotes `Register` to a `Slot` sum type and touches resume), done here — while
-the machine is still small and the resume battery is fresh — rather than after ingestion and
-schema pile onto the current register shape.
+**Goal.** The **register-and-step machine change** derived facts need: promote `Register` to a
+`Slot` sum type, make a plan's body a sequence of steps rather than a list of levels, and make
+resume recompute what it does not save. One of the **two sanctioned machine changes**, done here
+— while the machine is still small and the resume battery is fresh — rather than after ingestion
+and schema pile onto the current register shape.
+
+**The split this phase discovered, and it moved half the work out.** "Derived facts" was one
+name for two features:
+
+- **Stored derivation** (`predicate P : … = KEY where <query>`, written as facts) needs *nothing
+  from the executor* — at query time `P` is facts in a keyspace, scanned like any other
+  predicate, and the deriver is a program that runs a query and calls `put`. It cannot be built
+  before a derived predicate can be **declared**, which is the schema DSL. Moved to
+  [Phase 8b](#phase-8b--stored-derivation).
+- **Dynamic derivation** — a value computed while a query runs — is the machine change, and is
+  this phase.
 
 **Depends on:** Phase 4 (flatten + the graph-taking reorder interface) and the resume battery
-(Phases 0/1). *Derived-and-stored persistence* additionally needs Phase 7 (a store to write
-to) and integrates operationally in Phase 9 (ops-I8 phased derivation).
+(Phases 0/1).
 
-**Design of record:** [chapter 7 — "Derived facts"](docs/07-compilation.md#derived-facts)
-(the `Slot` sum type; derived binds as not-a-loop-level, recomputed on resume; the hard
-topo-ordering they impose; the Glean mechanism) and [ops-I8](docs/invariants.md#ops-i8)
-(phased derivation, sealed snapshots).
+**Design of record:** [chapter 7 — "Derived facts"](docs/07-compilation.md#derived-facts) (the
+two kinds; the `Slot` sum type; derived binds as not-a-loop-level, recomputed on resume;
+[folding](docs/07-compilation.md#folding-a-constant-bind)), [chapter
+4](docs/04-executor.md#the-plan-ir) (the `Step` sequence, levels vs steps, the unit relation)
+and [chapter 5](docs/05-resume.md) (one cursor entry per *level*).
 
 **Invariants in scope:**
-- *adds & makes green:* a **new invariant** — *derived binds are pure functions of the fact
-  bindings* — with its own tier-3 resume battery. **Add it to the
-  [registry](docs/invariants.md) and [chapter 7](docs/07-compilation.md) when this lands.**
-- *upholds:* [I4](docs/invariants.md#i4), [I5](docs/invariants.md#i5) (the `Register→Slot`
-  change must not regress the resume battery or the row-slot model).
+- *adds & makes green:* **[I14](docs/invariants.md#i14)** — *a derived bind is a pure function
+  of the fact bindings* — guarded by a tier-3 resume battery at every cut point, with the derive
+  step both above and below a scan.
+- *upholds:* [I4](docs/invariants.md#i4)–[I9](docs/invariants.md#i9) (the `Register→Slot` and
+  `body → [Step]` changes must regress none of them).
 
-**Tasks:** promote `Register` → `Slot` (fact | computed-value); derived-bind plan step +
-flatten lowering (the topo-ordering case); recompute value-slots on resume; the new purity
-type/guard; `DerivedAndStored` gating (persistence deferred to integrate with Phase 7/9).
+**Decisions taken here, as settled:**
+
+- **A plan's body is one ordered sequence of steps** (`Step::Scan | Step::Derive`), not levels
+  plus a side-table of computations. `reorder` produces one order; two collections joined by an
+  index would be two sources of truth for it, with nothing to say which wins. The cost is that
+  `body.len()` stops meaning "number of loops" — that is `Plan::levels()` now — and the one place
+  it mattered was the cursor's length check, which said `>` while the two counts were the same
+  number and so let a short cursor half-replay a plan.
+- **A derive step is a one-row generator**: compute descending, exhausted ascending, one bit of
+  frame state. So "a derived bind is not a loop level" stops being free and becomes maintained —
+  derive frames hold no row and contribute nothing to the cursor.
+- **A plan with no levels is the unit relation — exactly one row** — and reports `Done` when
+  asked to suspend, because its cursor would be empty and an empty cursor restarts a run.
+  `EmptyPlan` is gone; it existed to refuse exactly this shape.
+- **A constant bind folds; it does not become a derive step.** `X = 42`, and a record of
+  constants to any depth, is substituted at every use. A step holding a compile-time constant
+  would be a level to walk and a value to recompute in order to arrive back at the literal.
+
+**Tasks:**
+- **6a.** ✅ `Register` → `Slot` (fact | computed value), with `SlotKindMismatch` making a
+  wrong-kind read say so — the same silent shape as the `FactRef` marker trap. Behavioural
+  guards added *first* to the four seams the refactor lands on, which had none: the two
+  `MachineState::get` faults were covered only by a test asserting how they *render*, and
+  resume's fact-id integrity check had no test at all.
+- **6b.** ✅ `body: Box<[Step]>`, `Plan::levels()` / `::level(n)`, the derive arm of `enumerate`,
+  and resume as one forward walk — *re-bind the fact-slots, recompute the value-slots*.
+- **6c.** ✅ [I14](docs/invariants.md#i14) and its guard. **Mutation-checked, and it had to be**:
+  the first version of the guard passed with resume's recompute deleted, because the derive sat
+  *below* the scan and `enumerate` re-entered it from beneath on the way back up, recomputing it
+  itself. Only a derive *above* a scan observes the fault.
+- **6d.** ✅ Folding, and the empty-body relaxation it needs. The trap it walks past — `constant`
+  writes the wrapped record form, while a stored key is flat — is pinned by a test, because both
+  reasons it is safe are invisible from the fold's own code.
 
 **Acceptance:**
-- [ ] Derived predicates compile (flatten → plan with derived-bind steps) and execute (recomputed correctly) against a fixture/fjall store.
-- [ ] Resume is correct under the interruption-schedule generator — recompute-on-restore property green (tier-3), on top of Phase 0c's battery.
-- [ ] The `Register→Slot` change leaves all prior engine guards green.
-- [ ] The new purity invariant + guard are added to the registry and chapter 7.
+- [x] The `Register→Slot` and `body → [Step]` changes leave all prior engine guards green
+      (297 tests; the I4 battery re-run on `MemStore` and fjall either side of both).
+- [x] [I14](docs/invariants.md#i14) + guard added to the registry and chapter 7, green at every
+      cut point in both step orders.
+- [x] Resume is correct over plans containing a derive step, and over plans containing folds.
+- [x] A constant bind answers at the prompt — `X where X = 42`, `X where X = {name = "foo", y =
+      24}` — and narrows a seek where the written literal would.
+
+**What is left unlowered, deliberately.** Nothing in focus produces a `Step::Derive`: a constant
+folds, and anything else is a value that differs per row. The nearest candidate, `Y = X.name`,
+would most likely become another *substitution* (an alias for a field of `X`'s register) rather
+than a value slot — so the first real producer is a **primitive**
+([open decision](docs/open-decisions.md)) or a **subquery**
+([Phase 6b](#phase-6b--the-deferred-query-surface)). The machinery is built ahead of them on
+purpose, because its resume behaviour is the expensive thing to get wrong later; it is exercised
+by hand-built plans, and I14 records that scope rather than implying pressure the language does
+not yet apply.
 
 ---
 
@@ -759,6 +827,50 @@ variant.
 
 ---
 
+## Phase 8b — Stored derivation
+
+**Goal.** `predicate P : … = KEY where <query>` as **facts written at build time**:
+`DerivedAndStored`. The half of "derived facts" that never reaches the executor — at query time
+`P` is facts in a keyspace, scanned like any other predicate — so this is a *writer* and a
+*lifecycle phase*, not a machine change.
+
+**Depends on:** Phase 8, and that is the gating dependency: **a derived predicate cannot be
+built before it can be declared**, and declaring one is the schema DSL. Also Phase 7 (a write
+path to put facts through) and Phase 6 (the query it derives from must compile and run). This is
+why it is not in [Phase 6](#phase-6--dynamic-derivation-the-machine-change-): nothing about it
+needed the machine change, and everything about it needs a schema.
+
+**Design of record:** [ops-I8](docs/invariants.md#ops-i8) (create → ingest base → derive →
+finish; derivers read the frozen base via a *sealed snapshot*, write only derived predicates;
+prefix-disjointness makes read/write disjointness structural; embarrassingly parallel, no
+stratification in P0), [chapter 7](docs/07-compilation.md#two-kinds-and-only-one-of-them-is-the-executors-business)
+(the two kinds), and [operations §9](docs/aperture-cli-design.md) (per-predicate trees, which
+make dropping a re-derived predicate an O(1) tree delete rather than range tombstones).
+
+**Invariants in scope:**
+- *makes enforceable & tested:* [ops-I8](docs/invariants.md#ops-i8).
+- *upholds:* [ops-I4](docs/invariants.md#ops-i4) — identity is `hash(canonical schema, base
+  facts)`, so **derived facts are implied by identity, never part of it**; re-deriving must be
+  reproducible. [I11](docs/invariants.md#i11)/[I12](docs/invariants.md#i12) at derivation scale.
+  [I14](docs/invariants.md#i14) is *not* in scope: a stored deriver runs an ordinary query.
+
+**Tasks (coarse — decompose at pickup):** a `derivation` on the schema's `Predicate` (there is
+none today, and `focus`'s grammar has no `predicate` keyword — both are Phase 8's to add); the
+derive phase in the lifecycle, reading a sealed snapshot and writing through the one write funnel
+(`ops-I5`); `DerivedAndStored` vs derive-on-demand as a schema-level distinction; re-derivation
+as a tree drop; derived-on-derived via sealed rounds.
+
+**Acceptance:**
+- [ ] A schema declaring a derived predicate parses, derives, and the derived facts are queryable
+      exactly as base facts are — indistinguishable to the executor, which is the claim.
+- [ ] `ops-I8` enforced and tested: a deriver cannot read its own writes or another deriver's,
+      and cannot write a predicate it does not own (structural via prefix-disjointness).
+- [ ] Deriving twice from the same base gives the same facts (`ops-I4`); re-deriving one
+      predicate drops and rebuilds only its trees.
+- [ ] Ingest is refused after `derive` in a way the lifecycle defines, not by accident.
+
+---
+
 ## Phase 9 — Operations / production-ready
 
 **Goal.** The hardening pass: telemetry, cohesive error handling, the full database/lifecycle
@@ -778,7 +890,7 @@ Phase 1) now exercised through portals.
 - **DB / lifecycle** (`ops-I2`/`ops-I3`/`ops-I4`): `Writable → Complete` (+ `Broken`);
   `create` embeds canonical schema + fingerprint (I13); ingest refused on Complete; `finish`
   seals (flush + `SyncAll` → content-hash identity → atomic sidecar flip as the last durable
-  act); filesystem is the catalog (`ops-I7`); phased derivation via sealed snapshots (`ops-I8`).
+  act); filesystem is the catalog (`ops-I7`); the sealed-snapshot machinery `ops-I8` needs, shared with [Phase 8b](#phase-8b--stored-derivation).
 - **Connection layer / wire protocol** (if not landed in Phase 7): PSQL-inspired framed
   binary protocol with stream multiplexing, chunked `DataRow`s with a fair per-connection
   writer, per-stream `Cancel`, the bounded-channel sync↔async bridge with byte `Cursor`

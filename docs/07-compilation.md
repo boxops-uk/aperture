@@ -357,25 +357,76 @@ doing that casually. This is one of the two sanctioned exceptions (the other is 
 [`FactRef` marker](02-tuple-codec.md)), done deliberately with its own invariant and its own
 resume battery.
 
-A **derived predicate** — `predicate P : … = KEY where <query>` — computes facts from a
-query instead of storing them. Supporting it requires:
+### Two kinds, and only one of them is the executor's business
 
-- **`Register` becomes a `Slot` sum type** — a fact variant (a stored row, today's
-  `Register`) *and* a value variant (a computed binding). A **derived bind** `Z = f(bound
-  vars)` materialises a computed value into a value-slot where its inputs are live.
-- **A derived bind is *not* a loop level.** `enumerate` doesn't iterate it, and the
-  [`Cursor`](05-resume.md) doesn't store it — it is **recomputed on restore**. So resume
-  must, after re-binding the fact-slots, recompute the value-slots.
-- **The new invariant (added when this lands):** *derived binds are pure functions of the
-  generator (fact) bindings.* That purity is exactly what lets resume save only generator
-  positions and recompute the rest — so the type for derived binds must structurally forbid
-  iteration and hidden state. Its guard is a resume battery ([tier-3](testing.md)) over the
-  interruption schedule, on top of [I4](invariants.md#i4)'s.
+The word "derived" covers two features that share a name and almost nothing else:
+
+- **Stored derivation** — `predicate P : … = KEY where <query>`, computed once when the DB is
+  built and **written as facts**. At query time `P` is facts in a keyspace, scanned like any
+  other predicate, so the executor needs *nothing* for it: the deriver is a program that runs a
+  query and calls `put`. It is gated on being able to **declare** one, which is the schema DSL
+  ([`PLAN.md`](../PLAN.md) Phase 8), and its lifecycle is [ops-I8](invariants.md#ops-i8) —
+  create → ingest base → derive → finish, derivers reading a sealed snapshot of the frozen base.
+- **Dynamic derivation** — a value computed *while a query runs*, from the bindings live at
+  that point. This is the machine change, and the rest of this section is about it.
+
+### The machine change, as built
+
+- **`Register` became a [`Slot`](04-executor.md#the-register-file-and-the-row-slot-model-i5)
+  sum type** — a fact variant (a stored row) and a value variant (a computed binding).
+- **A plan's body became a sequence of [`Step`](04-executor.md#the-plan-ir)s** — a scan to
+  iterate or a value to compute — because `reorder` produces one order, and splitting it across
+  two collections joined by an index would be two sources of truth for one ordering.
+- **A derived bind is *not* a loop level.** `enumerate` does not iterate it, and the
+  [`Cursor`](05-resume.md) does not store it — it is **recomputed on restore**. So resume, after
+  re-binding the fact-slots, recomputes the value-slots. That is one forward walk over the
+  steps: a scan consumes the next cursor entry, a derive recomputes.
+- **The new invariant: [I14](invariants.md#i14)** — *a derived bind is a pure function of the
+  fact bindings*, which is exactly what lets the cursor save only generator positions. Its guard
+  is a resume battery ([tier-3](testing.md)) at every cut point, on top of
+  [I4](invariants.md#i4)'s, and the derive step must sit **above** a scan in at least one case:
+  below one, the machine re-enters it from beneath on the way back up and recomputes it anyway,
+  so only the above case can observe a resume that failed to.
 
 Derived binds impose the hard topological ordering the reorder interface was built for — *the*
 case that makes topo-sort necessary; cycles are compile errors (recursion is out of scope).
 Mechanism mirrors Glean (`DerivedFactGenerator`, `Derive when`, the `captureKey` trick,
 `DerivedAndStored`). Full sequencing in [`PLAN.md`](../PLAN.md) "Phase 6".
+
+### Folding a constant bind
+
+A variable bound to a **constant** does not become a derived bind at all. `X = 42` — and
+equally `X = {name = "foo", y = 24}`, to any depth — is *substituted at every use*: a key field
+asks `constant` and a head asks `project`, each reaching the arm it would have reached had the
+literal been written in place. So `Z = 1; test.Bar {id = Z}` seeks the bytes `{id = 1}` seeks,
+by the same code rather than a parallel path.
+
+A folded bind therefore occupies **no register and no step**. Introducing one would be a level
+for the executor to walk and a value for a resume to recompute, both to arrive back at a
+constant known at compile time. Two consequences worth stating:
+
+- **Range restriction accepts a folded variable as bound before any level runs**, which is
+  right on its own terms: `X = 42` gives `X` exactly one value, and the check exists to insist a
+  variable ranges over something finite.
+- **A query whose every binding folds has no steps**, which is why a plan with no levels has to
+  mean the unit relation ([chapter 4](04-executor.md#the-enumerate-driver-i7)).
+
+The trap it walks past: folding reaches `constant`, whose record arm writes the
+`MARK_RECORD`-wrapped form, while [a stored key is flat](03-storage-model.md#a-stored-key-is-flat).
+Wrapped is right for a record *inside a field* and wrong for a whole key, and choosing wrong
+reads bytes that match nothing with no error. It is safe because `key` destructures the
+top-level record itself and emits field by field, so a whole key never reaches `constant` — and
+because a bare variable as a whole key is `nyi/whole-key` before any of this. Both halves are
+invisible from the fold's own code, so both are pinned by tests.
+
+**What is left unlowered.** Nothing in focus currently produces a `Step::Derive`: a constant
+folds, and anything else — `Y = X.name`, or `{a = 1, b = Y}` with `Y` captured — is a value that
+differs per row. `Y = X.name` would most likely become another *substitution* (an alias for a
+field of `X`'s register) rather than a value slot, so the first real producer is likely a
+**primitive** ([open decision](open-decisions.md)) or a **subquery**
+([`PLAN.md`](../PLAN.md) Phase 6b). The machinery is deliberately built ahead of them, because
+its resume behaviour is the expensive thing to get wrong later; it is exercised by hand-built
+plans, and [I14](invariants.md#i14) records that scope honestly.
 
 ---
 
@@ -384,8 +435,9 @@ Mechanism mirrors Glean (`DerivedFactGenerator`, `Derive when`, the `captureKey`
 The front end *enforces* invariants owned elsewhere rather than owning many itself:
 
 - [I10](invariants.md#i10) (union discriminant stability) is checked at typecheck/schema-load.
-- The **derived-bind purity** invariant will be added here (and to the
-  [registry](invariants.md)) when Phase 6 lands.
+- [I14](invariants.md#i14) (**derived-bind purity**) is owned here: `Computed`'s arms are the
+  structural statement of it, so adding one that reads anything but already-bound slots breaks
+  [I4](invariants.md#i4) as well as I14.
 - Record-field ordering (a [convention](conventions.md)) must be preserved across all three
   tree layers.
 

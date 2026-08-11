@@ -54,10 +54,16 @@ between them is the whole design problem.
 On suspend, the executor builds a `Cursor` from the frame stack:
 
 ```rust
-struct Cursor(Vec<Register>);   // one detached Register per *active* level
+struct Cursor(Vec<Register>);   // one detached Register per loop *level*
 ```
 
-For each open level it saves that level's `current` row — but **detached**: `ByteView`
+One entry per **level**, not per plan step: a [`Step::Derive`](04-executor.md#the-plan-ir) holds
+no row and contributes nothing, because it is recomputed on restore instead
+([I14](invariants.md#i14)). A suspend only ever happens at a full row, so the cursor names
+*every* level — which is what makes resume's replay-by-order sound, and why its length check is
+`!= plan.levels()` rather than a bound.
+
+For each level it saves that level's `current` row — but **detached**: `ByteView`
 bytes are copied to owned memory (`to_detached`) so the cursor references no shared buffer,
 no iterator, no snapshot ([I9](invariants.md#i9)'s "copy out only at escape boundaries").
 The saved `Register` is `{ fact_id, key bytes }` — enough to find the row again and to
@@ -73,7 +79,8 @@ no snapshot. It can be written to a socket and read back an hour later.
 `Executor::resume(store, plan, cursor)` rebuilds machine state so the next `enumerate` call
 continues exactly where the last one stopped:
 
-For each saved level, in order:
+One forward walk over the plan's steps — **re-bind the fact-slots, recompute the
+value-slots.** At a scan step, consuming the next saved row in order:
 
 1. **Re-open the level's scan** starting `Included(saved_key)` — i.e. seek straight to the
    row the level was sitting on.
@@ -82,7 +89,11 @@ For each saved level, in order:
 3. **Integrity check:** the re-read row's `fact_id` **must equal** the saved `fact_id`. If
    not → `BadResumeKey`.
 
-Then set `depth` to the innermost saved level and hand back to `enumerate`, which — because
+At a derive step, recompute its value into its slot. Nothing is consumed from the cursor, and
+nothing needs to be: purity ([I14](invariants.md#i14)) is what makes recomputing equivalent to
+having saved it.
+
+Then set `depth` to the innermost step and hand back to `enumerate`, which — because
 that innermost frame's scan is already open and positioned — calls `next()` and thereby
 **advances past** the last-emitted row. Outer levels are *not* advanced; they stay pinned on
 their saved rows and only advance when the inner level exhausts and the machine backtracks.

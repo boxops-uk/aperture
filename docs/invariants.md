@@ -2,7 +2,7 @@
 
 > [Aperture design book](../README.md) · reference doc
 
-Every invariant in one place. **Engine invariants `I1`–`I13`** are the codec / executor /
+Every invariant in one place. **Engine invariants `I1`–`I14`** are the codec / executor /
 storage / identity rules explained in chapters 2–6. **Operational invariants
 `ops-I1`–`ops-I10`** are the lifecycle / connection rules explained in
 [Operations](aperture-cli-design.md). The two namespaces are separate — always write
@@ -39,6 +39,7 @@ green. See [testing](testing.md).
 | [I11](#i11) | `FactId` is stable, unique, never reused within a DB. | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | [ch3](03-storage-model.md) | ✅ green |
 | [I12](#i12) | A fact is written to both column families atomically. | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) | [ch3](03-storage-model.md) | ✅ green |
 | [I13](#i13) | The DB's schema is embedded and frozen at create. | `schema::ingest_rejects_incompatible_schema` + `fingerprint_is_order_independent` | [ch6](06-types-and-schema.md) | Phase 8 |
+| [I14](#i14) | A derived bind is a pure function of the fact bindings. | `iter::a_derive_is_recomputed_across_every_cut_point` | [ch7](07-compilation.md) | ✅ green (hand-built plans) |
 
 ---
 
@@ -160,6 +161,28 @@ Canonical schema + fingerprint embedded at `create`, immutable for the DB's life
 *Why & how:* [chapter 6](06-types-and-schema.md#the-schema-is-embedded-and-frozen-i13).
 *Guard:* `schema::ingest_rejects_incompatible_schema` + `schema::fingerprint_is_order_independent`
 (pending schema).
+
+<a id="i14"></a>
+### I14 — A derived bind is a pure function of the fact bindings
+A [`Step::Derive`](07-compilation.md#derived-facts)'s value is determined entirely by the
+fact slots bound when it is computed: no iteration, no store read, no state the
+[`Cursor`](05-resume.md) does not carry. That purity is exactly what lets the cursor save
+**only** generator positions — a derive step contributes no cursor entry and is *recomputed*
+on restore, so an impure one would resume to a different value than the uninterrupted run
+had, and the row sequences would diverge at the cut point. It is why `Computed`'s arms must
+stay expressions over already-bound slots; adding an arm that reads anything else breaks
+[I4](#i4) rather than only this. *Why & how:*
+[chapter 7](07-compilation.md#derived-facts). *Guard:*
+`iter::a_derive_is_recomputed_across_every_cut_point` — resume == uninterrupted at every cut
+point, with the derive step **both above and below** a scan. The order is the test: below a
+scan the machine re-enters the derive from beneath and recomputes it anyway, so only the
+*above* case observes a resume that failed to recompute (mutation-checked).
+
+> **Scope, honestly.** The guard drives hand-built plans, because nothing in focus lowers a
+> derive step yet — a constant bind is [folded](07-compilation.md#folding-a-constant-bind)
+> instead, and the first real producer will be a primitive or a subquery. So this invariant is
+> currently held by construction rather than by pressure from the language, and the guard is
+> what will catch the first producer getting it wrong.
 
 ---
 

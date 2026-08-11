@@ -42,7 +42,9 @@ already are that:
   ([chapter 5](05-resume.md)).
 - **Derived predicates**, on-demand and stored, with the mechanism mirroring Glean's
   (`DerivedFactGenerator`, `Derive when`, the `captureKey` trick, `DerivedAndStored`) —
-  [chapter 7](07-compilation.md#derived-facts), [Phase 6](../PLAN.md).
+  [chapter 7](07-compilation.md#derived-facts). Split across two phases, because the two halves
+  share almost nothing: the **dynamic** machinery is [Phase 6](../PLAN.md) and built; **stored**
+  derivation is Phase 8b, gated on being able to declare a derived predicate at all.
 - **No general recursion.** Both decline it; a cycle among derived binds is a compile error.
 - **Reordering as topological sort + antichains + a selectivity heuristic**, explicitly à la
   Glean's `Reorder`, and the bounded "PLAN-B" distribution of an alternation *into a single

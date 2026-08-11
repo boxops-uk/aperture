@@ -17,14 +17,36 @@ A **`Plan`** (`plan.rs`) is:
 
 ```rust
 struct Plan {
-    nvars: usize,          // size of the register file
-    body: Box<[Generator]>, // loop levels: [0] outermost … [n-1] innermost
-    head: Project,          // how to build each output row
+    nvars: usize,       // size of the register file
+    body: Box<[Step]>,  // ordered steps: [0] outermost … [n-1] innermost
+    head: Project,      // how to build each output row
+}
+
+enum Step {
+    Scan(Generator),      // a loop level
+    Derive(DerivedBind),  // a value to compute — not a loop level
 }
 ```
 
-A query is a **nested loop**, and the order of `body` *is* the loop nesting. Each level is
-a `Generator`:
+A query is a **nested loop**, and the order of `body` *is* the loop nesting. It is one
+ordered sequence because [`reorder`](07-compilation.md) produces one order; holding levels and
+computations in separate collections joined by an index would be two sources of truth for one
+ordering, with nothing to say which wins.
+
+> **`body.len()` is not the number of loops.** It counts *steps*; `Plan::levels()` counts scan
+> steps, and `Plan::level(n)` reaches the `n`th. The distinction is load-bearing in exactly one
+> place — a [`Cursor`](05-resume.md) holds one row per **level**, and resume pairs its entries
+> with scan steps by order. The two were the same number before derive steps existed, and the
+> cursor's length check said `>` rather than `!=` as a result, which let a short cursor
+> half-replay a plan and carry on from the wrong place.
+
+A `Step::Derive` is chapter 7's [derived bind](07-compilation.md#derived-facts) and is
+**one row**: the machine computes its value descending and reports exhausted ascending, which
+costs one bit of frame state because arriving at a step from below and from above must differ
+and the loop carries no direction. It contributes no cursor entry — see
+[I14](invariants.md#i14).
+
+Each loop level is a `Generator`:
 
 ```rust
 struct Generator {
@@ -65,6 +87,10 @@ Residuals are evaluated against the **key** (`keys` CF) only — never the value
 - `FactRef(address)` — the bound row's `FactId` as a fact reference.
 - `Value { address, ty }` — **fetch and decode the fact's value** from `entities` (the one
   place the value is read).
+- `Computed(address)` — a derived bind's output, read out of its value slot. Already a `Value`,
+  so nothing is decoded. Distinct from `Lit` on purpose: folding a constant bind into a `Lit`
+  is what the compiler does, and collapsing the two here would leave the recompute path with
+  no coverage ([chapter 7](07-compilation.md#folding-a-constant-bind)).
 - `Record(fields)` — a record built from sub-projections (sorted `(Symbol, Project)`).
 
 Projection is **lazy and at the escape boundary**: fields are decoded here, at the read
@@ -74,12 +100,25 @@ site, not when the row was bound. That is [I5](invariants.md#i5).
 
 ## The register file and the row-slot model ([I5](invariants.md#i5))
 
-`MachineState` is the register file: `Box<[Option<Register>]>`, indexed by `Address`. A
-**`Register`** holds a *whole row*:
+`MachineState` is the register file: `Box<[Option<Slot>]>`, indexed by `Address`. A **`Slot`**
+holds either a stored row or a computed value, and a **`Register`** is the row case:
 
 ```rust
+enum Slot {
+    Fact(Register),  // a stored row — what I5 below is about
+    Value(Value),    // a derived bind's output (I14)
+}
+
 struct Register { fact_id: FactId, bytes: ByteView }  // bytes = predicate_id ++ key
 ```
+
+The two kinds are separated *at the type level* rather than unified behind "some bytes",
+because splicing a value where a fact id belongs — or the reverse — compares two different
+encodings and quietly matches nothing. That is the same silent shape as the
+[`FactRef` marker](02-tuple-codec.md) split, so reading a slot names the kind it wants
+(`MachineState::fact` / `::value`) and a mismatch is a reported error, not a panic: flatten
+cannot emit one, since it knows which addresses a derive step writes, but a plan arriving off
+the wire can.
 
 The critical design decision — [invariant I5](invariants.md#i5):
 
@@ -101,15 +140,17 @@ bumps, not copies**, so "the whole row" is cheap to share across registers.
 
 ## The frame stack
 
-Execution state is a stack of frames, one per loop level:
-
 ```rust
 struct StackFrame {
     scan: Option<Scan>,           // the live cursor into `keys`, or None if closed
     current: Option<Register>,     // the row this level is currently sitting on
     field_offsets: Box<[FieldOffsets]>, // per-variable field-offset cache
+    derived_produced: bool,        // a Derive step's whole state (unused by scans)
 }
 ```
+
+Execution state is a stack of frames, **one per step**, not one per level: a derive step needs a
+frame too, though all it uses is the last field.
 
 - **`scan`** is the fjall (or `MemStore`) iterator for this level's range. It is `None`
   when the level is closed — opening it fresh on descent is what makes byte-resume possible
@@ -146,20 +187,39 @@ walked on demand and *not* cached — the cache never heap-spills. This is part 
 
 ```
 loop:
-  if depth == body.len():           # past the innermost loop → a full row is bound
+  if depth == body.len():           # past the innermost step → a full row is bound
       hand Row to the consumer (step)
-      on Continue: depth -= 1       # backtrack to find the next row
-      on Suspend:  return Suspended{ cursor }   # (chapter 5)
-
-  else:
-      frame = stack[depth]
-      if frame.scan is None: frame.open(...)     # descend: open this level fresh
-      match frame.next():                        # pull the next matching row
-        Some(row): bind row into registers; frame.current = row; depth += 1   # go deeper
-        None:      frame.scan = None             # exhausted: close and back up
-                   if depth == 0: return Done
+      on Continue: if body is empty: return Done    # nothing to back into
+                   depth -= 1       # backtrack to find the next row
+      on Suspend:  if levels() == 0: return Done    # see below
                    depth -= 1
+                   return Suspended{ cursor }   # (chapter 5)
+
+  else match body[depth]:
+      Scan(generator):
+        frame = stack[depth]
+        if frame.scan is None: frame.open(...)   # descend: open this level fresh
+        match frame.next():                      # pull the next matching row
+          Some(row): bind row into registers; frame.current = row; depth += 1
+          None:      frame.scan = None           # exhausted: close and back up
+                     if depth == 0: return Done
+                     depth -= 1
+
+      Derive(bind):                              # a one-row generator
+        if not produced: compute into the value slot; produced = true; depth += 1
+        else:            produced = false        # exhausted, on the way back up
+                         if depth == 0: return Done
+                         depth -= 1
 ```
+
+**A plan with no levels is the unit relation: exactly one row.** Every step is a derived bind
+and a derived bind is one value, so there is nothing to iterate — a query whose every binding
+[folded](07-compilation.md#folding-a-constant-bind) has no steps at all. Two consequences are
+written into the loop above. Backing out of the head cannot decrement past zero, and a
+*suspend request* reports `Done` rather than handing back a cursor: the cursor would be empty,
+an empty cursor means "start from the beginning", and so resuming would re-emit the row.
+Reporting `Done` is not a half-answer — the run genuinely is complete, which is what a resume
+would have discovered one round-trip later.
 
 `frame.next()` is the scan step: pull rows from the cursor, apply the generator's residuals
 ([I6](invariants.md#i6) — key fields only), and return the first match. It also polls the

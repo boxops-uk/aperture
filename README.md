@@ -20,8 +20,13 @@ ingestion is "fearless."
 > is checked against the rows it returns rather than only against the plan it produced. Facts
 > are **written by hand as well-typed values** whose fields are resolved against the schema, so
 > the shell's store is a code index built through the same API a deriver would use.
-> **Not yet built:** derived facts, the rest of the query surface (`|`, `never`, `!`,
-> subqueries, unions), bulk ingestion, schema parsing and the operational layer. See
+> A register now holds a **`Slot`** — a stored row or a computed value — and a plan's body is an
+> ordered sequence of **steps**, so a value can be derived mid-query and *recomputed* rather than
+> saved when a query suspends ([I14](docs/invariants.md#i14)); a bind to a constant is folded
+> instead, at compile time.
+> **Not yet built:** the rest of the query surface (`|`, `never`, `!`, subqueries, unions),
+> bulk ingestion, schema parsing, **stored** derivation (which needs the schema DSL first) and
+> the operational layer. See
 > [`PLAN.md`](PLAN.md) for the sequence and current state.
 
 ---
@@ -54,14 +59,15 @@ about one subsystem.
    I13.)*
 7. [**Compilation**](docs/07-compilation.md) — lex → parse → typecheck → flatten → reorder,
    the tree layers, sargeability (seek · splice · residual), why identity reordering is
-   *correct*, what flatten defers, and derived facts (the one deliberate machine change).
+   *correct*, what flatten defers, folding a constant bind, and derived facts — the two kinds,
+   and which of them was the machine change. *(I14.)*
 8. [**Operations**](docs/aperture-cli-design.md) — the CLI, the `Writable → Complete`
    lifecycle, the parallel ingestion pipeline, the wire protocol, and the operational
    invariants. *(ops-I1–ops-I10.)* The operational design of record.
 
 **Reference docs (look up, don't read cover-to-cover):**
 
-- [**Invariant registry**](docs/invariants.md) — every invariant (`I1`–`I13`,
+- [**Invariant registry**](docs/invariants.md) — every invariant (`I1`–`I14`,
   `ops-I1`–`ops-I10`) in one table: one-line statement, its guard test, and a link to the
   chapter that explains it. **The fastest way to check "what must I not break here."**
 - [**Testing methodology**](docs/testing.md) — property-first, generator-first testing;
@@ -79,8 +85,8 @@ about one subsystem.
 
 ## Two invariant namespaces (don't conflate them)
 
-- **Engine invariants `I1`–`I13`** — codec, executor/resume, storage, identity. Explained
-  in chapters 2–6, indexed in the [registry](docs/invariants.md).
+- **Engine invariants `I1`–`I14`** — codec, executor/resume, storage, identity, and
+  derived-bind purity. Explained in chapters 2–7, indexed in the [registry](docs/invariants.md).
 - **Operational invariants `ops-I1`–`ops-I10`** — lifecycle, single-writer ownership,
   reproducibility, the one-write-funnel. Explained in [Operations](docs/aperture-cli-design.md).
   Always written `ops-Ix` so they're never mistaken for the engine `Ix`.

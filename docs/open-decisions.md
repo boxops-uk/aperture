@@ -32,9 +32,14 @@ either way. Related, and easier: `bool` and `maybe T` are sugar over a union onc
 Angle has `prim.*` — arithmetic, string operations, comparisons — and if-then-else. focus has
 string prefix matching, and **order comparisons** are deferred-with-a-seam (`ResidualOp` arms).
 Arithmetic, string functions and conditionals are in neither place: not built, not deferred,
-not ruled out. The seam that would carry them is Phase 6's derived binds (a pure function of
-the fact bindings), so this is additive whenever it is wanted — the open question is whether P0
-wants any of it, since a query language with no arithmetic pushes that work onto the caller.
+not ruled out. The seam that would carry them **now exists**: Phase 6 built derived binds (a pure
+function of the fact bindings, [I14](invariants.md#i14)), and a primitive would be an arm of
+`Computed`. So this is additive whenever it is wanted — the open question is whether P0 wants any
+of it, since a query language with no arithmetic pushes that work onto the caller.
+
+Worth knowing when deciding: a primitive would be the **first thing in the language to produce a
+`Step::Derive` at all**. A constant bind folds instead, so the machinery is currently exercised
+only by hand-built plans — which means the first primitive is also the first real test of it.
 
 ---
 
