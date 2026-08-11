@@ -1099,15 +1099,26 @@ impl Flattener<'_> {
     /// Whether `node` is a pattern a bind can **fold** — one whose value is known
     /// without running anything.
     ///
-    /// Only scalar literals. A record of literals would fold too, but a record bind
-    /// is `pattern = pattern` unification and stays deferred; a string *prefix* is
-    /// not a value at all (it denotes a range), so binding a variable to one has no
-    /// meaning to fold to.
+    /// A scalar literal, or a record built entirely of foldable things, however
+    /// deeply. A record on the *left* of a bind is `pattern = pattern` unification
+    /// and typecheck defers it before flatten sees it; a record on the right of a
+    /// plain variable bind is not unification at all, just a constant with fields,
+    /// and folding it is the same substitution as a scalar.
+    ///
+    /// Two things are deliberately not foldable. A string **prefix** denotes a
+    /// range rather than a value, so there is nothing for a variable bound to one to
+    /// be. And a record mentioning a **captured** variable — `{a = 1, b = Y}` — is a
+    /// value that differs per row, so it is not a constant at all: that is the
+    /// derived bind this phase leaves unlowered, and the nearest thing in the
+    /// language to a producer for [`Step::Derive`].
     fn is_foldable(&self, node: NodeId) -> bool {
-        matches!(
-            self.ast.store().kind(node),
-            ExprKind::Lit(Literal::Int(_) | Literal::Str(_))
-        )
+        match self.ast.store().kind(node) {
+            ExprKind::Lit(Literal::Int(_) | Literal::Str(_)) => true,
+            ExprKind::Record(fields) => {
+                fields.iter().all(|(_, pattern)| self.is_foldable(*pattern))
+            }
+            _ => false,
+        }
     }
 
     /// The bytes a pattern determines, if it determines all of them.
@@ -2152,7 +2163,7 @@ mod tests {
 
     /// The folding rule's edges: what a bind may fold, and what it may not.
     #[test]
-    fn only_a_scalar_literal_bind_folds() {
+    fn a_constant_bind_folds_however_deep_it_is() {
         // A string folds as readily as an int.
         assert_eq!(rows("X where X = \"ann\""), strs(&["ann"]));
 
@@ -2160,9 +2171,71 @@ mod tests {
         // variable bound to it to be.
         assert_eq!(compile("X where X = \"a\"..").codes(), ["nyi/value-bind"]);
 
-        // A record bind is `pattern = pattern` unification, which typecheck rejects
-        // before flatten sees it, so folding never gets the chance — pinned in the
-        // corpus rather than here, where `compile` insists on a clean front end.
+        // A record of constants is a constant. The left side is a plain variable, so
+        // this is an ordinary bind and not the `pattern = pattern` unification a
+        // record on the *left* would be — that one typecheck defers, and the corpus
+        // pins it, before flatten is reached.
+        assert_eq!(
+            rows("X where X = {inner = 1}"),
+            vec![Value::Record(Box::new([(
+                "inner".to_owned(),
+                Value::Int(1)
+            )]))],
+        );
+
+        // ...to any depth, and field order is the schema's rather than the source's,
+        // since lowering sorts them.
+        assert_eq!(
+            rows("X where X = {extra = 2, inner = 1}"),
+            rows("X where X = {inner = 1, extra = 2}"),
+        );
+
+        // A record mentioning a **captured** variable is not a constant: its value
+        // differs per row. That is the derived bind this phase leaves unlowered.
+        assert_eq!(
+            compile("X where test.Nested {outer = {inner = Y}}; X = {inner = Y}").codes(),
+            ["nyi/value-bind"],
+        );
+    }
+
+    /// **The trap a folded record walks past.** A record inside a field keeps its
+    /// `MARK_RECORD` wrapper; a *stored key* is flat. Folding reaches
+    /// [`constant`](Flattener::constant), whose record arm writes the wrapped form —
+    /// which is right here and would be wrong for a whole key.
+    ///
+    /// It is safe because `key` destructures the top-level record itself and emits
+    /// field by field, so a whole key never reaches `constant`; and a bare variable
+    /// as a whole key is `nyi/whole-key` from `collect` before any of this. Pinned
+    /// because both halves are invisible from the fold's own code, and getting it
+    /// wrong reads the wrong bytes with no error — it matches nothing.
+    #[test]
+    fn a_folded_record_narrows_a_nested_field_and_still_matches() {
+        assert_eq!(
+            rows("X where X = {inner = 1}; test.Nested {outer = X}").len(),
+            1
+        );
+
+        // The written form is the oracle: a fold must reach the *same row*, which
+        // projecting the matched fact's identity says exactly.
+        assert_eq!(
+            rows("R where X = {inner = 1}; R = test.Nested {outer = X}"),
+            rows("R where R = test.Nested {outer = {inner = 1}}"),
+        );
+        assert_eq!(
+            rows("R where R = test.Nested {outer = {inner = 1}}").len(),
+            1,
+            "the oracle has to match something for the comparison to mean anything",
+        );
+
+        // And it is a seek, not a scan-and-filter: `outer` is the leading key field.
+        let flattened = compile("X where X = {inner = 1}; test.Nested {outer = X}");
+        match &flattened.plan().level(0).expect("a level").access.seek_key {
+            SeekKey::Prefix(bytes) => assert!(!bytes.is_empty(), "a constant prefix"),
+            SeekKey::Composite(parts) => assert!(
+                matches!(parts.first(), Some(SeekKeyPart::Bytes(_))),
+                "the fold must reach the seek prefix, got {parts:?}",
+            ),
+        }
     }
 
     /// A reference may be **captured, projected and matched**; what stays deferred

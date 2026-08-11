@@ -359,6 +359,14 @@ pub const CORPUS: &[Entry] = &[
          literal written in place",
     ),
     entry(
+        "X where X = {inner = 1}; test.Nested {outer = X}",
+        Supported("{inner = 1}"),
+        "a **record** of constants folds too, and narrows a nested key field. The \
+         wrapped form `constant` writes is right inside a field and would be wrong \
+         for a whole key — safe because `key` destructures the top-level record \
+         itself, and a bare variable as a whole key is `nyi/whole-key` first",
+    ),
+    entry(
         "{a = X, b = Z} where test.Edge {from = X, to = _}; Z = 7",
         Supported("{a = 1, b = 7}; {a = 1, b = 7}; {a = 2, b = 7}"),
         "and a fold read by the head beside a captured field — one row per edge, \
