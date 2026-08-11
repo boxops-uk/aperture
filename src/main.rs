@@ -5,6 +5,13 @@
 //! front end found on the way: lex and parse errors, names lowering cannot resolve,
 //! the type typecheck infers for the head, and then the rows.
 //!
+//! A command's **argument** is highlighted too, when the command takes focus source:
+//! `:plan X where …` reads exactly as the same query does at the bare prompt, because
+//! it is the same text going to the same compiler. Colour arriving as you type it is
+//! also the shell saying it recognised the command — a typo stays grey. That is keyed
+//! on [`COMMANDS`], which is the one table `:help`, the highlighter and the hinter all
+//! read.
+//!
 //! It runs against a **real** [`FjallDb`] in a scratch directory, seeded at startup
 //! with the index of a small crate — files, modules, declarations, references and
 //! imports — so the names a query resolves against and the rows it returns are the ones
@@ -353,50 +360,87 @@ fn colour(token: Token) -> &'static str {
 struct FocusHelper;
 
 impl FocusHelper {
-    /// Whether `line` is a shell command rather than a query.
-    fn is_command(line: &str) -> bool {
-        line.trim_start().starts_with(':')
-    }
-}
+    /// Where this line's **focus source** begins, if any.
+    ///
+    /// A query is source from the first byte. A command word is not — but the
+    /// *argument* of a command that takes one is, so `:plan X where …` and
+    /// `:facts src.Decl` colour everything past the word. `None` means there is no
+    /// source in the line at all: a bare command, a command that takes no
+    /// argument, or one the shell does not know.
+    ///
+    /// Keyed on [`COMMANDS`] rather than on "everything after the first word",
+    /// which is the point rather than an implementation detail: colour appearing
+    /// as you type the argument is also the shell saying it **recognised the
+    /// command**. A typo stays grey.
+    fn source_offset(line: &str) -> Option<usize> {
+        let trimmed = line.trim_start();
 
-impl Highlighter for FocusHelper {
-    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        if line.is_empty() || Self::is_command(line) {
-            return Cow::Borrowed(line);
+        if !trimmed.starts_with(':') {
+            return Some(0);
         }
 
+        // No whitespace yet ⇒ the command word is still being typed, and there is
+        // no argument to colour.
+        let word_end = trimmed.find(char::is_whitespace)?;
+        let indent = line.len() - trimmed.len();
+
+        COMMANDS
+            .iter()
+            .any(|command| command.name == &trimmed[..word_end] && command.argument.is_some())
+            .then_some(indent + word_end)
+    }
+
+    /// Paint `source` onto `out`, one colour per token.
+    ///
+    /// Pushes only slices of `source` and fixed colour codes, which is what makes
+    /// highlighting byte-preserving (`highlighting_only_adds_colour`).
+    fn paint(source: &str, out: &mut String) {
         // Diagnostics discarded: they belong to submitting a line, not to typing
         // one. What is live here is the colour — an invalid token turns red under
         // the cursor.
-        let (tokens, spans) = tokenize(line, &mut Vec::new());
-
-        let mut out = String::with_capacity(line.len() * 2);
+        let (tokens, spans) = tokenize(source, &mut Vec::new());
         let mut last = 0;
 
         for (token, span) in tokens.iter().zip(spans.iter()) {
             if span.start > last {
-                out.push_str(&line[last..span.start]);
+                out.push_str(&source[last..span.start]);
             }
 
             // Whitespace carries no colour: painting it would colour the gaps
             // between tokens as well as the tokens.
             if matches!(token, Token::Whitespace) {
-                out.push_str(&line[span.clone()]);
+                out.push_str(&source[span.clone()]);
             } else {
                 out.push_str("\x1b[");
                 out.push_str(colour(*token));
                 out.push('m');
-                out.push_str(&line[span.clone()]);
+                out.push_str(&source[span.clone()]);
                 out.push_str("\x1b[0m");
             }
 
             last = span.end;
         }
 
-        if last < line.len() {
-            out.push_str(&line[last..]);
+        if last < source.len() {
+            out.push_str(&source[last..]);
+        }
+    }
+}
+
+impl Highlighter for FocusHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        let Some(at) = Self::source_offset(line) else {
+            return Cow::Borrowed(line);
+        };
+
+        let (command, source) = line.split_at(at);
+        if source.trim().is_empty() {
+            return Cow::Borrowed(line);
         }
 
+        let mut out = String::with_capacity(line.len() * 2);
+        out.push_str(command);
+        Self::paint(source, &mut out);
         Cow::Owned(out)
     }
 
@@ -414,11 +458,15 @@ impl Hinter for FocusHelper {
     /// `X where` is incomplete rather than wrong — so hinting those would be
     /// noise. An invalid token stays wrong however much more is typed.
     fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
-        if pos < line.len() || Self::is_command(line) {
+        if pos < line.len() {
             return None;
         }
 
-        let (tokens, _) = tokenize(line, &mut Vec::new());
+        // The same span the highlighter paints, for the same reason: an invalid
+        // token in `:plan …`'s argument is as wrong as one at the bare prompt.
+        let source = &line[Self::source_offset(line)?..];
+
+        let (tokens, _) = tokenize(source, &mut Vec::new());
         tokens
             .iter()
             .any(|token| matches!(token, Token::Error))
@@ -662,16 +710,66 @@ const EXAMPLES: [&str; 4] = [
     "M where src.Import {from = M, to = src.Module {name = \"store\"}}",
 ];
 
+/// One shell command.
+///
+/// `argument` is `Some` when the command takes **focus source** — a query, or a
+/// predicate name. That is the field the highlighter reads, and it is why this is
+/// a table rather than three lists: the help text, the highlighter and the
+/// dispatch each need to know the same thing, and `dispatch_handles_every_command`
+/// holds them to it.
+struct Command {
+    name: &'static str,
+    argument: Option<&'static str>,
+    help: &'static str,
+}
+
+/// The commands, in the order `:help` lists them.
+const COMMANDS: [Command; 5] = [
+    Command {
+        name: ":plan",
+        argument: Some("<query>"),
+        help: "the plan it compiles to, without running it",
+    },
+    Command {
+        name: ":facts",
+        argument: Some("<name>"),
+        help: "rows stored for a predicate, read through the executor",
+    },
+    Command {
+        name: ":schema",
+        argument: None,
+        help: "the predicates this shell knows",
+    },
+    Command {
+        name: ":help",
+        argument: None,
+        help: "this, and some queries to try",
+    },
+    Command {
+        name: ":quit",
+        argument: None,
+        help: "leave (or Ctrl-D)",
+    },
+];
+
 fn print_help() {
     println!("  <query>          compile and run a focus query, e.g.");
     for example in EXAMPLES {
         println!("                     {example}");
     }
-    println!("  :plan <query>    the plan it compiles to, without running it");
-    println!("  :schema          the predicates this shell knows");
-    println!("  :facts <name>    rows stored for a predicate, read through the executor");
-    println!("  :help            this");
-    println!("  :quit            leave");
+
+    for Command {
+        name,
+        argument,
+        help,
+    } in &COMMANDS
+    {
+        let invocation = match argument {
+            Some(argument) => format!("{name} {argument}"),
+            None => (*name).to_owned(),
+        };
+        println!("  {invocation:<16} {help}");
+    }
 }
 
 fn print_schema(schema: &Schema) {
@@ -840,9 +938,9 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
     println!("aperture — a focus shell");
     println!("{written} facts in {}\n", dir.display());
     print_schema(&schema);
-    println!();
-    print_help();
-    println!();
+    // The schema is what you need to write a query; the commands are one keystroke
+    // away, so printing them every start is noise a returning user reads past.
+    println!("\n  :help for commands and example queries\n");
 
     let mut editor: Editor<FocusHelper, DefaultHistory> =
         Editor::new().map_err(|error| readline_failure(&error))?;
@@ -1252,12 +1350,110 @@ mod tests {
             prop_assert_eq!(strip_ansi(&highlighted), line);
         }
 
-        /// A command is passed through untouched — it is not focus source.
+        /// A command word is never highlighted — it is not focus source. Neither
+        /// is the argument of a command the shell does not recognise.
+        ///
+        /// The generator draws a word with no `:` of its own and no whitespace, so
+        /// every case is a plausible single command word rather than a query that
+        /// happens to start with a colon.
         #[test]
-        fn commands_are_not_highlighted(rest in "[^\u{1b}]{0,40}") {
-            let line = format!(":{rest}");
+        fn an_unrecognised_command_is_not_highlighted(word in "[a-z]{0,12}") {
+            let line = format!(":{word}");
+            let bare = FocusHelper.highlight(&line, line.len());
+            prop_assert_eq!(bare.as_ref(), line.as_str());
+
+            // ...and with an argument, still untouched: nothing here is source.
+            prop_assume!(!COMMANDS.iter().any(|c| c.name == line));
+            let with_argument = format!("{line} test.Foo _");
+            let highlighted = FocusHelper.highlight(&with_argument, with_argument.len());
+            prop_assert_eq!(highlighted.as_ref(), with_argument.as_str());
+        }
+    }
+
+    /// **The argument of a command that takes focus source is highlighted, and the
+    /// command word is not.**
+    ///
+    /// `:plan`/`:facts` take source, so a query typed after one should read exactly
+    /// as it does at the bare prompt — it is the same text compiled by the same
+    /// compiler. Before this, anything beginning `:` was passed through whole and
+    /// the argument sat grey.
+    #[test]
+    fn a_commands_source_argument_is_highlighted() {
+        for command in COMMANDS.iter().filter(|c| c.argument.is_some()) {
+            let argument = "src.Decl {name = \"open\"}";
+            let line = format!("{} {argument}", command.name);
             let highlighted = FocusHelper.highlight(&line, line.len());
-            prop_assert_eq!(highlighted.as_ref(), line.as_str());
+
+            assert!(
+                highlighted.contains("\x1b["),
+                "{}'s argument was not highlighted",
+                command.name,
+            );
+            assert_eq!(
+                strip_ansi(&highlighted),
+                line,
+                "{}: highlighting changed the text",
+                command.name,
+            );
+
+            // The word itself carries no colour: the escapes all start after it.
+            let first_escape = highlighted.find("\x1b[").expect("an escape");
+            assert!(
+                first_escape >= command.name.len(),
+                "{}: the command word was painted",
+                command.name,
+            );
+
+            // And the argument is coloured the same as it would be alone.
+            let mut alone = String::new();
+            FocusHelper::paint(&format!(" {argument}"), &mut alone);
+            assert!(
+                highlighted.ends_with(alone.trim_start()),
+                "{}: the argument is not painted as it would be at the prompt",
+                command.name,
+            );
+        }
+    }
+
+    /// A command that takes **no** argument leaves whatever follows it alone —
+    /// `:schema` has nothing to say about `where`.
+    #[test]
+    fn an_argumentless_command_is_never_highlighted() {
+        for command in COMMANDS.iter().filter(|c| c.argument.is_none()) {
+            for line in [command.name.to_owned(), format!("{} where", command.name)] {
+                assert_eq!(
+                    FocusHelper.highlight(&line, line.len()).as_ref(),
+                    line.as_str(),
+                    "{} should not highlight",
+                    command.name,
+                );
+            }
+        }
+    }
+
+    /// **Every command in the table is one the loop dispatches**, and the reverse.
+    ///
+    /// The table drives `:help` and the highlighter while `shell`'s `match` drives
+    /// behaviour, so nothing but a test stops a command being advertised and
+    /// highlighted without working — or working while the highlighter treats its
+    /// argument as prose.
+    #[test]
+    fn dispatch_handles_every_command() {
+        let dispatched = [":plan", ":facts", ":schema", ":help", ":quit"];
+
+        for command in &COMMANDS {
+            assert!(
+                dispatched.contains(&command.name),
+                "{} is in COMMANDS but `shell` does not dispatch it",
+                command.name,
+            );
+        }
+        for name in dispatched {
+            assert!(
+                COMMANDS.iter().any(|c| c.name == name),
+                "`shell` dispatches {name} but it is not in COMMANDS, so `:help` \
+                 never mentions it",
+            );
         }
     }
 }
