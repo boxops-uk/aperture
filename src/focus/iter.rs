@@ -853,15 +853,6 @@ impl<S: FactStore> Executor<S> {
         mut step: impl FnMut(A, Row<'_, S>) -> Result<Stream<A>, ApertureError>,
         cancellation_token: &CancellationToken,
     ) -> Result<Iteratee<A>, ApertureError> {
-        // With no generators, `depth` is already at the head on the first pass and
-        // there is no level to back into — `depth -= 1` would underflow. Rejected
-        // rather than read as the unit relation: a single row emitted here could
-        // not be resumed past (an empty `Cursor` restarts the run), so it would
-        // trade a panic for a duplicated row.
-        if self.plan.body.is_empty() {
-            return Err(ApertureError::EmptyPlan);
-        }
-
         // One deadline for the whole run: the poll interval is a property of the
         // run, not of any single level's scan.
         let mut deadline = Deadline::new(cancellation_token);
@@ -878,12 +869,23 @@ impl<S: FactStore> Executor<S> {
                 match step(acc, row)? {
                     Stream::Continue(next) => {
                         acc = next;
+
+                        // No steps at all — a query whose every binding folded at
+                        // compile time, `X where X = 42`. It has produced its one
+                        // row and there is no level to back into; `depth -= 1` here
+                        // is what used to underflow, and is why an empty body was an
+                        // error. It is safe now for the same reason the suspend arm
+                        // below is: a plan with no levels is *exactly one row*, so
+                        // "done" is the truth rather than a guess.
+                        if self.plan.body.is_empty() {
+                            return Ok(Iteratee::Done(acc));
+                        }
+
                         self.depth -= 1;
                         continue;
                     }
                     Stream::Suspend(next) => {
                         acc = next;
-                        self.depth -= 1;
 
                         // A plan with no levels produces **exactly one row** — every
                         // step is a derived bind, and a derived bind is one value —
@@ -897,6 +899,10 @@ impl<S: FactStore> Executor<S> {
                             return Ok(Iteratee::Done(acc));
                         }
 
+                        // Back off the head before saving, so `depth` names the
+                        // innermost step holding a row — which is what the cursor
+                        // is checked against.
+                        self.depth -= 1;
                         return Ok(Iteratee::Suspended(acc, self.build_cursor()));
                     }
                 }
@@ -1359,20 +1365,30 @@ mod tests {
     // `Cursor` from the wire — so neither may panic it (conventions: errors, not
     // panics, on data paths).
 
-    /// A plan with no generators has no level to back into. Before this was
-    /// checked, the first row underflowed `depth` (`0usize - 1`).
+    /// **A plan with no steps is the unit relation: exactly one row.**
+    ///
+    /// It used to be `EmptyPlan`, and the reason was sound at the time — the first
+    /// row backed into `depth -= 1` and underflowed, and emitting a row anyway would
+    /// have been worse than a panic, because an empty `Cursor` restarts a run and so
+    /// the row would come back twice across a suspend. Both halves are now answered:
+    /// the head backs out to `Done` instead of decrementing, and a plan with no
+    /// levels reports `Done` when asked to suspend rather than handing back a cursor
+    /// that cannot express "already emitted".
+    ///
+    /// What produces this shape is a query whose every binding **folded** —
+    /// `X where X = 42` compiles to no steps and a literal head.
     #[test]
-    fn an_empty_plan_body_is_an_error_not_a_panic() {
+    fn a_plan_with_no_steps_yields_exactly_one_row() {
         let plan = Plan {
             nvars: 0,
             body: Step::scans([]),
             head: Project::Lit(Value::Int(1)),
         };
 
-        assert!(matches!(
-            collect_rows(MemStore::new(), plan, &interner_with(&[])),
-            Err(ApertureError::EmptyPlan)
-        ));
+        assert_eq!(
+            collect_rows(MemStore::new(), plan, &interner_with(&[])).expect("run"),
+            vec![Value::Int(1)],
+        );
     }
 
     /// Cancellation is observed on a scan whose rows **all match**.

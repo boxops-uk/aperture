@@ -346,24 +346,24 @@ pub const CORPUS: &[Entry] = &[
     // ---- deferred at flatten: parse, typecheck, then say so by name ----
     entry(
         "X where X = 42",
-        Diagnosed(Code::NyiValueBind),
-        "binding a variable to a value no generator produced is a derived bind \
-         (PLAN Phase 6), which needs the `Slot` value variant. This one has **no \
-         generator at all**, so its plan has no loop level to iterate",
+        Supported("42"),
+        "a variable bound to a literal is **folded**: substituted at every use, so \
+         it takes no register and no plan step. This one folds away entirely, \
+         leaving a plan with no levels — the unit relation, exactly one row",
     ),
     entry(
         "Z where Z = 1; test.Bar {id = Z}",
-        Diagnosed(Code::NyiValueBind),
-        "the same bind **feeding a seek**: the value has to be computed before the \
-         level that splices it opens, which is the topological ordering derived \
-         binds impose (PLAN Phase 6)",
+        Supported("1"),
+        "the same fold **narrowing a seek**: `{id = Z}` seeks the bytes `{id = 1}` \
+         seeks, because the fold is seen through by the same code that encodes a \
+         literal written in place",
     ),
     entry(
         "{a = X, b = Z} where test.Edge {from = X, to = _}; Z = 7",
-        Diagnosed(Code::NyiValueBind),
-        "and the same bind *under* a fact binding, so a resume's cut points fall \
-         either side of a backtrack — the three shapes Phase 6 has to recompute, \
-         listed apart because one of them regressing is invisible in the others",
+        Supported("{a = 1, b = 7}; {a = 1, b = 7}; {a = 2, b = 7}"),
+        "and a fold read by the head beside a captured field — one row per edge, \
+         the folded value repeated, which is what says folding did not turn a \
+         constant into a level of its own",
     ),
     entry(
         "X.name where test.Ref {of = X}",

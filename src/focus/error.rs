@@ -31,13 +31,6 @@ pub enum ApertureError {
     #[error("advance of closed frame")]
     AdvanceAfterClose,
 
-    /// A plan with no generators. The executor is a nested loop over the plan's
-    /// body, so "no loops" has no level to back into; the compiler never emits
-    /// one, which makes this a malformed plan rather than a query yielding
-    /// nothing.
-    #[error("a plan must have at least one generator")]
-    EmptyPlan,
-
     /// A resume cursor naming more levels than the plan has. A
     /// [`Cursor`](crate::focus::iter::Cursor) is bytes-only and rebuilt from the
     /// wire, so a cursor that does not match the plan it is resumed against is
