@@ -64,6 +64,7 @@ use crate::focus::{
     iter::Address,
     plan::{
         Access, FieldPath, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+        Step,
     },
     reorder::{Deps, StmtDeps, reorder},
     schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},
@@ -830,7 +831,7 @@ impl Flattener<'_> {
 
         Some(Plan {
             nvars: order.len(),
-            body: body.into(),
+            body: body.into_iter().map(Step::Scan).collect(),
             head: head?,
         })
     }
@@ -1363,7 +1364,16 @@ mod tests {
         let schema = corpus::schema();
         let mut out = vec![];
 
-        for (level, generator) in plan.body.iter().enumerate() {
+        for step in plan.body.iter() {
+            let generator = match step {
+                Step::Scan(generator) => generator,
+                // A derived bind, which binds a value rather than a level.
+                Step::Derive(derived) => {
+                    out.push(format!("{} = <computed>", derived.bind));
+                    continue;
+                }
+            };
+
             let name = schema
                 .get(generator.access.predicate_id)
                 .and_then(|p| p.name())
@@ -1417,7 +1427,6 @@ mod tests {
                 .join(",");
 
             out.push(format!("{binds} <- {name} {access}{residuals}"));
-            let _ = level;
         }
 
         out.push(format!("head {}", project(&plan.head, interner)));
@@ -1434,6 +1443,7 @@ mod tests {
                 format!("{address}.{path}:{}", render_ty(ty))
             }
             Project::Value { address, ty } => format!("{address}.value:{}", render_ty(ty)),
+            Project::Computed(address) => format!("{address}="),
             Project::Record(fields) => format!(
                 "{{{}}}",
                 fields
@@ -1480,7 +1490,10 @@ mod tests {
 
         assert_eq!(plan.nvars, 1);
         assert_eq!(plan.body.len(), 1);
-        assert_eq!(plan.body[0].binds.as_ref(), [Address::new(0)]);
+        assert_eq!(
+            plan.level(0).expect("a level").binds.as_ref(),
+            [Address::new(0)]
+        );
         assert_eq!(
             describe(plan, &flattened.interner),
             lines(&["r0 <- test.Foo scan", "head r0"])
@@ -1555,7 +1568,7 @@ mod tests {
             describe(plan, &flattened.interner),
             lines(&["r0 <- test.Foo seek[k]", "head r0"])
         );
-        match &plan.body[0].access.seek_key {
+        match &plan.level(0).expect("a level").access.seek_key {
             SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), i64_field(1).as_slice()),
             other => panic!("expected a constant prefix, got {other:?}"),
         }
@@ -1566,7 +1579,7 @@ mod tests {
     fn a_scalar_key_constant_is_the_whole_seek() {
         let flattened = compile("X where X = test.Count -42");
 
-        match &flattened.plan().body[0].access.seek_key {
+        match &flattened.plan().level(0).expect("a level").access.seek_key {
             SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), i64_field(-42).as_slice()),
             other => panic!("expected a constant prefix, got {other:?}"),
         }
@@ -1584,7 +1597,7 @@ mod tests {
             describe(plan, &flattened.interner),
             lines(&["r0 <- test.Foo scan where 1 == k", "head r0.0:int"])
         );
-        match &plan.body[0].residuals[0].op {
+        match &plan.level(0).expect("a level").residuals[0].op {
             ResidualOp::EqConst(bytes) => assert_eq!(bytes.as_ref(), str_field("a").as_slice()),
             other => panic!("expected a constant residual, got {other:?}"),
         }
@@ -1606,7 +1619,7 @@ mod tests {
 
         let mut expected = str_field("abc");
         expected.pop().expect("a terminated string");
-        match &plan.body[0].access.seek_key {
+        match &plan.level(0).expect("a level").access.seek_key {
             SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
             other => panic!("expected a prefix seek, got {other:?}"),
         }
@@ -1626,7 +1639,7 @@ mod tests {
 
         let mut expected = str_field("a");
         expected.pop().expect("a terminated string");
-        match &plan.body[0].residuals[0].op {
+        match &plan.level(0).expect("a level").residuals[0].op {
             ResidualOp::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
             other => panic!("expected a prefix residual, got {other:?}"),
         }
@@ -3576,7 +3589,7 @@ mod battery {
         lower::lower,
         parse::parse,
         plan::{
-            FactId, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+            FactId, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Step,
             proptest::{arb_interruption_schedule, cut_points},
         },
         schema::{LocalInterner, PredicateTy, Schema},
@@ -3758,7 +3771,15 @@ mod battery {
         }
 
         fn observe(&mut self, plan: &Plan) {
-            for generator in plan.body.iter() {
+            for step in plan.body.iter() {
+                // The census is about the shapes a *scan* can take; a derive step
+                // has no seek and no residuals. When the generator learns to draw
+                // one, it gets its own census entry rather than being folded in
+                // here, since "reached a derive step" is a different claim.
+                let Step::Scan(generator) = step else {
+                    continue;
+                };
+
                 match &generator.access.seek_key {
                     SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
                     SeekKey::Composite(parts) => {
@@ -3796,6 +3817,10 @@ mod battery {
 
         fn observe_head(&mut self, head: &Project) {
             match head {
+                // A derived bind's output. Not a census entry yet: the query
+                // generator draws no derived binds, so claiming coverage of one
+                // would be claiming what nothing checks.
+                Project::Computed(_) => {}
                 Project::Value { .. } => self.value_projection = true,
                 Project::FactRef(_) => self.fact_ref_projection = true,
                 Project::RegisterField { path, ty, .. } => {

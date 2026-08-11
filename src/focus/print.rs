@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 
 use crate::focus::{
     iter::Address,
-    plan::{FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart},
+    plan::{FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Step},
     schema::{LocalInterner, PredicateTy, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},
 };
@@ -68,7 +68,20 @@ pub fn print(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> String {
 pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
     let mut out = String::new();
 
-    for (level, generator) in plan.body.iter().enumerate() {
+    // Numbered over *scan* steps: a level is a loop, and a derived bind is not one.
+    let mut level = 0;
+
+    for step in plan.body.iter() {
+        let generator = match step {
+            Step::Scan(generator) => generator,
+            // A derived bind names the register it computes, since it has no
+            // predicate to be about and no scan to narrow.
+            Step::Derive(derived) => {
+                let _ = writeln!(out, "  {} = <computed>", derived.bind);
+                continue;
+            }
+        };
+
         let predicate = schema.get(generator.access.predicate_id);
         let name = predicate.as_ref().and_then(|p| p.name()).unwrap_or("?");
         let key_ty = predicate.as_ref().map(|p| p.key().ty);
@@ -111,6 +124,7 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
         }
 
         out.push('\n');
+        level += 1;
     }
 
     let _ = write!(
@@ -127,9 +141,18 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
 /// predicate that register holds is recorded by the level that binds it — so the field
 /// has a name here as much as in a seek, just one indirection further away.
 fn projection(plan: &Plan, project: &Project, schema: &Schema, interner: &LocalInterner) -> String {
+    // Found by asking which level *binds* this register, rather than by indexing
+    // the body with the register number. Those were the same number while every
+    // register came from a level of its own; a derived bind writes a register with
+    // no level behind it, so indexing would name an unrelated predicate's fields.
     let key_of = |address: &Address| {
         plan.body
-            .get(address.index())
+            .iter()
+            .filter_map(|step| match step {
+                Step::Scan(generator) => Some(generator),
+                Step::Derive(_) => None,
+            })
+            .find(|generator| generator.binds.contains(address))
             .and_then(|generator| schema.get(generator.access.predicate_id))
     };
 
@@ -144,6 +167,8 @@ fn projection(plan: &Plan, project: &Project, schema: &Schema, interner: &LocalI
             format!("{address}.{}", field_name(key_ty, path, schema))
         }
         Project::Value { address, .. } => format!("{address}.value"),
+        // A computed value, which no predicate's field names.
+        Project::Computed(address) => format!("{address}="),
         Project::Record(fields) => format!(
             "{{{}}}",
             fields

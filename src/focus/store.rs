@@ -541,7 +541,7 @@ mod tests {
         mem_store::MemStore,
         plan::{
             Access, FieldPath, Generator, MAX_FACT_SEQUENCE, Plan, Project, Residual, ResidualOp,
-            SeekKey, SeekKeyPart,
+            SeekKey, SeekKeyPart, Step,
         },
         schema::PredicateTy,
         tuple::strinc,
@@ -1288,7 +1288,7 @@ mod tests {
     fn two_level_plan(outer: PredicateId, inner: PredicateId) -> Plan {
         Plan {
             nvars: 2,
-            body: Box::new([
+            body: Step::scans([
                 Generator {
                     access: Access {
                         predicate_id: outer,
@@ -1448,7 +1448,7 @@ mod tests {
 
         let filtered = Plan {
             nvars: 1,
-            body: Box::new([Generator {
+            body: Step::scans([Generator {
                 access: Access {
                     predicate_id: outer,
                     seek_key: SeekKey::Prefix(Box::new([])),

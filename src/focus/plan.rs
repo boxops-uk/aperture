@@ -265,7 +265,68 @@ pub enum Project {
         address: Address,
         ty: PredicateTy,
     },
+    /// A **derived bind's** output, read out of its value slot.
+    ///
+    /// Distinct from [`Project::Lit`], which carries a constant the head owns
+    /// outright. A literal derived bind could be folded into one and the query
+    /// would answer the same — deliberately not done, because folding is what would
+    /// leave the recompute-on-restore path with no coverage until the first
+    /// non-constant `Computed` arm exists to need it.
+    Computed(Address),
     Record(Box<[(Symbol, Project)]>),
+}
+
+/// What a **derived bind** computes: a pure expression over already-bound slots.
+///
+/// The vocabulary is deliberately one arm wide. Without primitives (an
+/// [open decision](../../docs/open-decisions.md)) a derived bind can only produce
+/// a constant, and inventing arms for arithmetic here would be speculating about a
+/// decision that has not been taken. What the enum *is* for is the shape of the
+/// seam: every arm must be a pure function of the fact slots, with no iteration and
+/// no hidden state, because that purity is what lets a [`Cursor`] save only
+/// generator positions and recompute the rest
+/// ([chapter 7](../../docs/07-compilation.md#derived-facts)).
+///
+/// [`Cursor`]: crate::focus::iter::Cursor
+#[derive(Debug, Clone)]
+pub enum Computed {
+    Lit(Value),
+}
+
+/// A variable bound to a computed value rather than to a row — chapter 7's
+/// *derived bind*.
+///
+/// It is **not a loop level**: it produces exactly one value, `enumerate` does not
+/// iterate it, and the [`Cursor`](crate::focus::iter::Cursor) does not store it.
+#[derive(Debug, Clone)]
+pub struct DerivedBind {
+    pub bind: Address,
+    pub value: Computed,
+}
+
+/// One position in a plan's body: a level to iterate, or a value to compute.
+///
+/// A single ordered sequence, because `reorder` produces a single order — holding
+/// the two kinds in separate collections joined by an index would mean two sources
+/// of truth for one ordering, with nothing to say which wins.
+#[derive(Debug, Clone)]
+pub enum Step {
+    Scan(Generator),
+    Derive(DerivedBind),
+}
+
+impl Step {
+    /// A body of scans only — every plan's shape before derived binds, and still
+    /// the shape of any query without one.
+    #[must_use]
+    pub fn scans<const N: usize>(generators: [Generator; N]) -> Box<[Step]> {
+        Box::new(generators.map(Step::Scan))
+    }
+
+    #[must_use]
+    pub fn is_scan(&self) -> bool {
+        matches!(self, Step::Scan(_))
+    }
 }
 
 /// The compiled query — the fixed contract between the front end and the
@@ -273,8 +334,38 @@ pub enum Project {
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub nvars: usize,
-    pub body: Box<[Generator]>,
+    pub body: Box<[Step]>,
     pub head: Project,
+}
+
+impl Plan {
+    /// How many of this plan's steps are **loop levels**.
+    ///
+    /// Distinct from `body.len()`, which counts steps, and the distinction is
+    /// load-bearing: a [`Cursor`](crate::focus::iter::Cursor) holds one row per
+    /// *level*, and resume replays it against the levels in order. `body.len()`
+    /// used to mean both, so every site that wants one or the other now has to
+    /// name which.
+    #[must_use]
+    pub fn levels(&self) -> usize {
+        self.body.iter().filter(|step| step.is_scan()).count()
+    }
+
+    /// The `n`th **loop level**, skipping derive steps.
+    ///
+    /// The counterpart to [`Plan::levels`], and the accessor anything reasoning
+    /// about join order wants: `body[n]` is the `n`th *step*, which is a different
+    /// thing as soon as a plan derives anything.
+    #[must_use]
+    pub fn level(&self, n: usize) -> Option<&Generator> {
+        self.body
+            .iter()
+            .filter_map(|step| match step {
+                Step::Scan(generator) => Some(generator),
+                Step::Derive(_) => None,
+            })
+            .nth(n)
+    }
 }
 
 #[derive(Debug)]
@@ -321,6 +412,7 @@ pub mod proptest {
 
     use super::{
         Access, FieldPath, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+        Step,
     };
     use crate::focus::{
         fixtures::{compose, i64_field, interner_with, str_field},
@@ -595,7 +687,9 @@ pub mod proptest {
 
             Plan {
                 nvars: self.levels.len(),
-                body,
+                // Every level the generator draws is a scan; a derive step is a
+                // shape it does not yet reach, and the census says so.
+                body: body.into_iter().map(Step::Scan).collect(),
                 head: Project::Record(head),
             }
         }
