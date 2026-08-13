@@ -15,7 +15,7 @@
 //! `parse ∘ print == id` on trees is claimed, and only that is tested.
 //!
 //! The hard part is parentheses. The grammar has three precedence levels, and a
-//! child looser than its position allows has to be wrapped — see [`Level`].
+//! child looser than its position allows has to be wrapped — see [`Prec`].
 
 use std::fmt::Write as _;
 
@@ -39,7 +39,7 @@ use crate::focus::{
 /// be ordered here, because an access chain's base may be a chain (`X.a.b`) while an
 /// application in that position needs wrapping (`(test.Foo X).name`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Level {
+enum Prec {
     Primary,
     Chain,
     Application,
@@ -365,22 +365,22 @@ impl Printer<'_> {
     // ---- focus source ---------------------------------------------------------
 
     fn query(&self, out: &mut Spanned, query: &Query<NodeId>) {
-        self.pattern(out, *query.head(), Level::Disjunction);
+        self.pattern(out, *query.head(), Prec::Disjunction);
         out.push(" where ");
         out.join("; ", query.body(), |out, stmt| self.stmt(out, stmt));
     }
 
     fn stmt(&self, out: &mut Spanned, stmt: &QueryStmt<NodeId>) {
         match stmt {
-            QueryStmt::Implicit(id) => self.pattern(out, *id, Level::Disjunction),
+            QueryStmt::Implicit(id) => self.pattern(out, *id, Prec::Disjunction),
             QueryStmt::Bind(lhs, rhs) => {
-                self.pattern(out, *lhs, Level::Disjunction);
+                self.pattern(out, *lhs, Prec::Disjunction);
                 out.push(" = ");
-                self.pattern(out, *rhs, Level::Disjunction);
+                self.pattern(out, *rhs, Prec::Disjunction);
             }
             QueryStmt::Negation(id) => {
                 out.push("!");
-                self.pattern(out, *id, Level::Disjunction);
+                self.pattern(out, *id, Prec::Disjunction);
             }
         }
     }
@@ -389,7 +389,7 @@ impl Printer<'_> {
     ///
     /// The wrapping parens are emitted *outside* the recorded span — see
     /// [`Spanned::span`] for why that is lowering's convention and not a choice.
-    fn pattern(&self, out: &mut Spanned, id: NodeId, permitted: Level) {
+    fn pattern(&self, out: &mut Spanned, id: NodeId, permitted: Prec) {
         let wrapped = self.level(id) > permitted;
         if wrapped {
             out.push("(");
@@ -400,12 +400,12 @@ impl Printer<'_> {
         }
     }
 
-    fn level(&self, id: NodeId) -> Level {
+    fn level(&self, id: NodeId) -> Prec {
         match self.ast.store().kind(id) {
-            ExprKind::Disjunction(_) => Level::Disjunction,
-            ExprKind::Fact(..) => Level::Application,
-            ExprKind::Access(..) | ExprKind::Select(..) => Level::Chain,
-            _ => Level::Primary,
+            ExprKind::Disjunction(_) => Prec::Disjunction,
+            ExprKind::Fact(..) => Prec::Application,
+            ExprKind::Access(..) | ExprKind::Select(..) => Prec::Chain,
+            _ => Prec::Primary,
         }
     }
 
@@ -436,7 +436,7 @@ impl Printer<'_> {
                 out.join(", ", fields.iter(), |out, (name, value)| {
                     out.push(self.name(*name));
                     out.push(" = ");
-                    self.pattern(out, *value, Level::Disjunction);
+                    self.pattern(out, *value, Prec::Disjunction);
                 });
                 out.push("}");
             }
@@ -444,16 +444,16 @@ impl Printer<'_> {
             // An access chain's base is a primary or another chain; anything looser
             // is wrapped.
             ExprKind::Access(FieldRef::Key(name), base) => {
-                self.pattern(out, *base, Level::Chain);
+                self.pattern(out, *base, Prec::Chain);
                 out.push(".");
                 out.push(self.name(*name));
             }
             ExprKind::Access(FieldRef::Value, base) => {
-                self.pattern(out, *base, Level::Chain);
+                self.pattern(out, *base, Prec::Chain);
                 out.push(".value");
             }
             ExprKind::Select(alt, base) => {
-                self.pattern(out, *base, Level::Chain);
+                self.pattern(out, *base, Prec::Chain);
                 out.push(".");
                 out.push(self.name(*alt));
                 out.push("?");
@@ -471,12 +471,12 @@ impl Printer<'_> {
                     .unwrap_or_else(|| format!("unknown.Predicate{}", predicate.0));
                 out.push(&name);
                 out.push(" ");
-                self.pattern(out, *key, Level::Application);
+                self.pattern(out, *key, Prec::Application);
             }
 
             ExprKind::Disjunction(branches) => {
                 out.join(" | ", branches.iter(), |out, branch| {
-                    self.pattern(out, *branch, Level::Application)
+                    self.pattern(out, *branch, Prec::Application)
                 });
             }
 
@@ -659,6 +659,8 @@ mod tests {
         diag::Diagnostics,
         lower::lower,
         parse::parse,
+        plan::{Access, Level as PlanLevel},
+        schema::PredicateId,
         syntax::{proptest::arb_query_spec, source_range},
     };
     use ::proptest::prelude::*;
@@ -698,6 +700,112 @@ mod tests {
         assert!(
             rendered.contains("seek[r0.name]"),
             "expected the register's own field name, got:\n{rendered}"
+        );
+    }
+
+    /// The id of the predicate `name`, found by asking the schema rather than by
+    /// hardcoding a number the fixture is free to renumber.
+    fn predicate_id(schema: &Schema, name: &str) -> PredicateId {
+        (0..64)
+            .map(PredicateId)
+            .find(|id| schema.get(*id).and_then(|p| p.name()) == Some(name))
+            .unwrap_or_else(|| panic!("no predicate called {name}"))
+    }
+
+    /// The **residual** arm names the other register against its own predicate
+    /// too — the same fault as the seek, one arm along, and the arm a fix to the
+    /// seek alone would have left behind.
+    #[test]
+    fn a_residual_against_a_register_is_named_against_its_own_predicate() {
+        let schema = corpus::schema();
+
+        // `r0` holds a `test.Foo` (key `{id, name}`); the level filtering against
+        // it is a `test.Edge` (key `{from, to}`). `from` is a wildcard, so the
+        // seek prefix closes and `to = X` becomes a residual reading `r0`'s field
+        // 0 — which is `id` there and `from` here.
+        let mut compilation = Compilation::new(
+            "X where test.Foo {id = X, name = _}; test.Edge {from = _, to = X}",
+            &schema,
+        );
+        let compiled = compilation.plan().expect("a plan");
+        let rendered = plan(&compiled, &schema, compilation.interner());
+
+        assert!(
+            rendered.contains("where to == r0.id"),
+            "expected `to == r0.id` — this level's field against the register's \
+             own — got:\n{rendered}"
+        );
+    }
+
+    /// The **head** names a register against the predicate of the level that
+    /// binds it, not against the last level or the level whose number matches.
+    #[test]
+    fn a_projected_register_is_named_against_its_own_predicate() {
+        let schema = corpus::schema();
+
+        // `r0` is a `test.Foo` (`{id, name}`) and `r1` a `test.Link` (`{at, of}`).
+        // Projecting `r0`'s field 1 is `name`; against `test.Link` it would read
+        // `of`, which is a real field name and so fails silently.
+        let mut compilation = Compilation::new(
+            "Y where test.Foo {id = _, name = Y}; test.Link {at = 1, of = _}",
+            &schema,
+        );
+        let compiled = compilation.plan().expect("a plan");
+        let rendered = plan(&compiled, &schema, compilation.interner());
+
+        assert!(
+            rendered.contains("head r0.name"),
+            "expected the head to name `r0`'s own field, got:\n{rendered}"
+        );
+    }
+
+    /// A register bound by a **disjunction spanning predicates** has no single key
+    /// to be named against, and the renderer says so by falling back to the index
+    /// rather than picking one of the alternatives.
+    ///
+    /// Reachable only from a hand-built plan today, since flatten emits
+    /// single-source levels — the same standing as the derive steps `projection`
+    /// already has to handle.
+    #[test]
+    fn a_register_bound_by_a_disjunction_across_predicates_falls_back_to_the_index() {
+        let schema = corpus::schema();
+        let interner = LocalInterner::new(schema.interner().clone());
+
+        let foo = predicate_id(&schema, "test.Foo");
+        let edge = predicate_id(&schema, "test.Edge");
+
+        let source = |predicate| Source::Seek {
+            access: Access {
+                predicate_id: predicate,
+                seek_key: SeekKey::Prefix(Box::new([])),
+            },
+            residuals: Box::new([]),
+        };
+
+        let compiled = Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(PlanLevel {
+                sources: Box::new([source(foo), source(edge)]),
+                binds: Box::new([Address::new(0)]),
+            })]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let rendered = plan(&compiled, &schema, &interner);
+
+        assert!(
+            rendered.contains("head r0.0"),
+            "expected the index, since `id` and `from` are both wrong for half the \
+             rows, got:\n{rendered}"
+        );
+        // Both alternatives are still named, each against its own key.
+        assert!(
+            rendered.contains("test.Foo scan") && rendered.contains("test.Edge scan"),
+            "expected both alternatives, got:\n{rendered}"
         );
     }
 
