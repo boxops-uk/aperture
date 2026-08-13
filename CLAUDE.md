@@ -20,7 +20,10 @@ invariants by number, and where to read the rest. It is deliberately tight.
 **Module map.** `src/focus/` is the live engine + language — all new work lands here.
 `src/main.rs` is the `aperture` shell: it compiles and runs what you type against a real store
 seeded with a **code index** (files → modules → declarations → references), written through the
-fact API; `:plan` shows the plan. Keep logic out of it — the plan renderer it needed lives in
+fact API; `:plan` shows the plan. The index is a real one — `example/` holds a small Python
+corpus, the `ast`-based indexer that reads it and the JSON it emits, which the shell compiles
+in and writes as facts at startup ([`example/README.md`](example/README.md)). Regenerate with
+`python3 example/index.py`. Keep logic out of it — the plan renderer it needed lives in
 `focus::print`. **`focus::fact` is how a fact is written by hand**: a well-typed value whose
 key fields are named, resolved against the schema (`FjallDb::put`), because `put_fact` takes
 bytes and three of its preconditions fail silently — see
@@ -162,17 +165,25 @@ decoded data.
   `Cursor` a `Vec<Register>` in the end — only *fact* slots are ever saved, since a derive step is
   recomputed — but it did change what a cursor entry is counted against.)
 - **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — two, both from
-  comparing the design against Glean: **multiplicity** (arrays vs one fact per element — decide
-  before the Phase 8 schema DSL fixes how schemas are written) and **primitives** (arithmetic,
-  string functions, conditionals: not built, not deferred, not ruled out). Everything the file
+  comparing the design against Glean: **multiplicity** (arrays *and* one fact per element — Glean
+  writes both, deliberately; decide before the Phase 8 schema DSL fixes how schemas are written)
+  and **primitives** (arithmetic, string functions, conditionals: not built, not even lexed, not
+  ruled out). Everything the file
   was originally opened for has settled: intra-row repeated variables are **rejected**
-  (`nyi/repeated-variable`, Phase 4), the `pattern = pattern` *scope* is settled at typecheck
-  (the feature itself stays deferred), and cancellation counting rows examined is settled in
+  (`nyi/repeated-variable`, Phase 4), the `pattern = pattern` *scope* is settled — split across
+  typecheck and flatten, and one case of it turned out never to have been unification at all
+  (binding a row a field already named is an **ordering** question, which `reorder` now answers;
+  the feature itself stays deferred) — and cancellation counting rows examined is settled in
   the executor.
-- **What flatten defers** — a value bind, reading *through* a fact reference, matching on a
-  value, a whole record key, an intra-row repeat — each has a code and a corpus entry
+- **What flatten defers** — a value in no register, reading *through* a fact reference, matching
+  on a value, a whole record key, an intra-row repeat — each has a code and a corpus entry
   ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). `nyi/fact-field` is the
   load-bearing one, and it is now a *split* rather than a blanket: **following** a reference is
   supported (the splice is off `Register::fact_id`), reaching the fact it names is not. The
   danger the split guards is that a register also holds its own row's key bytes — splicing
   those where an id belongs would compare a key against an id and quietly match nothing.
+  **`Slot` is the single substitution**, and `flatten::resolve` the only function that answers
+  *where does this expression's value live* — for a key field, the head, an alias's right side,
+  and a record's pieces alike, with a constant as an ordinary arm rather than a parallel path.
+  So `Y = X.file` is an **alias**: no register, no step, the same plan as the read it names.
+  `nyi/value-bind` now means only *this value is in no register and would have to be built*.

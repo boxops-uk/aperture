@@ -50,11 +50,16 @@ The engine spine exists in `src/focus/`:
   checkable at all, since a tree comparison is blind to them.
 - **Flatten → reorder** (`flatten.rs`, `reorder.rs`, Phase 4 done) — `Compilation::plan`
   produces a runnable `Plan`, so the two halves of the system meet. Sargeability builds seeks,
-  splices and residuals over the chosen order; `reorder` is a verified identity taking a
-  graph over *variables* (not edges between statements — which statement captures a shared
-  variable depends on the order, so edges would forbid correct orders). The headline gate is
-  tier-3: a generated `(query, store)` pair run against a nested-loop model, in **every**
-  permutation of the body. What flatten defers has a code and a corpus entry each
+  splices and residuals over the chosen order; `reorder` emits the **greedy runnable frontier**
+  over a graph of *variables* (not edges between statements — which statement captures a shared
+  variable depends on the order, so edges would forbid correct orders), which makes it
+  load-bearing for **acceptance** and not only for speed: a written order that reads a variable
+  the statement after it binds has a perfectly good plan, and this is what stops it being
+  refused. Greedy is complete because the constraint is monotone, and `Deps::antichains` is kept
+  **off** that path — it is the feasibility answer and the independent witness the completeness
+  property is checked against. The headline gate is tier-3: a generated `(query, store)` pair run
+  against a nested-loop model, in **every** permutation of the body. What flatten defers has a
+  code and a corpus entry each
   ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). Phase 5 added **following
   a fact reference** (a fact-id splice and compare) and **hoisting a nested generator**, which
   retired the last of `src/lens/`.
@@ -402,16 +407,20 @@ by one test on the same two diagnostics.
 ## Phase 4 — Flatten → reorder
 
 **Goal.** Lower the typed query to the flat `Plan`: flatten nested generators into an ordered
-generator list, run sargeability to build seeks/residuals, and pass through a reorder step
-that is **initially identity** — structured so the real algorithm drops in without reshaping.
+generator list, run sargeability to build seeks/residuals, and choose the loop order — identity
+at the outset, the greedy runnable frontier as built, structured either way so a cost model drops
+in without reshaping.
 
 **Depends on:** Phase 3 (the driver + context).
 
 **Design of record:** [chapter 7](docs/07-compilation.md) covers all the settled design —
 flatten, disjunction-stays-a-node (never DNF across conjuncts), union-select →
-`DiscriminantEq` residual, sargeability's order-dependence, the safety-vs-ordering split (why
-identity reorder is *correct*, not a stub), and the future Kahn + antichain + selectivity
-reorder (whose interface is built here). **Read it before this phase.**
+`DiscriminantEq` residual, sargeability's order-dependence, the safety-vs-ordering split, and
+[reorder — the runnable frontier](docs/07-compilation.md#reorder--the-runnable-frontier): why
+greedy is complete, why a layering is the wrong shape for *choosing* an order, and what is
+actually outstanding — a **cost model**, not a topological sort. (Glean's `Reorder` has neither a
+topological sort nor antichains; the only `topSort` in its pipeline is over derived-predicate
+dependencies in `glean/db/Glean/Query/Prune.hs:85`.) **Read it before this phase.**
 
 **Invariants in scope:**
 - *makes green:* the end-to-end property **"flattened plan run == expected rows"** (tier-3,
@@ -446,10 +455,19 @@ reorder (whose interface is built here). **Read it before this phase.**
   decision table in [chapter 7](docs/07-compilation.md#how-sargeability-actually-decides-phase-4-as-built).
   A string prefix seeks in the leading field and filters elsewhere; a fully-input key becomes a
   point match.
-- **4c.** ✅ Reorder as a verified identity, taking a graph over **variables** rather than edges
-  between statements — because which statement captures a shared variable depends on the order,
-  so edges would forbid correct orders. `Deps::respects` / `Deps::antichains` are what the real
-  algorithm sorts within; the `// TODO: Kahn + antichain + selectivity` seam is in place.
+- **4c.** ✅ Reorder as the **greedy runnable frontier**, over a graph of **variables** rather
+  than edges between statements — because which statement captures a shared variable depends on
+  the order, so edges would forbid correct orders. It is load-bearing for **acceptance**: a
+  written order that reads a variable the next statement binds is made legal rather than refused,
+  and a source order that already works is returned unchanged. Greedy is *complete* because
+  `reads` is structural and `bound` only grows, so emitting anything runnable can never strand
+  anything else — property-tested against `Deps::antichains`, which is kept **off** the reorder
+  path as the exact feasibility answer and the independent witness. What is left is a **cost
+  model**, and the `// TODO: selectivity` seam says what it needs: extend `StmtDeps` with each
+  statement's key-prefix shape, then `min_by_key` over the frontier (plus moving
+  negations/conditionals after their parent-scope binds — Phase 6b). A layering cannot be that
+  cost model: a layer index is only a lower bound on position, so sorting inside a layer can never
+  defer a cheap-looking scan past the selective statement that would have bound its key.
 - **4d.** ✅ Intra-row repeats decided and implemented: rejected, tested both ways (the repeat,
   and the repeated *read* that is supported).
 - **4e.** ✅ The tier-3 battery re-run **through the interruption schedule**, and against fjall.
@@ -467,7 +485,9 @@ reorder (whose interface is built here). **Read it before this phase.**
       queries rejected with a clear error). The corpus gate now runs the whole driver, so
       `Supported` means *produces a plan*, and every construct flatten defers has an entry
       naming it.
-- [x] Reorder is a verified identity with the real (graph-taking) interface in place.
+- [x] Reorder is the greedy runnable frontier over the variable graph: completeness
+      property-tested against `Deps::antichains`, and a source order that already works compiles
+      to exactly the plan it compiled to before.
 - [x] "flattened plan run == expected rows" holds over generated `(query, store)` pairs
       (tier-3), against a nested-loop model — and holds in **every permutation** of the body,
       which is the reorderability claim made executable.
@@ -689,6 +709,22 @@ the recorded consequence that `(!A) | B` is inexpressible unless `!` moves into 
   a generating position inlines its statements into the enclosing generator list, this is
   flatten-local and needs no operator at all. Confirm that before budgeting a nested executor.
 
+**A risk `Deps` cannot express today, and this phase is where it becomes real.** Glean tags every
+statement `Ordered` or `Floating` — "may not move" versus "may"
+(`glean/db/Glean/Query/Flatten/Types.hs:70-77`) — and its negation-placement rule is **semantic**,
+not a heuristic: a negated subquery is forced *after* every parent-scope variable it uses is
+bound, because an unbound variable inside a negation behaves as a wildcard, so moving it changes
+what the query *means* (`Note [Reordering negations]`,
+`glean/db/Glean/Query/Reorder.hs:547-573`). `StmtDeps` records only what a statement can capture
+and what it must read, which cannot say "this one may not move above that one" — and the frontier
+is free to emit anything runnable. Safe today, because nothing in focus is order-sensitive in that
+way; unsafe the moment negation and disjunction have an engine. The `// TODO` in `reorder.rs`
+already names half of it ("move negations/conditionals after their non-locals are bound");
+*expressing* immovability is the design question, and it must be answered before 6b-d lands, not
+after. The same nesting is why Glean's `Reorder` needs a give-up branch where focus's greedy pass
+does not: a nested group's reads depend on how its own branches are ordered, which is exactly
+where the monotonicity argument fails — so re-prove completeness here rather than inheriting it.
+
 **Tasks (coarse — decompose at pickup, per the rule at the top of this file):**
 - **6b-a. Disjunction.** `FlatDisjunction` as a union-of-streams frame; the per-branch
   discriminant on `Cursor`; `ty.rs` gives `|` a type; `never` decided alongside it. No DNF
@@ -718,6 +754,9 @@ the recorded consequence that `(!A) | B` is inexpressible unless `!` moves into 
       variable — never a run-time error.
 - [ ] `never`, negation and subqueries each either run, or draw a **narrowed** diagnostic
       naming what is still missing — never a parse error and never a panic.
+- [ ] Negation's placement is *forced*, not merely likely: `!(A X); B X` answers exactly as
+      `B X; !(A X)` does, so no negation is ever evaluated with an unbound variable acting as a
+      wildcard — the immovability question above, closed by a test rather than a comment.
 - [ ] Every reclassified corpus entry returns its recorded rows against a real `FjallDb`, and no
       retired `nyi/` code is left in `Code::ALL`.
 - [ ] All prior engine guards green — the cursor format changed, so this is the claim that
@@ -758,8 +797,19 @@ side) is the part the streaming path still owes, by a different mechanism.
 
 **Phase-specific rules:** the encoder must agree **byte-for-byte** with the read-path decoder
 (the round-trip property is the guard); dedup byte-identical facts silently and **reject
-same-key-different-value** deterministically (`--on-conflict=reject` default; any override
-commutative, never LWW).
+same-key-different-value** deterministically (`--on-conflict=reject` default; any override must be
+commutative, so no pick-one rule of either polarity).
+
+**What this phase is actually claiming against Glean, stated so it isn't overclaimed.** The reject
+rule is Glean's own default (`glean/rts/define.cpp:91-102`), not a divergence; what Glean cannot do
+is *hold* it — it disables the rule on three paths, including its offline merge, with an in-source
+admission that it may be "silently picking one of the two facts"
+(`glean/write/Glean/Write/SendAndRebaseQueue.hs:408-426`). So the claim here is **"one funnel is
+what makes rejecting affordable"**, and the acceptance criteria below are what make it true. The
+genuine format divergence is *splittability*: a Glean binary `Batch` is one opaque sequential blob
+with no sync marker, header, CRC or footer index (`glean/if/glean.thrift:159-181`), so it cannot be
+split and Glean parallelises across batches; this pipeline splits **one file** at validated sync
+markers (`ops-I5`, operations §8).
 
 **Tasks:** `Db` + per-predicate partition handles; the fact-file format + sync-marker chunk
 splitter; the parallel decode→encode→sort→k-way-merge→bulk-`ingest()` pipeline with the
@@ -854,11 +904,43 @@ make dropping a re-derived predicate an O(1) tree delete rather than range tombs
   reproducible. [I11](docs/invariants.md#i11)/[I12](docs/invariants.md#i12) at derivation scale.
   [I14](docs/invariants.md#i14) is *not* in scope: a stored deriver runs an ordinary query.
 
+**Two things Glean's implementation settles for us — both cheap to write down now and expensive to
+discover after schemas exist:**
+
+- **Negation in a stored derivation is legal here, and that is a capability we get for free.**
+  Glean forbids it — *"use of negation is not allowed in a stored predicate"*
+  (`glean/db/Glean/Database/Schema.hs:451-462`), and if-then-else with it — for one reason:
+  *"facts derived based on the absence of other facts could be invalidated when new facts are
+  added to an incremental database. The work required to identify which fact to invalidate is
+  close to that of re-deriving those predicates all over again"* (`:791-801`), propagated
+  transitively through the derivation graph by a topological sort. The ban is a cost of
+  incrementality, not of derivation, so **an immutable DB does not need it**: nothing can be added
+  to a Complete DB, so nothing can invalidate a derived fact (`ops-I2`). Record it as a decision
+  rather than leaving it implicit — and record it as a **one-way door**: if `ops-I9` ever reopens,
+  every stored derivation containing a `!` becomes unsound, and because focus negates a
+  *statement* rather than a pattern the transitive analysis would be at a different granularity
+  than Glean's.
+- **Write the query's *results*, not the body's output.** Glean's
+  `Note [Writing derived facts]` (`glean/db/Glean/Query/UserQuery.hs:1074-1119`) records the trap:
+  the statement that produces a derived fact is an ordinary statement, so the reorderer may place
+  it **above** a later filter, and the fact set accumulated while the query runs then contains
+  facts that are not true — the *results* are still correct, which is why the fix is to write the
+  results and filter the fact set by them, never to dump what the body produced. `reorder` has
+  exactly that freedom, so a deriver implemented as "run the plan and put what the body produces"
+  is wrong in the same way. It is the same family of bug as the
+  [I14](docs/invariants.md#i14) guard's lesson — only a derive step placed *above* a scan observes
+  the fault — and as the deferred `Access::Fetch` hazard.
+
 **Tasks (coarse — decompose at pickup):** a `derivation` on the schema's `Predicate` (there is
 none today, and `focus`'s grammar has no `predicate` keyword — both are Phase 8's to add); the
 derive phase in the lifecycle, reading a sealed snapshot and writing through the one write funnel
 (`ops-I5`); `DerivedAndStored` vs derive-on-demand as a schema-level distinction; re-derivation
-as a tree drop; derived-on-derived via sealed rounds.
+as a tree drop; derived-on-derived via sealed rounds — for which the shape to copy exists: a
+per-predicate completion list in the sidecar (Glean's `metaCompletePredicates`,
+`glean/if/internal.thrift:74-80`, appended at `glean/db/Glean/Query/Derive.hs:242-251`) plus a
+topological sort of the derivation graph with concurrency inside each stratum
+(`glean/tools/gleancli/GleanCLI/Derive.hs:86-132`), which computes the round boundaries from the
+schema instead of asking the operator to declare them.
 
 **Acceptance:**
 - [ ] A schema declaring a derived predicate parses, derives, and the derived facts are queryable
@@ -867,6 +949,11 @@ as a tree drop; derived-on-derived via sealed rounds.
       and cannot write a predicate it does not own (structural via prefix-disjointness).
 - [ ] Deriving twice from the same base gives the same facts (`ops-I4`); re-deriving one
       predicate drops and rebuilds only its trees.
+- [ ] **Only the query's results are written.** A derivation whose body would produce a fact the
+      head's filters exclude writes nothing — tested with a plan the reorderer is free to schedule
+      the derive above the filter in, so the test fails if the deriver dumps the body's output.
+- [ ] A stored derivation containing `!` derives and is queryable — the capability the immutable
+      DB grants, pinned so a later reader does not "restore" Glean's ban by analogy.
 - [ ] Ingest is refused after `derive` in a way the lifecycle defines, not by accident.
 
 ---
@@ -880,7 +967,10 @@ as a tree drop; derived-on-derived via sealed rounds.
 
 **Design of record:** [`docs/aperture-cli-design.md`](docs/aperture-cli-design.md) **in
 full** — CLI tree (§4), per-command requirements (§5), operational invariants
-`ops-I1`–`ops-I10` (§1), wire protocol (§6), on-disk layout (§9), workspace structure (§10).
+`ops-I1`–`ops-I10` (§1), wire protocol (§6), on-disk layout (§9), workspace structure (§10). Read
+it knowing that **none of it is implemented**: where it weighs a decision against Glean it is
+weighing Glean's shipped code against this design, so Glean's costs there are measured and ours are
+predicted.
 
 **Invariants in scope:** *makes enforceable & tested:* `ops-I1`–`ops-I10`. *upholds under the
 real connection layer:* [I8](docs/invariants.md#i8) (drop-at-suspend, already guarded at
@@ -896,7 +986,18 @@ Phase 1) now exercised through portals.
   writer, per-stream `Cancel`, the bounded-channel sync↔async bridge with byte `Cursor`
   portals ([chapter 5](docs/05-resume.md)), default-closed bind (`ops-I10`). The remote-first
   `shell` (re-pointing the Phase 5 REPL) lands here.
-- **Telemetry:** query profiling (facts-searched-per-predicate), metrics, tracing spans.
+- **The shell holds the cursor — first, and by a distance** ([operations
+  §5](docs/aperture-cli-design.md)). Phase 5's REPL discards the resume token
+  (`Iteratee::Suspended(rows, _)`, `src/main.rs`), so [I4](docs/invariants.md#i4) and
+  [I8](docs/invariants.md#i8) — a bytes-only cursor and an entire resume battery, the most
+  heavily tested machinery in this project — have **no interactive exerciser at all**. A wire
+  client *can* hold a `Cursor`; that is the whole point of a bytes-only continuation, and it is
+  the one item here that pressure-tests what the project spent the most effort on. Then, in
+  order: a profile view (facts searched per predicate, with a full-scan flag — the *outcome* to
+  `:plan`'s *intent*), `finish --allow-zero-facts`, a prefix-matching describe, and a readiness
+  signal for `serve`. Each is specified in operations §5.
+- **Telemetry:** query profiling (facts-searched-per-predicate — the counter already exists for
+  cancellation and is simply not surfaced), metrics, tracing spans.
 - **Cohesive errors:** one taxonomy end-to-end; no panics on data paths.
 - **Snapshot lifecycle & migration:** backup/restore; migration story for the frozen marker
   (I3) & discriminant (I10) tables.

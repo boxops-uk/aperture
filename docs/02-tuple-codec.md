@@ -26,11 +26,32 @@ property-tested subsystem, for the reasons below.
 memcmp(encode(a), encode(b)) == semantic_compare(a, b)
 ```
 
-Byte order *is* semantic order. This is the property that makes the whole database work:
-because a predicate's facts are stored as `predicate_id ++ encoded_key`, sorted
-lexicographically, a **prefix scan over a byte range is exactly a predicate query over a
-value range**. Range queries, point lookups, and joins all reduce to "scan a sorted byte
-range." No secondary structure, no per-query sort.
+Byte order *is* semantic order. Two claims run together here and have to be kept apart. An
+**exact-prefix** scan — every fact of predicate `P`, or every fact whose leading key fields
+equal given values — needs only that each encoding be self-delimiting and **canonical**: one
+value, one byte string, so the matching rows are exactly the rows carrying that byte prefix.
+Order-preservation buys the *other* thing: a **value-range** scan (`X > 3` as a bounded seek
+rather than a filter) and rows that arrive in semantic order with no sort. Point lookups and
+joins reduce to the first, ranges and ordered output to the second; either way there is no
+secondary structure and no per-query sort.
+
+Glean is the proof that the two are separable. Its fact keys carry LEB128 varints, which
+mis-order — 255 encodes `FF 01`, 256 encodes `80 02`, and `FF > 80` — and it serves a
+production fact database on exact-prefix seeks all the same. It *owns* an order-preserving
+prefix-varint, whose header states memcmp-comparability as requirement #1
+(`glean/rts/nat.h:20-64`), and spends it only on storage-level keys, never inside a fact key;
+then it dropped its reliance on ordered iteration deliberately, to support backends with
+limited key sizes, and now documents a prefix iterator as returning facts "in no specified
+order". *Evidence:* [the Glean comparison](glean-comparison.md).
+
+So I1 is **a divergence of this design's own, and the divergent half of it is currently
+unspent**: `ResidualOp` (`src/focus/plan.rs`) has no ordering arm, and `<` and `>` are not
+lexer tokens, so an order comparison does not even lex. The bet is kept because it costs
+almost nothing to hold and cannot be retrofitted — the marker table freezes the moment data
+exists ([I3](invariants.md#i3)), and there is no format version to migrate under. What *is*
+spent today is the weaker, store-level half of the same property: the scan is lexicographic,
+and resume re-seeks against that order
+([chapter 3](03-storage-model.md#the-order-a-scan-is-promised-in)).
 
 Get this wrong by one byte and queries silently return wrong rows — no crash, no error.
 That is why order-preservation is property-tested against an **independent comparator**
@@ -64,10 +85,26 @@ order-preservation guarantee (which is stated over encodings) and the round-trip
 **The invariant:** the marker byte alone tells you how to advance past a value — no schema
 required.
 
-The executor must skip over fields it doesn't care about (to reach field 3 of a key, it
-walks past fields 0–2) and it must do so **without type information**, deep in the scan hot
-loop. So every encoding carries its own shape. There are exactly **three skip-shape
-families**:
+The executor skips over fields it doesn't care about — to reach field 3 of a key it walks past
+fields 0–2 — with **no type information** in hand, deep in the scan hot loop. That is a
+consequence of [I7](invariants.md#i7), not a law of encodings: the alternative is a compiler in
+the loop. Glean's fact encoding is **untagged and positional** — a record is the bare
+concatenation of its fields, no wrapper and no terminator — and its skip is **schema-driven
+codegen**, a per-predicate bytecode traversal emitted from the type
+(`glean/hs/Glean/RTS/Traverse.hs:27-119`), which goes one better than any tag-driven skip can:
+it proves a whole suffix holds no fact references and never emits the walk at all. Against a
+compiler, tags are pure overhead — a byte per field on disk and a branch per field in the loop
+([the comparison](glean-comparison.md) has the byte arithmetic).
+
+What a tag buys instead, and the reason to keep it, is that **the bytes can be walked without
+the schema**: a golden-bytes test, a dump of a row whose predicate is unknown, the diagnosis of
+a corrupt key are each a `skip` loop over untyped bytes. The tag is also where the byte-level
+`Int`/`Fact` distinction lives — `MARK_FACT_REF` has a marker of its own, so an id is
+distinguishable from an integer *in the bytes* rather than only in the schema that was consulted
+when they were written, which is the class of silent mismatch
+[chapter 3](03-storage-model.md#writing-a-fact-by-hand) is built to prevent.
+
+So every encoding carries its own shape. There are exactly **three skip-shape families**:
 
 1. **Fixed-width** — the marker implies a fixed number of payload bytes (e.g. zero has
    none; a fact reference has 8).
@@ -91,6 +128,21 @@ element is **escaped as `0x00 0xFF`**. In nested mode, `skip` treats a `0x00` *n
 followed by `0xFF` as the terminator, and `0x00 0xFF` as a null element. This is why the
 codec has both `MARK_NULL` and `MARK_ESCAPE`.
 
+The one-byte terminator has a second consequence, and it is a **requirement on the marker
+table** rather than a property of strings. An embedded NUL inside a string escapes the same way,
+so within a record `encode("a") < encode("a\0")` compares the shorter string's terminator
+against the longer one's escape byte — and holds only because the byte that follows a
+terminator, the *next field's marker*, is below `0xFF`. Every marker a value can begin with is
+at most `0x51` and the reserved bands stop at `0xFE`, so it holds by construction; it is stated
+on [the table](#the-marker-table) because nothing else keeps it true. Glean spends two bytes on
+a terminator (`00 00`, with embedded NUL escaping to `00 01`, `glean/rts/string.h:16-26`) and
+gets the same ordering argument *locally*, with no dependence on what follows.
+
+The rest of the string encoding is genuine convergence, arrived at twice: escape NUL,
+terminate, sort by `memcmp` — and build a prefix seek by encoding the prefix and **dropping the
+terminator**, which is what makes `"al"..` a byte range rather than a filter
+(`src/focus/flatten.rs`; Glean emits the same trick).
+
 ### Bounded nesting
 
 Record nesting is capped at `MAX_RECORD_DEPTH` (256). A hostile or corrupt byte string
@@ -109,6 +161,24 @@ New types don't get to renumber the table. They go into a **reserved band** in t
 skip-family, chosen so their marker byte places the type where it should sort. Renumbering
 an existing marker after data exists silently corrupts every stored key. There is a
 golden-bytes test pinning every marker precisely so a renumber breaks loudly.
+
+**And there is no on-disk format version, so I3 holds *forever*, not until a migration.** A
+migration presupposes detection, and nothing written here says which encoding wrote it —
+neither the store nor the embedded schema carries a version. Glean has both halves of the escape
+hatch this lacks: a DB binary-representation version with negotiated readable/writable sets, and
+a separately versioned bytecode ABI carrying its own lowest-supported floor
+(`glean/bytecode/def/Glean/Bytecode/Generate/Instruction.hs:86-96`). This is recorded as the gap
+it is rather than repaired here — it is cheap while no long-lived artifact exists and not after,
+and it is listed with the [other undecided things](glean-comparison.md).
+
+**A reserved band is not the whole decision for a container type.** For a scalar it genuinely is:
+pick a marker in the right skip-family, the type slots in where it sorts, nothing existing moves.
+An **array** is different — length-prefixed or terminator-delimited is a choice *inside* the
+encoding, and a length-prefixed array cannot be prefix-matched at all, because the length sorts
+ahead of the elements. Glean, which length-prefixes, says it outright: "MatchArrayPrefix doesn't
+actually look at a prefix because arrays encode their length at the front"
+(`glean/db/Glean/Query/Reorder.hs:794-796`). So arrays *are* a one-way door in a way the reserved
+scalar bands are not, and the [multiplicity decision](open-decisions.md) has an encoding half.
 
 ---
 
@@ -144,6 +214,11 @@ The **type ordering** falls out of the table: `null < string < record < integers
 fact-ref`. Within a typed field all values share a type, so cross-type ordering never
 affects a real query; but the ordering is still frozen because the marker is part of the
 sort key.
+
+**Every marker a value can begin with stays below `MARK_ESCAPE`** — which is why the reserved
+band stops at `0xFE`. A new type numbered `0xFF` would silently invert
+[string ordering across a record boundary](#records-and-the-nullterminator-subtlety), so this
+is part of what [I3](invariants.md#i3) freezes, not a spare byte.
 
 > **On `MARK_FACT_REF`.** Fact references have their **own fixed-width marker** (`0x51`), so
 > a value's bytes are self-describing without the schema and the byte-level `Int`/`Fact`

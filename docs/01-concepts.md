@@ -18,10 +18,21 @@ Aperture is an **embedded, immutable fact database**. Two names to keep straight
   the engine and the language). When you read "a focus query," it's a query written in
   focus and run by Aperture.
 
-It is **inspired by [Glean](https://glean.software/), not a clone.** Where we diverge
-deliberately, the chapters say so — and
-[**what we take, what we changed, and what we have not answered**](glean-comparison.md) is
-one table, kept honest about which is which.
+It is **inspired by [Glean](https://glean.software/), not a clone** — and the border runs in a
+less obvious place than "the ideas are theirs, the code is ours". The **two-map storage layout
+and the nested-loop execution shape are Glean's**, down to the names: its own column families are
+called `keys` and `entities` (`glean/rocksdb/container-impl.cpp:34,39`). The *machine* that runs
+that shape is not: Glean compiles a query to bytecode for a query VM, and
+[I7](invariants.md#i7) says why we don't. Nor is the **codec**, and **nor are four invariants** it
+would be easy to read as inherited — order-preserving keys
+([I1](invariants.md#i1)), an encoding self-delimiting enough that `skip` needs no schema
+([I2](invariants.md#i2)), values kept out of the scan loop ([I6](invariants.md#i6), which Glean's
+scan *violates*, fetching a whole fact by id mid-loop when a query wants a value), and stable
+union discriminants ([I10](invariants.md#i10), where Glean's are positional and remapped by name
+at read time). Glean does the opposite, or nothing, in each case. Where we diverge deliberately
+the chapters say so, and
+[**what we take, what we changed, and what we have not answered**](glean-comparison.md) is one
+table, kept honest about which is which — read it before assuming a design here came from there.
 
 ### Immutable, by design
 
@@ -54,8 +65,8 @@ A predicate's type (`PredicateTy`) has two parts:
 
 Both key and value are typed: an integer, a string, a record (a sorted set of named
 fields), a reference to another fact, or (later) a union. That is a **deliberately narrow**
-type model next to Glean's — no arrays, enums, booleans or optionals — and what that costs is
-[accounted for here](glean-comparison.md). Types are covered in
+type model next to Glean's — no arrays, sets, enums, booleans or optionals — and what that costs
+is [accounted for here](glean-comparison.md). Types are covered in
 [chapter 6](06-types-and-schema.md).
 
 > **Why split key from value?** Queries seek and filter on keys without ever touching
@@ -103,9 +114,10 @@ structure — the **`Plan` IR** — and otherwise evolve independently.
   struct-of-arrays, `NodeId`-indexed tree) and produce the `Plan`.
 - **flatten** is the crux: it turns a query's statements into a flat, ordered list of loop
   levels (**generators**) and decides, per key field, whether it seeks, splices or filters.
-  **reorder** then chooses the loop order — the identity for now, and *correct*, because
-  ordering is a performance choice and safety is the only thing correctness needs (see
-  [chapter 7](07-compilation.md)).
+  **reorder** then chooses the loop order — greedily, emitting the *runnable frontier*, so a
+  query that reads a variable the next statement binds is reordered rather than refused.
+  Choosing among the orders that are safe is a performance question, and P0 does not do it
+  (see [chapter 7](07-compilation.md)).
 
 Chapter 7 describes three tree representations and why each would earn its place; **two are
 built** (façade → typed store), and the boxed ergonomic AST is not, because nothing has
@@ -179,6 +191,13 @@ Knowing which module is real saves hours:
   `:plan` shows the plan without running it. Useful for seeing the whole system behave; not a
   place to put logic — the plan renderer it needed went into `print.rs`, and its facts are
   written through `fact.rs`.
+- **`example/`** — what that index is an index *of*: a small Python corpus, a real
+  `ast`-based indexer over it, and the JSON the shell compiles in and writes as facts at
+  startup. Its sixth predicate is the interesting one — `src.SearchByName` is the declaration
+  names keyed *by name*, because `src.Decl`'s key begins with its module and a name prefix can
+  therefore only filter that scan, not narrow it. Derived data written by hand, which is what a
+  deriver does until [Phase 8b](../PLAN.md) can declare one. See
+  [`example/README.md`](../example/README.md).
 - **`src/focus.rs`** — the module list, and then a **graveyard of commented-out prototype
   code** (~20 live lines out of ~1,250). Kept only for the transport-codec sketch. Don't add
   code here.

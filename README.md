@@ -1,10 +1,11 @@
 # Aperture
 
 **Aperture** (the product: *Aperture DB*) is an embedded, immutable **fact database**.
-**focus** is its typed, Datalog-flavoured query and schema language (Angle-inspired,
-Glean-influenced). Facts are typed records identified by a `FactId`, grouped by predicate,
-stored in an LSM (fjall) and queried by compiling focus queries to a nested-loop plan run
-by a suspendable, pull-based virtual machine.
+**focus** is its typed, Datalog-flavoured query and schema language — a small, faithful subset of
+Glean's Angle at the core, and its own thing past that ([what is inherited and what is
+not](docs/glean-comparison.md)). Facts are typed records identified by a `FactId`, grouped by
+predicate, stored in an LSM (fjall) and queried by compiling focus queries to a nested-loop plan
+run by a suspendable, pull-based virtual machine.
 
 The database is **immutable**: a DB is built once (schema → base facts → derivations),
 sealed, and thereafter only read. That single decision is what makes the rest of the
@@ -58,9 +59,10 @@ about one subsystem.
    their stable discriminants, and schema identity (canonical form + fingerprint). *(I10,
    I13.)*
 7. [**Compilation**](docs/07-compilation.md) — lex → parse → typecheck → flatten → reorder,
-   the tree layers, sargeability (seek · splice · residual), why identity reordering is
-   *correct*, what flatten defers, folding a constant bind, and derived facts — the two kinds,
-   and which of them was the machine change. *(I14.)*
+   the tree layers, sargeability (seek · splice · residual), why the runnable frontier is
+   *complete* — and load-bearing for acceptance, not just speed — what flatten defers, folding
+   a constant bind, and derived facts — the two kinds, and which of them was the machine
+   change. *(I14.)*
 8. [**Operations**](docs/aperture-cli-design.md) — the CLI, the `Writable → Complete`
    lifecycle, the parallel ingestion pipeline, the wire protocol, and the operational
    invariants. *(ops-I1–ops-I10.)* The operational design of record.
@@ -77,8 +79,9 @@ about one subsystem.
 - [**Open decisions**](docs/open-decisions.md) — what's not yet settled (and where the
   settled ones landed).
 - [**Aperture vs Glean**](docs/glean-comparison.md) — what we take from Glean, what we
-  deliberately changed and why, and the capabilities we have **neither built nor ruled out**.
-  Read it before proposing a feature Glean has.
+  deliberately changed and why, which invariants are **ours** rather than inherited, and the
+  capabilities we have **neither built nor ruled out**. Read it before proposing a feature Glean
+  has, and before claiming a design here came from there.
 - [**Glossary**](docs/glossary.md) — every term of art in one place.
 
 ---
@@ -111,5 +114,5 @@ cargo fmt
 
 Module map: `src/focus/` is the live engine and language — all new work lands there.
 `src/main.rs` is the `aperture` focus shell, which compiles and runs what you type against a
-real store. `src/focus.rs` is a commented-out graveyard. See
-[Concepts](docs/01-concepts.md) for detail.
+real store — seeded with a real index of the Python corpus in [`example/`](example/README.md).
+`src/focus.rs` is a commented-out graveyard. See [Concepts](docs/01-concepts.md) for detail.

@@ -47,9 +47,20 @@ green. See [testing](testing.md).
 
 <a id="i1"></a>
 ### I1 — Key encoding is order-preserving
-`memcmp(encode(a), encode(b)) == semantic_compare(a, b)`. Prefix scans over sorted bytes
-*are* range/predicate queries — the whole storage model rests on this. **The gate for any
-codec change.** *Why & how:* [chapter 2](02-tuple-codec.md#property-1--order-preserving-i1).
+`memcmp(encode(a), encode(b)) == semantic_compare(a, b)`. What that buys, precisely: a
+**value-range** scan (`X > 3` as a bounded seek, not a filter) and rows in semantic order with no
+sort. An exact-*prefix* scan — a predicate query, or leading key fields fixed to constants — needs
+only a self-delimiting **canonical** encoding, no ordering: Glean's fact keys are LEB128 varints
+that mis-order, and it serves prefix seeks on them. So I1 is a **divergence whose divergent half
+is unspent** — `ResidualOp` has no ordering arm and `<`/`>` are not lexer tokens, so no query can
+ask for a range yet. Kept because it is nearly free to hold and impossible to retrofit: the marker
+table freezes the moment data exists ([I3](#i3)) and there is no format version to migrate under.
+What *is* spent today is the weaker store-level half — a scan yields rows in lexicographic key
+order, which resume re-seeks against ([I4](#i4)) — and that is a **commitment**: it forecloses the
+truncated `keys` row Glean adopted when it dropped ordered iteration, and there is no key-size
+budget here to bound it. **The gate for any codec change.** *Why & how:*
+[chapter 2](02-tuple-codec.md#property-1--order-preserving-i1) and
+[chapter 3](03-storage-model.md#the-order-a-scan-is-promised-in).
 *Guard:* `codec::test_typed_value_order_matches_encoded_order` (tier-2: encoded-byte order vs
 `cmp_typed`, an independent comparator that walks the type rather than reusing the code under
 test) + `test_roundtrip_preserves_value_and_ordering` + the scalar properties
@@ -57,9 +68,15 @@ test) + `test_roundtrip_preserves_value_and_ordering` + the scalar properties
 
 <a id="i2"></a>
 ### I2 — Encoding is self-delimiting; `skip` needs no schema
-The marker byte alone says how to advance past a value (three skip families). Lets the scan
-hot loop walk fields with no type info; a full decode consumes exactly to end-of-input.
-Record nesting is bounded (`MAX_RECORD_DEPTH`) → errors, never stack overflow. *Why & how:*
+The marker byte alone says how to advance past a value (three skip families); a full decode
+consumes exactly to end-of-input; record nesting is bounded (`MAX_RECORD_DEPTH`) → errors, never
+stack overflow. **A divergence, and not for the reason it looks like.** That the scan hot loop can
+walk fields with no type info is downstream of [I7](#i7), not a property encodings must have:
+Glean's fact encoding is untagged and positional and its skip is per-predicate codegen, against
+which a tag is pure overhead — a byte per field and a branch per field. What I2 buys is that the
+bytes can be walked **without the schema** (golden-byte tests, dumping a row of unknown predicate,
+diagnosing a corrupt key), and the byte-level `Int`/`Fact` distinction `MARK_FACT_REF` enforces.
+*Why & how:*
 [chapter 2](02-tuple-codec.md#property-2--self-delimiting-i2). *Guard:* the
 `codec::test_skip_*` family — `test_skip_{string,i64,u64}` are the exactness properties (skip
 lands exactly where decode ends), the rest are the record/terminator/escape edge cases — plus
@@ -70,6 +87,14 @@ overflowing.
 ### I3 — The marker table is frozen on disk
 Marker values and their order are semantic (a marker is the MSB of a value's sort key).
 Once data exists they can't change without migration; new types go in reserved bands.
+**There is no on-disk format version anywhere in Aperture, so I3 must hold *forever*** — a
+migration presupposes detection, and nothing a reader is handed says which encoding wrote it.
+Glean versions both its DB binary representation (readable/writable sets negotiated at open) and
+its bytecode ABI; that is the escape hatch I3 lacks, recorded as the gap it is. Two further things
+the table freezes: every marker a value can *begin* with stays below `MARK_ESCAPE` (otherwise
+string ordering inverts across a record boundary), and for a *container* type the reserved band is
+not the whole decision — length-prefix versus terminator decides whether an array can be
+prefix-matched at all, which no later renumbering can undo.
 *Why & how:* [chapter 2](02-tuple-codec.md#property-3--frozen-on-disk-i3). *Guard:*
 `codec::marker_table_golden` (golden bytes — breaks loudly on renumber).
 
@@ -92,14 +117,22 @@ Decode lazily at read sites only. *Why & how:* [chapter 4](04-executor.md#the-re
 ### I6 — Values never enter the scan hot loop
 Residuals on *key* fields are checked against the `keys` CF only; a value is fetched from
 `entities` only when projected/navigated. Value patterns are a distinct residual class over
-the fetched buffer. *Why & how:* [chapter 3](03-storage-model.md#why-two-not-one). *Guard:*
+the fetched buffer. **An Aperture strengthening, not an adopted idea:** Glean has the same
+key-only/key-value split at its iterator, but a non-wild value pattern marks the seek as needing a
+value and it then fetches one for every row the scan *examines* — a second store lookup per row,
+which is exactly what I6 forbids. Cheap to hold here partly because value patterns are deferred
+(`nyi/value-match`), so the query that tempts the fetch cannot be written yet. *Why & how:*
+[chapter 3](03-storage-model.md#why-two-not-one). *Guard:*
 `exec::no_value_fetch_in_scan` (store spy fails on unexpected `point()`).
 
 <a id="i7"></a>
 ### I7 — The executor is a defunctionalised state machine
 `enumerate` + the frame stack are the explicit reification of recursive `concatMap`, chosen
 so execution can suspend to bytes (I4). Native recursion/closures/coroutines can't — they
-pin iterators and a snapshot. **Don't rewrite `enumerate` as recursion.** *Why & how:*
+pin iterators and a snapshot. **Don't rewrite `enumerate` as recursion.** A compiled bytecode
+machine is the *other* road to a serialisable continuation — Glean's VM has no call stack at all —
+so what decides it here is continuation **size** and not version-locking a compiled form.
+*Why & how:*
 [chapter 4](04-executor.md#why-a-state-machine-and-not-recursion--i7). *Guard:* structural —
 the resume battery is impossible to pass under a recursive rewrite; plus review.
 
@@ -127,9 +160,17 @@ and bytes both compared).
 <a id="i10"></a>
 ### I10 — Union alternative discriminants are stable and append-only
 Explicit, assigned-once, never-reused, append-only discriminants (protobuf-style). Frozen
-the moment union data is written; derived-from-names schemes would silently renumber. *Why &
-how:* [chapter 6](06-types-and-schema.md#unions-and-stable-discriminants-i10). *Guard:*
-`schema::discriminants_append_only` (renumber/reuse rejected at load).
+the moment union data is written; a discriminant *derived* from the declaration renumbers the
+moment an alternative is inserted. **A divergence.** Glean has no discriminant syntax at all — an
+alternative's discriminant is its **position** in the list, so an insert renumbers, and stability
+comes from a query-time transform that remaps alternatives **by name** and answers with a synthetic
+`unknown` for one that no longer exists. Explicit discriminants are therefore not "the only safe
+scheme"; they are the only safe scheme *without* that transform layer, which [I13](#i13) declines
+by freezing the schema instead. *Why & how:*
+[chapter 6](06-types-and-schema.md#unions-and-stable-discriminants-i10). *Guard:*
+`schema::discriminants_append_only` (renumber/reuse rejected at load) — which also owes the one
+case the invariant needs and Aperture has not settled: what a decoder does with a tag no schema
+declares. Glean has a defined answer there; this design does not yet.
 
 <a id="i11"></a>
 ### I11 — `FactId` is stable, unique, never reused within a DB
@@ -138,9 +179,18 @@ in the low 40 — so uniqueness across predicates is structural and each predica
 independently. Monotonic within a predicate, never reused (no deletion), stable for the DB's
 lifetime; sequence 0 is reserved, so `FactId(0)` is never a fact. The high-water mark is
 recovered from the last `entities` key rather than a sidecar counter, which cannot go stale
-across a crash. The scan→point map and resume's integrity check depend on it. It is a
-*physical* row id, **not** cross-DB identity (that's the content hash, [ops-I4](#ops-i4)).
-Constrains the schema: a predicate id must fit 24 bits.
+across a crash — Glean's persisted `NEXT_ID` cannot go stale either, but it can go *missing*, and
+its error for that is "corrupt database". The scan→point map and resume's integrity check depend on
+it. It is a *physical* row id, **not** cross-DB identity (that's the content hash,
+[ops-I4](#ops-i4)). Constrains the schema: a predicate id must fit 24 bits. What the tag trades
+away is **density across predicates**: Glean's ids are documented as *dense*, and five mechanisms
+spend that density — substitution vectors indexed by `id − base`, fact sets indexed by
+`id − starting_id`, Elias-Fano ownership sets, the fact→owner interval map, and the `id < mid`
+stacking test — so stacking is one consumer of five. Within a predicate the sequence stays dense,
+so each of those survives as a per-predicate instance keyed by the tag; only a fact set *spanning*
+predicates degrades. Against that, Glean has **no concurrent writer at all** at the storage layer
+and buys parallelism back with the whole rebase/substitution subsystem, which per-predicate
+counters delete.
 *Why & how:* [chapter 3](03-storage-model.md#factid-allocation-i11). *Guards:*
 `store::factid_unique_monotonic` + `store::exhausted_sequence_space_is_an_error` +
 `store::untaggable_predicate_is_rejected`.
@@ -149,7 +199,8 @@ Constrains the schema: a predicate id must fit 24 bits.
 ### I12 — A fact is written to both column families atomically
 `keys` and `entities` are written in one fjall batch — a fact is never half-present. A
 dangling half is silent corruption at projection; a dangling entity is invisible to every
-query. *Why & how:* [chapter 3](03-storage-model.md#the-atomic-two-cf-write-i12). *Guards:*
+query. **Adopted, not diverged:** Glean commits its two families in one wider batch, carrying its
+id counter and per-predicate stats rows along with them. *Why & how:* [chapter 3](03-storage-model.md#the-atomic-two-cf-write-i12). *Guards:*
 `store::no_half_present_facts_after_writes` (the two CFs in exact bijection over generated
 writes) + `store::no_half_present_facts` (a child process aborted mid-write; the bijection
 must survive recovery).
@@ -159,8 +210,15 @@ must survive recovery).
 Canonical schema + fingerprint embedded at `create`, immutable for the DB's lifetime (no
 `evolves` in P0); every ingest validated by subset containment; the DB is self-describing.
 *Why & how:* [chapter 6](06-types-and-schema.md#the-schema-is-embedded-and-frozen-i13).
-*Guard:* `schema::ingest_rejects_incompatible_schema` + `schema::fingerprint_is_order_independent`
-(pending schema).
+*Guards:* `schema::ingest_rejects_incompatible_schema` + `schema::fingerprint_is_order_independent`
+(pending schema). The second one's specification is **predicate order free, field order
+significant**: two source orderings of the same predicates — spread across files differently,
+declared in a different sequence — must share a fingerprint, and permuting the *fields* of a
+predicate must **change** it. Field order is encoding order (`focus::fact` resolves a fact's named
+fields into declared order before any bytes exist) and it decides the seek prefix, so a field
+permutation is a semantic change; a guard that certified it as identity would certify two DBs with
+one fingerprint and incompatible bytes. Glean agrees: field order sits inside its `fingerprintDef`,
+and a field reorder is a *transform*, not identity.
 
 <a id="i14"></a>
 ### I14 — A derived bind is a pure function of the fact bindings
@@ -206,8 +264,10 @@ action. Never observable that metadata says Complete while data isn't durable.
 
 <a id="ops-i4"></a>**ops-I4 — Reproducibility.** A DB built twice from identical inputs is
 identical; identity = `hash(canonical schema, base facts)`. Timestamps/random ids are
-descriptive, never identity. Conflict handling is order-independent (strict reject, not
-last-writer-wins). This is why [I11](#i11) fact-ids are *not* cross-DB identity.
+descriptive, never identity. Conflict handling is order-independent (strict reject — neither
+first- nor last-writer-wins; Glean's default is the same reject, and the paths where it
+disables that rule land on *first*-writer-wins). This is why [I11](#i11) fact-ids are *not*
+cross-DB identity.
 
 <a id="ops-i5"></a>**ops-I5 — One write funnel.** Every writer (bulk ingest, wire COPY,
 tools) passes the same pipeline: schema-validate → sort/merge → dedup identical → reject

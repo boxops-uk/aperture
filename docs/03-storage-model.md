@@ -24,9 +24,13 @@ answering a different question:
 predicate_id (4B big-endian) ++ tuple_encoded_key   →   fact_id (8B big-endian)
 ```
 
-Sorted lexicographically. Because the codec is order-preserving
-([I1](invariants.md#i1)), a **prefix scan over this map is a predicate query**. To find all
-facts of predicate `P`, scan the half-open byte range `[P, strinc(P))`:
+Sorted lexicographically, so a **prefix scan over this map is a predicate query**. What that asks
+of the codec is only that a value have exactly one encoding — the
+[canonicalising decoder](02-tuple-codec.md#property-1--order-preserving-i1) — so that every
+matching row carries the same leading bytes. Order-preservation ([I1](invariants.md#i1)) is what
+turns a *value range* into a byte range, and that half is
+[not spent yet](#the-order-a-scan-is-promised-in). To find all facts of predicate `P`, scan the
+half-open byte range `[P, strinc(P))`:
 
 - `strinc(prefix)` is the **prefix-successor** — the smallest byte string greater than
   every string with that prefix. Compute it by incrementing the last non-`0xFF` byte and
@@ -76,12 +80,22 @@ bytes, then the value. You read from here only when a query genuinely needs a fa
 names the predicate whose tree holds the row ([snowflake `FactId`](#factid-allocation-i11)),
 so this stays a single lookup even though the CF is split per predicate.
 
+**What it costs is that the key is stored twice** — once as the `keys` row that indexes it, once
+inside the `entities` row that identifies it. Glean's layout has the identical duplication and
+names it as its main space defect, worst exactly where keys are large: file paths and symbol
+names, which is the example corpus's entire profile. Glean's fix is to store a *truncated* key in
+`keys` and re-check the full one from `entities` — available to it because it gave up ordered
+iteration, and [not available here](#the-order-a-scan-is-promised-in).
+
 ### Why two, not one
 
 The split is the physical expression of "keys are for finding, values are for fetching."
 Keeping values out of `keys` means the index stays dense and the scan loop reads only what
 it needs to *filter*, deferring the (potentially large) value until a row actually
-survives to projection. This is [invariant I6](invariants.md#i6):
+survives to projection. The layout is **Glean's, down to the names** — its two fact-bearing
+column families are called `keys` and `entities` and point the same two ways — and it is adopted
+on purpose, not arrived at ([the comparison](glean-comparison.md) has the side-by-side). What is
+*not* adopted is the discipline on top of it, [invariant I6](invariants.md#i6):
 
 > **I6 — values never enter the scan hot loop.** Residuals on *key* fields are checked
 > during the scan against `keys` only. A value is fetched from `entities` only when
@@ -90,6 +104,14 @@ survives to projection. This is [invariant I6](invariants.md#i6):
 >
 > *Guard:* `exec::no_value_fetch_in_scan` — a store spy fails if `point()` is called while
 > running a key-only query.
+
+**I6 is a strengthening, and it is ours.** Glean has the same key-only/key-value choice at its
+iterator — a scan can be asked for the index row alone — but where a query *matches* on a value
+it marks the seek as needing one, and then fetches the value for every row the scan **examines**:
+a second store lookup per row, which its own interface documents as the expensive mode. That is
+precisely what I6 forbids. Affording the stricter rule is partly luck of sequencing — value
+patterns are deferred (`nyi/value-match`), so the query that tempts a fetch into the loop cannot
+be written yet — and I6 is what keeps it out when it can.
 
 ---
 
@@ -118,6 +140,21 @@ consequences, all load-bearing:
 Splitting `entities` is only possible because a [`FactId` is tagged with its predicate](#factid-allocation-i11):
 `point()` is handed a bare id and no predicate, so an untagged id would turn identity lookup
 into a search across every predicate's tree.
+
+**Glean's split is global where this one is physical.** One `keys` family and one `entities`
+family hold every predicate; the predicate is an 8-byte key prefix in `keys` only, with RocksDB
+told about it through a fixed-prefix transform, so prefix bloom filters do the work separate trees
+do here. Its `entities` has no predicate structure at all — facts of every predicate interleave in
+id order. Two things fall out of the physical split that are worth claiming, because they are
+savings rather than preferences:
+
+- **No predicate id in every `entities` row.** Glean stores one, because a bare id does not say
+  which predicate it belongs to. Here the tag says it, and "what predicate is this fact?" is a
+  shift rather than a fetch.
+- **No `stats` family inside the write batch.** Glean maintains per-predicate counts as rows
+  updated in every commit, to answer `count(predicate)` and to skip a seek into an empty one. A
+  predicate's cardinality and size are properties of its own tree here, so both answers cost
+  nothing on the write path.
 
 ### What it costs
 
@@ -172,6 +209,32 @@ identically would satisfy a differential and both still be wrong.
 
 ---
 
+## The order a scan is promised in
+
+A scan yields rows in **lexicographic key order**, and everything above it takes that as given: a
+seek narrows by extending a byte prefix, residuals are checked as rows arrive in that order, and
+resume re-opens a level at the saved key bytes and expects to land on the same fact
+([I4](invariants.md#i4), [chapter 5](05-resume.md)). That is a **commitment**, not an incidental
+property of fjall, and it is stronger than what the design it was taken from now offers: Glean's
+prefix iterator returns facts "in no specified order" — a requirement it dropped deliberately, so
+that a `keys` row could hold a *truncated* key on backends with a small maximum key size, with the
+full key re-checked from `entities`.
+
+Two consequences, neither of which has an answer here yet:
+
+- **Key truncation is foreclosed.** It is the fix for [storing the key
+  twice](#entities--identity-answers-what-is-this-fact), and it needs duplicate index entries in
+  no particular order. A backend that cannot hold a whole key cannot hold this `keys` family.
+- **There is no key-size budget and no degradation path.** Glean caps a key explicitly and
+  documents what happens above the cap; nothing here states a bound, so an over-long key is a
+  question the store answers by accident.
+
+The codec's [order-preservation](02-tuple-codec.md#property-1--order-preserving-i1) is the
+stronger property and is still unspent. This is the weaker half of it, and it is what is
+load-bearing today.
+
+---
+
 ## FactId allocation ([I11](invariants.md#i11))
 
 Every fact gets a `FactId` — a `u64` — assigned once at ingest. It is a **snowflake**: the
@@ -195,7 +258,12 @@ Three things follow from the tag, and they are the reason for it:
   bare id.
 - **There is no global allocator.** Each predicate counts its own facts, so two ingest
   workers on different predicates share no counter and write disjoint, ascending id ranges —
-  which is exactly what fjall's ascending-only bulk `ingest()` wants.
+  which is exactly what fjall's ascending-only bulk `ingest()` wants. Glean, whose ids are one
+  flat space behind one counter, has **no concurrent writer at all** at the storage layer — a
+  batch inserted out of sequence is an error, and the code says "we do *not* support concurrent
+  writes" in as many words — and buys the parallelism back with a whole rebase subsystem: a
+  writer builds a local fact set and every id in it is renamed through a substitution on merge.
+  The snowflake deletes that subsystem rather than reimplementing it.
 - **Uniqueness across predicates is structural**, not enforced: the tag partitions the id
   space, so two predicates cannot collide however their sequences are allocated.
 
@@ -206,10 +274,25 @@ resume cursor safe.
 **The high-water mark is recovered from the data, not from a sidecar counter.** An `entities`
 key *is* a fact id, big-endian, so the last key in a predicate's `entities` tree is its
 high-water mark. A separately persisted counter could be stale after a crash and reissue a
-live id; a derived one cannot disagree with what is stored.
+live id; a derived one cannot disagree with what is stored. Glean persists its `NEXT_ID` in an
+admin family and inside the same batch as the facts, so its counter cannot be stale either — but
+it can be *missing*, and Glean's own error message for that case is "corrupt database". A mark
+read back from the data is not state that can be lost.
 
 Sequences are **unique and never reused, but not dense**: an id consumed by a write that then
 fails is not handed out again.
+
+**What the tag costs is density *across* predicates**, and it is worth naming precisely, because
+Glean's interface says its ids "are supposed to be dense" and five separate mechanisms spend that
+density — a substitution is a flat vector indexed by `id − base`, an in-memory fact set indexes
+its facts by `id − starting_id`, ownership sets are Elias-Fano-coded (a coding for *monotone*
+sequences), the fact→owner map is an interval map over consecutive ids, and stacking is the single
+compare `id < mid`. Within one predicate the sequence here is monotonic from 1 with holes only
+where a write failed, so every one of those structures survives as a **per-predicate instance
+keyed by the tag** — the same dense-map-of-predicates shape Glean already uses elsewhere — rather
+than becoming impossible. The one that genuinely degrades is a set of facts *spanning* predicates:
+under a snowflake that is up to 2²⁴ far-apart runs, and bitset or monotone compaction over it buys
+much less. If such a set is ever wanted, key it by predicate from the start.
 
 > **I11 — `FactId` is stable, unique, and never reused within a DB.** Unique within a DB
 > (structurally, via the predicate tag), monotonic within a predicate, never reused (there is
@@ -244,7 +327,8 @@ per-predicate counter is the seam that makes concurrent ingestion safe.
 ## The atomic two-CF write ([I12](invariants.md#i12))
 
 `keys` and `entities` are the two halves of one fact. They are written in a **single fjall
-write batch**.
+write batch**. Glean does exactly this, in one wider batch that also carries its id counter and
+its per-predicate stats rows — an adopted rule, not a divergence.
 
 > **I12 — a fact is written to both column families atomically.** A fact is never
 > half-present: never a key without its entity, never an entity without its key.

@@ -158,8 +158,16 @@ Flatten lowers the typed, nested query into the flat `Plan`: an ordered `[Genera
 
 - **Disjunction stays a node.** `|` survives flattening as a `FlatDisjunction`
   (union-of-streams) — it is **never DNF-expanded across sibling conjuncts** (that's
-  exponential blow-up). The one bounded exception is Glean's "PLAN-B": distribute an `|`
-  only *within a single seek's pattern*. This needs a per-branch discriminant on the
+  exponential blow-up). Glean's "PLAN-B" (`glean/db/Glean/Query/Flatten.hs:398-459`) is the
+  same rule seen from the other side, and it is worth stating as it actually is: it duplicates
+  the *enclosing pattern* outward to the nearest enclosing statement, so
+  `cxx1.Name ("foo".. | "bar"..)` becomes `(cxx1.Name "foo"..) | (cxx1.Name "bar"..)`
+  (`:439-443`) — **one seek per alternative under a disjunction node**, not an alternation
+  folded into a single seek. What bounds it is **scope, not frequency**: Glean does PLAN B
+  *always* ("for now we do PLAN B all the time", `:453`) and PLAN A — bind a fresh variable,
+  duplicate nothing — is the unbuilt alternative; the duplication stops at the nearest
+  enclosing statement, which is exactly what keeps it from becoming DNF across conjuncts. N
+  seeks from one written pattern is why this needs a per-branch discriminant on the
   [`Cursor`](05-resume.md) — keep that token extensible.
 - **Union select lowers to a residual**, not a generator: `x.alt?` becomes
   `ResidualOp::DiscriminantEq(n)` + a payload bind ([chapter 6](06-types-and-schema.md)).
@@ -201,17 +209,80 @@ those — and a nested step re-derives its offsets per read. `FieldPath` is why
 `test.Nested {outer = {inner = X}}` can be projected at all, and why a *whole* record key
 cannot: it is not one field, so there is no path that names it.
 
-### reorder — identity now, real later
+### reorder — the runnable frontier
 
-`reorder` chooses the loop order. **In P0 it is the identity function** — and that's
-*correct*, not a stub, because of the safety/ordering split below. Its interface, though, is
-built for the real algorithm and for [derived facts](#derived-facts): it takes a
-**dependency graph**. The eventual algorithm (build later, not now):
+`reorder` chooses the loop order, over a **dependency graph** (the interface [derived
+facts](#derived-facts) needed too). The algorithm:
 
-> **Kahn's topological sort** over the dependency graph, layered into **antichains** of
-> independently-orderable statements, with a **selectivity heuristic** within each antichain
-> (point-matches before prefix-matches before full scans, à la Glean's `Reorder`).
-> Negations/conditionals move after their non-locals are bound.
+> Repeatedly emit the **frontier** — the statements whose `reads` are all bound —
+> lowest-numbered first. Greedy, one pass, **no backtracking**.
+
+No backtracking is needed because the constraint is **monotone**: `reads` is structural (fixed
+whatever the order) and `bound` only grows, so a statement runnable at one step is still
+runnable at the next, and emitting one can never strand another. If any valid order exists,
+greedy finds it. That is a completeness claim, and it is property-tested against `antichains()`
+as an independent check — the two must agree on *which* graphs are orderable.
+
+**Completeness is Aperture's own, and Glean cannot claim it.** Glean's `Reorder` is two passes
+with different jobs, and the second — the one that checks a statement's bindings can actually be
+compiled — queues a statement it cannot place, tries the next, and, having got all the way
+through the list, **gives up** (`glean/db/Glean/Query/Reorder.hs:575-639`). The difference is
+**nested statement groups** from negation and disjunction, whose own reads depend on how their
+branches are ordered — which is exactly where monotonicity fails. focus has none until Phase 6b,
+so this is a claim to re-prove there rather than one to assume survives.
+
+**A query whose written order already works is returned unchanged**, so this is not a second
+way to compile anything: the same plan, plus the orders that used to be refused. Which is the
+point — `reorder` is load-bearing for **acceptance**, not only for speed. `test.Ref {of = P};
+P = test.Foo {id = 1}` reads `P` in the statement written before the one that captures it, and
+the frontier is what makes that query legal at all rather than a refusal with a perfectly good
+plan going spare.
+
+What is *not* built is selectivity, and the **tiers** are the one part of Glean's reorderer this
+design genuinely takes: point match before prefix match before full scan, applied greedily in
+strict order — `chooseAll StmtFilter → chooseAll StmtPointMatch → chooseBest
+StmtPrefixFactMatch → chooseBest StmtPrefixMatch → chooseBest StmtScan`
+(`glean/db/Glean/Query/Reorder.hs:539-544`). Two things about that ranking travel with it. It is
+priced from **key-prefix boundness, not from cardinality** — Glean walks the key pattern left to
+right against "is this variable bound?", stops at the first field that is not, and reads the
+answer off where it stopped; its `PredicateStats` is a request-driver and deriver concern, never
+imported by `Reorder`. And it treats a field the pattern omits as a wildcard that **closes** the
+prefix, which is the same rule as the table above, one side using it to build the prefix and the
+other to price it.
+
+**Nothing else about the two algorithms is shared, and the resemblance is easy to overstate.**
+Glean's `Reorder` contains no topological sort and no antichains; the only topological sort in
+its pipeline is over *derived-predicate* dependencies at schema load, in a different module
+(`glean/db/Glean/Query/Prune.hs:85`). Its loop is transitive **lookup-chasing** from the bound
+set — emit every `X = pred …`
+whose `X` is already bound, add whatever that binds, repeat, because such a statement is O(1) and
+unlocks more — then a greedy pass over the tiers, then back to chasing. Beyond the tiers, Glean
+has and focus does not: lookup-chasing itself, any cost model at all, an `Ordered`/`Floating` tag
+distinguishing statements a person put in an order from ones flattening invented, a *semantic*
+rule requiring a negation's non-locals be bound before it runs, synthesis of a generator for an
+otherwise-unbound variable, and a whole optimiser stage
+([below](#folding-a-constant-bind)). Full ledger, both directions:
+[Glean comparison](glean-comparison.md).
+
+The blocker here is data, not structure: `StmtDeps` carries variable occurrences only, not the
+shape of each statement's key prefix. When it does, the heuristic replaces "lowest-numbered" with
+a `min_by_key` over the frontier — which can then weigh a statement against **what is bound at
+the moment it would run**, the only point at which "point match, prefix seek or full scan" has an
+answer. Note that layering with `antichains()` and sorting *within* a layer cannot express that:
+a layer index is only a lower bound on position, so it can never defer a cheap-looking scan past
+the selective statement that would have bound its key. `antichains()` is kept for feasibility
+and diagnostics, off the choosing path.
+
+**But the blocker is sequencing rather than information, and the comparison is what makes that
+plain.** Glean extracts the seek prefix in **codegen**
+(`glean/db/Glean/Query/Codegen.hs:1085-1190`), so its reorderer has no real prefix to look at and
+must approximate one from the pattern tree; flatten builds seek and residuals *here*, and so
+holds the **typed** pattern at the moment it orders — and still declines to read it. The
+classifier that does the approximating is about sixty lines. Cheaper still, and independent of
+any cost model, is **lookup-chasing**: propagating boundness transitively before consulting a
+tier at all, which is the common case on the shell's own code index (files → modules →
+declarations → references), where most joins are a point match through an already-bound
+reference and the frontier today takes the lower index instead.
 
 **The graph is over variables, not edges between statements**, and that turned out to be
 load-bearing rather than a modelling preference. Which statement *captures* a shared variable
@@ -231,28 +302,52 @@ rather than emitting a plan that reads an unbound register.
 
 ---
 
-## Safety vs ordering — why reorder can be identity
+## Safety vs ordering — where the split actually falls
 
 A subtle but load-bearing distinction:
 
 - **Correctness needs only a *safety* check, not a sort.** Every variable used in a
-  seek/residual/head must be **captured** in *some* generator's key pattern. Because capture
-  happens at first occurrence, "bound before use" holds automatically in *any* linear order.
-  So flatten just verifies **range-restriction** (reject queries with an un-captured
-  variable — a clear compile error) and any order runs correctly.
-- **Ordering is purely a *performance* choice** (selectivity). That's why P0 can ship
-  `reorder = identity`: it's slower, never wrong.
+  seek/residual/head must be **captured** in *some* generator's key pattern, before it is read.
+  Flatten verifies exactly that — **range-restriction** — over the order that was chosen, and
+  any order passing it runs correctly.
+- **Choosing among the orders that pass is a *performance* question** (selectivity), and that
+  part is not built: `reorder` takes the first order it finds, which is slower, never wrong.
+  *Finding* one, by contrast, is not optional, which is the next paragraph's point.
 
-**Topological sort becomes *required* only with derived binds** — they consume variables and
-can't capture them, so they impose hard ordering edges (and a cycle is a compile error).
-That's the next section, and it's why the reorder interface takes a graph from day one.
+The line between those two moved once, and it is worth being precise about where it now is.
+"Bound before use holds automatically in *any* linear order" is **false**, and used to be
+stated here: it holds only where every variable is captured at its first occurrence. A
+variable that can only be *read* breaks it — `test.Name Y.name` reads `Y`, and so does `of = P`
+where `P` is a row bound elsewhere — and then some orders are correct and others are not. So
+ordering is a performance choice *among the safe orders*, and finding a safe one at all is
+`reorder`'s job rather than a property of how the query happened to be written.
 
-The claim is *tested*, not asserted: the tier-3 battery generates a `(query, store)` pair and
-runs it in **every permutation** of the body, against a model that reads the query as slow
-nested loops ([testing](testing.md)). The plans differ — one seeks where another filters —
-and the rows do not. One order is not free, and the graph is what says so: a statement that
-can only *read* a variable (`test.Name Y.name`) has to follow the one that binds it, and an
-order putting it first is refused rather than compiled.
+That is what makes the written order not the run order: `test.Ref {of = P}; P = test.Foo {id =
+1}` reads `P` in the statement written first and captures it in the statement written second,
+and it compiles — to the same plan as the other spelling. Before, it was refused at typecheck
+as a `pattern = pattern` ([open decisions](open-decisions.md)), which conflated an ordering
+question with unification.
+
+**A topological order becomes *required* for derived binds** too — they consume variables and
+can't capture them, so they impose hard ordering edges (and a cycle is a compile error). That's
+the next section, and it's the other reason the reorder interface takes a graph.
+
+The claim is *tested*, not asserted, and from both ends. The tier-3 battery generates a
+`(query, store)` pair and runs it against a model that reads the query as slow nested loops
+([testing](testing.md)):
+
+- **Handed an order**, it runs every *safe* permutation of the body. The plans differ — one
+  seeks where another filters — and the rows do not.
+- **Handed a rewritten source**, it runs **every** permutation, safe or not, and lets `reorder`
+  choose. This is what says the written order does not matter: the unsafe ones are precisely
+  those where a read precedes its bind, and they now compile rather than being refused. A
+  separate census counts them, because the property would be decoration if the generator drew
+  none.
+
+The two are not the same claim, and the difference is the point: an order that is *given* is
+still checked and still refused, because flatten's safety pass runs over the order that was
+chosen — by `reorder` or by a caller. What changed is that being written in a bad order is no
+longer the same thing as being handed one.
 
 <a id="what-flatten-defers-and-why"></a>
 ### What flatten defers, and why
@@ -260,15 +355,40 @@ order putting it first is refused rather than compiled.
 Everything below **parses and typechecks**, then draws one specific `nyi/…` naming it — the
 permissive-early promise, now checked all the way through the driver *and past it*: the corpus
 gate runs `Compilation::plan` and then runs the plan against a real store, so `Supported`
-means **returns these rows**, and each of these has an entry.
+means **returns these rows**. Every code here has a corpus entry.
 
 | construct | code | what it needs |
 |---|---|---|
-| `X = 42`, `X = Y`, `X = Y.name` | `nyi/value-bind` | a **derived bind** — the `Slot` value variant ([Phase 6](#derived-facts)) |
+| `X = {a = 1, b = Y}` — a value in **no register** | `nyi/value-bind` | a **derived bind**: the value has to be *built*, which is the `Slot` value variant ([Phase 6](#derived-facts)) |
+| `X = Y` with both bound, `X = "a"..`, `gen = gen` | `nyi/bind-unification` | two values compared at runtime and nothing to substitute — a register-to-register residual ([open decisions](open-decisions.md)) |
 | `X.name`, `X.value` where `X` came out of a reference field | `nyi/fact-field` | cross-fact navigation: a second lookup, which is a new `Access` kind (`Access::Fetch`) |
 | `test.Name Y.value` — a value in a key position | `nyi/value-match` | a residual class over the fetched value buffer, never in the scan ([I6](invariants.md#i6)) |
 | `test.Foo Y` — a variable for a whole record key | `nyi/whole-key` | a key is not one field ([chapter 3](03-storage-model.md#a-stored-key-is-flat)) |
 | `Edge {from = X, to = X}` | `nyi/repeated-variable` | a same-row `EqField` residual — the [Phase 4 decision](open-decisions.md) |
+
+**`X = Y.name` is not on this list any more, and the line it moved across is the useful one.**
+A field read names a *place* — a register plus a path — so binding a name to it is the same
+substitution a constant bind is: no register, no step, and the same plan as writing the read
+where the name is used. What is left under `nyi/value-bind` is the case where the right side is
+in no register at all and would have to be constructed. So the two bind deferrals now divide on
+*where a value is*: nothing anywhere (`nyi/value-bind`) against two things each somewhere
+(`nyi/bind-unification`).
+
+That split is what makes [`Slot`](#where-a-value-lives) the single substitution. One function —
+`resolve` — answers "where does this expression's value live" for every position that can
+consume one: a key field, the head, an alias's right side, and a record's pieces when it
+destructures. A constant is an ordinary arm of it rather than a parallel path, so
+`test.Bar {id = 1}` and `Z = 1; test.Bar {id = Z}` are the same code and not merely the same
+answer. Glean reaches the same place from the other end, and pays for it: it emits a statement
+for every read and then removes the redundancy with a unification pass (`Opt.hs`), which costs a
+per-row rebuild wherever the pass fails to fire. Substituting a *location* rather than a *term*
+is what makes the pass unnecessary here ([Glean comparison](glean-comparison.md)).
+
+A record pattern destructures against any slot for the same reason — `{inner = X} = P.outer`
+names each piece of a place — which is Glean's `expandStmt` decomposition with the trivial
+leaves never built rather than built and dropped. Its one limit is typecheck's: records unify
+exactly, so a pattern has to name every field, and `{extra = _, inner = X}` is the spelling for
+"only this piece".
 
 **Reaching a fact through a reference** is the one that would have been dangerous to leave
 implicit, and it is now split at exactly the line the danger falls on. *Following* a reference
@@ -388,10 +508,40 @@ The word "derived" covers two features that share a name and almost nothing else
   below one, the machine re-enters it from beneath on the way back up and recomputes it anyway,
   so only the above case can observe a resume that failed to.
 
-Derived binds impose the hard topological ordering the reorder interface was built for — *the*
-case that makes topo-sort necessary; cycles are compile errors (recursion is out of scope).
-Mechanism mirrors Glean (`DerivedFactGenerator`, `Derive when`, the `captureKey` trick,
-`DerivedAndStored`). Full sequencing in [`PLAN.md`](../PLAN.md) "Phase 6".
+**I14 mirrors nothing in Glean, and is worth claiming as this design's own.** Glean's on-demand
+derivation is macro **inlining**: a derived predicate's defining query is expanded at the call
+site and compiled as part of the caller (`glean/db/Glean/Query/Flatten.hs:264-290`), so no
+derived value ever exists as a *binding* for a continuation to carry, and no purity rule is
+needed to say what happens to one across a suspend. I14 exists because Aperture resumes from
+**bytes** ([chapter 5](05-resume.md)) — the question it answers is one only a bytes-only cursor
+asks.
+
+Derived binds impose the hard ordering the reorder interface was built for — *the* case where a
+statement consumes variables and can never capture them; cycles are compile errors. Recursion is
+out of scope, which is a firmer line than Glean draws — so "both decline recursion" needs its
+qualifier: Glean refuses a recursive reference by *default* but will compile one behind
+`--experimental-recursion` (`glean/db/Glean/Query/Flatten.hs:296-308`), iterating the query to a
+fixpoint over the facts each round newly produces
+(`glean/db/Glean/Query/Codegen.hs:1412-1465`). Declining it here is still right: a fixpoint
+driver is a genuine reshape of the machine, not an additive feature.
+
+**What actually mirrors Glean here is narrow.** `DerivedFactGenerator`
+(`glean/db/Glean/Query/Codegen/Types.hs:158`) is the same idea as a step producing a binding no
+stored row supplied, and `DerivedAndStored` — spelled `stored` in Angle — is the same
+stored-versus-dynamic split as the two kinds above, one of **three** derivation modes rather
+than two (`DeriveOnDemand | DerivedAndStored | DeriveIfEmpty`,
+`glean/angle/Glean/Angle/Types.hs:619`). Full sequencing in [`PLAN.md`](../PLAN.md) "Phase 6".
+
+**One hazard is worth taking from Glean even though its mechanism is not.** `captureKey`
+(`glean/db/Glean/Query/Flatten.hs:549-586`) is not a derivation mechanism at all — it rewrites
+`X = pred pat` so the **client** gets the key back without a second fetch, which focus needs
+nothing for, because [I5](invariants.md#i5) already puts the whole row in the register. What its
+`Note [query result]` records is the trap underneath: where the key cannot be captured and a real
+fetch is required, that fetch has to be emitted **last**, because the fact may be produced by a
+derived-fact generator and does not exist until then — and nothing otherwise stops a later phase
+moving it earlier. That is the same family as I14's "the derive step must sit above a scan" case,
+and it becomes a live risk the moment `Access::Fetch` lands: **a fact read must never be ordered
+above the step that produces the fact it reads**, and `reorder` is where that would go wrong.
 
 ### Folding a constant bind
 
@@ -400,6 +550,35 @@ equally `X = {name = "foo", y = 24}`, to any depth — is *substituted at every 
 asks `constant` and a head asks `project`, each reaching the arm it would have reached had the
 literal been written in place. So `Z = 1; test.Bar {id = Z}` seeks the bytes `{id = 1}` seeks,
 by the same code rather than a parallel path.
+
+**The fold does not care where the bind was written.** Constants are collected from the whole
+body before any statement is lowered, so `test.Bar {id = Z}; Z = 1` reaches `emit` with the same
+bindings as `Z = 1; test.Bar {id = Z}` and is the same plan. Unlike the row case this needs no
+reordering at all — a constant has no level to move — and unlike the row case it was never
+*about* the order: the fold was order-free from the start and only typecheck's gate was not
+([open decisions](open-decisions.md)).
+
+The same substitution covers a **record of variables on the left**: `{a = X, b = Y} = {a = 1,
+b = 2}` destructures piece by piece into the two binds written out, which is exactly the sugar
+it looks like. Sound only because the right side is constant — `{a = X} = {a = Y}` would need
+the two compared per row — and only because a *literal* leaf on the left is refused:
+`{a = 1} = {a = 2}` typechecks and binds nothing, so accepting it would emit no constraint and
+mean `true` where it means the empty relation. A wildcard leaf is fine, since it binds nothing
+but also cannot fail.
+
+Both halves of "one variable, one constant" are flatten's to enforce, and the second is the
+dangerous one: `lookup` walks the bindings in reverse, so `Y = 1; Y = 2` would silently keep
+the *last*.
+
+**The substitution reaches through a field read**, and has to. `A = {x = 2}` makes `A.x` the
+literal `2`, so `resolve` maps a read through a folded record to the constant of the piece it
+names. Stopping at the variable was a real bug, and instructively it went wrong in two
+different ways with no error message in either: in the **head** `resolve` declined quietly, so
+flatten returned no plan with nothing reported and the "no plan without a reason" assertion
+fired; at a **key field** the constraint was dropped altogether, so the level matched every row.
+The second is the worse outcome and the reason the arm that lowers a read at a key field now
+reports when nothing else explained a decline — a field that narrows nothing, filters nothing
+and says nothing is the one result worse than refusing the query.
 
 A folded bind therefore occupies **no register and no step**. Introducing one would be a level
 for the executor to walk and a value for a resume to recompute, both to arrive back at a
@@ -427,6 +606,28 @@ field of `X`'s register) rather than a value slot, so the first real producer is
 ([`PLAN.md`](../PLAN.md) Phase 6b). The machinery is deliberately built ahead of them, because
 its resume behaviour is the expensive thing to get wrong later; it is exercised by hand-built
 plans, and [I14](invariants.md#i14) records that scope honestly.
+
+**What folding is not is an optimiser, and that is the gap that bites first.** Glean has a whole
+query-simplification stage with no counterpart here (`glean/db/Glean/Query/Opt.hs`): unification
+and substitution over `P = Q`, structural decomposition of `{A,B} = {C,D}` into a bind per field,
+tautology **and duplicate-statement** elimination, and propagation of a statement that can never
+match outward through its conjunction. Its own worked example
+(`glean/db/Glean/Query/Opt.hs:53-81`) is the one that matters, because it is exactly the shape
+[Phase 8b](../PLAN.md) produces: expanding a derived predicate yields
+`X where StringPair {B, A}; X = {A, B}; X = {_, "a"}`, and only substitution **through a record**
+turns that into `{A, "a"} where StringPair {"a", A}` — a **seek** where the unsimplified form is a
+full scan. The fold above cannot do it: `{A, B} = {_, "a"}` has a variable leaf, and folding
+requires constants all the way down. So a stored derived predicate will be systematically slower
+than the query a person would have written by hand until something performs that substitution,
+which is the failure Glean built `Opt` for.
+
+Two things follow, and the second is a trap in advance. Aperture's constant fold is a **proper
+subset** of that stage — `Opt` would fold `X = 42` as one case of general substitution, not as a
+feature. And the pass Glean needs *because* it substitutes, `BindOrder.hs`, is legitimately
+unnecessary here for a reason Glean states about itself: it exists only because substitution and
+statement floating invalidate the bind-versus-match decisions its typechecker already made
+(`glean/db/Glean/Query/BindOrder.hs:38-51`). focus decides capture-versus-read once, at collect
+time, and nothing later disturbs it — which stops being true the day an `Opt`-shaped stage lands.
 
 ---
 

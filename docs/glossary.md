@@ -8,8 +8,10 @@ Every term of art in one place, with a pointer to the chapter that goes deep. Al
 
 **Access** — a `Generator`'s target: a `predicate_id` plus a `SeekKey`. [ch4](04-executor.md).
 
-**antichain** — a layer of statements with no ordering dependency between them; the reorder
-algorithm sorts topologically into antichains, then picks within each by selectivity.
+**antichain** — a layer of statements with no ordering dependency between them. `Deps::antichains`
+answers *whether* a valid order exists, and is the independent witness the reorder completeness
+property is checked against — it is **not** on the reorder path, which is a greedy runnable
+frontier. Neither is it Glean's algorithm: `Reorder.hs` has no antichains and no topological sort.
 [ch7](07-compilation.md).
 
 **Aperture DB** — the database / product. Immutable: built once, sealed, then read-only.
@@ -55,7 +57,8 @@ not a loop level, recomputed on resume; must be a pure function of the fact bind
 (`… = KEY where <query>`) rather than stored. **Two different features share the name:**
 *stored* derivation writes the facts at build time and the executor never knows the difference
 (PLAN Phase 8b, gated on the schema DSL); *dynamic* derivation computes a value while a query
-runs, and is what the `Register→Slot` machine change was for (Phase 6).
+runs, and is what the `Register→Slot` machine change was for (Phase 6). Our two are not Glean's
+three deriving modes — [the ledger](glean-comparison.md) maps them.
 [ch7](07-compilation.md#derived-facts).
 
 **discriminant** — the explicit, append-only tag identifying a union alternative
@@ -167,8 +170,9 @@ some generator's key pattern; makes bind-before-use automatic in any order. [ch7
 **Register** — a bound row: `{ fact_id, bytes }` (the whole row, not a field —
 [I5](invariants.md#i5)). The fact case of a [`Slot`](#). [ch4](04-executor.md).
 
-**reorder** — the compiler phase choosing loop order; identity in P0 (safe because ordering is
-performance-only); eventually Kahn topo-sort + antichains + selectivity. [ch7](07-compilation.md).
+**reorder** — the compiler phase choosing loop order: the greedy *runnable frontier*, complete
+because the constraint is monotone, so a written order that reads before it binds is fixed
+rather than refused. Selectivity within the safe orders is not built. [ch7](07-compilation.md).
 
 **residual** — a filter applied to a scanned row during the scan: `EqConst | Prefix |
 EqRegisterField` (key fields only, [I6](invariants.md#i6)). [ch4](04-executor.md).

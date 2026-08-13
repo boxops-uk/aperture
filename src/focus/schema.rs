@@ -356,10 +356,19 @@ mod pending_phase_8 {
     // (and `ops-I4` reproducibility with it).
     //
     // Procedure: build the same schema from two different source orderings — the
-    // predicates and their fields permuted, split across files differently — and
-    // assert the canonical forms are byte-identical and the fingerprints equal.
-    // A genuine semantic change must still change the fingerprint (the negative
-    // control, or the property passes trivially for a constant function).
+    // predicates permuted and split across files differently — and assert the
+    // canonical forms are byte-identical and the fingerprints equal. A genuine
+    // semantic change must still change the fingerprint (the negative control, or
+    // the property passes trivially for a constant function).
+    //
+    // **Field order is not source layout.** A record's field order *is* its
+    // encoding order (`focus::fact`), and it decides the seek prefix — so
+    // permuting fields is a semantic change and belongs in the negative control,
+    // never in the permuted-input arm. Asserting otherwise would certify two
+    // schemas as identical whose facts have incompatible bytes. Glean draws the
+    // line in the same place: field order is inside its per-predicate
+    // fingerprint, and a field reorder is handled as a *transform* rather than as
+    // identity.
     #[test]
     #[ignore = "I13 — pending Phase 8 (needs canonical form + fingerprints, PLAN 8)"]
     fn fingerprint_is_order_independent() {
