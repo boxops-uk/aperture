@@ -540,7 +540,7 @@ mod tests {
         iter::{Address, CANCELLATION_STRIDE, Executor, Iteratee, Stream},
         mem_store::MemStore,
         plan::{
-            Access, FieldPath, Generator, MAX_FACT_SEQUENCE, Plan, Project, Residual, ResidualOp,
+            Access, FieldPath, Level, MAX_FACT_SEQUENCE, Plan, Project, Residual, ResidualOp,
             SeekKey, SeekKeyPart, Step,
         },
         schema::PredicateTy,
@@ -1288,26 +1288,26 @@ mod tests {
     fn two_level_plan(outer: PredicateId, inner: PredicateId) -> Plan {
         Plan {
             nvars: 2,
-            body: Step::scans([
-                Generator {
-                    access: Access {
+            body: Step::levels([
+                Level::seek(
+                    Access {
                         predicate_id: outer,
                         seek_key: SeekKey::Prefix(Box::new([])),
                     },
-                    binds: Box::new([Address::new(0)]),
-                    residuals: Box::new([]),
-                },
-                Generator {
-                    access: Access {
+                    Box::new([Address::new(0)]),
+                    Box::new([]),
+                ),
+                Level::seek(
+                    Access {
                         predicate_id: inner,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
                             path: FieldPath::field(0),
                         }])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([]),
-                },
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
             ]),
             head: Project::RegisterField {
                 address: Address::new(0),
@@ -1448,19 +1448,18 @@ mod tests {
 
         let filtered = Plan {
             nvars: 1,
-            body: Step::scans([Generator {
-                access: Access {
+            body: Step::levels([Level::seek(
+                Access {
                     predicate_id: outer,
                     seek_key: SeekKey::Prefix(Box::new([])),
                 },
-                binds: Box::new([Address::new(0)]),
-                // Matches only the final key, so the run skips every other row
+                Box::new([Address::new(0)]), // Matches only the final key, so the run skips every other row
                 // and trips the poll on the way.
-                residuals: Box::new([Residual {
+                Box::new([Residual {
                     path: FieldPath::field(0),
                     op: ResidualOp::EqConst(i64_field(last).into_boxed_slice()),
                 }]),
-            }]),
+            )]),
             head: Project::RegisterField {
                 address: Address::new(0),
                 path: FieldPath::field(0),

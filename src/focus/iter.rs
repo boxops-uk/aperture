@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 use crate::focus::{
     error::{ApertureError, StoreCodecError, StoreError},
     plan::{
-        Computed, FactId, FactStore, FieldPath, Generator, Plan, Project, Residual, ResidualOp,
-        SeekKey, SeekKeyPart, Step,
+        Computed, FactId, FactStore, FieldPath, Plan, Project, Residual, ResidualOp, SeekKey,
+        SeekKeyPart, Source, Step,
     },
     schema::{LocalInterner, PREDICATE_ID_SIZE},
     tuple::{
@@ -425,6 +425,14 @@ impl<'a> Deadline<'a> {
 
 struct StackFrame<S: FactStore> {
     scan: Option<S::Scan>,
+    /// Which of the level's [`Source`]s is being drained.
+    ///
+    /// Alternatives are concatenated, so this only ever moves forward while the
+    /// level is open, and is reset when it closes — a level re-entered from an
+    /// outer level's next row starts at its first source again. Saved into the
+    /// [`Cursor`] beside the row, because "which branch produced this" is not
+    /// recoverable from the row itself.
+    source: usize,
     current: Option<Register>,
     field_offsets: Box<[FieldOffsets]>,
     /// Whether a [`Step::Derive`] at this position has produced its one value —
@@ -440,16 +448,28 @@ impl<S: FactStore> StackFrame<S> {
     fn closed(nvars: usize) -> Self {
         Self {
             scan: None,
+            source: 0,
             current: None,
             field_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
             derived_produced: false,
         }
     }
 
+    /// Close the level: no live scan, no row, and back to its first source.
+    ///
+    /// Resetting `source` is what makes a level re-entered from an outer row
+    /// produce all of its alternatives again rather than resuming where the last
+    /// pass through it happened to stop.
+    fn close(&mut self) {
+        self.scan = None;
+        self.source = 0;
+        self.current = None;
+    }
+
     fn open(
         &mut self,
         store: &S,
-        generator: &Generator,
+        source: &Source,
         state: &MachineState,
         resume_at: Option<&[u8]>,
     ) -> Result<(), ApertureError> {
@@ -461,7 +481,7 @@ impl<S: FactStore> StackFrame<S> {
         // out-of-range slice.
         self.field_offsets.iter_mut().for_each(|fo| fo.clear());
 
-        let prefix = self.build_prefix(state, generator)?;
+        let prefix = self.build_prefix(state, source)?;
         let hi = strinc(&prefix);
         let lo = resume_at.unwrap_or(&prefix);
 
@@ -474,11 +494,12 @@ impl<S: FactStore> StackFrame<S> {
     fn build_prefix(
         &mut self,
         state: &MachineState,
-        generator: &Generator,
+        source: &Source,
     ) -> Result<Vec<u8>, ApertureError> {
-        let mut prefix = generator.access.predicate_id.0.to_be_bytes().to_vec();
+        let Source::Seek { access, .. } = source;
+        let mut prefix = access.predicate_id.0.to_be_bytes().to_vec();
 
-        match &generator.access.seek_key {
+        match &access.seek_key {
             SeekKey::Prefix(bytes) => prefix.extend_from_slice(bytes.as_ref()),
             SeekKey::Composite(parts) => {
                 for part in parts.iter() {
@@ -514,7 +535,7 @@ impl<S: FactStore> StackFrame<S> {
     fn next(
         &mut self,
         state: &MachineState,
-        generator: &Generator,
+        source: &Source,
         deadline: &mut Deadline<'_>,
     ) -> Result<Option<Register>, ApertureError> {
         let scan = self.scan.as_mut().ok_or(ApertureError::AdvanceAfterClose)?;
@@ -542,12 +563,8 @@ impl<S: FactStore> StackFrame<S> {
                 bytes: key_bytes,
             };
 
-            if Self::check_residuals(
-                &mut self.field_offsets,
-                state,
-                &generator.residuals,
-                &current,
-            )? {
+            if Self::check_residuals(&mut self.field_offsets, state, source.residuals(), &current)?
+            {
                 self.current = Some(current.clone());
                 return Ok(Some(current));
             }
@@ -755,7 +772,7 @@ impl<S: FactStore> Executor<S> {
             saved.len(),
             self.plan.body[..=self.depth]
                 .iter()
-                .filter(|step| step.is_scan())
+                .filter(|step| step.is_level())
                 .count(),
             "a suspend cursor must name every level up to `depth`, contiguously"
         );
@@ -800,22 +817,24 @@ impl<S: FactStore> Executor<S> {
             let frame = &mut ex.stack[index];
 
             match &ex.plan.body[index] {
-                Step::Scan(generator) => {
+                Step::Level(level) => {
                     // Cannot run out: the length check above pinned the cursor to
                     // exactly this plan's level count.
                     let saved = saved_rows.next().ok_or(ApertureError::BadResumeKey)?;
 
-                    frame.open(&ex.store, generator, &ex.state, Some(&saved.bytes))?;
+                    let source = level.sources.first().ok_or(ApertureError::BadResumeKey)?;
+
+                    frame.open(&ex.store, source, &ex.state, Some(&saved.bytes))?;
 
                     let row = frame
-                        .next(&ex.state, generator, &mut deadline)?
+                        .next(&ex.state, source, &mut deadline)?
                         .ok_or(ApertureError::BadResumeKey)?;
 
                     if row.fact_id != saved.fact_id {
                         return Err(ApertureError::BadResumeKey);
                     }
 
-                    for var_address in generator.binds.iter() {
+                    for var_address in level.binds.iter() {
                         ex.state.registers[var_address.0] = Some(Slot::Fact(row.clone()));
                     }
                     frame.current = Some(row);
@@ -916,14 +935,27 @@ impl<S: FactStore> Executor<S> {
             // whether its iterator is open; a derive step, having no iterator, needs
             // the one bit below.
             match &self.plan.body[self.depth] {
-                Step::Scan(generator) => {
+                Step::Level(level) => {
+                    // No alternative left to open — which is both "every source
+                    // has been drained" and, for a level with no sources at all,
+                    // "the empty relation". One arm, because the machine's answer
+                    // to the two is the same: close and back up.
+                    let Some(source) = level.sources.get(frame.source) else {
+                        frame.close();
+                        if self.depth == 0 {
+                            return Ok(Iteratee::Done(acc));
+                        }
+                        self.depth -= 1;
+                        continue;
+                    };
+
                     if frame.scan.is_none() {
-                        frame.open(&self.store, generator, &self.state, None)?;
+                        frame.open(&self.store, source, &self.state, None)?;
                     }
 
-                    match frame.next(&self.state, generator, &mut deadline)? {
+                    match frame.next(&self.state, source, &mut deadline)? {
                         Some(register) => {
-                            for var_address in generator.binds.iter() {
+                            for var_address in level.binds.iter() {
                                 let slot = self
                                     .state
                                     .registers
@@ -934,13 +966,12 @@ impl<S: FactStore> Executor<S> {
                             frame.current = Some(register);
                             self.depth += 1;
                         }
+                        // This alternative is drained; the next round of the loop
+                        // opens the one after it, or backs out above if there is
+                        // none. Backtracking lives in one place for both.
                         None => {
                             frame.scan = None;
-                            frame.current = None;
-                            if self.depth == 0 {
-                                return Ok(Iteratee::Done(acc));
-                            }
-                            self.depth -= 1;
+                            frame.source += 1;
                         }
                     }
                 }
@@ -996,7 +1027,7 @@ mod tests {
         },
         mem_store::MemStore,
         plan::{
-            Access, DerivedBind, Entity, FactId, FieldPath, Generator, Plan, Project, Residual,
+            Access, DerivedBind, Entity, FactId, FieldPath, Level, Plan, Project, Residual,
             ResidualOp, SeekKey, SeekKeyPart,
             proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
@@ -1228,21 +1259,20 @@ mod tests {
         let interner = interner_with(&["n"]);
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([
-                Generator {
-                    access: Access {
+            body: Step::levels([
+                Level::seek(
+                    Access {
                         predicate_id: nested,
                         seek_key: SeekKey::Prefix(Box::new([])),
                     },
-                    binds: Box::new([Address::new(0)]),
-                    // `tag = "a"`, one step inside the record.
-                    residuals: Box::new([Residual {
+                    Box::new([Address::new(0)]), // `tag = "a"`, one step inside the record.
+                    Box::new([Residual {
                         path: FieldPath::nested(0, [1]),
                         op: ResidualOp::EqConst(str_field("a").into_boxed_slice()),
                     }]),
-                },
-                Generator {
-                    access: Access {
+                ),
+                Level::seek(
+                    Access {
                         predicate_id: ints,
                         // ...seeking on `inner`, also one step inside.
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
@@ -1250,9 +1280,9 @@ mod tests {
                             path: FieldPath::nested(0, [0]),
                         }])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([]),
-                },
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
             ]),
             head: Project::Record(Box::new([(
                 interner.get("n").expect("interned above"),
@@ -1339,7 +1369,7 @@ mod tests {
 
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head,
         };
 
@@ -1381,7 +1411,7 @@ mod tests {
     fn a_plan_with_no_steps_yields_exactly_one_row() {
         let plan = Plan {
             nvars: 0,
-            body: Step::scans([]),
+            body: Step::levels([]),
             head: Project::Lit(Value::Int(1)),
         };
 
@@ -1414,7 +1444,7 @@ mod tests {
         // No residual: every row matches, so every `next()` returns immediately.
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::FactRef(Address::new(0)),
         };
 
@@ -1468,7 +1498,7 @@ mod tests {
     fn a_short_keys_row_is_an_error_not_a_panic() {
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(PredicateId(0), 0)]),
+            body: Step::levels([scan_all(PredicateId(0), 0)]),
             head: Project::FactRef(Address::new(0)),
         };
 
@@ -1499,19 +1529,19 @@ mod tests {
 
         let two_level = Plan {
             nvars: 2,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(person, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: knows,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
                             path: FieldPath::field(0),
                         }])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([]),
-                },
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
             ]),
             head: Project::FactRef(Address::new(1)),
         };
@@ -1531,7 +1561,7 @@ mod tests {
 
         let one_level = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(person, 0)]),
+            body: Step::levels([scan_all(person, 0)]),
             head: Project::FactRef(Address::new(0)),
         };
 
@@ -1568,7 +1598,7 @@ mod tests {
         // Two registers, one generator binding r0: nothing ever binds r1.
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::FactRef(Address::new(1)),
         };
 
@@ -1589,7 +1619,7 @@ mod tests {
 
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::FactRef(Address::new(7)),
         };
 
@@ -1683,7 +1713,7 @@ mod tests {
 
         let plan = || Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::FactRef(Address::new(0)),
         };
 
@@ -1711,7 +1741,7 @@ mod tests {
 
         let plan = || Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::FactRef(Address::new(0)),
         };
 
@@ -1788,17 +1818,17 @@ mod tests {
 
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([Generator {
-                access: Access {
+            body: Step::levels([Level::seek(
+                Access {
                     predicate_id: pred,
                     seek_key: SeekKey::Prefix(Box::new([])),
                 },
-                binds: Box::new([Address::new(0)]),
-                residuals: Box::new([Residual {
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
                     path: FieldPath::field(0),
                     op: ResidualOp::EqConst(str_field("beta").into_boxed_slice()),
                 }]),
-            }]),
+            )]),
             head: Project::RegisterField {
                 address: Address::new(0),
                 path: FieldPath::field(0),
@@ -1823,14 +1853,14 @@ mod tests {
 
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([Generator {
-                access: Access {
+            body: Step::levels([Level::seek(
+                Access {
                     predicate_id: pred,
                     seek_key: SeekKey::Prefix(Box::new([])),
                 },
-                binds: Box::new([Address::new(0)]),
-                residuals: Box::new([]),
-            }]),
+                Box::new([Address::new(0)]),
+                Box::new([]),
+            )]),
             head: Project::Value {
                 address: Address::new(0),
                 ty: PredicateTy::Int,
@@ -1860,15 +1890,15 @@ mod tests {
     }
 
     /// A single generator that scans a whole predicate and binds one register.
-    fn scan_all(predicate_id: PredicateId, bind: usize) -> Generator {
-        Generator {
-            access: Access {
+    fn scan_all(predicate_id: PredicateId, bind: usize) -> Level {
+        Level::seek(
+            Access {
                 predicate_id,
                 seek_key: SeekKey::Prefix(Box::new([])),
             },
-            binds: Box::new([Address::new(bind)]),
-            residuals: Box::new([]),
-        }
+            Box::new([Address::new(bind)]),
+            Box::new([]),
+        )
     }
 
     // A one-level scan projects a key field, in ascending key order regardless
@@ -1884,7 +1914,7 @@ mod tests {
 
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::RegisterField {
                 address: Address::new(0),
                 path: FieldPath::field(0),
@@ -1916,17 +1946,17 @@ mod tests {
 
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([Generator {
-                access: Access {
+            body: Step::levels([Level::seek(
+                Access {
                     predicate_id: p,
                     seek_key: SeekKey::Prefix(Box::new([])),
                 },
-                binds: Box::new([Address::new(0)]),
-                residuals: Box::new([Residual {
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
                     path: FieldPath::field(0),
                     op: ResidualOp::Prefix(prefix.into_boxed_slice()),
                 }]),
-            }]),
+            )]),
             head: Project::RegisterField {
                 address: Address::new(0),
                 path: FieldPath::field(0),
@@ -1965,19 +1995,19 @@ mod tests {
 
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(person, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: knows,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
                             path: FieldPath::field(0),
                         }])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([]),
-                },
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
             ]),
             head: Project::Record(Box::new([
                 (
@@ -2051,26 +2081,25 @@ mod tests {
 
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(outer, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: inner,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
                             path: FieldPath::field(0),
                         }])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    // Fills this frame's offset cache for register 0 mid-scan.
-                    residuals: Box::new([Residual {
+                    Box::new([Address::new(1)]), // Fills this frame's offset cache for register 0 mid-scan.
+                    Box::new([Residual {
                         path: FieldPath::field(1),
                         op: ResidualOp::EqRegisterField {
                             address: Address::new(0),
                             path: FieldPath::field(1),
                         },
                     }]),
-                },
+                ),
             ]),
             head: Project::Record(Box::new([
                 (
@@ -2150,18 +2179,18 @@ mod tests {
 
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(person, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: refs,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterFactId(
                             Address::new(0),
                         )])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([]),
-                },
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
             ]),
             head: Project::RegisterField {
                 address: Address::new(0),
@@ -2200,19 +2229,19 @@ mod tests {
 
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(person, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: links,
                         seek_key: SeekKey::Prefix(Box::new([])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([Residual {
+                    Box::new([Address::new(1)]),
+                    Box::new([Residual {
                         path: FieldPath::field(1),
                         op: ResidualOp::EqRegisterFactId(Address::new(0)),
                     }]),
-                },
+                ),
             ]),
             head: Project::RegisterField {
                 address: Address::new(1),
@@ -2242,18 +2271,18 @@ mod tests {
 
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(person, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: refs,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterFactId(
                             Address::new(0),
                         )])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([]),
-                },
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
             ]),
             head: Project::FactRef(Address::new(1)),
         };
@@ -2302,18 +2331,18 @@ mod tests {
 
         let plan = Plan {
             nvars: 3,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(person, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: knows,
                         seek_key: seek_first_on(0),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([]),
-                },
-                Generator {
-                    access: Access {
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
+                Level::seek(
+                    Access {
                         predicate_id: knows,
                         // splice r1's second field (b) into the inner prefix.
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
@@ -2321,9 +2350,9 @@ mod tests {
                             path: FieldPath::field(1),
                         }])),
                     },
-                    binds: Box::new([Address::new(2)]),
-                    residuals: Box::new([]),
-                },
+                    Box::new([Address::new(2)]),
+                    Box::new([]),
+                ),
             ]),
             head: Project::Record(Box::new([
                 (
@@ -2382,23 +2411,22 @@ mod tests {
 
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(r, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: r,
                         seek_key: SeekKey::Prefix(Box::new([])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    // inner.field0 == outer(r0).field1
-                    residuals: Box::new([Residual {
+                    Box::new([Address::new(1)]), // inner.field0 == outer(r0).field1
+                    Box::new([Residual {
                         path: FieldPath::field(0),
                         op: ResidualOp::EqRegisterField {
                             address: Address::new(0),
                             path: FieldPath::field(1),
                         },
                     }]),
-                },
+                ),
             ]),
             head: Project::Record(Box::new([
                 (
@@ -2442,7 +2470,7 @@ mod tests {
 
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::FactRef(Address::new(0)),
         };
 
@@ -2463,7 +2491,7 @@ mod tests {
 
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::FactRef(Address::new(0)),
         };
 
@@ -2541,7 +2569,7 @@ mod tests {
         let interner = interner_with(&["got", "want"]);
         let plan = Plan {
             nvars: 2,
-            body: Box::new([derive(1, Value::Int(7)), Step::Scan(scan_all(p, 0))]),
+            body: Box::new([derive(1, Value::Int(7)), Step::Level(scan_all(p, 0))]),
             head: Project::Record(Box::new([
                 (
                     interner.get("got").expect("interned"),
@@ -2594,7 +2622,7 @@ mod tests {
                     store.insert(p, i64_field(v), i as u64 + 1);
                 }
 
-                let scan = Step::Scan(scan_all(p, 0));
+                let scan = Step::Level(scan_all(p, 0));
                 let computed = derive(1, Value::Int(99));
                 let body: Box<[Step]> = if above {
                     Box::new([computed, scan])
@@ -2719,7 +2747,7 @@ mod tests {
 
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::RegisterField {
                 address: Address::new(0),
                 path: FieldPath::field(0),
@@ -2747,19 +2775,19 @@ mod tests {
 
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(person, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: knows,
                         seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
                             address: Address::new(0),
                             path: FieldPath::field(0),
                         }])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([]),
-                },
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
             ]),
             head: Project::Record(Box::new([
                 (
@@ -2815,24 +2843,24 @@ mod tests {
 
         let plan = Plan {
             nvars: 3,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(person, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: knows,
                         seek_key: seek_on(0, 0),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([]),
-                },
-                Generator {
-                    access: Access {
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
+                Level::seek(
+                    Access {
                         predicate_id: knows,
                         seek_key: seek_on(1, 1),
                     },
-                    binds: Box::new([Address::new(2)]),
-                    residuals: Box::new([]),
-                },
+                    Box::new([Address::new(2)]),
+                    Box::new([]),
+                ),
             ]),
             head: Project::Record(Box::new([
                 (
@@ -2878,22 +2906,22 @@ mod tests {
 
         let plan = Plan {
             nvars: 2,
-            body: Step::scans([
+            body: Step::levels([
                 scan_all(r, 0),
-                Generator {
-                    access: Access {
+                Level::seek(
+                    Access {
                         predicate_id: r,
                         seek_key: SeekKey::Prefix(Box::new([])),
                     },
-                    binds: Box::new([Address::new(1)]),
-                    residuals: Box::new([Residual {
+                    Box::new([Address::new(1)]),
+                    Box::new([Residual {
                         path: FieldPath::field(0),
                         op: ResidualOp::EqRegisterField {
                             address: Address::new(0),
                             path: FieldPath::field(1),
                         },
                     }]),
-                },
+                ),
             ]),
             head: Project::Record(Box::new([
                 (
@@ -3087,14 +3115,14 @@ mod tests {
         // Three variables bind to each whole row; no residuals; no projection.
         let bind_plan = Plan {
             nvars: 3,
-            body: Step::scans([Generator {
-                access: Access {
+            body: Step::levels([Level::seek(
+                Access {
                     predicate_id: p,
                     seek_key: SeekKey::Prefix(Box::new([])),
                 },
-                binds: Box::new([Address::new(0), Address::new(1), Address::new(2)]),
-                residuals: Box::new([]),
-            }]),
+                Box::new([Address::new(0), Address::new(1), Address::new(2)]),
+                Box::new([]),
+            )]),
             head: Project::FactRef(Address::new(0)),
         };
 
@@ -3113,7 +3141,7 @@ mod tests {
         store2.insert(p, compose(&[&i64_field(1), &i64_field(2)]), 1);
         let proj_plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::RegisterField {
                 address: Address::new(0),
                 path: FieldPath::field(1),
@@ -3143,17 +3171,17 @@ mod tests {
         let (spy, calls) = PointSpy::new(store);
         let plan = Plan {
             nvars: 1,
-            body: Step::scans([Generator {
-                access: Access {
+            body: Step::levels([Level::seek(
+                Access {
                     predicate_id: p,
                     seek_key: SeekKey::Prefix(Box::new([])),
                 },
-                binds: Box::new([Address::new(0)]),
-                residuals: Box::new([Residual {
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
                     path: FieldPath::field(0),
                     op: ResidualOp::EqConst(i64_field(2).into_boxed_slice()),
                 }]),
-            }]),
+            )]),
             head: Project::RegisterField {
                 address: Address::new(0),
                 path: FieldPath::field(0),
@@ -3175,7 +3203,7 @@ mod tests {
         let (spy2, calls2) = PointSpy::new(store2);
         let value_plan = Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, 0)]),
+            body: Step::levels([scan_all(p, 0)]),
             head: Project::Value {
                 address: Address::new(0),
                 ty: PredicateTy::Int,
@@ -3222,7 +3250,7 @@ mod tests {
 
         let plan = |bind| Plan {
             nvars: 1,
-            body: Step::scans([scan_all(p, bind)]),
+            body: Step::levels([scan_all(p, bind)]),
             head: Project::FactRef(Address::new(0)),
         };
 

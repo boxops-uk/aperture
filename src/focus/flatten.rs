@@ -1,7 +1,7 @@
 //! flatten — the typed query becomes the [`Plan`] the executor runs.
 //!
 //! The last front-end phase and the one the two halves of the system meet at
-//! ([chapter 7]). It takes the typed tree and produces an ordered `[Generator]`
+//! ([chapter 7]). It takes the typed tree and produces an ordered `[Level]`
 //! plus a `head: Project`, which is the fixed contract
 //! ([chapter 4](../../../docs/04-executor.md)); everything after this point is the
 //! executor's.
@@ -63,8 +63,7 @@ use crate::focus::{
     diag::{Code, Diagnostics},
     iter::Address,
     plan::{
-        Access, FieldPath, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
-        Step,
+        Access, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Step,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
     schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},
@@ -238,7 +237,7 @@ impl Occurrences {
 }
 
 /// The seek and residuals of one level, built field by field.
-struct Level {
+struct SeekBuilder {
     parts: Vec<SeekKeyPart>,
     residuals: Vec<Residual>,
     /// Whether the seek prefix is still **contiguous from field 0**.
@@ -251,7 +250,7 @@ struct Level {
     building: bool,
 }
 
-impl Level {
+impl SeekBuilder {
     fn new() -> Self {
         Self {
             parts: vec![],
@@ -1045,7 +1044,7 @@ impl Flattener<'_> {
     /// derives.
     fn emit(&mut self, stmts: &[Stmt], order: &[usize]) -> Option<Plan> {
         let mark = self.diagnostics.len();
-        let mut body: Vec<Generator> = Vec::with_capacity(order.len());
+        let mut body: Vec<Level> = Vec::with_capacity(order.len());
 
         for &stmt in order {
             match stmts.get(stmt)? {
@@ -1053,7 +1052,7 @@ impl Flattener<'_> {
                     let address = Address::new(body.len());
                     let key_ty = self.schema.get(generator.predicate)?.key().ty.clone();
 
-                    let mut current = Level::new();
+                    let mut current = SeekBuilder::new();
                     self.key(generator.key, &key_ty, address, &mut current);
 
                     // After the key: `X = test.Foo {id = X}` cannot typecheck, so
@@ -1068,14 +1067,14 @@ impl Flattener<'_> {
                         ));
                     }
 
-                    body.push(Generator {
-                        access: Access {
+                    body.push(Level::seek(
+                        Access {
                             predicate_id: generator.predicate,
                             seek_key: current.seek_key(),
                         },
-                        binds: Box::new([address]),
-                        residuals: current.residuals.into(),
-                    });
+                        Box::new([address]),
+                        current.residuals.into(),
+                    ));
                 }
 
                 // The order has already put every level this reads into a register,
@@ -1100,7 +1099,7 @@ impl Flattener<'_> {
 
         Some(Plan {
             nvars: body.len(),
-            body: body.into_iter().map(Step::Scan).collect(),
+            body: body.into_iter().map(Step::Level).collect(),
             head: head?,
         })
     }
@@ -1179,7 +1178,13 @@ impl Flattener<'_> {
 
     /// A level's key pattern, field by field in **declared order** — which is
     /// encoding order, and so the order a seek prefix has to be built in.
-    fn key(&mut self, node: NodeId, key_ty: &PredicateTy, address: Address, level: &mut Level) {
+    fn key(
+        &mut self,
+        node: NodeId,
+        key_ty: &PredicateTy,
+        address: Address,
+        level: &mut SeekBuilder,
+    ) {
         match (key_ty, self.ast.store().kind(node)) {
             (PredicateTy::Record(field_tys), ExprKind::Record(fields)) => {
                 let fields = fields.clone();
@@ -1216,7 +1221,7 @@ impl Flattener<'_> {
         ty: &PredicateTy,
         address: Address,
         path: &FieldPath,
-        level: &mut Level,
+        level: &mut SeekBuilder,
     ) {
         match self.ast.store().kind(node) {
             ExprKind::Wildcard => level.building = false,
@@ -1309,7 +1314,7 @@ impl Flattener<'_> {
         ty: &PredicateTy,
         address: Address,
         path: &FieldPath,
-        level: &mut Level,
+        level: &mut SeekBuilder,
     ) {
         match slot {
             Slot::Field {
@@ -1414,7 +1419,7 @@ impl Flattener<'_> {
         ty: &PredicateTy,
         address: Address,
         path: &FieldPath,
-        level: &mut Level,
+        level: &mut SeekBuilder,
     ) {
         level.building = false;
 
@@ -1439,7 +1444,7 @@ impl Flattener<'_> {
     /// Shared by the two ways a constant reaches a key field — written there, or
     /// bound to a variable and folded — so that `Z = 1; test.Bar {id = Z}` narrows
     /// exactly as `test.Bar {id = 1}` does rather than by a parallel code path.
-    fn narrow_by(constant: Const, path: &FieldPath, level: &mut Level) {
+    fn narrow_by(constant: Const, path: &FieldPath, level: &mut SeekBuilder) {
         match constant {
             Const::Bytes(bytes) => {
                 if level.building {
@@ -1784,7 +1789,7 @@ mod tests {
         lower::lower,
         mem_store::MemStore,
         parse::parse,
-        plan::{FactId, Project, Residual, ResidualOp, SeekKey, SeekKeyPart},
+        plan::{FactId, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source},
         tuple::Value,
         ty,
     };
@@ -1890,8 +1895,8 @@ mod tests {
         let mut out = vec![];
 
         for step in plan.body.iter() {
-            let generator = match step {
-                Step::Scan(generator) => generator,
+            let level = match step {
+                Step::Level(level) => level,
                 // A derived bind, which binds a value rather than a level.
                 Step::Derive(derived) => {
                     out.push(format!("{} = <computed>", derived.bind));
@@ -1899,59 +1904,79 @@ mod tests {
                 }
             };
 
-            let name = schema
-                .get(generator.access.predicate_id)
-                .and_then(|p| p.name())
-                .unwrap_or("?")
-                .to_owned();
-
-            let access = match &generator.access.seek_key {
-                SeekKey::Prefix(bytes) if bytes.is_empty() => "scan".to_owned(),
-                SeekKey::Prefix(_) => "seek[k]".to_owned(),
-                SeekKey::Composite(parts) => format!(
-                    "seek[{}]",
-                    parts
-                        .iter()
-                        .map(|part| match part {
-                            SeekKeyPart::Bytes(_) => "k".to_owned(),
-                            SeekKeyPart::RegisterField { address, path } => {
-                                format!("{address}.{path}")
-                            }
-                            // `r0#` — the row's identity, not any field of it.
-                            SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ),
-            };
-
-            let residuals = generator
-                .residuals
+            // One alternative per source, joined by `|`. A level flatten emits has
+            // exactly one, so these renderings read as they always did; zero
+            // sources is the empty relation and renders as the keyword for it.
+            let alternatives = level
+                .sources
                 .iter()
-                .map(|Residual { path, op }| match op {
-                    ResidualOp::EqConst(_) => format!("{path} == k"),
-                    ResidualOp::Prefix(_) => format!("{path} ^= k"),
-                    ResidualOp::EqRegisterField { address, path: at } => {
-                        format!("{path} == {address}.{at}")
-                    }
-                    ResidualOp::EqRegisterFactId(address) => format!("{path} == {address}#"),
+                .map(|source| {
+                    let Source::Seek { access, residuals } = source;
+
+                    let name = schema
+                        .get(access.predicate_id)
+                        .and_then(|p| p.name())
+                        .unwrap_or("?")
+                        .to_owned();
+
+                    let seek = match &access.seek_key {
+                        SeekKey::Prefix(bytes) if bytes.is_empty() => "scan".to_owned(),
+                        SeekKey::Prefix(_) => "seek[k]".to_owned(),
+                        SeekKey::Composite(parts) => format!(
+                            "seek[{}]",
+                            parts
+                                .iter()
+                                .map(|part| match part {
+                                    SeekKeyPart::Bytes(_) => "k".to_owned(),
+                                    SeekKeyPart::RegisterField { address, path } => {
+                                        format!("{address}.{path}")
+                                    }
+                                    // `r0#` — the row's identity, not any field of it.
+                                    SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ),
+                    };
+
+                    let residuals = residuals
+                        .iter()
+                        .map(|Residual { path, op }| match op {
+                            ResidualOp::EqConst(_) => format!("{path} == k"),
+                            ResidualOp::Prefix(_) => format!("{path} ^= k"),
+                            ResidualOp::EqRegisterField { address, path: at } => {
+                                format!("{path} == {address}.{at}")
+                            }
+                            ResidualOp::EqRegisterFactId(address) => {
+                                format!("{path} == {address}#")
+                            }
+                        })
+                        .collect::<Vec<_>>();
+
+                    let residuals = if residuals.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" where {}", residuals.join(" and "))
+                    };
+
+                    format!("{name} {seek}{residuals}")
                 })
                 .collect::<Vec<_>>();
 
-            let residuals = if residuals.is_empty() {
-                String::new()
+            let sources = if alternatives.is_empty() {
+                "never".to_owned()
             } else {
-                format!(" where {}", residuals.join(" and "))
+                alternatives.join(" | ")
             };
 
-            let binds = generator
+            let binds = level
                 .binds
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(",");
 
-            out.push(format!("{binds} <- {name} {access}{residuals}"));
+            out.push(format!("{binds} <- {sources}"));
         }
 
         out.push(format!("head {}", project(&plan.head, interner)));
@@ -2107,7 +2132,13 @@ mod tests {
             describe(plan, &flattened.interner),
             lines(&["r0 <- test.Foo seek[k]", "head r0"])
         );
-        match &plan.level(0).expect("a level").access.seek_key {
+        match &plan
+            .level(0)
+            .expect("a level")
+            .sole_source()
+            .expect("one source")
+            .seek_key()
+        {
             SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), i64_field(1).as_slice()),
             other => panic!("expected a constant prefix, got {other:?}"),
         }
@@ -2118,7 +2149,14 @@ mod tests {
     fn a_scalar_key_constant_is_the_whole_seek() {
         let flattened = compile("X where X = test.Count -42");
 
-        match &flattened.plan().level(0).expect("a level").access.seek_key {
+        match &flattened
+            .plan()
+            .level(0)
+            .expect("a level")
+            .sole_source()
+            .expect("one source")
+            .seek_key()
+        {
             SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), i64_field(-42).as_slice()),
             other => panic!("expected a constant prefix, got {other:?}"),
         }
@@ -2136,7 +2174,14 @@ mod tests {
             describe(plan, &flattened.interner),
             lines(&["r0 <- test.Foo scan where 1 == k", "head r0.0:int"])
         );
-        match &plan.level(0).expect("a level").residuals[0].op {
+        match &plan
+            .level(0)
+            .expect("a level")
+            .sole_source()
+            .expect("one source")
+            .residuals()[0]
+            .op
+        {
             ResidualOp::EqConst(bytes) => assert_eq!(bytes.as_ref(), str_field("a").as_slice()),
             other => panic!("expected a constant residual, got {other:?}"),
         }
@@ -2158,7 +2203,13 @@ mod tests {
 
         let mut expected = str_field("abc");
         expected.pop().expect("a terminated string");
-        match &plan.level(0).expect("a level").access.seek_key {
+        match &plan
+            .level(0)
+            .expect("a level")
+            .sole_source()
+            .expect("one source")
+            .seek_key()
+        {
             SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
             other => panic!("expected a prefix seek, got {other:?}"),
         }
@@ -2178,7 +2229,14 @@ mod tests {
 
         let mut expected = str_field("a");
         expected.pop().expect("a terminated string");
-        match &plan.level(0).expect("a level").residuals[0].op {
+        match &plan
+            .level(0)
+            .expect("a level")
+            .sole_source()
+            .expect("one source")
+            .residuals()[0]
+            .op
+        {
             ResidualOp::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
             other => panic!("expected a prefix residual, got {other:?}"),
         }
@@ -3081,7 +3139,14 @@ mod tests {
 
         // And it is a seek, not a scan-and-filter: `outer` is the leading key field.
         let flattened = compile("X where X = {inner = 1}; test.Nested {outer = X}");
-        match &flattened.plan().level(0).expect("a level").access.seek_key {
+        match &flattened
+            .plan()
+            .level(0)
+            .expect("a level")
+            .sole_source()
+            .expect("one source")
+            .seek_key()
+        {
             SeekKey::Prefix(bytes) => assert!(!bytes.is_empty(), "a constant prefix"),
             SeekKey::Composite(parts) => assert!(
                 matches!(parts.first(), Some(SeekKeyPart::Bytes(_))),
@@ -4658,7 +4723,7 @@ mod battery {
         lower::lower,
         parse::parse,
         plan::{
-            FactId, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Step,
+            FactId, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step,
             proptest::{arb_interruption_schedule, cut_points},
         },
         schema::{LocalInterner, PredicateTy, Schema},
@@ -4868,38 +4933,43 @@ mod battery {
                 // has no seek and no residuals. When the generator learns to draw
                 // one, it gets its own census entry rather than being folded in
                 // here, since "reached a derive step" is a different claim.
-                let Step::Scan(generator) = step else {
+                let Step::Level(level) = step else {
                     continue;
                 };
 
-                match &generator.access.seek_key {
-                    SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
-                    SeekKey::Composite(parts) => {
-                        self.multi_part_seek |= parts.len() > 1;
+                // Every alternative counts: a shape reached by the second source
+                // of a disjunction is as reached as one in the first, and the
+                // census is what says the battery saw it at all.
+                for Source::Seek { access, residuals } in level.sources.iter() {
+                    match &access.seek_key {
+                        SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
+                        SeekKey::Composite(parts) => {
+                            self.multi_part_seek |= parts.len() > 1;
 
-                        for part in parts.iter() {
-                            match part {
-                                SeekKeyPart::Bytes(_) => self.constant_in_composite = true,
-                                SeekKeyPart::RegisterField { path, .. } => {
-                                    self.nested_path |= !path.is_flat();
+                            for part in parts.iter() {
+                                match part {
+                                    SeekKeyPart::Bytes(_) => self.constant_in_composite = true,
+                                    SeekKeyPart::RegisterField { path, .. } => {
+                                        self.nested_path |= !path.is_flat();
+                                    }
+                                    SeekKeyPart::RegisterFactId(_) => self.fact_id_splice = true,
                                 }
-                                SeekKeyPart::RegisterFactId(_) => self.fact_id_splice = true,
                             }
                         }
                     }
-                }
 
-                self.several_residuals |= generator.residuals.len() > 1;
+                    self.several_residuals |= residuals.len() > 1;
 
-                for Residual { path, op } in generator.residuals.iter() {
-                    self.nested_path |= !path.is_flat();
-                    match op {
-                        ResidualOp::Prefix(_) => self.prefix_residual = true,
-                        ResidualOp::EqRegisterField { path, .. } => {
-                            self.nested_path |= !path.is_flat();
+                    for Residual { path, op } in residuals.iter() {
+                        self.nested_path |= !path.is_flat();
+                        match op {
+                            ResidualOp::Prefix(_) => self.prefix_residual = true,
+                            ResidualOp::EqRegisterField { path, .. } => {
+                                self.nested_path |= !path.is_flat();
+                            }
+                            ResidualOp::EqRegisterFactId(_) => self.fact_id_residual = true,
+                            ResidualOp::EqConst(_) => {}
                         }
-                        ResidualOp::EqRegisterFactId(_) => self.fact_id_residual = true,
-                        ResidualOp::EqConst(_) => {}
                     }
                 }
             }

@@ -56,7 +56,7 @@ use aperture::focus::{
     fact::{Fact, ToValue, record},
     iter::{Address, Executor, Iteratee, Stream},
     lexer::{Token, tokenize},
-    plan::{Access, FactId, FactStore, FieldPath, Generator, Plan, Project, SeekKey, Step},
+    plan::{Access, FactId, FactStore, FieldPath, Level, Plan, Project, SeekKey, Step},
     print,
     schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner, Symbol},
     store::{FjallDb, FjallStore},
@@ -1083,14 +1083,14 @@ fn scan_plan(
 
     Plan {
         nvars: 1,
-        body: Step::scans([Generator {
-            access: Access {
+        body: Step::levels([Level::seek(
+            Access {
                 predicate_id: id,
                 seek_key: SeekKey::Prefix(Box::new([])),
             },
-            binds: Box::new([Address::new(0)]),
-            residuals: Box::new([]),
-        }]),
+            Box::new([Address::new(0)]),
+            Box::new([]),
+        )]),
         head,
     }
 }

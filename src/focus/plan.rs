@@ -245,11 +245,124 @@ pub struct Residual {
     pub op: ResidualOp,
 }
 
+/// Where one level's rows come from, and the filters that apply to rows out of
+/// **this** source.
+///
+/// Residuals belong here rather than on the [`Level`] because a residual is a
+/// [`FieldPath`] into a row, and two sources of one level are two different key
+/// layouts — a path that names a field of one names different bytes, or no bytes
+/// at all, in the other.
 #[derive(Debug, Clone)]
-pub struct Generator {
-    pub access: Access,
+pub enum Source {
+    Seek {
+        access: Access,
+        residuals: Box<[Residual]>,
+    },
+}
+
+impl Source {
+    /// The residuals rows out of this source are filtered by.
+    #[must_use]
+    pub fn residuals(&self) -> &[Residual] {
+        match self {
+            Source::Seek { residuals, .. } => residuals,
+        }
+    }
+
+    /// How this source's scan is narrowed.
+    #[must_use]
+    pub fn seek_key(&self) -> &SeekKey {
+        match self {
+            Source::Seek { access, .. } => &access.seek_key,
+        }
+    }
+
+    /// The predicate this source draws from, when it draws from exactly one.
+    #[must_use]
+    pub fn predicate_id(&self) -> PredicateId {
+        match self {
+            Source::Seek { access, .. } => access.predicate_id,
+        }
+    }
+}
+
+/// One **loop level**: the rows it iterates, and the registers it binds them to.
+///
+/// `sources` are the level's alternatives, tried in order and concatenated — so
+/// the count is the construct:
+///
+/// | sources | what it is |
+/// |---|---|
+/// | 0 | the **empty relation** — the level is exhausted the moment it is entered |
+/// | 1 | an ordinary scan, which is every plan focus compiles today |
+/// | N | a **disjunction**, one branch per source |
+///
+/// They are one node rather than three because the machine's job is identical in
+/// all three: open a source, drain it, move to the next, and back up when there is
+/// no next. Counting is the only thing that differs, which is why `never` needs no
+/// arm of its own and no case in [`enumerate`](crate::focus::iter::Executor::enumerate).
+///
+/// `binds` is the level's, not a source's: every alternative binds the same
+/// variables, which is what makes a register mean one thing whichever branch
+/// filled it (see [the query-surface note](../../../docs/query-surface.md)).
+#[derive(Debug, Clone)]
+pub struct Level {
+    pub sources: Box<[Source]>,
     pub binds: Box<[Address]>,
-    pub residuals: Box<[Residual]>,
+}
+
+impl Level {
+    /// A level with a single [`Source::Seek`] — the shape every plan had before
+    /// a level could have alternatives, and still the shape of any level flatten
+    /// emits.
+    #[must_use]
+    pub fn seek(access: Access, binds: Box<[Address]>, residuals: Box<[Residual]>) -> Self {
+        Self {
+            sources: Box::new([Source::Seek { access, residuals }]),
+            binds,
+        }
+    }
+
+    /// A level that produces nothing — zero sources.
+    ///
+    /// Not reachable from focus text yet (`never` is [Phase
+    /// 6b](../../../PLAN.md)); the machine handles it because it falls out of
+    /// counting, and it is guarded so that it stays that way.
+    #[must_use]
+    pub fn empty(binds: Box<[Address]>) -> Self {
+        Self {
+            sources: Box::new([]),
+            binds,
+        }
+    }
+
+    /// This level's only source, when it has exactly one.
+    ///
+    /// Every level flatten emits is single-source, so this is what a caller
+    /// reasoning about *the* seek of a level means — and `None` is the honest
+    /// answer for a disjunction, where there is no such thing.
+    #[must_use]
+    pub fn sole_source(&self) -> Option<&Source> {
+        match &*self.sources {
+            [source] => Some(source),
+            _ => None,
+        }
+    }
+
+    /// The predicate this level's rows come from, when every source agrees.
+    ///
+    /// `None` for the empty relation, and for a disjunction spanning predicates —
+    /// where there is no single answer, and a caller that wants to name a field
+    /// has to say which source it means.
+    #[must_use]
+    pub fn predicate_id(&self) -> Option<PredicateId> {
+        let first = self.sources.first()?.predicate_id();
+
+        self.sources
+            .iter()
+            .all(|source| source.predicate_id() == first)
+            .then_some(first)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -311,21 +424,21 @@ pub struct DerivedBind {
 /// of truth for one ordering, with nothing to say which wins.
 #[derive(Debug, Clone)]
 pub enum Step {
-    Scan(Generator),
+    Level(Level),
     Derive(DerivedBind),
 }
 
 impl Step {
-    /// A body of scans only — every plan's shape before derived binds, and still
+    /// A body of levels only — every plan's shape before derived binds, and still
     /// the shape of any query without one.
     #[must_use]
-    pub fn scans<const N: usize>(generators: [Generator; N]) -> Box<[Step]> {
-        Box::new(generators.map(Step::Scan))
+    pub fn levels<const N: usize>(levels: [Level; N]) -> Box<[Step]> {
+        Box::new(levels.map(Step::Level))
     }
 
     #[must_use]
-    pub fn is_scan(&self) -> bool {
-        matches!(self, Step::Scan(_))
+    pub fn is_level(&self) -> bool {
+        matches!(self, Step::Level(_))
     }
 }
 
@@ -348,7 +461,7 @@ impl Plan {
     /// name which.
     #[must_use]
     pub fn levels(&self) -> usize {
-        self.body.iter().filter(|step| step.is_scan()).count()
+        self.body.iter().filter(|step| step.is_level()).count()
     }
 
     /// The `n`th **loop level**, skipping derive steps.
@@ -357,11 +470,11 @@ impl Plan {
     /// about join order wants: `body[n]` is the `n`th *step*, which is a different
     /// thing as soon as a plan derives anything.
     #[must_use]
-    pub fn level(&self, n: usize) -> Option<&Generator> {
+    pub fn level(&self, n: usize) -> Option<&Level> {
         self.body
             .iter()
             .filter_map(|step| match step {
-                Step::Scan(generator) => Some(generator),
+                Step::Level(level) => Some(level),
                 Step::Derive(_) => None,
             })
             .nth(n)
@@ -411,8 +524,7 @@ pub mod proptest {
     use ::proptest::prelude::*;
 
     use super::{
-        Access, FieldPath, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
-        Step,
+        Access, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Step,
     };
     use crate::focus::{
         fixtures::{compose, i64_field, interner_with, str_field},
@@ -621,38 +733,40 @@ pub mod proptest {
                 .levels
                 .iter()
                 .enumerate()
-                .map(|(level, spec)| Generator {
-                    access: Access {
-                        predicate_id: PredicateId(spec.predicate as u32),
-                        seek_key: match spec.seek {
-                            None => SeekKey::Prefix(Box::new([])),
-                            Some((ref_level, ref_field)) => {
-                                SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
-                                    address: Address::new(ref_level),
-                                    path: FieldPath::field(ref_field),
-                                }]))
-                            }
-                        },
-                    },
-                    binds: Box::new([Address::new(level)]),
-                    residuals: match &spec.residual {
-                        None => Box::new([]),
-                        Some(ResidualSpec::EqConst { field, val }) => Box::new([Residual {
-                            path: FieldPath::field(*field),
-                            op: ResidualOp::EqConst(val.encode().into_boxed_slice()),
-                        }]),
-                        Some(ResidualSpec::EqRegisterField {
-                            field,
-                            level: ref_level,
-                            ref_field,
-                        }) => Box::new([Residual {
-                            path: FieldPath::field(*field),
-                            op: ResidualOp::EqRegisterField {
-                                address: Address::new(*ref_level),
-                                path: FieldPath::field(*ref_field),
+                .map(|(level, spec)| {
+                    Level::seek(
+                        Access {
+                            predicate_id: PredicateId(spec.predicate as u32),
+                            seek_key: match spec.seek {
+                                None => SeekKey::Prefix(Box::new([])),
+                                Some((ref_level, ref_field)) => {
+                                    SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                                        address: Address::new(ref_level),
+                                        path: FieldPath::field(ref_field),
+                                    }]))
+                                }
                             },
-                        }]),
-                    },
+                        },
+                        Box::new([Address::new(level)]),
+                        match &spec.residual {
+                            None => Box::new([]),
+                            Some(ResidualSpec::EqConst { field, val }) => Box::new([Residual {
+                                path: FieldPath::field(*field),
+                                op: ResidualOp::EqConst(val.encode().into_boxed_slice()),
+                            }]),
+                            Some(ResidualSpec::EqRegisterField {
+                                field,
+                                level: ref_level,
+                                ref_field,
+                            }) => Box::new([Residual {
+                                path: FieldPath::field(*field),
+                                op: ResidualOp::EqRegisterField {
+                                    address: Address::new(*ref_level),
+                                    path: FieldPath::field(*ref_field),
+                                },
+                            }]),
+                        },
+                    )
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice();
@@ -689,7 +803,7 @@ pub mod proptest {
                 nvars: self.levels.len(),
                 // Every level the generator draws is a scan; a derive step is a
                 // shape it does not yet reach, and the census says so.
-                body: body.into_iter().map(Step::Scan).collect(),
+                body: body.into_iter().map(Step::Level).collect(),
                 head: Project::Record(head),
             }
         }

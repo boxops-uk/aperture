@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 
 use crate::focus::{
     iter::Address,
-    plan::{FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Step},
+    plan::{FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step},
     schema::{LocalInterner, PredicateRef, PredicateTy, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},
 };
@@ -73,7 +73,7 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
 
     for step in plan.body.iter() {
         let generator = match step {
-            Step::Scan(generator) => generator,
+            Step::Level(generator) => generator,
             // A derived bind names the register it computes, since it has no
             // predicate to be about and no scan to narrow.
             Step::Derive(derived) => {
@@ -82,15 +82,10 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
             }
         };
 
-        let predicate = schema.get(generator.access.predicate_id);
-        let name = predicate.as_ref().and_then(|p| p.name()).unwrap_or("?");
-        let key_ty = predicate.as_ref().map(|p| p.key().ty);
-        let field = |path: &FieldPath| field_name(key_ty, path, schema);
-
-        // The same for a path read out of some *other* register — named against
-        // the key of whatever predicate that register holds, which is a different
-        // predicate with different field names. Naming it against this level's key
-        // gave `r0.module` for a register holding a `src.Module`, whose key has no
+        // A path read out of some *other* register is named against the key of
+        // whatever predicate that register holds, which is a different predicate
+        // with different field names. Naming it against this level's key gave
+        // `r0.module` for a register holding a `src.Module`, whose key has no
         // `module` field at all.
         let register_field = |address: &Address, path: &FieldPath| {
             let predicate = register_key(plan, address, schema);
@@ -99,44 +94,71 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
             format!("{address}.{}", field_name(key_ty, path, schema))
         };
 
-        let _ = write!(out, "  {} <- {name}", Address::new(level));
+        let _ = write!(out, "  {} <-", Address::new(level));
 
-        match &generator.access.seek_key {
-            SeekKey::Prefix(bytes) if bytes.is_empty() => out.push_str(" scan"),
-            SeekKey::Prefix(_) => out.push_str(" seek[<const>]"),
-            SeekKey::Composite(parts) => {
-                let parts: Vec<String> = parts
-                    .iter()
-                    .map(|part| match part {
-                        SeekKeyPart::Bytes(_) => "<const>".to_owned(),
-                        SeekKeyPart::RegisterField { address, path } => {
-                            register_field(address, path)
-                        }
-                        SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
-                    })
-                    .collect();
-
-                let _ = write!(out, " seek[{}]", parts.join(" "));
-            }
+        // A level with no sources produces nothing. Rendered as the keyword for
+        // it rather than as a blank, because "this level answers nothing" is the
+        // most important thing a plan can say about itself.
+        if generator.sources.is_empty() {
+            out.push_str(" never");
         }
 
-        for Residual { path, op } in generator.residuals.iter() {
-            let at = field(path);
+        for (alternative, Source::Seek { access, residuals }) in
+            generator.sources.iter().enumerate()
+        {
+            // Alternatives after the first are stacked under the level, so a
+            // single-source level — every level focus compiles today — reads
+            // exactly as it did before there was more than one.
+            if alternative > 0 {
+                let _ = write!(out, "\n     |");
+            }
 
-            let _ = match op {
-                ResidualOp::EqConst(_) => write!(out, "\n       where {at} == <const>"),
-                ResidualOp::Prefix(_) => write!(out, "\n       where {at} starts with <const>"),
-                ResidualOp::EqRegisterField { address, path } => {
-                    write!(
-                        out,
-                        "\n       where {at} == {}",
-                        register_field(address, path)
-                    )
+            let predicate = schema.get(access.predicate_id);
+            let name = predicate.as_ref().and_then(|p| p.name()).unwrap_or("?");
+            let key_ty = predicate.as_ref().map(|p| p.key().ty);
+            let field = |path: &FieldPath| field_name(key_ty, path, schema);
+
+            let _ = write!(out, " {name}");
+
+            match &access.seek_key {
+                SeekKey::Prefix(bytes) if bytes.is_empty() => out.push_str(" scan"),
+                SeekKey::Prefix(_) => out.push_str(" seek[<const>]"),
+                SeekKey::Composite(parts) => {
+                    let parts: Vec<String> = parts
+                        .iter()
+                        .map(|part| match part {
+                            SeekKeyPart::Bytes(_) => "<const>".to_owned(),
+                            SeekKeyPart::RegisterField { address, path } => {
+                                register_field(address, path)
+                            }
+                            SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
+                        })
+                        .collect();
+
+                    let _ = write!(out, " seek[{}]", parts.join(" "));
                 }
-                ResidualOp::EqRegisterFactId(address) => {
-                    write!(out, "\n       where {at} == {address}#")
-                }
-            };
+            }
+
+            for Residual { path, op } in residuals.iter() {
+                let at = field(path);
+
+                let _ = match op {
+                    ResidualOp::EqConst(_) => write!(out, "\n       where {at} == <const>"),
+                    ResidualOp::Prefix(_) => {
+                        write!(out, "\n       where {at} starts with <const>")
+                    }
+                    ResidualOp::EqRegisterField { address, path } => {
+                        write!(
+                            out,
+                            "\n       where {at} == {}",
+                            register_field(address, path)
+                        )
+                    }
+                    ResidualOp::EqRegisterFactId(address) => {
+                        write!(out, "\n       where {at} == {address}#")
+                    }
+                };
+            }
         }
 
         out.push('\n');
@@ -201,11 +223,14 @@ fn register_key<'a>(
     plan.body
         .iter()
         .filter_map(|step| match step {
-            Step::Scan(generator) => Some(generator),
+            Step::Level(generator) => Some(generator),
             Step::Derive(_) => None,
         })
-        .find(|generator| generator.binds.contains(address))
-        .and_then(|generator| schema.get(generator.access.predicate_id))
+        .find(|level| level.binds.contains(address))
+        // `None` for a disjunction spanning predicates: there is no single key to
+        // name a field against, and falling back to the index says so.
+        .and_then(|level| level.predicate_id())
+        .and_then(|predicate| schema.get(predicate))
 }
 
 /// A field path as the schema names it — `of`, or `outer.inner` for a nested step.
