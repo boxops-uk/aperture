@@ -26,3 +26,8 @@ rustc-ice-*.txt
 # proptest writes failing-case seeds here. The cases worth keeping are pinned as
 # explicit regression tests instead, so the generated seeds stay out of the repo.
 **/proptest-regressions/
+
+# The example corpus (`example/src`) is *parsed* by `example/index.py`, never imported,
+# so nothing in the build makes these — but running the corpus does, and it is real
+# enough to run.
+__pycache__/

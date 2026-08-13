@@ -1,0 +1,825 @@
+{
+  "files": [
+    "query/plan.py",
+    "query/run.py",
+    "store/codec.py",
+    "store/engine.py",
+    "store/keys.py"
+  ],
+  "modules": [
+    {
+      "name": "query.plan",
+      "file": 0
+    },
+    {
+      "name": "query.run",
+      "file": 1
+    },
+    {
+      "name": "store.codec",
+      "file": 2
+    },
+    {
+      "name": "store.engine",
+      "file": 3
+    },
+    {
+      "name": "store.keys",
+      "file": 4
+    }
+  ],
+  "decls": [
+    {
+      "module": 0,
+      "name": "Plan",
+      "line": 6,
+      "kind": "class"
+    },
+    {
+      "module": 0,
+      "name": "Plan.__init__",
+      "line": 9,
+      "kind": "method"
+    },
+    {
+      "module": 0,
+      "name": "Plan.describe",
+      "line": 15,
+      "kind": "method"
+    },
+    {
+      "module": 0,
+      "name": "plan_scan",
+      "line": 21,
+      "kind": "def"
+    },
+    {
+      "module": 0,
+      "name": "plan_seek",
+      "line": 26,
+      "kind": "def"
+    },
+    {
+      "module": 0,
+      "name": "plan_point",
+      "line": 32,
+      "kind": "def"
+    },
+    {
+      "module": 0,
+      "name": "plan_filter",
+      "line": 37,
+      "kind": "def"
+    },
+    {
+      "module": 1,
+      "name": "run_plan",
+      "line": 8,
+      "kind": "def"
+    },
+    {
+      "module": 1,
+      "name": "run_filters",
+      "line": 19,
+      "kind": "def"
+    },
+    {
+      "module": 1,
+      "name": "run_scan",
+      "line": 24,
+      "kind": "def"
+    },
+    {
+      "module": 1,
+      "name": "run_seek",
+      "line": 29,
+      "kind": "def"
+    },
+    {
+      "module": 1,
+      "name": "main",
+      "line": 34,
+      "kind": "def"
+    },
+    {
+      "module": 2,
+      "name": "MARK_TERM",
+      "line": 8,
+      "kind": "const"
+    },
+    {
+      "module": 2,
+      "name": "MARK_INT",
+      "line": 9,
+      "kind": "const"
+    },
+    {
+      "module": 2,
+      "name": "MARK_STR",
+      "line": 10,
+      "kind": "const"
+    },
+    {
+      "module": 2,
+      "name": "CodecError",
+      "line": 13,
+      "kind": "class"
+    },
+    {
+      "module": 2,
+      "name": "encode_int",
+      "line": 17,
+      "kind": "def"
+    },
+    {
+      "module": 2,
+      "name": "encode_str",
+      "line": 26,
+      "kind": "def"
+    },
+    {
+      "module": 2,
+      "name": "encode_key",
+      "line": 31,
+      "kind": "def"
+    },
+    {
+      "module": 2,
+      "name": "decode_int",
+      "line": 42,
+      "kind": "def"
+    },
+    {
+      "module": 2,
+      "name": "decode_str",
+      "line": 49,
+      "kind": "def"
+    },
+    {
+      "module": 2,
+      "name": "decode_key",
+      "line": 59,
+      "kind": "def"
+    },
+    {
+      "module": 3,
+      "name": "DEFAULT_PATH",
+      "line": 6,
+      "kind": "const"
+    },
+    {
+      "module": 3,
+      "name": "StoreError",
+      "line": 9,
+      "kind": "class"
+    },
+    {
+      "module": 3,
+      "name": "Store",
+      "line": 13,
+      "kind": "class"
+    },
+    {
+      "module": 3,
+      "name": "Store.__init__",
+      "line": 16,
+      "kind": "method"
+    },
+    {
+      "module": 3,
+      "name": "Store.put",
+      "line": 20,
+      "kind": "method"
+    },
+    {
+      "module": 3,
+      "name": "Store.get",
+      "line": 26,
+      "kind": "method"
+    },
+    {
+      "module": 3,
+      "name": "Store.scan",
+      "line": 30,
+      "kind": "method"
+    },
+    {
+      "module": 3,
+      "name": "store_open",
+      "line": 39,
+      "kind": "def"
+    },
+    {
+      "module": 3,
+      "name": "store_close",
+      "line": 46,
+      "kind": "def"
+    },
+    {
+      "module": 3,
+      "name": "store_flush",
+      "line": 51,
+      "kind": "def"
+    },
+    {
+      "module": 3,
+      "name": "store_scan",
+      "line": 62,
+      "kind": "def"
+    },
+    {
+      "module": 4,
+      "name": "key_of",
+      "line": 6,
+      "kind": "def"
+    },
+    {
+      "module": 4,
+      "name": "key_prefix",
+      "line": 11,
+      "kind": "def"
+    },
+    {
+      "module": 4,
+      "name": "key_successor",
+      "line": 20,
+      "kind": "def"
+    },
+    {
+      "module": 4,
+      "name": "key_range",
+      "line": 31,
+      "kind": "def"
+    }
+  ],
+  "names": [
+    {
+      "name": "Plan",
+      "to": 0
+    },
+    {
+      "name": "Plan.__init__",
+      "to": 1
+    },
+    {
+      "name": "Plan.describe",
+      "to": 2
+    },
+    {
+      "name": "plan_scan",
+      "to": 3
+    },
+    {
+      "name": "plan_seek",
+      "to": 4
+    },
+    {
+      "name": "plan_point",
+      "to": 5
+    },
+    {
+      "name": "plan_filter",
+      "to": 6
+    },
+    {
+      "name": "run_plan",
+      "to": 7
+    },
+    {
+      "name": "run_filters",
+      "to": 8
+    },
+    {
+      "name": "run_scan",
+      "to": 9
+    },
+    {
+      "name": "run_seek",
+      "to": 10
+    },
+    {
+      "name": "main",
+      "to": 11
+    },
+    {
+      "name": "MARK_TERM",
+      "to": 12
+    },
+    {
+      "name": "MARK_INT",
+      "to": 13
+    },
+    {
+      "name": "MARK_STR",
+      "to": 14
+    },
+    {
+      "name": "CodecError",
+      "to": 15
+    },
+    {
+      "name": "encode_int",
+      "to": 16
+    },
+    {
+      "name": "encode_str",
+      "to": 17
+    },
+    {
+      "name": "encode_key",
+      "to": 18
+    },
+    {
+      "name": "decode_int",
+      "to": 19
+    },
+    {
+      "name": "decode_str",
+      "to": 20
+    },
+    {
+      "name": "decode_key",
+      "to": 21
+    },
+    {
+      "name": "DEFAULT_PATH",
+      "to": 22
+    },
+    {
+      "name": "StoreError",
+      "to": 23
+    },
+    {
+      "name": "Store",
+      "to": 24
+    },
+    {
+      "name": "Store.__init__",
+      "to": 25
+    },
+    {
+      "name": "Store.put",
+      "to": 26
+    },
+    {
+      "name": "Store.get",
+      "to": 27
+    },
+    {
+      "name": "Store.scan",
+      "to": 28
+    },
+    {
+      "name": "store_open",
+      "to": 29
+    },
+    {
+      "name": "store_close",
+      "to": 30
+    },
+    {
+      "name": "store_flush",
+      "to": 31
+    },
+    {
+      "name": "store_scan",
+      "to": 32
+    },
+    {
+      "name": "key_of",
+      "to": 33
+    },
+    {
+      "name": "key_prefix",
+      "to": 34
+    },
+    {
+      "name": "key_successor",
+      "to": 35
+    },
+    {
+      "name": "key_range",
+      "to": 36
+    }
+  ],
+  "refs": [
+    {
+      "file": 0,
+      "at": {
+        "line": 23,
+        "col": 12
+      },
+      "to": 0
+    },
+    {
+      "file": 0,
+      "at": {
+        "line": 28,
+        "col": 14
+      },
+      "to": 36
+    },
+    {
+      "file": 0,
+      "at": {
+        "line": 28,
+        "col": 24
+      },
+      "to": 34
+    },
+    {
+      "file": 0,
+      "at": {
+        "line": 29,
+        "col": 12
+      },
+      "to": 0
+    },
+    {
+      "file": 0,
+      "at": {
+        "line": 34,
+        "col": 12
+      },
+      "to": 0
+    },
+    {
+      "file": 0,
+      "at": {
+        "line": 39,
+        "col": 12
+      },
+      "to": 0
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 10,
+        "col": 29
+      },
+      "to": 0
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 12,
+        "col": 30
+      },
+      "to": 24
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 15,
+        "col": 12
+      },
+      "to": 8
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 26,
+        "col": 12
+      },
+      "to": 7
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 26,
+        "col": 28
+      },
+      "to": 3
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 31,
+        "col": 12
+      },
+      "to": 7
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 31,
+        "col": 28
+      },
+      "to": 4
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 36,
+        "col": 10
+      },
+      "to": 29
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 41,
+        "col": 26
+      },
+      "to": 10
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 44,
+        "col": 16
+      },
+      "to": 6
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 44,
+        "col": 28
+      },
+      "to": 3
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 45,
+        "col": 26
+      },
+      "to": 7
+    },
+    {
+      "file": 1,
+      "at": {
+        "line": 50,
+        "col": 5
+      },
+      "to": 11
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 23,
+        "col": 19
+      },
+      "to": 13
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 28,
+        "col": 19
+      },
+      "to": 14
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 28,
+        "col": 62
+      },
+      "to": 12
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 36,
+        "col": 20
+      },
+      "to": 16
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 38,
+        "col": 20
+      },
+      "to": 17
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 44,
+        "col": 20
+      },
+      "to": 13
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 45,
+        "col": 15
+      },
+      "to": 15
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 51,
+        "col": 20
+      },
+      "to": 14
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 52,
+        "col": 15
+      },
+      "to": 15
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 53,
+        "col": 21
+      },
+      "to": 12
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 55,
+        "col": 15
+      },
+      "to": 15
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 64,
+        "col": 24
+      },
+      "to": 13
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 65,
+        "col": 25
+      },
+      "to": 19
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 66,
+        "col": 26
+      },
+      "to": 14
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 67,
+        "col": 25
+      },
+      "to": 20
+    },
+    {
+      "file": 2,
+      "at": {
+        "line": 69,
+        "col": 19
+      },
+      "to": 15
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 22,
+        "col": 15
+      },
+      "to": 18
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 28,
+        "col": 30
+      },
+      "to": 18
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 36,
+        "col": 23
+      },
+      "to": 21
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 39,
+        "col": 21
+      },
+      "to": 22
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 42,
+        "col": 15
+      },
+      "to": 23
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 43,
+        "col": 12
+      },
+      "to": 24
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 56,
+        "col": 26
+      },
+      "to": 21
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 57,
+        "col": 20
+      },
+      "to": 15
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 58,
+        "col": 23
+      },
+      "to": 23
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 64,
+        "col": 14
+      },
+      "to": 36
+    },
+    {
+      "file": 3,
+      "at": {
+        "line": 64,
+        "col": 24
+      },
+      "to": 34
+    },
+    {
+      "file": 4,
+      "at": {
+        "line": 8,
+        "col": 12
+      },
+      "to": 18
+    },
+    {
+      "file": 4,
+      "at": {
+        "line": 17,
+        "col": 12
+      },
+      "to": 17
+    },
+    {
+      "file": 4,
+      "at": {
+        "line": 33,
+        "col": 20
+      },
+      "to": 35
+    }
+  ],
+  "imports": [
+    {
+      "from": 0,
+      "to": 4
+    },
+    {
+      "from": 1,
+      "to": 0
+    },
+    {
+      "from": 1,
+      "to": 3
+    },
+    {
+      "from": 3,
+      "to": 2
+    },
+    {
+      "from": 3,
+      "to": 4
+    },
+    {
+      "from": 4,
+      "to": 2
+    }
+  ]
+}

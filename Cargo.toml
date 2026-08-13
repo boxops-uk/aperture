@@ -37,6 +37,11 @@ memchr = "2.8.2"
 proptest = { version = "1.11.0", optional = true }
 rustyline = "18"
 serde = { version = "1.0.150", features = ["derive"] }
+# Reads `example/index.json` — the example indexer's output, which the `aperture`
+# shell compiles in and writes as facts at startup (`example/README.md`). Nothing in
+# the engine uses it, and nothing should: JSON is the *indexer's* format, not a
+# storage one, and Aperture's own ingestion path (PLAN phase 7) is a fact file.
+serde_json = "1.0.150"
 thiserror = "2.0.18"
 tinyvec = { version = "1.11.0", features = ["alloc"] }
 tokio-util = "0.7.18"
