@@ -23,7 +23,7 @@ struct Plan {
 }
 
 enum Step {
-    Scan(Generator),      // a loop level
+    Level(Level),         // a loop level
     Derive(DerivedBind),  // a value to compute — not a loop level
 }
 ```
@@ -52,15 +52,34 @@ costs one bit of frame state because arriving at a step from below and from abov
 and the loop carries no direction. It contributes no cursor entry — see
 [I14](invariants.md#i14).
 
-Each loop level is a `Generator`:
+Each loop level is a `Level`, and its rows come from a list of **sources**:
 
 ```rust
-struct Generator {
-    access: Access,         // which predicate, and where to start scanning
-    binds: Box<[Address]>,  // registers this level fills from the matched row
-    residuals: Box<[Residual]>, // extra filters checked during the scan
+struct Level {
+    sources: Box<[Source]>,  // alternatives, tried in order and concatenated
+    binds: Box<[Address]>,   // registers this level fills from the matched row
+}
+
+enum Source {
+    Seek { access: Access, residuals: Box<[Residual]> },
 }
 ```
+
+**The count is the construct.** Zero sources is the **empty relation** — the level is
+exhausted the moment it is entered, which is what `never` means. One is an ordinary scan,
+which is every level focus compiles today. Many is a **disjunction**, one branch per source.
+They are one node rather than three because `enumerate`'s job is identical in all three —
+open a source, drain it, move to the next, back up when there is no next — so `never` needs
+no arm of its own and no case in the driver. The two ways a level can end are one arm each:
+"no source left to open" covers the drained level and the level that never had a source
+alike.
+
+**Residuals belong to the source, not to the level**, because a residual is a `FieldPath`
+into a row and two sources are two key layouts: a path that names a field of one names
+different bytes, or none, in the other. `binds` stays on the level, because every
+alternative binds the same variables — which is what lets a register mean one thing whichever
+branch filled it. Where a branch would have to bind a *different* shape, the branch has to
+export a value instead, and that rule is [the query-surface note](query-surface.md)'s.
 
 - **`Access`** = a `predicate_id` plus a **`SeekKey`**. The seek key builds the scan prefix:
   either constant `Bytes`, or a `RegisterField { address, field_idx }` **splice** — bytes
@@ -162,6 +181,7 @@ variable.
 ```rust
 struct StackFrame {
     scan: Option<Scan>,           // the live cursor into `keys`, or None if closed
+    source: usize,                // which of the level's sources is being drained
     current: Option<Register>,     // the row this level is currently sitting on
     field_offsets: Box<[FieldOffsets]>, // per-variable field-offset cache
     derived_produced: bool,        // a Derive step's whole state (unused by scans)
@@ -174,7 +194,12 @@ frame too, though all it uses is the last field.
 - **`scan`** is the fjall (or `MemStore`) iterator for this level's range. It is `None`
   when the level is closed — opening it fresh on descent is what makes byte-resume possible
   ([chapter 5](05-resume.md)).
-- **`current`** is the level's cursor position, saved into the resume `Cursor` on suspend.
+- **`source`** is which alternative is being drained. It only moves forward while the level
+  is open, and is reset when the level closes — a level re-entered from an outer level's next
+  row produces all of its alternatives again, rather than resuming where the last pass through
+  it happened to stop.
+- **`current`** is the level's cursor position, saved into the resume `Cursor` on suspend,
+  along with `source`: which alternative produced a row is not recoverable from the row.
 - **`field_offsets`** caches where each field starts within a bound row's key, so repeated
   field access on the same row doesn't re-walk from the front.
 
@@ -233,14 +258,18 @@ loop:
                    return Suspended{ cursor }   # (chapter 5)
 
   else match body[depth]:
-      Scan(generator):
+      Level(level):
         frame = stack[depth]
-        if frame.scan is None: frame.open(...)   # descend: open this level fresh
+        if level.sources[frame.source] is None:  # every alternative drained — or
+            frame.close()                        #   there were none at all
+            if depth == 0: return Done
+            depth -= 1
+            continue
+        if frame.scan is None: frame.open(source) # descend: open this source fresh
         match frame.next():                      # pull the next matching row
           Some(row): bind row into registers; frame.current = row; depth += 1
-          None:      frame.scan = None           # exhausted: close and back up
-                     if depth == 0: return Done
-                     depth -= 1
+          None:      frame.scan = None           # this alternative is drained;
+                     frame.source += 1           #   the next round opens the next
 
       Derive(bind):                              # a one-row generator
         if not produced: compute into the value slot; produced = true; depth += 1

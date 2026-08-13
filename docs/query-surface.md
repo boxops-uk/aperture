@@ -5,6 +5,12 @@
 > items that would otherwise arrive one machine change at a time (`Access::Fetch`, primitives,
 > comparisons, union select). Sequencing stays the maintainer's ([`PLAN.md`](../PLAN.md) Phase
 > 6b). Where it recommends against something already written down, it says so.
+>
+> **What has been built from it:** §10's stage 2 (`Level { sources }`, at 0, 1 and N) and the
+> cursor half of stage 3 (an entry carries the alternative that produced it, with
+> [I4](invariants.md#i4) re-proved over generated multi-source plans). The vocabulary in §2 is
+> otherwise unbuilt — no `Test`, no `Source::Group`, no `Source::Fetch` — and §3's export rule
+> is stated but not needed until flatten can emit a branch that binds.
 
 The question it answers is not "can each of these be built" — each can — but **what shape does
 the executor end up in if they all are**. The executor is 989 lines of implementation today

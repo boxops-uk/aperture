@@ -725,10 +725,30 @@ after. The same nesting is why Glean's `Reorder` needs a give-up branch where fo
 does not: a nested group's reads depend on how its own branches are ordered, which is exactly
 where the monotonicity argument fails — so re-prove completeness here rather than inheriting it.
 
+**Architecture note, written before pickup:** [`docs/query-surface.md`](docs/query-surface.md)
+argues one shape for this whole phase and for the deferred items behind it, on the finding that
+**only disjunction touches the resume token** — negation, `never`, subqueries, `Access::Fetch`,
+primitives and comparisons are all filters, deterministic binds, or compile-time rewrites, and a
+construct costs cursor work only if it can be mid-flight when a row is handed out. Two of its
+recommendations amend this phase and are not yet folded into the tasks below: negation's
+placement wants a **reads-edge** rather than an immovability tag (Glean's own rule is "after the
+binding of all parent-scope variables it uses", which is what `reads` means), and branch scope
+wants the **intersection** of what the branches bind rather than 6b-b's rejection.
+
+**The machine half of 6b-a is done** (`plan.rs`, `iter.rs`), ahead of the language, the same way
+Phase 6 built derived binds ahead of a producer: a level's rows come from a list of `Source`s,
+so zero is the empty relation, one is a scan and many is a disjunction; a cursor entry carries
+the alternative that produced it; and [I4](docs/invariants.md#i4) is re-proved over generated
+multi-source plans with a census asserting a cut is taken while a later alternative is live.
+Nothing in focus lowers one yet — `nyi/disjunction` is still reported — so what is left of 6b-a
+is `flatten` and `ty.rs`, plus `never` decided alongside them.
+
 **Tasks (coarse — decompose at pickup, per the rule at the top of this file):**
-- **6b-a. Disjunction.** `FlatDisjunction` as a union-of-streams frame; the per-branch
-  discriminant on `Cursor`; `ty.rs` gives `|` a type; `never` decided alongside it. No DNF
-  expansion across conjuncts.
+- **6b-a. Disjunction.** ~~The per-branch discriminant on `Cursor`~~ ✅. Left: flatten lowers a
+  `FlatDisjunction` to a multi-source level, `ty.rs` gives `|` a type, `never` decided alongside
+  it. No DNF expansion across conjuncts. The classification the note asks for — a disjunction
+  whose branches only *filter* becomes a test rather than a level, and single-generator branches
+  normalise to `Source::Seek` — is flatten's, and is what keeps the common case off the token.
 - **6b-b. Range-restriction safety across branches.** Every branch must bind the same variable
   set, or the head reads a register the taken branch never wrote. Flatten's safety check is
   over the *chosen order* today; it now also has to be over *branches*, and the failure must be

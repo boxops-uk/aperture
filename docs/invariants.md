@@ -102,9 +102,11 @@ prefix-matched at all, which no later renumbering can undo.
 ### I4 — Resume == uninterrupted run
 Suspend+resume reproduces the exact row sequence — no duplicates, no skips, across join
 boundaries. The `Cursor` is bytes only; pins no iterator and no snapshot. Resume re-opens
-each level at the saved key, re-binds, and checks the re-read `fact_id` matches (else
-`BadResumeKey`). *Why & how:* [chapter 5](05-resume.md). *Guard:*
-`exec::resume_equals_uninterrupted` (tier-3, every cut point, 1-/2-/3-level, MemStore + fjall).
+each level at the saved key **in the alternative that saved it**, re-binds, and checks the
+re-read `fact_id` matches (else `BadResumeKey`). *Why & how:* [chapter 5](05-resume.md).
+*Guard:* `exec::resume_equals_uninterrupted` (tier-3, every cut point, 1-/2-/3-level,
+MemStore + fjall), with `exec::the_battery_reaches_a_cut_inside_a_later_source` asserting the
+battery draws a multi-source level and cuts inside one.
 
 <a id="i5"></a>
 ### I5 — Row-slot / register model

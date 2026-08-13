@@ -73,7 +73,8 @@ to.
 On suspend, the executor builds a `Cursor` from the frame stack:
 
 ```rust
-struct Cursor(Vec<Register>);   // one detached Register per loop *level*
+struct Cursor(Vec<Entry>);              // one entry per open loop *level*
+struct Entry { source: usize, row: Register }
 ```
 
 One entry per **level**, not per plan step: a [`Step::Derive`](04-executor.md#the-plan-ir) holds
@@ -81,6 +82,13 @@ no row and contributes nothing, because it is recomputed on restore instead
 ([I14](invariants.md#i14)). A suspend only ever happens at a full row, so the cursor names
 *every* level — which is what makes resume's replay-by-order sound, and why its length check is
 `!= plan.levels()` rather than a bound.
+
+**An entry says which of the level's [sources](04-executor.md#the-plan-ir) produced the row**,
+and that is not recoverable from the row itself. Alternatives can overlap, so one fact is
+reachable from more than one of them; and the sources *after* the live one have not run yet.
+Resuming into the wrong alternative therefore re-emits rows and skips rows at once. A
+single-source level — every level focus compiles today — says `0`, so this is the shape the
+token had all along with the part that was implied now written down.
 
 For each level it saves that level's `current` row — but **detached**: `ByteView`
 bytes are copied to owned memory (`to_detached`) so the cursor references no shared buffer,
@@ -240,13 +248,24 @@ is I8 (nothing pinned while idle). The wire protocol chapter builds portals, chu
 streaming, and per-stream cancellation directly on this — see
 [Operations](aperture-cli-design.md).
 
-Later features extend the cursor without reshaping it: **disjunction** (`|`) adds a
-per-branch discriminant to the token; keep the `Cursor` type extensible to that
-([`PLAN.md`](../PLAN.md) Phase 6b owns it, sequenced immediately after the `Register → Slot`
-promotion of Phase 6 so the token — and [I4](invariants.md#i4) with it — is settled once
-rather than twice). That work has no counterpart in a register machine, where a branch's return
-address is just another register the continuation was saving anyway: it is the recurring price of
-a token this small ([chapter 4](04-executor.md#why-a-state-machine-and-not-recursion--i7)).
+**The disjunction half of that is now paid.** The per-branch discriminant this section was
+kept for is the `source` on an entry, and [I4](invariants.md#i4) is re-established over
+generated plans holding a multi-source level, with a census asserting the battery takes a cut
+*while a later alternative is live* — the cut that a source index is the only defence against.
+What it cost is the measure of the trade: in a register machine a branch's return address is
+just another register the continuation was saving anyway, and here it was a token change, a
+resume change and a battery extension ([chapter
+4](04-executor.md#why-a-state-machine-and-not-recursion--i7)). The remaining extension is a
+branch that *contains a join*, whose entry holds a nested cursor rather than a row
+([the query-surface note](query-surface.md), [`PLAN.md`](../PLAN.md) Phase 6b).
+
+**A cursor is untrusted, and both new ways to malform one are errors rather than panics.** An
+entry naming a source the level does not have is `CursorSourceOutOfRange` — the level-count
+check one level down, since two plans of the same shape can disagree about how many
+alternatives a level has. A saved position outside the range of the source it is replayed into
+is `BadResumeKey`, checked where a saved position becomes a scan bound so that it covers every
+`FactStore` at once: unchecked, `lo > hi` is a **panic** inside the store's range, and a `lo`
+below the prefix silently re-scans rows the level already emitted.
 
 ---
 
