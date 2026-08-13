@@ -485,6 +485,19 @@ impl<S: FactStore> StackFrame<S> {
         let hi = strinc(&prefix);
         let lo = resume_at.unwrap_or(&prefix);
 
+        // A resume position must lie inside the range of the source it is being
+        // replayed into. It does for any cursor this executor built; it need not
+        // for one rebuilt from the wire, and the two ways it can be wrong are a
+        // panic and a wrong answer — `lo > hi` panics inside `BTreeMap`, and a
+        // `lo` below the prefix silently re-scans rows the level already emitted.
+        // Checked here because this is the one place a saved position becomes a
+        // scan bound, so it covers every `FactStore` at once.
+        if resume_at
+            .is_some_and(|at| at < prefix.as_slice() || hi.as_deref().is_some_and(|hi| at >= hi))
+        {
+            return Err(ApertureError::BadResumeKey);
+        }
+
         self.scan = Some(store.scan(lo, hi.as_deref())?);
         self.current = None;
 
@@ -630,7 +643,21 @@ pub struct Executor<S: FactStore> {
     projection_offsets: Box<[FieldOffsets]>,
 }
 
-pub struct Cursor(Vec<Register>);
+/// One open level's position: the row it stopped on, and **which of the level's
+/// sources produced it**.
+///
+/// The source index is not recoverable from the row. The alternatives of one
+/// level can overlap — the same fact can be reachable from more than one of
+/// them — and the ones after the live source have not run yet, so resuming into
+/// the wrong alternative both re-emits rows and skips rows. It is the whole of
+/// what disjunction adds to the token ([chapter 5](../../docs/05-resume.md)).
+#[derive(Debug, Clone)]
+pub struct Entry {
+    source: usize,
+    row: Register,
+}
+
+pub struct Cursor(Vec<Entry>);
 
 pub struct Row<'a, S: FactStore> {
     store: &'a S,
@@ -762,10 +789,15 @@ impl<S: FactStore> Executor<S> {
     /// levels if a frame in the middle were ever empty, and `resume` pairs cursor
     /// entries with scan steps **by order**.
     pub fn build_cursor(&self) -> Cursor {
-        let saved: Vec<Register> = self
+        let saved: Vec<Entry> = self
             .stack
             .iter()
-            .filter_map(|f| f.current.as_ref().map(Register::to_detached))
+            .filter_map(|f| {
+                f.current.as_ref().map(|row| Entry {
+                    source: f.source,
+                    row: row.to_detached(),
+                })
+            })
             .collect();
 
         debug_assert_eq!(
@@ -822,15 +854,26 @@ impl<S: FactStore> Executor<S> {
                     // exactly this plan's level count.
                     let saved = saved_rows.next().ok_or(ApertureError::BadResumeKey)?;
 
-                    let source = level.sources.first().ok_or(ApertureError::BadResumeKey)?;
+                    // Back into the alternative that produced the saved row, not
+                    // into the first one: the sources after it have not run, and
+                    // the ones before it are done. Out of range is untrusted
+                    // input rather than an impossibility — the level count
+                    // matching says nothing about how many sources a level has.
+                    let source = level.sources.get(saved.source).ok_or(
+                        ApertureError::CursorSourceOutOfRange {
+                            index: saved.source,
+                            sources: level.sources.len(),
+                        },
+                    )?;
+                    frame.source = saved.source;
 
-                    frame.open(&ex.store, source, &ex.state, Some(&saved.bytes))?;
+                    frame.open(&ex.store, source, &ex.state, Some(&saved.row.bytes))?;
 
                     let row = frame
                         .next(&ex.state, source, &mut deadline)?
                         .ok_or(ApertureError::BadResumeKey)?;
 
-                    if row.fact_id != saved.fact_id {
+                    if row.fact_id != saved.row.fact_id {
                         return Err(ApertureError::BadResumeKey);
                     }
 
@@ -1776,6 +1819,9 @@ mod tests {
             (3, &|| three_level_seek_join(&interner)),
         ] {
             let (store, plan) = mk();
+            // Kept to check each entry against the level that produced it; the
+            // executor consumes the one it runs.
+            let shape = plan.clone();
             let cursor = suspend_after_first_row(store, plan);
 
             assert_eq!(
@@ -1790,15 +1836,24 @@ mod tests {
             // the store that produced the bytes has been dropped.
             for (level, saved) in cursor.0.iter().enumerate() {
                 assert!(
-                    saved.bytes.len() > PREDICATE_ID_SIZE,
+                    saved.row.bytes.len() > PREDICATE_ID_SIZE,
                     "level {level}'s saved row is {} byte(s) — no key follows the \
                      predicate id",
-                    saved.bytes.len()
+                    saved.row.bytes.len()
                 );
                 assert_ne!(
-                    saved.fact_id.raw(),
+                    saved.row.fact_id.raw(),
                     0,
                     "level {level} saved the reserved fact id, which is never a fact"
+                );
+                // The alternative that produced the row has to be one this plan's
+                // level actually has, or resume replays into a source that does
+                // not exist.
+                let sources = shape.level(level).expect("a level").sources.len();
+                assert!(
+                    saved.source < sources,
+                    "level {level} saved source {} of {sources}",
+                    saved.source
                 );
             }
         }
@@ -1899,6 +1954,315 @@ mod tests {
             Box::new([Address::new(bind)]),
             Box::new([]),
         )
+    }
+
+    // ---- a level's sources -------------------------------------------------
+    //
+    // A level's rows come from its sources, tried in order and concatenated, so
+    // the count is the construct: none is the empty relation, one is a scan, and
+    // several is a disjunction ([the query-surface note]). These pin all three
+    // against the machine rather than against flatten, which emits only the
+    // middle one — the same way derived binds were guarded ahead of a producer.
+    //
+    // [the query-surface note]: ../../docs/query-surface.md
+
+    /// A source seeking one exact integer key of `predicate`.
+    fn seek_int(predicate: PredicateId, key: i64, bind: usize) -> Source {
+        let _ = bind;
+        Source::Seek {
+            access: Access {
+                predicate_id: predicate,
+                seek_key: SeekKey::Prefix(i64_field(key).into_boxed_slice()),
+            },
+            residuals: Box::new([]),
+        }
+    }
+
+    /// A plan of one level over `sources`, projecting the bound row's key.
+    fn one_level(sources: Box<[Source]>) -> Plan {
+        Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(Level {
+                sources,
+                binds: Box::new([Address::new(0)]),
+            })]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        }
+    }
+
+    fn three_int_facts(p: PredicateId) -> MemStore {
+        let mut store = MemStore::new();
+        store.insert(p, i64_field(10), 1);
+        store.insert(p, i64_field(20), 2);
+        store.insert(p, i64_field(30), 3);
+        store
+    }
+
+    /// **A level with no sources is the empty relation.** Not an error and not
+    /// one row — the level is exhausted the moment it is entered, so the plan
+    /// answers nothing at all.
+    #[test]
+    fn a_level_with_no_sources_produces_no_rows() {
+        let p = PredicateId(0);
+
+        assert_eq!(run(three_int_facts(p), one_level(Box::new([]))), vec![]);
+    }
+
+    /// An empty level inside a join annihilates it, rather than being skipped:
+    /// the outer level still runs, and finds nothing to pair with.
+    #[test]
+    fn an_empty_level_annihilates_the_join_around_it() {
+        let p = PredicateId(0);
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                Step::Level(Level {
+                    sources: Box::new([Source::Seek {
+                        access: Access {
+                            predicate_id: p,
+                            seek_key: SeekKey::Prefix(Box::new([])),
+                        },
+                        residuals: Box::new([]),
+                    }]),
+                    binds: Box::new([Address::new(0)]),
+                }),
+                Step::Level(Level::empty(Box::new([Address::new(1)]))),
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        assert_eq!(run(three_int_facts(p), plan), vec![]);
+    }
+
+    /// **Several sources concatenate, in source order** — not in key order, and
+    /// without deduplication. Both halves matter: the sources here are drawn so
+    /// that source order and key order disagree, and so that one row is produced
+    /// by two of them.
+    #[test]
+    fn sources_concatenate_in_order_and_do_not_deduplicate() {
+        let p = PredicateId(0);
+
+        let plan = one_level(Box::new([
+            seek_int(p, 30, 0),
+            seek_int(p, 10, 0),
+            seek_int(p, 30, 0),
+        ]));
+
+        assert_eq!(
+            run(three_int_facts(p), plan),
+            vec![Value::Int(30), Value::Int(10), Value::Int(30)]
+        );
+    }
+
+    /// A source matching nothing is skipped without ending the level — the one
+    /// that follows it still runs.
+    #[test]
+    fn an_empty_source_does_not_end_the_level() {
+        let p = PredicateId(0);
+
+        let plan = one_level(Box::new([
+            seek_int(p, 99, 0),
+            seek_int(p, 20, 0),
+            seek_int(p, 98, 0),
+        ]));
+
+        assert_eq!(run(three_int_facts(p), plan), vec![Value::Int(20)]);
+    }
+
+    /// A level re-entered from an outer row starts at its **first** source
+    /// again, rather than carrying on from wherever the previous pass stopped.
+    ///
+    /// The bug this catches is a level that produces its alternatives for the
+    /// first outer row and only its last alternative thereafter — which is what
+    /// leaving the source index alone on close would do.
+    #[test]
+    fn a_level_restarts_its_sources_for_each_outer_row() {
+        let outer = PredicateId(0);
+        let inner = PredicateId(1);
+
+        let mut store = MemStore::new();
+        store.insert(outer, i64_field(1), 1);
+        store.insert(outer, i64_field(2), 2);
+        store.insert(inner, i64_field(10), 1);
+        store.insert(inner, i64_field(20), 2);
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                Step::Level(Level::seek(
+                    Access {
+                        predicate_id: outer,
+                        seek_key: SeekKey::Prefix(Box::new([])),
+                    },
+                    Box::new([Address::new(0)]),
+                    Box::new([]),
+                )),
+                Step::Level(Level {
+                    sources: Box::new([seek_int(inner, 20, 1), seek_int(inner, 10, 1)]),
+                    binds: Box::new([Address::new(1)]),
+                }),
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(1),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        // Both alternatives, in source order, once per outer row.
+        assert_eq!(
+            run(store, plan),
+            vec![
+                Value::Int(20),
+                Value::Int(10),
+                Value::Int(20),
+                Value::Int(10)
+            ]
+        );
+    }
+
+    /// **[I4](../../docs/invariants.md#i4) across a disjunction.** Suspending
+    /// while a later source is the live one and resuming must reproduce the
+    /// uninterrupted run exactly.
+    ///
+    /// This is what the source index on a cursor entry is for: a saved row says
+    /// *where* a level stopped and not *which alternative* it stopped in, and
+    /// the two are independent — the same key can be reachable from more than
+    /// one source, and the sources after the live one have not run yet.
+    #[test]
+    fn resume_across_a_multi_source_level_equals_an_uninterrupted_run() {
+        let p = PredicateId(0);
+
+        let mk = || {
+            (
+                three_int_facts(p),
+                one_level(Box::new([
+                    seek_int(p, 10, 0),
+                    seek_int(p, 20, 0),
+                    seek_int(p, 30, 0),
+                ])),
+            )
+        };
+
+        let interner = interner_with(&[]);
+        let (uninterrupted, _) = run_with_suspends(mk, &interner, &BTreeSet::new()).unwrap();
+
+        assert_eq!(
+            uninterrupted,
+            vec![Value::Int(10), Value::Int(20), Value::Int(30)]
+        );
+
+        // Every cut point, including the two that fall while a source other than
+        // the first is the live one.
+        for cut in 1..=uninterrupted.len() {
+            let (resumed, suspends) =
+                run_with_suspends(mk, &interner, &BTreeSet::from([cut])).unwrap();
+
+            assert!(suspends > 0, "cut at {cut} did not suspend");
+            assert_eq!(resumed, uninterrupted, "cut after row {cut}");
+        }
+    }
+
+    /// A cursor is rebuilt from the wire, so a source index it names may not
+    /// exist in the plan it is replayed against. **Reported, not panicked** — the
+    /// level count matching says nothing about how many alternatives a level has,
+    /// so this is untrusted input rather than an impossibility.
+    #[test]
+    fn a_cursor_naming_a_source_the_level_lacks_is_reported() {
+        let p = PredicateId(0);
+
+        let plan = one_level(Box::new([seek_int(p, 10, 0)]));
+        let cursor = suspend_after_first_row(three_int_facts(p), plan);
+
+        // The same plan, and a cursor pointing at an alternative it never had.
+        let forged = Cursor(
+            cursor
+                .0
+                .into_iter()
+                .map(|entry| Entry { source: 7, ..entry })
+                .collect(),
+        );
+
+        let resumed = Executor::resume(
+            three_int_facts(p),
+            one_level(Box::new([seek_int(p, 10, 0)])),
+            forged,
+        );
+
+        assert!(
+            matches!(
+                resumed,
+                Err(ApertureError::CursorSourceOutOfRange {
+                    index: 7,
+                    sources: 1
+                })
+            ),
+            "expected the source index to be rejected, got {resumed:?}",
+            resumed = resumed.map(|_| "an executor")
+        );
+    }
+
+    /// A saved position outside the range of the source it is replayed into is
+    /// **an error, not a panic**. It was a panic: `lo > hi` is unreachable for a
+    /// cursor this executor built, and it is a `BTreeMap` panic one level down
+    /// for a cursor that names a different alternative than the one that saved
+    /// it — which is exactly what a forged or stale cursor does.
+    #[test]
+    fn a_cursor_position_outside_its_source_is_reported() {
+        let p = PredicateId(0);
+
+        // Suspend inside the *second* alternative, so the saved key is 20.
+        let plan = one_level(Box::new([seek_int(p, 10, 0), seek_int(p, 20, 0)]));
+        let interner = interner_with(&[]);
+        let ex = Executor::new(three_int_facts(p), plan);
+        let out = ex
+            .enumerate(
+                0usize,
+                |n, mut row| {
+                    let _ = row.to_value(&interner)?;
+                    // Row 1 is source 0's; suspend after row 2, inside source 1.
+                    if n + 1 == 2 {
+                        Ok(Stream::Suspend(n + 1))
+                    } else {
+                        Ok(Stream::Continue(n + 1))
+                    }
+                },
+                &CancellationToken::new(),
+            )
+            .expect("a run");
+
+        let Iteratee::Suspended(_, cursor) = out else {
+            panic!("expected a suspend");
+        };
+
+        // Replayed against a plan whose only alternative seeks 10: the level
+        // count matches and source 0 exists, but the saved key is not in it.
+        let resumed = Executor::resume(
+            three_int_facts(p),
+            one_level(Box::new([seek_int(p, 10, 0)])),
+            Cursor(
+                cursor
+                    .0
+                    .into_iter()
+                    .map(|entry| Entry { source: 0, ..entry })
+                    .collect(),
+            ),
+        );
+
+        assert!(
+            matches!(resumed, Err(ApertureError::BadResumeKey)),
+            "expected a bad resume key, got {resumed:?}",
+            resumed = resumed.map(|_| "an executor")
+        );
     }
 
     // A one-level scan projects a key field, in ascending key order regardless

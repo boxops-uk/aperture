@@ -38,6 +38,14 @@ pub enum ApertureError {
     #[error("resume cursor names {cursor} level(s) but the plan has {plan}")]
     CursorPlanMismatch { cursor: usize, plan: usize },
 
+    /// A resume cursor naming an alternative the level it is replayed against
+    /// does not have — the same untrusted-input case as
+    /// [`CursorPlanMismatch`](Self::CursorPlanMismatch), one level down. The
+    /// level count matching does not make the sources match, since two plans of
+    /// the same shape can disagree about how many alternatives a level has.
+    #[error("resume cursor names source {index} of a level with {sources}")]
+    CursorSourceOutOfRange { index: usize, sources: usize },
+
     #[error("resume key not found")]
     BadResumeKey,
 
