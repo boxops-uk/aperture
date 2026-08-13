@@ -66,7 +66,7 @@ use crate::focus::{
         Access, FieldPath, Generator, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
         Step,
     },
-    reorder::{Deps, StmtDeps, reorder},
+    reorder::{Deps, Placement, StmtDeps, reorder},
     schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, QueryStmt},
     tuple::{MARK_RECORD, MARK_TERM, Value, put_i64, put_str},
@@ -121,13 +121,79 @@ struct Gen {
     /// The variable the whole row binds, from `X = test.Foo …`.
     row: Option<Symbol>,
     span: NodeSpan,
+    placement: Placement,
 }
 
-/// What flatten works out *before* an order is chosen: the generators, the
+impl Stmt {
+    /// Whether the query wrote this statement, or flatten invented it.
+    ///
+    /// A hoisted generator is the name the query did not write, and an alias
+    /// emits no level at all — neither has a position a person chose.
+    fn placement(&self) -> Placement {
+        match self {
+            Stmt::Scan(generator) => generator.placement,
+            Stmt::Alias(_) => Placement::Floating,
+        }
+    }
+}
+
+/// A **name for a value that is already somewhere** — `Y = X.name`.
+///
+/// Not a level and not a computation: the right side denotes a [`Slot`], and the
+/// statement binds the left side to it. So an alias occupies no register and emits
+/// no [`Step`], exactly as a folded constant does — the difference is only that
+/// *which* slot it names depends on the order, since the register it points into
+/// is assigned when the level that owns it is emitted.
+#[derive(Debug, Clone)]
+struct Alias {
+    /// The pattern being named — a variable or a wildcard today, a record once
+    /// destructuring is general.
+    pattern: NodeId,
+    /// The expression whose location it names.
+    value: NodeId,
+    span: NodeSpan,
+}
+
+/// One statement before an order is chosen: a level to iterate, or a substitution.
+///
+/// One sequence rather than two collections, for the reason [`Step`] gives: an
+/// order is a single thing, and two collections joined by an index would be two
+/// sources of truth for it.
+#[derive(Debug, Clone)]
+enum Stmt {
+    Scan(Gen),
+    Alias(Alias),
+}
+
+impl Stmt {
+    fn span(&self) -> NodeSpan {
+        match self {
+            Stmt::Scan(generator) => generator.span.clone(),
+            Stmt::Alias(alias) => alias.span.clone(),
+        }
+    }
+}
+
+/// The variables some statement has already **claimed** — said what they are,
+/// rather than offering to bind them.
+///
+/// A claim is not an ordering question, so `reorder` must never be handed one: if
+/// two statements could both bind a variable the plan would quietly keep whichever
+/// ran second. Every *other* occurrence of a claimed variable is therefore a read,
+/// which is what forces the claiming statement to run first.
+#[derive(Debug, Default)]
+struct Claims {
+    /// Variables bound to a whole row, from `X = test.Foo …`.
+    rows: Vec<Symbol>,
+    /// Variables an [`Alias`] names.
+    aliased: Vec<Symbol>,
+}
+
+/// What flatten works out *before* an order is chosen: the statements, the
 /// dependency graph over them, and the variables the head reads.
 #[derive(Debug)]
 struct Collected {
-    stmts: Vec<Gen>,
+    stmts: Vec<Stmt>,
     deps: Deps,
     /// The head's variables. Reads, always — a head projects, it never captures —
     /// and so the last thing the safety check has to account for.
@@ -391,20 +457,23 @@ impl Flattener<'_> {
     /// be wrong in several places, as it can in every other phase.
     fn collect(&mut self) -> Option<Collected> {
         let mark = self.diagnostics.len();
-        let mut stmts: Vec<Gen> = vec![];
+        let mut stmts: Vec<Stmt> = vec![];
 
         for stmt in self.ast.query().body() {
             match stmt {
                 QueryStmt::Implicit(node) => {
                     if let Some(generator) = self.generator(*node, None) {
                         self.hoist_within(generator.key, &mut stmts);
-                        stmts.push(generator);
+                        stmts.push(Stmt::Scan(generator));
                     }
                 }
 
                 QueryStmt::Bind(lhs, rhs) => {
-                    // Typecheck accepts a bind only where the left side is a fresh
+                    // Typecheck accepts a bind only where the left side is a
                     // variable or a wildcard, so this is the whole of what it can be.
+                    // The variable need not be one the query mentions here first —
+                    // binding a row a field already named is an ordering question,
+                    // and the duplicate-row check below is what it is *not*.
                     let row = match self.ast.store().kind(*lhs) {
                         ExprKind::Var(symbol) => Some(*symbol),
                         _ => None,
@@ -413,22 +482,37 @@ impl Flattener<'_> {
                     if matches!(self.ast.store().kind(*rhs), ExprKind::Fact(..)) {
                         if let Some(generator) = self.generator(*rhs, row) {
                             self.hoist_within(generator.key, &mut stmts);
-                            stmts.push(generator);
+                            stmts.push(Stmt::Scan(generator));
                         }
                     } else if self.is_foldable(*rhs) {
                         // A constant bind: recorded and substituted at every use, so
-                        // it contributes no generator and no step. `row` is `Some`
-                        // unless the left side is a wildcard, and `_ = 42` binds
-                        // nothing anyone can read — harmless, and dropped here.
-                        if let Some(symbol) = row {
-                            self.bindings.push((symbol, Slot::Const(*rhs)));
-                        }
+                        // it contributes no generator and no step. The left side is a
+                        // variable, a wildcard, or a record destructured piece by
+                        // piece — all three are the same substitution.
+                        //
+                        // Folded **here**, before any order is chosen, and not as the
+                        // alias below: a bare variable at a key field is capturable,
+                        // so a statement reading `N` would otherwise offer to bind it
+                        // and `reorder` would be free to run that first. A constant
+                        // is what `N` *is*, in every order, so it cannot wait.
+                        self.fold_into(*lhs, *rhs);
+                    } else if self.names_a_location(*rhs) {
+                        // An **alias**: the right side denotes a place — a register,
+                        // a field inside one, a fact's value — so the left side is a
+                        // second name for it and needs nothing computed. A generator
+                        // written under the read is a level like any other.
+                        self.hoist_within(*rhs, &mut stmts);
+                        stmts.push(Stmt::Alias(Alias {
+                            pattern: *lhs,
+                            value: *rhs,
+                            span: self.ast.store().span(*rhs),
+                        }));
                     } else {
                         self.report(
                             *rhs,
                             Code::NyiValueBind,
-                            "binding a variable to a value no fact produced is not implemented \
-                             yet; it needs a derived bind",
+                            "binding a variable to a value that is in no register is not \
+                             implemented yet; it needs a derived bind",
                         );
                     }
                 }
@@ -454,26 +538,40 @@ impl Flattener<'_> {
         let head = *self.ast.query().head();
         self.hoist_node(head, &mut stmts);
 
-        // Which variables name a whole row. A bare variable at a *fact-typed* field
-        // is capturable like any other — the field holds a reference and a reference
-        // is a value — but if the same variable is a row somewhere, the field can only
-        // be **matched against** that row, never bind it: the level would have to
-        // find its own fact by id, which is a point access the plan cannot express.
-        // Deciding it here, from the whole statement list, keeps it a property of the
-        // query rather than of the order.
-        let rows: Vec<Symbol> = stmts.iter().filter_map(|generator| generator.row).collect();
+        // Which variables some statement has already said what *are*, rather than
+        // offering to bind — see [`Claims`]. Decided here, from the whole statement
+        // list, so it is a property of the query rather than of the order.
+        let claims = self.claims(&stmts);
 
-        for generator in &stmts {
+        for stmt in &stmts {
             let mut occurrences = Occurrences::default();
 
-            if let Some(row) = generator.row {
-                occurrences.capture(row);
+            match stmt {
+                Stmt::Scan(generator) => {
+                    if let Some(row) = generator.row {
+                        occurrences.capture(row);
+                    }
+                    self.scan_key(
+                        generator.key,
+                        generator.predicate,
+                        &claims,
+                        &mut occurrences,
+                    );
+                }
+
+                // An alias binds what its pattern names and reads what its value is
+                // rooted at, which is the shape `reorder` was written for: reads it
+                // cannot satisfy itself, captures it offers.
+                Stmt::Alias(alias) => {
+                    self.scan_pattern(alias.pattern, &mut occurrences);
+                    self.scan_read(alias.value, &mut occurrences);
+                }
             }
-            self.scan_key(generator.key, generator.predicate, &rows, &mut occurrences);
 
             deps.push(StmtDeps {
                 captures: occurrences.captures.into(),
                 reads: occurrences.reads.into(),
+                placement: stmt.placement(),
             });
         }
 
@@ -491,6 +589,112 @@ impl Flattener<'_> {
         })
     }
 
+    /// Every variable a statement **claims**, reporting a second claim.
+    ///
+    /// Two statements claiming one variable is unification — *these two things are
+    /// the same thing* — and this is the only place it can be seen, with every
+    /// statement in hand. It is not an ordering question, so `reorder` must never
+    /// be handed it: both claims would satisfy every read and the plan would
+    /// quietly keep whichever ran last. Reported at the later claim, which is the
+    /// one that could have been written another way.
+    fn claims(&mut self, stmts: &[Stmt]) -> Claims {
+        let mut claims = Claims::default();
+
+        for stmt in stmts {
+            // A record pattern claims each of its pieces, and a wildcard claims
+            // nothing — so a statement claims a *set*, not a name.
+            let (claimed, span, is_row) = match stmt {
+                Stmt::Scan(generator) => {
+                    let Some(row) = generator.row else { continue };
+                    (vec![row], generator.span.clone(), true)
+                }
+                Stmt::Alias(alias) => {
+                    let mut names = vec![];
+                    self.pattern_claims(alias.pattern, &mut names);
+                    (names, alias.span.clone(), false)
+                }
+            };
+
+            for name in claimed {
+                if claims.rows.contains(&name) || claims.aliased.contains(&name) {
+                    let text = self.name(name).to_owned();
+                    self.diagnostics.error(
+                        Code::NyiBindUnification,
+                        format!(
+                            "an earlier statement already says what `{text}` is; matching two \
+                             values against each other is not implemented yet"
+                        ),
+                        span.clone(),
+                    );
+                } else if is_row {
+                    claims.rows.push(name);
+                } else {
+                    claims.aliased.push(name);
+                }
+            }
+        }
+
+        claims
+    }
+
+    /// The variables a pattern being bound **captures** — every leaf of it, since a
+    /// record pattern binds each of its pieces.
+    ///
+    /// Anything else binds nothing: a wildcard cannot fail, and a literal leaf was
+    /// refused at typecheck.
+    fn scan_pattern(&mut self, node: NodeId, occurrences: &mut Occurrences) {
+        match self.ast.store().kind(node) {
+            ExprKind::Var(symbol) => occurrences.capture(*symbol),
+            ExprKind::Record(fields) => {
+                for (_, piece) in fields.clone().iter() {
+                    self.scan_pattern(*piece, occurrences);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The variables a pattern being bound **claims**, appended to `out`.
+    fn pattern_claims(&self, node: NodeId, out: &mut Vec<Symbol>) {
+        match self.ast.store().kind(node) {
+            ExprKind::Var(symbol) => out.push(*symbol),
+            ExprKind::Record(fields) => {
+                for (_, piece) in fields.iter() {
+                    self.pattern_claims(*piece, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The variable a read is rooted at — `X` in `X.a.b`, or the row a hoisted
+    /// generator was given.
+    fn scan_read(&mut self, node: NodeId, occurrences: &mut Occurrences) {
+        let root = self.chain_root(node);
+
+        match self.ast.store().kind(root) {
+            ExprKind::Var(symbol) => occurrences.read(*symbol),
+            ExprKind::Fact(..) => self.read_hoisted(root, occurrences),
+            _ => {}
+        }
+    }
+
+    /// Whether `node` denotes a **place** — something a name can be another name
+    /// for, rather than a value that would have to be computed.
+    ///
+    /// Shape only, because that is all `collect` can know: whether the place
+    /// actually resolves depends on the order, and `emit` reports what does not.
+    /// What this excludes is the derived bind — a record mentioning a captured
+    /// variable, a string prefix — which is in no register and would have to be
+    /// built ([chapter 7](../../../docs/07-compilation.md#derived-facts)).
+    fn names_a_location(&self, node: NodeId) -> bool {
+        match self.ast.store().kind(node) {
+            ExprKind::Var(_) | ExprKind::Fact(..) => true,
+            ExprKind::Access(_, base) | ExprKind::Select(_, base) => self.names_a_location(*base),
+            _ => false,
+        }
+    }
+
     // ---- hoisting -----------------------------------------------------------
 
     /// Hoist every fact pattern **inside** `node` into a generator of its own.
@@ -499,7 +703,7 @@ impl Flattener<'_> {
     /// is written — in a key field, in the head, under a field read. Only the one a
     /// statement *is* stays where it is; the rest become levels, appended here so that
     /// each precedes whatever named it.
-    fn hoist_within(&mut self, node: NodeId, stmts: &mut Vec<Gen>) {
+    fn hoist_within(&mut self, node: NodeId, stmts: &mut Vec<Stmt>) {
         match self.ast.store().kind(node) {
             ExprKind::Record(fields) => {
                 for (_, value) in fields.clone().iter() {
@@ -519,7 +723,7 @@ impl Flattener<'_> {
     }
 
     /// [`hoist_within`](Self::hoist_within), and `node` itself if it is a generator.
-    fn hoist_node(&mut self, node: NodeId, stmts: &mut Vec<Gen>) {
+    fn hoist_node(&mut self, node: NodeId, stmts: &mut Vec<Stmt>) {
         let ExprKind::Fact(predicate, key) = *self.ast.store().kind(node) else {
             self.hoist_within(node, stmts);
             return;
@@ -530,12 +734,13 @@ impl Flattener<'_> {
         self.hoist_within(key, stmts);
 
         let row = self.fresh(stmts.len());
-        stmts.push(Gen {
+        stmts.push(Stmt::Scan(Gen {
             predicate,
             key,
             row: Some(row),
             span: self.ast.store().span(node),
-        });
+            placement: Placement::Floating,
+        }));
         self.hoisted.push((node, row));
     }
 
@@ -572,6 +777,7 @@ impl Flattener<'_> {
                 key: *key,
                 row,
                 span: self.ast.store().span(node),
+                placement: Placement::Written,
             }),
             _ => {
                 self.report(
@@ -590,7 +796,7 @@ impl Flattener<'_> {
         &mut self,
         node: NodeId,
         predicate: PredicateId,
-        rows: &[Symbol],
+        claims: &Claims,
         occurrences: &mut Occurrences,
     ) {
         let Some(key_ty) = self.schema.get(predicate).map(|p| p.key().ty.clone()) else {
@@ -599,7 +805,7 @@ impl Flattener<'_> {
 
         match (&key_ty, self.ast.store().kind(node)) {
             (PredicateTy::Record(_), ExprKind::Record(_)) => {
-                self.scan_field(node, &key_ty, rows, occurrences);
+                self.scan_field(node, &key_ty, claims, occurrences);
             }
             // A whole-predicate scan.
             (PredicateTy::Record(_), ExprKind::Wildcard) => {}
@@ -610,7 +816,7 @@ impl Flattener<'_> {
                  a stored key is its fields, so name the fields instead",
             ),
             // A scalar key is one field, and the pattern is that field's.
-            (scalar, _) => self.scan_field(node, scalar, rows, occurrences),
+            (scalar, _) => self.scan_field(node, scalar, claims, occurrences),
         }
     }
 
@@ -618,16 +824,27 @@ impl Flattener<'_> {
         &mut self,
         node: NodeId,
         ty: &PredicateTy,
-        rows: &[Symbol],
+        claims: &Claims,
         occurrences: &mut Occurrences,
     ) {
         match self.ast.store().kind(node) {
             ExprKind::Wildcard | ExprKind::Lit(_) | ExprKind::Prefix(_) => {}
 
             ExprKind::Var(symbol) => {
-                // A reference field whose variable is a row elsewhere can only read
-                // it; anything else is a capture. See `rows` in `collect`.
-                if matches!(ty, PredicateTy::Fact(_)) && rows.contains(symbol) {
+                // A variable something else has **claimed** can only be read here —
+                // see [`Claims`]. For an alias that holds wherever it occurs: the
+                // statement saying what it is has to run first, whatever its type.
+                //
+                // For a row it holds only at a *fact-typed* field, because that is
+                // the one place the two could be confused: the field holds a
+                // reference and a reference is a value, so a bare variable there is
+                // ordinarily capturable — but if it is a row, binding it here would
+                // need the level to find its own fact by id, a point access the plan
+                // cannot express.
+                let claimed = claims.aliased.contains(symbol)
+                    || (matches!(ty, PredicateTy::Fact(_)) && claims.rows.contains(symbol));
+
+                if claimed {
                     occurrences.read(*symbol);
                 } else {
                     occurrences.capture(*symbol);
@@ -641,7 +858,7 @@ impl Flattener<'_> {
 
                 for (name, field_ty) in field_tys.iter() {
                     if let Some(pattern) = field_pattern(fields, Symbol::Schema(*name)) {
-                        self.scan_field(pattern, field_ty, rows, occurrences);
+                        self.scan_field(pattern, field_ty, claims, occurrences);
                     }
                 }
             }
@@ -776,7 +993,7 @@ impl Flattener<'_> {
         let mut ok = true;
 
         for &stmt in order {
-            let (Some(deps), Some(generator)) =
+            let (Some(deps), Some(statement)) =
                 (collected.deps.stmt(stmt), collected.stmts.get(stmt))
             else {
                 return false;
@@ -784,7 +1001,7 @@ impl Flattener<'_> {
 
             for read in deps.reads.iter() {
                 if !bound.contains(read) {
-                    let at = generator.span.clone();
+                    let at = statement.span();
                     self.unbound(*read, at);
                     ok = false;
                 }
@@ -820,38 +1037,59 @@ impl Flattener<'_> {
 
     /// Walk the statements in `order`, assigning a register per level and deciding
     /// each key field's fate, then project the head.
-    fn emit(&mut self, stmts: &[Gen], order: &[usize]) -> Option<Plan> {
+    ///
+    /// A **register is a level's**, not a statement's, so the address is counted off
+    /// the levels emitted rather than the position in the order: an alias is a
+    /// statement that binds without iterating, exactly as
+    /// [`Plan::levels`](crate::focus::plan::Plan::levels) counts them for a plan that
+    /// derives.
+    fn emit(&mut self, stmts: &[Stmt], order: &[usize]) -> Option<Plan> {
         let mark = self.diagnostics.len();
-        let mut body = Vec::with_capacity(order.len());
+        let mut body: Vec<Generator> = Vec::with_capacity(order.len());
 
-        for (level, &stmt) in order.iter().enumerate() {
-            let generator = stmts.get(stmt)?;
-            let address = Address::new(level);
-            let key_ty = self.schema.get(generator.predicate)?.key().ty.clone();
+        for &stmt in order {
+            match stmts.get(stmt)? {
+                Stmt::Scan(generator) => {
+                    let address = Address::new(body.len());
+                    let key_ty = self.schema.get(generator.predicate)?.key().ty.clone();
 
-            let mut current = Level::new();
-            self.key(generator.key, &key_ty, address, &mut current);
+                    let mut current = Level::new();
+                    self.key(generator.key, &key_ty, address, &mut current);
 
-            // After the key: `X = test.Foo {id = X}` cannot typecheck, so nothing in
-            // a level's own key can read the row it binds.
-            if let Some(row) = generator.row {
-                self.bindings.push((
-                    row,
-                    Slot::Row {
-                        address,
-                        predicate: generator.predicate,
-                    },
-                ));
+                    // After the key: `X = test.Foo {id = X}` cannot typecheck, so
+                    // nothing in a level's own key can read the row it binds.
+                    if let Some(row) = generator.row {
+                        self.bindings.push((
+                            row,
+                            Slot::Row {
+                                address,
+                                predicate: generator.predicate,
+                            },
+                        ));
+                    }
+
+                    body.push(Generator {
+                        access: Access {
+                            predicate_id: generator.predicate,
+                            seek_key: current.seek_key(),
+                        },
+                        binds: Box::new([address]),
+                        residuals: current.residuals.into(),
+                    });
+                }
+
+                // The order has already put every level this reads into a register,
+                // so the slot it names exists by now. A `None` was reported by
+                // `resolve` — a read through a reference, say — and the mark below
+                // is what insists on that.
+                Stmt::Alias(alias) => {
+                    let (pattern, value) = (alias.pattern, alias.value);
+
+                    if let Some(slot) = self.resolve(value) {
+                        self.bind_pattern(pattern, slot);
+                    }
+                }
             }
-
-            body.push(Generator {
-                access: Access {
-                    predicate_id: generator.predicate,
-                    seek_key: current.seek_key(),
-                },
-                binds: Box::new([address]),
-                residuals: current.residuals.into(),
-            });
         }
 
         let head = self.project(*self.ast.query().head());
@@ -861,10 +1099,82 @@ impl Flattener<'_> {
         }
 
         Some(Plan {
-            nvars: order.len(),
+            nvars: body.len(),
             body: body.into_iter().map(Step::Scan).collect(),
             head: head?,
         })
+    }
+
+    /// **Bind a pattern to the place it names**, piece by piece.
+    ///
+    /// One walk for every shape a bind's left side can have, against every shape a
+    /// slot can be. A record decomposes by *field name* rather than by zipping two
+    /// trees, which is what lets the right side be anything with pieces — a
+    /// constant, a register's field, a row — instead of only another record
+    /// literal. Glean reaches the same place by decomposing `T = U` into leaf
+    /// equations and dropping the trivial ones (`Opt.hs:592-663`); decomposing
+    /// against a slot means the trivial leaves are never built.
+    ///
+    /// A wildcard piece is exactly a piece the pattern omits: no constraint, which
+    /// is the right answer because a wildcard cannot fail.
+    fn bind_pattern(&mut self, pattern: NodeId, slot: Slot) {
+        match self.ast.store().kind(pattern) {
+            ExprKind::Var(symbol) => {
+                let symbol = *symbol;
+
+                // **One variable, one claim.** Two is unification, and the dangerous
+                // kind: `lookup` walks the bindings in reverse and would keep the
+                // last silently. Typecheck cannot decide this — it would have to
+                // decide it in source order, and only `bindings` knows whether the
+                // variable is already a substitution rather than a capture.
+                if self.lookup(symbol).is_some() {
+                    let name = self.name(symbol).to_owned();
+                    self.report(
+                        pattern,
+                        Code::NyiBindUnification,
+                        format!(
+                            "an earlier statement already says what `{name}` is; matching two \
+                             values against each other is not implemented yet"
+                        ),
+                    );
+                } else {
+                    self.bindings.push((symbol, slot));
+                }
+            }
+
+            // Binds nothing, and cannot fail.
+            ExprKind::Wildcard => {}
+
+            ExprKind::Record(fields) => {
+                let fields = fields.clone();
+
+                for (name, piece) in fields.iter() {
+                    let mark = self.diagnostics.len();
+
+                    match self.field_slot(*piece, &slot, *name) {
+                        Some(field) => self.bind_pattern(*piece, field),
+                        // A piece of something with no such piece. Typecheck unified
+                        // the two shapes first, so this is unreachable — reported
+                        // rather than asserted, because it is a data path.
+                        None if self.diagnostics.len() == mark => self.report(
+                            *piece,
+                            Code::RejectTypeMismatch,
+                            "this is not a piece of that value",
+                        ),
+                        None => {}
+                    }
+                }
+            }
+
+            // Typecheck's gate makes this unreachable: a literal leaf is not
+            // destructurable, precisely because it would bind nothing and so mean
+            // `true` where it means the empty relation.
+            _ => self.report(
+                pattern,
+                Code::NyiBindUnification,
+                "matching two patterns against each other is not implemented yet",
+            ),
+        }
     }
 
     /// A level's key pattern, field by field in **declared order** — which is
@@ -894,6 +1204,12 @@ impl Flattener<'_> {
     }
 
     /// One key field: seek, splice, residual, or capture.
+    ///
+    /// Three of those four are the same question — *where does this value live* —
+    /// so they are one arm, asked of [`resolve`](Self::resolve). What is left is the
+    /// two shapes a key field can hold that are **not** reads: a variable this level
+    /// is the first to mention, which the field *binds*; and a string prefix, which
+    /// denotes a range and so is a pattern rather than a value.
     fn field(
         &mut self,
         node: NodeId,
@@ -905,52 +1221,78 @@ impl Flattener<'_> {
         match self.ast.store().kind(node) {
             ExprKind::Wildcard => level.building = false,
 
-            ExprKind::Var(symbol) => match self.lookup(*symbol) {
-                // First occurrence in this order: the field is an *output*, so it
-                // cannot narrow the scan.
-                None => {
-                    level.building = false;
-                    self.bindings.push((
-                        *symbol,
-                        Slot::Field {
-                            address,
-                            path: path.clone(),
-                            ty: ty.clone(),
-                        },
-                    ));
-                }
-                Some(slot) => self.matched(node, &slot, ty, address, path, level),
-            },
-
-            ExprKind::Access(..) | ExprKind::Select(..) | ExprKind::Fact(..) => {
-                if let Some(slot) = self.resolve(node) {
-                    self.matched(node, &slot, ty, address, path, level);
-                }
+            // First occurrence in this order: the field is an *output*, so it cannot
+            // narrow the scan.
+            ExprKind::Var(symbol) if self.lookup(*symbol).is_none() => {
+                level.building = false;
+                self.bindings.push((
+                    *symbol,
+                    Slot::Field {
+                        address,
+                        path: path.clone(),
+                        ty: ty.clone(),
+                    },
+                ));
             }
 
-            // A literal, a string prefix, or a record of them.
-            _ => match self.constant(node, ty) {
+            // A **range**, and so the one narrowing that is not a slot: there is no
+            // single value for `"a".."` to be, which is also why a variable cannot be
+            // bound to one.
+            ExprKind::Prefix(_) => match self.constant(node, ty) {
                 Some(constant) => Self::narrow_by(constant, path, level),
+                // Typecheck rejects a prefix against a non-string field first;
+                // reported rather than declined so no path refuses a plan silently.
+                None => self.report(
+                    node,
+                    Code::RejectTypeMismatch,
+                    "this prefix is not a pattern for that field's type",
+                ),
+            },
 
-                // Not fully determined: a record giving only some of its fields.
-                // Those become residuals and captures one step deeper, and the
-                // field itself cannot narrow the scan.
-                None => {
-                    level.building = false;
+            _ => {
+                let mark = self.diagnostics.len();
 
-                    if let (ExprKind::Record(fields), PredicateTy::Record(field_tys)) =
-                        (self.ast.store().kind(node), ty)
-                    {
-                        let fields = fields.clone();
+                match self.resolve(node) {
+                    Some(slot) => self.matched(node, &slot, ty, address, path, level),
 
-                        for (idx, (name, field_ty)) in field_tys.clone().iter().enumerate() {
-                            if let Some(pattern) = field_pattern(&fields, Symbol::Schema(*name)) {
-                                self.field(pattern, field_ty, address, &path.then(idx), level);
-                            }
+                    // Not one place. A record giving only some of its fields is a
+                    // pattern rather than a value, and its pieces are matched one
+                    // step deeper; anything else that reaches here is a read that
+                    // resolved to nothing.
+                    None if matches!(self.ast.store().kind(node), ExprKind::Record(_)) => {
+                        self.partial(node, ty, address, path, level);
+                    }
+
+                    None => {
+                        level.building = false;
+
+                        // **A quiet decline here is the one outcome worse than
+                        // refusing the query.** The field would get no narrowing, no
+                        // residual and no error, `building` would stay set, and the
+                        // level would match every row — a wrong answer with nothing
+                        // to read. `resolve` declines loudly in the cases it knows
+                        // about (a read through a reference, say), and typecheck
+                        // reported the deferred constructs, so report only where
+                        // nothing explained it.
+                        let deferred = matches!(
+                            self.ast.store().kind(node),
+                            ExprKind::Never
+                                | ExprKind::Disjunction(_)
+                                | ExprKind::Subquery(_)
+                                | ExprKind::Error
+                        );
+
+                        if self.diagnostics.len() == mark && !deferred {
+                            self.report(
+                                node,
+                                Code::RejectUnresolvedAccess,
+                                "this read does not resolve to a value that can match a key \
+                                 field",
+                            );
                         }
                     }
                 }
-            },
+            }
         }
     }
 
@@ -1035,20 +1377,18 @@ impl Flattener<'_> {
                 ),
             },
 
-            // A **folded constant** at a key field: narrowed exactly as the literal
-            // written in place would be. This is the arm that makes
-            // `Z = 1; test.Bar {id = Z}` a seek rather than a scan.
+            // A **constant** at a key field — written there or reached by name,
+            // which is now one path: this is the arm that makes
+            // `Z = 1; test.Bar {id = Z}` a seek rather than a scan, and it is the
+            // same arm `test.Bar {id = 1}` takes.
             //
-            // `None` means the literal does not encode against this field's type,
-            // which typecheck rejects first — reported rather than declined so no
-            // path can refuse a plan without saying why.
+            // `None` is a constant that does not determine all of the field's bytes
+            // — a record giving only some of its fields, `{}` most of all. That is a
+            // pattern rather than a value, so it narrows nothing here and its pieces
+            // are matched one step deeper.
             Slot::Const(folded) => match self.constant(*folded, ty) {
                 Some(constant) => Self::narrow_by(constant, path, level),
-                None => self.report(
-                    node,
-                    Code::RejectTypeMismatch,
-                    "this constant is not a value of that field's type",
-                ),
+                None => self.partial(*folded, ty, address, path, level),
             },
 
             // Reported by `collect` too, which sees the field's declared type before
@@ -1058,6 +1398,38 @@ impl Flattener<'_> {
                 Code::NyiValueMatch,
                 "matching on a fact's value is not implemented yet",
             ),
+        }
+    }
+
+    /// A record pattern that gives only **some** of its fields — including the one
+    /// that gives none.
+    ///
+    /// It cannot narrow the scan, because the encoding is positional and the bytes
+    /// of the fields it does give are not a prefix of anything. So the field closes
+    /// the seek and each piece is matched one path step deeper, where it becomes a
+    /// residual or a capture in its own right.
+    fn partial(
+        &mut self,
+        node: NodeId,
+        ty: &PredicateTy,
+        address: Address,
+        path: &FieldPath,
+        level: &mut Level,
+    ) {
+        level.building = false;
+
+        let (ExprKind::Record(fields), PredicateTy::Record(field_tys)) =
+            (self.ast.store().kind(node), ty)
+        else {
+            return;
+        };
+
+        let fields = fields.clone();
+
+        for (idx, (name, field_ty)) in field_tys.clone().iter().enumerate() {
+            if let Some(pattern) = field_pattern(&fields, Symbol::Schema(*name)) {
+                self.field(pattern, field_ty, address, &path.then(idx), level);
+            }
         }
     }
 
@@ -1111,14 +1483,20 @@ impl Flattener<'_> {
     /// value that differs per row, so it is not a constant at all: that is the
     /// derived bind this phase leaves unlowered, and the nearest thing in the
     /// language to a producer for [`Step::Derive`].
+    /// Shared with typecheck, which decides *from the same predicate* that a bind is
+    /// a substitution rather than the unification it defers — see
+    /// [`Ast::is_constant`].
     fn is_foldable(&self, node: NodeId) -> bool {
-        match self.ast.store().kind(node) {
-            ExprKind::Lit(Literal::Int(_) | Literal::Str(_)) => true,
-            ExprKind::Record(fields) => {
-                fields.iter().all(|(_, pattern)| self.is_foldable(*pattern))
-            }
-            _ => false,
-        }
+        self.ast.is_constant(node)
+    }
+
+    /// Bind every variable in `pattern` to its piece of the constant `value`.
+    ///
+    /// The collect-time entry to [`bind_pattern`](Self::bind_pattern): a constant is
+    /// a slot like any other, so folding a constant bind and naming a place are the
+    /// same walk over the same left side.
+    fn fold_into(&mut self, pattern: NodeId, value: NodeId) {
+        self.bind_pattern(pattern, Slot::Const(value));
     }
 
     /// The bytes a pattern determines, if it determines all of them.
@@ -1184,9 +1562,40 @@ impl Flattener<'_> {
         }
     }
 
-    /// Where a read pattern's value lives — a variable, or a chain of field reads
-    /// from one.
+    /// The field `name` of a **folded constant**, as a constant of its own.
+    ///
+    /// `None` when the constant is not a record, which is a field read on a scalar and
+    /// something typecheck has already rejected. The lookup is by exact [`Symbol`], and
+    /// works because both sides were interned by the same lowering pass: the record's
+    /// field names and the access's come from the same source text through the same
+    /// schema-first resolution.
+    fn folded_field(&self, folded: NodeId, name: Symbol) -> Option<NodeId> {
+        match self.ast.store().kind(folded) {
+            ExprKind::Record(fields) => field_pattern(fields, name),
+            _ => None,
+        }
+    }
+
+    /// **Where an expression's value lives** — the one function from a read to a
+    /// [`Slot`], and the only place the answer is worked out.
+    ///
+    /// Every position that can consume a value goes through here: a key field, the
+    /// head, an alias's right side, and a record's pieces when it destructures. That
+    /// is what keeps a construct from meaning one thing in one position and
+    /// something else in another — the failure mode of answering the question six
+    /// times ([chapter 7](../../../docs/07-compilation.md)).
+    ///
+    /// `None` is "this denotes no place". Some of those are reported here (a read
+    /// through a reference); the rest were reported by the phase that owns them.
     fn resolve(&mut self, node: NodeId) -> Option<Slot> {
+        // A literal, or a record of them to any depth: a constant is a location like
+        // any other — the node itself, substituted wherever the name is used. Asked
+        // first so every arm below sees a written-out constant and a named one the
+        // same way.
+        if self.ast.is_constant(node) {
+            return Some(Slot::Const(node));
+        }
+
         match self.ast.store().kind(node) {
             ExprKind::Var(symbol) => self.lookup(*symbol),
 
@@ -1216,45 +1625,63 @@ impl Flattener<'_> {
             }
 
             ExprKind::Access(FieldRef::Key(name), base) => {
-                let name = *name;
-
-                match self.resolve(*base)? {
-                    Slot::Row { address, predicate } => {
-                        let key_ty = self.schema.get(predicate)?.key().ty.clone();
-                        let (idx, ty) = field_of(&key_ty, name)?;
-
-                        Some(Slot::Field {
-                            address,
-                            path: FieldPath::field(idx),
-                            ty,
-                        })
-                    }
-
-                    Slot::Field { address, path, ty } => match ty {
-                        PredicateTy::Record(_) => {
-                            let (idx, field_ty) = field_of(&ty, name)?;
-
-                            Some(Slot::Field {
-                                address,
-                                path: path.then(idx),
-                                ty: field_ty,
-                            })
-                        }
-                        // Reading a field *of* a referenced fact is a second lookup.
-                        PredicateTy::Fact(_) => {
-                            self.report_through_reference(node, "a field");
-                            None
-                        }
-                        _ => None,
-                    },
-
-                    // Reading a field of a scalar: typecheck rejects both, since
-                    // neither a value's type nor a literal's has fields.
-                    Slot::Value { .. } | Slot::Const(_) => None,
-                }
+                let (name, base) = (*name, *base);
+                let slot = self.resolve(base)?;
+                self.field_slot(node, &slot, name)
             }
 
             _ => None,
+        }
+    }
+
+    /// The slot of one **field inside** another slot.
+    ///
+    /// Reading `X.name` and destructuring `{name = Y} = X` ask this same question,
+    /// which is why they answer it with the same function: a field of a place is a
+    /// place, reached by extending the path rather than by moving any bytes.
+    fn field_slot(&mut self, node: NodeId, slot: &Slot, name: Symbol) -> Option<Slot> {
+        match slot {
+            Slot::Row { address, predicate } => {
+                let key_ty = self.schema.get(*predicate)?.key().ty.clone();
+                let (idx, ty) = field_of(&key_ty, name)?;
+
+                Some(Slot::Field {
+                    address: *address,
+                    path: FieldPath::field(idx),
+                    ty,
+                })
+            }
+
+            Slot::Field { address, path, ty } => match ty {
+                PredicateTy::Record(_) => {
+                    let (idx, field_ty) = field_of(ty, name)?;
+
+                    Some(Slot::Field {
+                        address: *address,
+                        path: path.then(idx),
+                        ty: field_ty,
+                    })
+                }
+                // Reading a field *of* a referenced fact is a second lookup.
+                PredicateTy::Fact(_) => {
+                    self.report_through_reference(node, "a field");
+                    None
+                }
+                _ => None,
+            },
+
+            // A field of a **folded constant record** is itself a constant: `A = {x =
+            // 2}` makes `A.x` the literal `2`, and the substitution has to reach
+            // through the access or it stops at the variable — quietly, and
+            // differently wrongly in each position (see the guard test).
+            //
+            // `None` here is a field read on a *scalar* constant, which typecheck
+            // rejects: an integer has no fields.
+            Slot::Const(folded) => self.folded_field(*folded, name).map(Slot::Const),
+
+            // A field of a value: typecheck rejects it too, since a value's type has
+            // no fields.
+            Slot::Value { .. } => None,
         }
     }
 
@@ -1571,6 +1998,20 @@ mod tests {
     }
 
     /// The shape of `source`'s plan.
+    /// Every code the **whole front end** reports, typecheck's included — for the
+    /// queries flatten never gets to see.
+    fn front_end_codes(source: &str) -> Vec<String> {
+        let schema = corpus::schema();
+        let mut compilation = Compilation::new(source, &schema);
+
+        compilation.plan();
+        compilation
+            .diagnostics()
+            .codes()
+            .map(str::to_owned)
+            .collect()
+    }
+
     fn shape(source: &str) -> String {
         let flattened = compile(source);
         describe(flattened.plan(), &flattened.interner)
@@ -1892,19 +2333,75 @@ mod tests {
     /// and a read constrains the order, exactly as `Y.name` does.
     #[test]
     fn a_row_variable_at_a_reference_field_is_a_read() {
-        let schema = corpus::schema();
         let deps = deps_of("P where P = test.Foo {id = 1}; test.Ref {of = P}");
 
         assert_eq!(deps.antichains(), Some(vec![vec![0], vec![1]]));
         assert!(deps.respects(&[0, 1]));
         assert!(!deps.respects(&[1, 0]));
+    }
 
-        // Reorder being the identity, the other spelling has to be refused — and it
-        // never reaches flatten to be refused *here*: binding a row variable that a
-        // reference field has already mentioned is a `pattern = pattern`, which
-        // typecheck defers.
-        let mut compilation =
-            Compilation::new("P where test.Ref {of = P}; P = test.Foo {id = 1}", &schema);
+    /// **The order the query was written in is not the order it runs in.**
+    ///
+    /// The same read, written the other way round: `of = P` reads `P` in the
+    /// statement that comes first, and the statement that comes second is the only
+    /// one that can capture it. The dependency graph says so — one order works and
+    /// the source is not it — and [`reorder`](crate::focus::reorder::reorder) is what
+    /// makes the query legal rather than refused.
+    ///
+    /// Asserted as *plan equality* against the other spelling rather than against a
+    /// literal shape: the claim is that these are one query written two ways, so any
+    /// shape either of them has, both have.
+    #[test]
+    fn a_row_bound_after_the_field_that_reads_it_is_reordered() {
+        let deps = deps_of("P where test.Ref {of = P}; P = test.Foo {id = 1}");
+
+        assert_eq!(deps.antichains(), Some(vec![vec![1], vec![0]]));
+        assert!(deps.respects(&[1, 0]));
+        assert!(
+            !deps.respects(&[0, 1]),
+            "the premise: the source order is wrong"
+        );
+
+        assert_eq!(
+            shape("P where test.Ref {of = P}; P = test.Foo {id = 1}"),
+            shape("P where P = test.Foo {id = 1}; test.Ref {of = P}"),
+            "one query, two spellings, one plan"
+        );
+
+        // And the plan is the reordered one, not a scan of `test.Ref` that filters:
+        // `test.Foo` is the level the query wrote *second*, and it is `r0` — so the
+        // reference seek splices the fact id of a row already bound.
+        assert_eq!(
+            shape("P where test.Ref {of = P}; P = test.Foo {id = 1}"),
+            lines(&[
+                "r0 <- test.Foo seek[k]",
+                "r1 <- test.Ref seek[r0#]",
+                "head r0",
+            ]),
+        );
+    }
+
+    /// **A row variable is bound by at most one statement.**
+    ///
+    /// Two statements claiming the same row say *these two facts are the same
+    /// fact*, which is unification proper and has no engine — unlike binding a row
+    /// out of source order, which is only an ordering question and which
+    /// [`reorder`](crate::focus::reorder::reorder) now answers.
+    ///
+    /// Typecheck used to catch this incidentally, by refusing *any* bind whose left
+    /// side was already bound. That refusal is now narrowed to the shapes that
+    /// really need unification, so the check lives here — where every statement's
+    /// row is in hand at once, which is also the only place it can be decided
+    /// independently of the order. The proptest generator at
+    /// [`proptest`](self::proptest) relies on this holding.
+    #[test]
+    fn a_row_variable_bound_twice_is_deferred() {
+        let schema = corpus::schema();
+        let mut compilation = Compilation::new(
+            "X where X = test.Foo {id = 1}; X = test.Foo {id = 2}",
+            &schema,
+        );
+
         assert!(compilation.plan().is_none());
         assert_eq!(
             compilation.diagnostics().codes().collect::<Vec<_>>(),
@@ -2141,22 +2638,214 @@ mod tests {
         );
     }
 
+    // ---- an alias: a second name for a value already somewhere --------------
+
+    /// **Naming a field read is a spelling, not a second way to run a query.**
+    ///
+    /// `Y = X.name` says where `Y`'s value lives — a field of the row `X` is bound
+    /// to — so it substitutes exactly as a constant bind does: no register, no
+    /// step, nothing computed. The warrant is plan equality, as it is for hoisting:
+    /// if the two agreed only on their answers, the alias would be a second
+    /// machine.
+    #[test]
+    fn naming_a_field_read_compiles_to_the_read() {
+        assert_eq!(
+            shape("Y where X = test.Foo _; Y = X.name"),
+            shape("X.name where X = test.Foo _"),
+        );
+
+        assert_eq!(
+            rows("Y where X = test.Foo _; Y = X.name"),
+            strs(&["ann", "bob", "ann"]),
+        );
+    }
+
+    /// **An alias reaches every position the read reaches**, because it *is* the
+    /// read: at a key field it splices the register it names rather than comparing
+    /// a value, which is the whole point of substituting a location.
+    ///
+    /// This is the query that used to draw `nyi/value-bind`.
+    #[test]
+    fn an_alias_seeks_where_the_read_would() {
+        assert_eq!(
+            shape("X.name where X = test.Foo _; Y = X.name; test.Name Y"),
+            shape("X.name where X = test.Foo _; test.Name X.name"),
+        );
+
+        assert_eq!(
+            rows("Y where X = test.Foo _; Y = X.name; test.Name Y"),
+            strs(&["ann", "bob", "ann"]),
+        );
+    }
+
+    /// **An alias must be written after whatever binds its base** — and the limit
+    /// is *typecheck's*, not the plan's.
+    ///
+    /// `reorder` would place either spelling: an alias reads its base and captures
+    /// its target, which is all the frontier needs. But inference runs in source
+    /// order, so `X`'s type is still an open variable when `Y = X.name` is checked,
+    /// and resolving the read would need row polymorphism the type model does not
+    /// have (`ty::Checker::unresolved`). The diagnostic is therefore the earlier,
+    /// clearer one and comes from typecheck, before flatten sees the query.
+    ///
+    /// Recorded as a test rather than left implicit because it is the one place an
+    /// alias is *not* the ordering-free substitution the rest of these say it is.
+    #[test]
+    fn an_alias_must_follow_what_binds_its_base() {
+        assert_eq!(
+            front_end_codes("Y where Y = X.name; X = test.Foo _"),
+            ["reject/unresolved-access"],
+        );
+
+        // ...and the same query the other way round is an ordinary alias.
+        assert_eq!(
+            rows("Y where X = test.Foo _; Y = X.name"),
+            strs(&["ann", "bob", "ann"]),
+        );
+    }
+
+    /// `X = Y` with `Y` bound is the same substitution with an empty path.
+    #[test]
+    fn naming_a_bound_variable_is_an_alias() {
+        assert_eq!(
+            shape("Y where test.Foo {name = X}; Y = X"),
+            shape("X where test.Foo {name = X}"),
+        );
+
+        assert_eq!(
+            rows("Y where test.Foo {name = X}; Y = X"),
+            strs(&["ann", "bob", "ann"]),
+        );
+    }
+
+    /// A `.value` alias projects, and still cannot be matched: a value is fetched
+    /// per row and never enters the scan ([I6](../../../docs/invariants.md#i6)).
+    /// The deferral is the value one, reported where the match is attempted.
+    #[test]
+    fn a_value_alias_projects_but_does_not_match() {
+        assert_eq!(
+            rows("Y where X = test.Foo _; Y = X.value"),
+            strs(&["one", "two", "three"]),
+        );
+
+        assert_eq!(
+            compile("Y where X = test.Foo _; Y = X.value; test.Name Y").codes(),
+            ["nyi/value-match"],
+        );
+    }
+
+    /// An alias through a **reference** draws the reference deferral rather than
+    /// the bind one: naming it changes nothing about the second lookup it needs.
+    #[test]
+    fn an_alias_through_a_reference_is_the_reference_deferral() {
+        assert_eq!(
+            compile("Y where test.Ref {of = P}; Y = P.name").codes(),
+            ["nyi/fact-field"],
+        );
+    }
+
+    /// **One variable, one claim.** Two statements saying what a name is, is
+    /// unification rather than an ordering question — the rule two rows already
+    /// meet, and one an alias meets at typecheck: the second bind's right side is
+    /// neither a fact nor a constant, so the gate that lets a name be re-stated
+    /// does not open. Flatten's own claim check ([`Flattener::claims`]) is the
+    /// backstop for the shapes that gate does let through, such as two rows.
+    #[test]
+    fn a_variable_may_be_claimed_once() {
+        assert_eq!(
+            front_end_codes("Y where X = test.Foo _; Y = X.name; Y = X.id"),
+            ["nyi/bind-unification"],
+        );
+
+        // Two rows of one predicate: the same rule, reached in flatten because
+        // typecheck's gate lets a repeated fact bind through on purpose — it is
+        // the gate that makes `test.Ref {of = P}; P = test.Foo _` an ordering
+        // question rather than a rejection.
+        assert_eq!(
+            compile("X where X = test.Foo _; X = test.Foo {id = 1}").codes(),
+            ["nyi/bind-unification"],
+        );
+    }
+
+    /// **A record pattern destructures against any slot, not just a constant.**
+    ///
+    /// `{inner = X} = P.outer` names each piece of a place, which is the same
+    /// substitution one name for the whole place is — so it compiles to the plan
+    /// the chain of reads compiles to, and to the plan the *nested pattern*
+    /// spelling of the same query compiles to.
+    ///
+    /// Glean reaches this by decomposing `T = U` into leaf equations and dropping
+    /// the trivial ones (`Opt.hs:592-663`); here the decomposition is by field name
+    /// against a slot, so the leaves that would be trivial never exist.
+    #[test]
+    fn a_record_pattern_destructures_any_slot() {
+        assert_eq!(
+            shape("X where P = test.Nested _; {inner = X} = P.outer"),
+            shape("X where P = test.Nested _; X = P.outer.inner"),
+        );
+
+        assert_eq!(
+            rows("X where P = test.Nested _; {inner = X} = P.outer"),
+            ints(&[1, 7])
+        );
+
+        // Every piece at once, from a field with two of them.
+        assert_eq!(
+            rows("{a = A, b = B} where P = test.Wide _; {extra = A, inner = B} = P.outer"),
+            vec![Value::Record(Box::new([
+                ("a".to_owned(), Value::Int(1)),
+                ("b".to_owned(), Value::Int(2)),
+            ]))],
+        );
+    }
+
+    /// A **wildcard piece** binds nothing and cannot fail, so a pattern carrying one
+    /// is the read of the pieces that are left. Glean's expansion drops these as
+    /// tautologies; decomposing against a slot means they are never built.
+    ///
+    /// Note the pattern still has to name *every* field: records unify exactly here,
+    /// with no row polymorphism, so `{inner = X}` against a two-field record is a
+    /// type error rather than a partial match. That is typecheck's rule and this is
+    /// the spelling it leaves for "I only want this piece".
+    #[test]
+    fn a_wildcard_piece_binds_nothing() {
+        assert_eq!(
+            shape("X where P = test.Wide _; {extra = _, inner = X} = P.outer"),
+            shape("X where P = test.Wide _; X = P.outer.inner"),
+        );
+
+        assert_eq!(
+            rows("X where P = test.Wide _; {extra = _, inner = X} = P.outer"),
+            ints(&[2]),
+        );
+    }
+
+    /// A **literal** leaf on the left is still refused, and the reason is the one
+    /// [`Ast::is_destructurable`] gives: it binds nothing, so flatten would emit no
+    /// constraint and the statement would silently mean *true* where it means the
+    /// empty relation. Deciding it needs two values compared, which is the hard
+    /// half.
+    #[test]
+    fn a_literal_piece_is_still_unification() {
+        assert_eq!(
+            front_end_codes("X where P = test.Nested _; {inner = 1} = P.outer"),
+            ["nyi/bind-unification"],
+        );
+    }
+
     // ---- the deferred constructs -------------------------------------------
 
-    /// Binding a variable to a value **a row produced** is still a derived bind.
+    /// What is left of `nyi/value-bind`: a right side that denotes **no location**.
     ///
-    /// The line moved in Phase 6: a *literal* bind folds (see
-    /// [`a_value_bind_returns_the_value`]), because its value is known before
-    /// anything runs and substituting it is what the query means. This one is not
-    /// foldable — `X.name` is a different row's field on every iteration — so it
-    /// needs a value that is computed while the plan runs, and nothing lowers one
-    /// yet. `Y` would most likely become another *substitution* (an alias for a
-    /// field of `X`'s register) rather than a value slot, which is why the derive
-    /// step still has no producer in the language.
+    /// The code used to cover two different things. A field read names a place in a
+    /// register and now substitutes; these do not, and are the derived bind the
+    /// machine has a step for and the language still has no producer for.
     #[test]
-    fn a_computed_bind_is_not_implemented_yet() {
+    fn a_value_no_location_names_is_still_deferred() {
+        // A record mentioning a captured variable: its value differs per row, and
+        // it is in no register — it would have to be built.
         assert_eq!(
-            compile("X where X = test.Foo _; Y = X.name; test.Name Y").codes(),
+            compile("X where test.Nested {outer = {inner = Y}}; X = {inner = Y}").codes(),
             ["nyi/value-bind"],
         );
     }
@@ -2196,6 +2885,169 @@ mod tests {
             compile("X where test.Nested {outer = {inner = Y}}; X = {inner = Y}").codes(),
             ["nyi/value-bind"],
         );
+    }
+
+    /// **A constant may be bound after a field has captured the variable.**
+    ///
+    /// The fold's counterpart to
+    /// [`a_row_bound_after_the_field_that_reads_it_is_reordered`]: `test.Foo {id = N};
+    /// N = 1` names `N` before the statement that says what it is, and that is an
+    /// ordering artefact and nothing more — the fold is collected from the whole body
+    /// before any statement is lowered, so both spellings reach `emit` with the same
+    /// bindings and compile to the same plan.
+    ///
+    /// Unlike the row case this needs no reordering at all: a folded constant takes
+    /// no register and no step, so there is no level to move.
+    ///
+    /// [`a_row_bound_after_the_field_that_reads_it_is_reordered`]: self::tests::a_row_bound_after_the_field_that_reads_it_is_reordered
+    #[test]
+    fn a_constant_may_be_bound_after_a_field_captures_it() {
+        for (written_late, written_first) in [
+            // A scalar, at a key field that the constant then narrows to a seek.
+            (
+                "X where test.Foo {id = N, name = X}; N = 1",
+                "X where N = 1; test.Foo {id = N, name = X}",
+            ),
+            // A record of constants, at a record-typed field — the case whose bytes
+            // carry a `MARK_RECORD` wrapper (see the test below), reached the other
+            // way round.
+            (
+                "X where test.Nested {outer = X}; X = {inner = 1}",
+                "X where X = {inner = 1}; test.Nested {outer = X}",
+            ),
+        ] {
+            assert_eq!(
+                shape(written_late),
+                shape(written_first),
+                "one query, two spellings, one plan: {written_late:?}"
+            );
+            assert_eq!(rows(written_late), rows(written_first), "{written_late:?}");
+        }
+    }
+
+    /// **Destructuring a constant is the same as binding each piece.**
+    ///
+    /// `{a = X, b = Y} = {a = 1, b = 2}` is sugar, and the test is that it is *exactly*
+    /// sugar: the same rows and the same plan as writing the two binds out. Nothing is
+    /// compared at runtime, because each variable folds into the piece of the constant
+    /// it lines up with.
+    #[test]
+    fn destructuring_a_constant_is_the_same_as_binding_each_piece() {
+        assert_eq!(rows("X where {a = X} = {a = 1}"), rows("X where X = 1"));
+
+        assert_eq!(
+            shape("X where {a = X, b = Y} = {a = 1, b = 2}; test.Bar {id = X}"),
+            shape("X where X = 1; Y = 2; test.Bar {id = X}"),
+            "destructuring is the two binds written out"
+        );
+
+        // Nested, and against a field the fold then narrows — so the pieces reach the
+        // seek exactly as a literal written in place would.
+        assert_eq!(
+            shape("X where {a = X} = {a = {inner = 1}}; test.Nested {outer = X}"),
+            shape("X where X = {inner = 1}; test.Nested {outer = X}"),
+        );
+    }
+
+    /// **Reading a field of a folded constant is itself a constant.**
+    ///
+    /// `A = {x = 2}` makes `A.x` the literal `2`, so the substitution has to go through
+    /// the *access* and not stop at the variable. Stopping halfway went wrong in two
+    /// different ways, neither of them an error message:
+    ///
+    /// - in the **head**, `resolve` declined quietly, so flatten returned no plan with
+    ///   nothing reported — the "no plan without a reason" assertion firing as a panic;
+    /// - at a **key field**, the constraint was dropped altogether, so the level
+    ///   matched every row. A silent wrong answer, which is the worse of the two.
+    ///
+    /// Found from the shell, by hand, on `{x = A.x, y = A.y} where A = {x=2, y=3}`.
+    #[test]
+    fn a_field_read_through_a_folded_constant_is_folded_too() {
+        // The head case: the whole query folds away, so this is one row of literals
+        // and no levels at all.
+        assert_eq!(
+            rows("{x = A.x, y = A.y} where A = {x = 2, y = 3}"),
+            vec![Value::Record(Box::new([
+                ("x".to_owned(), Value::Int(2)),
+                ("y".to_owned(), Value::Int(3)),
+            ]))],
+        );
+
+        // The key-field case, against the literal written in place: same plan, so the
+        // read narrows the seek exactly as `{id = 1}` does.
+        assert_eq!(
+            shape("A.x where A = {x = 1}; test.Bar {id = A.x}"),
+            shape("1 where test.Bar {id = 1}"),
+            "a field read through a fold narrows the seek like a literal"
+        );
+
+        // And the rows, which is what says the constraint did not go missing: `test.Bar`
+        // has more than one fact, so "matched everything" is visible here.
+        assert_eq!(
+            rows("A.x where A = {x = 1}; test.Bar {id = A.x}"),
+            rows("1 where test.Bar {id = 1}"),
+        );
+        assert!(
+            rows("A.x where A = {x = 1}; test.Bar {id = A.x}").len()
+                < rows("A.x where A = {x = 1}; test.Bar _").len(),
+            "the premise: an unnarrowed scan of test.Bar returns more rows"
+        );
+
+        // To any depth.
+        assert_eq!(rows("A.a.b where A = {a = {b = 7}}"), vec![Value::Int(7)]);
+    }
+
+    /// A field read on a **scalar** constant stays a type error: an integer has no
+    /// fields, and typecheck says so before flatten sees it.
+    ///
+    /// This is the case the buggy arm's comment was written for, and it was right about
+    /// — the mistake was assuming it covered records too.
+    #[test]
+    fn a_field_read_on_a_scalar_constant_is_a_type_error() {
+        let schema = corpus::schema();
+
+        for source in ["X where A = 42; X = A.x", "A.x where A = 42"] {
+            let mut compilation = Compilation::new(source, &schema);
+
+            assert!(compilation.plan().is_none(), "{source:?}");
+            assert_eq!(
+                compilation.diagnostics().codes().collect::<Vec<_>>(),
+                ["reject/type-mismatch"],
+                "{source:?}"
+            );
+        }
+    }
+
+    /// **One variable, one constant.**
+    ///
+    /// Two constant binds of one variable is unification — the same fault as a row
+    /// claimed twice, and worse to get wrong, because `lookup` walks the bindings in
+    /// reverse and would silently keep the *last*. Typecheck used to catch this
+    /// incidentally by refusing any bind whose left side was already bound; that
+    /// refusal is now narrowed, so the check has an owner.
+    #[test]
+    fn a_constant_bound_to_one_variable_twice_is_deferred() {
+        let schema = corpus::schema();
+
+        for source in [
+            "Y where Y = 1; Y = 2",
+            // Identical values are refused too: deciding they agree would mean
+            // comparing encoded bytes, and a query saying it twice is degenerate
+            // either way.
+            "Y where Y = 1; Y = 1",
+            // And with a capture in between, which is the shape that makes it
+            // dangerous rather than merely redundant.
+            "Y where test.Foo {id = Y}; Y = 1; Y = 2",
+        ] {
+            let mut compilation = Compilation::new(source, &schema);
+
+            assert!(compilation.plan().is_none(), "{source:?}");
+            assert_eq!(
+                compilation.diagnostics().codes().collect::<Vec<_>>(),
+                ["nyi/bind-unification"],
+                "{source:?}"
+            );
+        }
     }
 
     /// **The trap a folded record walks past.** A record inside a field keeps its
@@ -2309,10 +3161,19 @@ mod tests {
         assert!(flattened.plan.is_none());
     }
 
-    /// Reorder is the identity, verified by plan equality: flattening a query is
-    /// the same as flattening it in the order it was written.
+    /// **A source order that already works is flattened untouched**, verified by
+    /// plan equality: flattening these queries is the same as flattening them in the
+    /// order they were written.
+    ///
+    /// Not the identity in general any more — `reorder` moves what has to move, and
+    /// [`a_row_bound_after_the_field_that_reads_it_is_reordered`] is that case. This
+    /// is the other half of the claim, and the more important one for a reader: a
+    /// query that compiled before this module chose anything still compiles to the
+    /// very same plan.
+    ///
+    /// [`a_row_bound_after_the_field_that_reads_it_is_reordered`]: self::tests::a_row_bound_after_the_field_that_reads_it_is_reordered
     #[test]
-    fn reorder_is_a_verified_identity() {
+    fn a_valid_source_order_is_flattened_untouched() {
         for source in [
             "X where X = test.Foo _",
             "X where test.Edge {from = X, to = Y}; test.Node {id = Y}",
@@ -3082,6 +3943,17 @@ pub mod proptest {
                 .collect()
         }
 
+        /// **Every** order of the body, safe or not.
+        ///
+        /// What [`orders`](Self::orders) filters out is exactly what a query may not
+        /// be *handed* — flatten in a given order refuses a read before its bind —
+        /// but it is not what a query may not be *written* in, because `reorder`
+        /// chooses. So the source-rewriting property gets all of them, and the
+        /// filtered list stays for the properties that pass an order in explicitly.
+        pub fn all_orders(&self) -> Vec<Vec<usize>> {
+            permutations(&self.identity())
+        }
+
         /// Whether `order` binds every row before a reference field reads it.
         fn respects(&self, order: &[usize]) -> bool {
             let mut bound: Vec<usize> = vec![];
@@ -3776,7 +4648,7 @@ pub mod proptest {
 #[cfg(test)]
 mod battery {
     use super::{
-        flatten_in_order,
+        flatten, flatten_in_order,
         proptest::{QueryAndStore, arb_query_and_store},
     };
     use crate::focus::{
@@ -3803,6 +4675,20 @@ mod battery {
     /// diagnostic here is a fault in flatten or in the generator, and either way
     /// the message should say which query.
     fn plan_of(schema: &Schema, source: &str, order: &[usize]) -> (Plan, LocalInterner) {
+        plan_of_maybe_ordered(schema, source, Some(order))
+    }
+
+    /// The plan for `source` in the order **`reorder` chooses** — what the compiler
+    /// does with a query nobody handed an order to.
+    fn plan_of_chosen(schema: &Schema, source: &str) -> (Plan, LocalInterner) {
+        plan_of_maybe_ordered(schema, source, None)
+    }
+
+    fn plan_of_maybe_ordered(
+        schema: &Schema,
+        source: &str,
+        order: Option<&[usize]>,
+    ) -> (Plan, LocalInterner) {
         let mut interner = LocalInterner::new(schema.interner().clone());
         let mut diagnostics = Diagnostics::new();
 
@@ -3815,7 +4701,10 @@ mod battery {
             diagnostics.codes().collect::<Vec<_>>()
         );
 
-        let plan = flatten_in_order(&ast, schema, &mut interner, &mut diagnostics, order);
+        let plan = match order {
+            Some(order) => flatten_in_order(&ast, schema, &mut interner, &mut diagnostics, order),
+            None => flatten(&ast, schema, &mut interner, &mut diagnostics),
+        };
 
         assert!(
             !diagnostics.has_errors(),
@@ -3872,6 +4761,13 @@ mod battery {
 
         /// The same claim from the *source* end: writing the statements in another
         /// order is a different query text, and must still mean the same thing.
+        ///
+        /// Over **every** permutation, not just the safe ones. That is the whole of
+        /// what `reorder` buys: the orders this used to skip are the ones where a
+        /// reference field reads a row the next statement binds, and they now compile
+        /// — to the same plan, and so to the same rows — rather than being refused.
+        /// No order is passed in: each rewritten source is compiled the way the
+        /// compiler compiles it, so what is under test is the order `reorder` picked.
         #[test]
         fn rewriting_the_body_in_another_order_means_the_same_query(spec in arb_query_and_store()) {
             let mut want = spec.expected();
@@ -3879,10 +4775,9 @@ mod battery {
 
             let schema = spec.schema();
 
-            for order in spec.orders() {
+            for order in spec.all_orders() {
                 let source = spec.source_in_order(&order);
-                let identity: Vec<usize> = (0..spec.statements()).collect();
-                let (plan, interner) = plan_of(&schema, &source, &identity);
+                let (plan, interner) = plan_of_chosen(&schema, &source);
 
                 let mut rows = collect_rows(spec.build_store(), plan, &interner).expect("run");
                 rows.sort();
@@ -4070,6 +4965,50 @@ mod battery {
             "{RUNS} generated queries never produced: {}",
             missing.join(", ")
         );
+    }
+
+    /// **The rewriting property is not vacuous.**
+    ///
+    /// `rewriting_the_body_in_another_order_means_the_same_query` runs over every
+    /// permutation of the body rather than only the safe ones, which says something
+    /// only if the generator draws queries where some permutation *is* unsafe — a
+    /// reference field reading a row that a later statement binds. Those are exactly
+    /// the orders that used to be skipped and that `reorder` now has to fix, so if
+    /// this count were zero the strengthening would be decoration.
+    ///
+    /// Counted rather than asserted per-case, for the same reason the census is: it
+    /// is a claim about the *generator*, and one case proves nothing either way.
+    #[test]
+    fn the_generator_reaches_a_source_order_reorder_has_to_fix() {
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 300;
+
+        let mut runner = TestRunner::deterministic();
+        let mut fixable = 0;
+        let mut unsafe_orders = 0;
+
+        for _ in 0..RUNS {
+            let spec = arb_query_and_store()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+
+            let skipped = spec.all_orders().len() - spec.orders().len();
+            unsafe_orders += skipped;
+            fixable += usize::from(skipped > 0);
+        }
+
+        assert!(
+            fixable > 0,
+            "{RUNS} generated queries drew no body whose written order needs fixing, \
+             so running the rewriting property over every permutation tests nothing \
+             beyond the safe ones"
+        );
+        assert!(unsafe_orders > 0);
     }
 
     proptest! {

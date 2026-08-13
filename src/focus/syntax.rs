@@ -164,6 +164,53 @@ impl Ast {
     pub fn store(&self) -> &SyntaxTree<ExprKind<NodeId>> {
         &self.store
     }
+
+    /// Whether `node` is a value known at **compile time** — a literal, or a record
+    /// of them to any depth.
+    ///
+    /// Lives here because two phases have to agree on it exactly. Typecheck uses it
+    /// to decide that `N = "abc"` is a *substitution* rather than the unification it
+    /// defers, and flatten uses it to actually fold — so a phase that thought
+    /// something folded when the other did not would accept a bind nothing can lower,
+    /// and flatten's "no plan without a reason" assertion is all that would catch it.
+    ///
+    /// A string **prefix** is deliberately not constant: `"a"..` denotes a range, so
+    /// there is no single value for a variable bound to it to be.
+    #[must_use]
+    pub fn is_constant(&self, node: NodeId) -> bool {
+        match self.store.kind(node) {
+            ExprKind::Lit(Literal::Int(_) | Literal::Str(_)) => true,
+            ExprKind::Record(fields) => {
+                fields.iter().all(|(_, pattern)| self.is_constant(*pattern))
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a constant can be **destructured into** `node`: a variable, a
+    /// wildcard, or a record of them to any depth.
+    ///
+    /// Shared between typecheck and flatten for the same reason as
+    /// [`is_constant`](Self::is_constant) — one gates on it, the other walks it.
+    ///
+    /// A **literal** leaf is excluded, and that exclusion is load-bearing rather than
+    /// conservative. `{a = 1} = {a = 2}` typechecks (both sides are `int`) and binds
+    /// nothing, so flatten would emit no constraint and the statement would silently
+    /// mean *true* where it means the empty relation. Deciding it needs the two
+    /// constants' bytes compared, which is unification.
+    ///
+    /// A wildcard leaf is fine by the same reasoning read the other way: it binds
+    /// nothing, but it also cannot fail, so "no constraint" is the right answer for it.
+    #[must_use]
+    pub fn is_destructurable(&self, node: NodeId) -> bool {
+        match self.store.kind(node) {
+            ExprKind::Var(_) | ExprKind::Wildcard => true,
+            ExprKind::Record(fields) => fields
+                .iter()
+                .all(|(_, pattern)| self.is_destructurable(*pattern)),
+            _ => false,
+        }
+    }
 }
 
 /// A struct-of-arrays tree indexed by [`NodeId`].
