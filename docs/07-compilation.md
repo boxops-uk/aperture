@@ -355,7 +355,9 @@ longer the same thing as being handed one.
 Everything below **parses and typechecks**, then draws one specific `nyi/…` naming it — the
 permissive-early promise, now checked all the way through the driver *and past it*: the corpus
 gate runs `Compilation::plan` and then runs the plan against a real store, so `Supported`
-means **returns these rows**. Every code here has a corpus entry.
+means **returns these rows**. Every code here has a corpus entry **except `nyi/whole-key`**,
+which needs a schema where one predicate's whole key is another's field type — a shape the
+fixture deliberately does not have, so its guard builds a two-predicate schema of its own.
 
 | construct | code | what it needs |
 |---|---|---|
@@ -363,7 +365,7 @@ means **returns these rows**. Every code here has a corpus entry.
 | `X = Y` with both bound, `X = "a"..`, `gen = gen` | `nyi/bind-unification` | two values compared at runtime and nothing to substitute — a register-to-register residual ([open decisions](open-decisions.md)) |
 | `X.name`, `X.value` where `X` came out of a reference field | `nyi/fact-field` | cross-fact navigation: a second lookup, which is a new `Access` kind (`Access::Fetch`) |
 | `test.Name Y.value` — a value in a key position | `nyi/value-match` | a residual class over the fetched value buffer, never in the scan ([I6](invariants.md#i6)) |
-| `test.Foo Y` — a variable for a whole record key | `nyi/whole-key` | a key is not one field ([chapter 3](03-storage-model.md#a-stored-key-is-flat)) |
+| `test.Nested Y; test.Wide {outer = Y}` — a whole key matched **into a record field** | `nyi/whole-key` | flat against wrapped: the same record, not the same bytes ([chapter 3](03-storage-model.md#a-stored-key-is-flat)) |
 | `Edge {from = X, to = X}` | `nyi/repeated-variable` | a same-row `EqField` residual — the [Phase 4 decision](open-decisions.md) |
 
 **`X = Y.name` is not on this list any more, and the line it moved across is the useful one.**
@@ -595,7 +597,7 @@ The trap it walks past: folding reaches `constant`, whose record arm writes the
 Wrapped is right for a record *inside a field* and wrong for a whole key, and choosing wrong
 reads bytes that match nothing with no error. It is safe because `key` destructures the
 top-level record itself and emits field by field, so a whole key never reaches `constant` — and
-because a bare variable as a whole key is `nyi/whole-key` before any of this. Both halves are
+because `key` decomposes a whole key into its fields before any of this. Both halves are
 invisible from the fold's own code, so both are pinned by tests.
 
 **What is left unlowered.** Nothing in focus currently produces a `Step::Derive`: a constant

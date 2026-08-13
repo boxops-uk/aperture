@@ -493,9 +493,9 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "Y where test.Foo Y",
-        Diagnosed(Code::NyiWholeKey),
-        "a stored key is its fields with no wrapper, so a record key is not one \
-         field and has no path to project; name its fields instead",
+        Supported("{id = 1, name = ann}; {id = 2, name = bob}; {id = 3, name = ann}"),
+        "**a whole key**, which is its fields: a stored key is flat, so the record \
+         is built one field at a time and needs no operator of its own",
     ),
     // ---- meaningless at flatten ----
     entry(

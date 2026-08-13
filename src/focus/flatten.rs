@@ -84,6 +84,20 @@ enum Slot {
         address: Address,
         predicate: PredicateId,
     },
+    /// A row's **whole key** — `test.Foo Y`, where `Y` is every key field at once.
+    ///
+    /// Distinct from [`Row`](Slot::Row), which is the *fact*: `Y = test.Foo …`
+    /// binds the thing a reference points at, and projects as an id, while this
+    /// binds what the key says and projects as a record. Both name the same
+    /// register.
+    ///
+    /// It needs no plan support, because [a stored key is
+    /// flat](../../../docs/03-storage-model.md#a-stored-key-is-flat): its top-level
+    /// fields sit back to back, so splicing every field in declared order
+    /// reconstructs exactly the bytes of the whole key, and projecting is a record
+    /// over those fields. Under a wrapped layout neither would be true — the
+    /// wrapper's markers are not any field's bytes.
+    Key { address: Address, ty: PredicateTy },
     /// A key field of a row, reached by a path.
     Field {
         address: Address,
@@ -806,14 +820,11 @@ impl Flattener<'_> {
             (PredicateTy::Record(_), ExprKind::Record(_)) => {
                 self.scan_field(node, &key_ty, claims, occurrences);
             }
-            // A whole-predicate scan.
-            (PredicateTy::Record(_), ExprKind::Wildcard) => {}
-            (PredicateTy::Record(_), _) => self.report(
-                node,
-                Code::NyiWholeKey,
-                "binding a fact's whole key to one variable is not implemented yet; \
-                 a stored key is its fields, so name the fields instead",
-            ),
+            // A **whole key** — a wildcard (a whole-predicate scan), or one variable
+            // standing for every field at once. Both are the same question the field
+            // walk already answers, asked of the key's own type: a wildcard occurs
+            // nowhere, and a variable is captured here or read from elsewhere.
+            (PredicateTy::Record(_), _) => self.scan_field(node, &key_ty, claims, occurrences),
             // A scalar key is one field, and the pattern is that field's.
             (scalar, _) => self.scan_field(node, scalar, claims, occurrences),
         }
@@ -1201,10 +1212,78 @@ impl Flattener<'_> {
                 }
             }
 
-            // A wildcard key, or a shape `collect` has already reported.
-            (PredicateTy::Record(_), _) => {}
+            (PredicateTy::Record(_), _) => self.whole_key(node, key_ty, address, level),
 
             (scalar, _) => self.field(node, scalar, address, &FieldPath::field(0), level),
+        }
+    }
+
+    /// A **whole record key** in one pattern — `test.Foo Y`, or a wildcard.
+    ///
+    /// A key is not one field, so there is no [`FieldPath`] that names it and no
+    /// plan operator that moves it. It does not need one: a stored key is its
+    /// top-level fields back to back, so *every* whole-key question decomposes into
+    /// the per-field questions [`field`](Self::field) already answers.
+    ///
+    /// - **A capture** binds the variable to [`Slot::Key`] and closes the seek
+    ///   prefix, exactly as a captured field does — the key is an output here.
+    /// - **A read** resolves the pattern once and then asks for each of its fields
+    ///   in turn, so `test.Bar Y` against a bound `Y` splices field 0, field 1, …
+    ///   in declared order, which is byte-for-byte the key `Y` holds.
+    ///
+    /// The second case is why this cannot go through
+    /// [`constant`](Self::constant) for a constant record: that writes the
+    /// `MARK_RECORD`-wrapped form, which is right for a record *inside* a field and
+    /// wrong for a whole key. Decomposing first means a constant key reaches
+    /// `constant` one field at a time, and the wrapper never appears.
+    fn whole_key(
+        &mut self,
+        node: NodeId,
+        key_ty: &PredicateTy,
+        address: Address,
+        level: &mut SeekBuilder,
+    ) {
+        let PredicateTy::Record(field_tys) = key_ty else {
+            return;
+        };
+        if let ExprKind::Wildcard = self.ast.store().kind(node) {
+            level.building = false;
+            return;
+        }
+
+        if let ExprKind::Var(symbol) = self.ast.store().kind(node)
+            && self.lookup(*symbol).is_none()
+        {
+            level.building = false;
+            self.bindings.push((
+                *symbol,
+                Slot::Key {
+                    address,
+                    ty: key_ty.clone(),
+                },
+            ));
+            return;
+        }
+
+        let Some(slot) = self.resolve(node) else {
+            level.building = false;
+            return;
+        };
+
+        for (idx, (name, field_ty)) in field_tys.clone().iter().enumerate() {
+            let Some(field) = self.field_slot(node, &slot, Symbol::Schema(*name)) else {
+                level.building = false;
+                continue;
+            };
+
+            self.matched(
+                node,
+                &field,
+                field_ty,
+                address,
+                &FieldPath::field(idx),
+                level,
+            );
         }
     }
 
@@ -1317,6 +1396,24 @@ impl Flattener<'_> {
         level: &mut SeekBuilder,
     ) {
         match slot {
+            // **A whole key matched into a field.** The two are the same record and
+            // not the same bytes: a stored key is flat, while a record *inside* a
+            // field keeps its `MARK_RECORD … TERM` wrapper so that it can be skipped
+            // as one value. Splicing one where the other belongs compares different
+            // encodings and matches nothing, silently — the shape of bug the
+            // `FactRef` marker exists to prevent — so this is refused rather than
+            // built out of the fields.
+            Slot::Key { .. } => {
+                level.building = false;
+                self.report(
+                    node,
+                    Code::NyiWholeKey,
+                    "matching a whole key against a record field is not implemented \
+                     yet; a stored key is flat and a record field is wrapped, so the \
+                     two are not the same bytes",
+                );
+            }
+
             Slot::Field {
                 address: from,
                 path: at,
@@ -1657,6 +1754,18 @@ impl Flattener<'_> {
                 })
             }
 
+            // A field of a whole key is a field of the row it came from — the same
+            // answer `Slot::Row` gives, with the key type already to hand.
+            Slot::Key { address, ty } => {
+                let (idx, field_ty) = field_of(ty, name)?;
+
+                Some(Slot::Field {
+                    address: *address,
+                    path: FieldPath::field(idx),
+                    ty: field_ty,
+                })
+            }
+
             Slot::Field { address, path, ty } => match ty {
                 PredicateTy::Record(_) => {
                     let (idx, field_ty) = field_of(ty, name)?;
@@ -1719,6 +1828,31 @@ impl Flattener<'_> {
                     // A variable bound to a whole row projects its identity: the row
                     // itself is not bytes in the register, the fact id is.
                     Slot::Row { address, .. } => Some(Project::FactRef(address)),
+                    // A whole key projects as the **record it is** — one projection
+                    // per field, which is the only way to say it: a key is not one
+                    // field, so no single `Project::RegisterField` names it.
+                    Slot::Key { address, ty } => {
+                        let PredicateTy::Record(fields) = ty else {
+                            return None;
+                        };
+
+                        Some(Project::Record(
+                            fields
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, (name, field_ty))| {
+                                    (
+                                        Symbol::Schema(*name),
+                                        Project::RegisterField {
+                                            address,
+                                            path: FieldPath::field(idx),
+                                            ty: field_ty.clone(),
+                                        },
+                                    )
+                                })
+                                .collect(),
+                        ))
+                    }
                     Slot::Field { address, path, ty } => {
                         Some(Project::RegisterField { address, path, ty })
                     }
@@ -3182,16 +3316,95 @@ mod tests {
         );
     }
 
-    /// A stored key is its fields with no wrapper, so a *record* key is not one
-    /// field and has no path to project. A *scalar* key is one field, and works.
+    /// **A whole key is its fields**, and that is the whole implementation: a
+    /// stored key is flat, so a capture projects as a record built one field at a
+    /// time, and a *scalar* key stays the one field it always was.
     #[test]
-    fn binding_a_whole_record_key_is_not_implemented_yet() {
-        assert_eq!(compile("Y where test.Foo Y").codes(), ["nyi/whole-key"]);
+    fn a_whole_record_key_binds_to_a_record_of_its_fields() {
+        assert_eq!(
+            shape("Y where test.Foo Y"),
+            lines(&[
+                "r0 <- test.Foo scan",
+                "head {id = r0.0:int, name = r0.1:str}"
+            ]),
+        );
 
         assert_eq!(
             shape("Y where test.Count Y"),
             lines(&["r0 <- test.Count scan", "head r0.0:int"]),
             "a scalar key is one field",
+        );
+    }
+
+    /// **Read as an input, a whole key splices every field in declared order** —
+    /// which is byte-for-byte the key the register holds, because the layout is
+    /// flat. The point of the test is that it is a *seek* and not a scan with
+    /// filters: the fields go into the prefix, in order, from field 0.
+    #[test]
+    fn a_whole_key_read_back_splices_each_field_in_order() {
+        // `test.Bar` and `test.Node` are both `{id : int}`, so one's key is a
+        // pattern for the other's.
+        assert_eq!(
+            shape("Y where test.Bar Y; test.Node Y"),
+            lines(&[
+                "r0 <- test.Bar scan",
+                "r1 <- test.Node seek[r0.0]",
+                "head {id = r0.0:int}",
+            ]),
+        );
+    }
+
+    /// A field of a whole key is a field of the row it came from, so naming one
+    /// costs no register and no step — the same answer a row gives.
+    #[test]
+    fn a_field_of_a_whole_key_is_a_field_of_its_row() {
+        assert_eq!(
+            shape("Y.name where test.Foo Y"),
+            lines(&["r0 <- test.Foo scan", "head r0.1:str"]),
+        );
+    }
+
+    /// What is left of `nyi/whole-key`, and it is a different thing from what the
+    /// code used to mean: a whole key matched **into a record field**. The two are
+    /// the same record and not the same bytes — flat against wrapped — so building
+    /// the match out of the fields would compare the wrong things and match
+    /// nothing.
+    /// Needs a schema the fixture deliberately does not have — a predicate whose
+    /// *whole key* is also some other predicate's *field* type — so it is built
+    /// here rather than added to the shared fixture, which every battery and the
+    /// corpus would pay for. That is also why this code is the one `nyi/` with no
+    /// corpus entry: the corpus can only say what the fixture can express.
+    #[test]
+    fn matching_a_whole_key_against_a_record_field_is_not_implemented_yet() {
+        use crate::focus::schema::Predicate;
+        use ::lasso::Rodeo;
+        use std::sync::Arc;
+
+        let mut names = Rodeo::new();
+        let mut sym = |s: &str| names.get_or_intern(s);
+
+        // `t.Point` is `{x : int}`; `t.Box`'s `at` field is the same record.
+        let point = PredicateTy::Record(Arc::from([(sym("x"), PredicateTy::Int)]));
+        let predicates = vec![
+            Predicate {
+                name: sym("t.Point"),
+                key: point.clone(),
+                value: None,
+            },
+            Predicate {
+                name: sym("t.Box"),
+                key: PredicateTy::Record(Arc::from([(sym("at"), point)])),
+                value: None,
+            },
+        ];
+        let schema = Schema::new(names.into_reader(), Arc::from(predicates));
+
+        let mut compilation = Compilation::new("Y where t.Point Y; t.Box {at = Y}", &schema);
+
+        assert!(compilation.plan().is_none(), "expected no plan");
+        assert_eq!(
+            compilation.diagnostics().codes().collect::<Vec<_>>(),
+            ["nyi/whole-key"],
         );
     }
 
