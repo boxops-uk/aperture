@@ -240,8 +240,9 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X where X = (Y where test.Foo {id = Y})",
-        Diagnosed(Code::NyiSubquery),
-        "subquery as a pattern",
+        Supported("1; 2; 3"),
+        "**a subquery**, which inlines: its statements become the enclosing \
+         query's and its head is the value the bind names",
     ),
     entry(
         "X.alt? where X = test.Foo _",

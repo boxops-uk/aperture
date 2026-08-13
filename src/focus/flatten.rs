@@ -517,6 +517,46 @@ impl Flattener<'_> {
 
         for stmt in self.ast.query().body() {
             match stmt {
+                // **A subquery inlines.** Its statements are the enclosing query's,
+                // and its head is the value the bind names — which is why the
+                // grammar makes group and subquery one rule: a subquery is shaped
+                // like a query, so lowering reuses the query algebra rather than
+                // needing an operator.
+                QueryStmt::Bind(lhs, rhs)
+                    if matches!(self.ast.store().kind(*rhs), ExprKind::Subquery(_)) =>
+                {
+                    let ExprKind::Subquery(query) = self.ast.store().kind(*rhs) else {
+                        continue;
+                    };
+
+                    // Copied out rather than borrowed: the statements live in the
+                    // tree, and inlining them calls back into `self`. Neither
+                    // `Query` nor `QueryStmt` is `Clone` on purpose — ownership
+                    // signals sharing here — so this says what it copies.
+                    let head = *query.head();
+                    let body: Vec<QueryStmt<NodeId>> = query
+                        .body()
+                        .iter()
+                        .map(|stmt| match stmt {
+                            QueryStmt::Implicit(node) => QueryStmt::Implicit(*node),
+                            QueryStmt::Bind(lhs, rhs) => QueryStmt::Bind(*lhs, *rhs),
+                            QueryStmt::Negation(node) => QueryStmt::Negation(*node),
+                        })
+                        .collect();
+
+                    if self.subquery_shadows(&body, *rhs) {
+                        continue;
+                    }
+
+                    self.inline(&body, &mut stmts);
+
+                    stmts.push(Stmt::Alias(Alias {
+                        pattern: *lhs,
+                        value: head,
+                        span: self.ast.store().span(*rhs),
+                    }));
+                }
+
                 QueryStmt::Implicit(node) => {
                     if let Some(generator) = self.generator(*node, None) {
                         for alt in generator.alternatives.clone().iter() {
@@ -884,6 +924,99 @@ impl Flattener<'_> {
             placement: Placement::Floating,
         }));
         self.hoisted.push((node, row));
+    }
+
+    /// Inline a subquery's statements into the enclosing list.
+    ///
+    /// One level deep per call, and recursive through `collect`'s own arms, so a
+    /// subquery inside a subquery flattens the same way. Nothing about the
+    /// statements changes: after this they are the outer query's, and `reorder`
+    /// orders them with everything else — which is the point, since a subquery in
+    /// a generating position constrains the same rows.
+    fn inline(&mut self, body: &[QueryStmt<NodeId>], stmts: &mut Vec<Stmt>) {
+        for stmt in body {
+            match stmt {
+                QueryStmt::Implicit(node) => {
+                    if let Some(generator) = self.generator(*node, None) {
+                        for alt in generator.alternatives.clone().iter() {
+                            self.hoist_within(alt.key, stmts);
+                        }
+                        stmts.push(Stmt::Scan(generator));
+                    }
+                }
+                QueryStmt::Bind(lhs, rhs) => {
+                    self.hoist_within(*rhs, stmts);
+                    stmts.push(Stmt::Alias(Alias {
+                        pattern: *lhs,
+                        value: *rhs,
+                        span: self.ast.store().span(*rhs),
+                    }));
+                }
+                QueryStmt::Negation(node) => {
+                    self.report(
+                        *node,
+                        Code::NyiNegation,
+                        "negation inside a subquery is not implemented yet",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether a subquery binds a name that only becomes an outer name **later**.
+    ///
+    /// Sharing a name with the scope *around* it is how a correlated subquery
+    /// works — `W = (Y where test.Foo {id = X, name = Y})` reads the outer `X`,
+    /// and typecheck agrees, because `X` was already in the environment when the
+    /// subquery was checked. Inlining preserves that exactly.
+    ///
+    /// What inlining does **not** preserve is a name the subquery binds fresh that
+    /// some *later* statement also binds: typecheck scoped the first away, so they
+    /// are two variables to it and one to flatten. Rather than silently conflate
+    /// them, this refuses and says to rename — scoping them properly means
+    /// renaming into fresh symbols, which is a rewrite of the tree flatten cannot
+    /// do.
+    fn subquery_shadows(&mut self, body: &[QueryStmt<NodeId>], at: NodeId) -> bool {
+        let mut inner = vec![];
+        for stmt in body {
+            if let QueryStmt::Implicit(node) = stmt
+                && let ExprKind::Fact(_, key) = self.ast.store().kind(*node)
+            {
+                self.key_captures(*key, &mut inner);
+            }
+        }
+
+        // Only what comes *after*: a name bound before the subquery is one the
+        // subquery reads, which is correlation rather than collision.
+        let mut outer = vec![];
+        let mut seen_subquery = false;
+
+        for stmt in self.ast.query().body() {
+            match stmt {
+                QueryStmt::Bind(_, rhs) if *rhs == at => seen_subquery = true,
+                QueryStmt::Implicit(node) if seen_subquery => {
+                    if let ExprKind::Fact(_, key) = self.ast.store().kind(*node) {
+                        self.key_captures(*key, &mut outer);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(shadowed) = inner.iter().find(|name| outer.contains(name)) else {
+            return false;
+        };
+
+        let name = self.name(*shadowed).to_owned();
+        self.report(
+            at,
+            Code::NyiSubquery,
+            format!(
+                "this subquery binds `{name}`, which the query around it also binds; a \
+                 subquery that reuses an outer name is not implemented yet — rename it"
+            ),
+        );
+        true
     }
 
     /// A name for a hoisted row that no source can collide with: the lexer has no
@@ -3695,6 +3828,47 @@ mod tests {
         assert_eq!(
             compile("Y where Y = test.Foo _; test.Name Y.value").codes(),
             ["nyi/value-match"]
+        );
+    }
+
+    // ---- subqueries ---------------------------------------------------------
+
+    /// **A subquery inlines**, so it needs no operator and no nested run: its
+    /// statements become the enclosing query's, and its head is the value the
+    /// bind names. The plan is the one the same query written flat compiles to.
+    #[test]
+    fn a_subquery_inlines_into_the_query_around_it() {
+        assert_eq!(
+            shape("X where X = (Y where test.Foo {id = Y})"),
+            shape("X where test.Foo {id = X}"),
+        );
+    }
+
+    /// Its statements are ordinary statements afterwards, so `reorder` places
+    /// them with everything else and a subquery can be joined against.
+    #[test]
+    fn a_subquery_joins_with_the_statements_around_it() {
+        assert_eq!(
+            shape("X where test.Bar {id = X}; W = (Y where test.Foo {id = X, name = Y})"),
+            lines(&[
+                "r0 <- test.Bar scan",
+                "r1 <- test.Foo seek[r0.0]",
+                "head r0.0:int",
+            ]),
+        );
+    }
+
+    /// A name the subquery binds fresh and a **later** statement binds too is two
+    /// variables to typecheck, which scoped the first away, and would be one to
+    /// flatten, which inlines. Refused rather than silently conflated.
+    ///
+    /// Reading an *outer* name is the opposite case and is allowed — that is what
+    /// correlation is, and the test above relies on it.
+    #[test]
+    fn a_subquery_reusing_an_outer_name_is_refused() {
+        assert_eq!(
+            compile("X where X = (Y where test.Foo {id = Y}); test.Bar {id = Y}").codes(),
+            ["nyi/subquery"]
         );
     }
 

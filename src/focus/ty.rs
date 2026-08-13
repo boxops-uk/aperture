@@ -396,9 +396,25 @@ impl Checker<'_> {
 
                 result
             }
-            ExprKind::Subquery(_) => {
-                self.nyi(ast, id, Code::NyiSubquery, "a subquery");
-                Ty::Error
+            // **A subquery is a query, and its variables are its own.** The body is
+            // checked, then the environment is truncated back — so a name used
+            // inside says nothing about the same name outside, which is what makes
+            // `(Y where …)` writable next to an outer `Y`.
+            //
+            // Only the environment is rolled back, not the substitution or the
+            // annotations: the types the subquery worked out are real and the side
+            // table keeps them. That is why this is not [`rollback`](Self::rollback),
+            // which is for a scope that *failed*.
+            ExprKind::Subquery(query) => {
+                let scope = self.env.len();
+
+                for stmt in query.body() {
+                    self.stmt(ast, stmt);
+                }
+
+                let ty = self.infer(ast, *query.head());
+                self.env.truncate(scope);
+                ty
             }
         };
 
@@ -1090,7 +1106,6 @@ mod tests {
                 "X where test.Foo {id = X}; !test.Bar {id = X}",
                 "nyi/negation",
             ),
-            ("X where X = (Y where test.Foo {id = Y})", "nyi/subquery"),
         ] {
             let checked = compile(source);
             assert_eq!(codes(&checked), [code], "for {source:?}");

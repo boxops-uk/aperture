@@ -175,6 +175,12 @@ Flatten lowers the typed, nested query into the flat `Plan`: an ordered `[Genera
   enclosing statement, which is exactly what keeps it from becoming DNF across conjuncts. N
   seeks from one written pattern is why this needs a per-branch discriminant on the
   [`Cursor`](05-resume.md) — keep that token extensible.
+- **A subquery inlines.** Its statements become the enclosing query's and its head is the
+  value the bind names — which is what Phase 2's group/subquery factoring was for, and why
+  there is no nested run and no operator. The one thing inlining does not preserve is
+  scoping: typecheck scopes a subquery's variables and flatten cannot, so a name bound inside
+  that a *later* statement also binds is refused (`nyi/subquery`) rather than conflated.
+  Reading an *outer* name is the opposite case and is how correlation works.
 - **Union select lowers to a residual**, not a generator: `x.alt?` becomes
   `ResidualOp::DiscriminantEq(n)` + a payload bind ([chapter 6](06-types-and-schema.md)).
 - **Sargeability** decides, per key field, whether it becomes a **seek** (narrow the scan),
