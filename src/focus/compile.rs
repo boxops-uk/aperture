@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn checking_twice_does_not_report_twice() {
         let schema = corpus::schema();
-        let mut compilation = Compilation::new("X where X = never", &schema);
+        let mut compilation = Compilation::new("X.alt? where X = test.Foo _", &schema);
 
         compilation.check();
         let after_first = compilation.diagnostics().len();
@@ -357,7 +357,7 @@ mod tests {
 
         for (source, code) in [
             ("X where X = nosuch.Pred _", "reject/unknown-predicate"),
-            ("X where X = never", "nyi/never"),
+            ("X.alt? where X = test.Foo _", "nyi/union-select"),
             ("_ where test.Foo _", "reject/wildcard-in-head"),
         ] {
             let mut compilation = Compilation::new(source, &schema);

@@ -228,9 +228,10 @@ pub const CORPUS: &[Entry] = &[
     // ---- deferred constructs: parse, then say so by name ----
     entry(
         "X where test.Foo {id = X} | test.Bar {id = X}",
-        Diagnosed(Code::NyiDisjunction),
-        "disjunction survives flattening as a node (never DNF-expanded); the \
-         union-of-streams operator is a deferred feature",
+        Supported("1; 2; 3; 1; 2"),
+        "**a disjunction**, which is one level with an alternative per branch — \
+         never DNF-expanded across conjuncts, and the rows are the branches' \
+         concatenated in order rather than merged or deduplicated",
     ),
     entry(
         "X where test.Foo {id = X}; !test.Bar {id = X}",
@@ -250,8 +251,9 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X where X = never",
-        Diagnosed(Code::NyiNever),
-        "the empty pattern",
+        Supported(""),
+        "**the empty pattern**: a level with no alternative to open, which is \
+         exhausted the moment it is entered",
     ),
     entry(
         "Y where X = test.Foo _; Y = X.name",

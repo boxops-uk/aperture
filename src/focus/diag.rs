@@ -460,8 +460,8 @@ mod tests {
     fn both_span_types_land_on_the_same_bytes() {
         let mut diagnostics = Diagnostics::new();
 
-        diagnostics.error(Code::NyiNever, "parser span", 3usize..7usize);
-        diagnostics.error(Code::NyiNever, "node span", 3u32..7u32);
+        diagnostics.error(Code::NyiSubquery, "parser span", 3usize..7usize);
+        diagnostics.error(Code::NyiSubquery, "node span", 3u32..7u32);
 
         let ranges: Vec<_> = diagnostics
             .iter()

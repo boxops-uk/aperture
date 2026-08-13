@@ -63,7 +63,8 @@ use crate::focus::{
     diag::{Code, Diagnostics},
     iter::Address,
     plan::{
-        Access, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Step,
+        Access, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+        Source, Step,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
     schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},
@@ -80,9 +81,15 @@ use crate::focus::{
 #[derive(Debug, Clone)]
 enum Slot {
     /// The whole row of a loop level — `X = test.Foo …`.
+    ///
+    /// `predicate` is `None` for `X = never`: the level has no alternative, so no
+    /// row ever reaches the register and there is no predicate the row is *of*.
+    /// The distinction only matters to a reader of the row's fields, which is why
+    /// [`field_slot`](Flatten::field_slot) is the one place that has to answer for
+    /// it.
     Row {
         address: Address,
-        predicate: PredicateId,
+        predicate: Option<PredicateId>,
     },
     /// A row's **whole key** — `test.Foo Y`, where `Y` is every key field at once.
     ///
@@ -124,13 +131,23 @@ enum Slot {
     Const(NodeId),
 }
 
+/// One **alternative** of a generator: a predicate, and the key pattern
+/// sargeability walks for it once the order is fixed.
+#[derive(Debug, Clone)]
+struct Alt {
+    predicate: PredicateId,
+    key: NodeId,
+}
+
 /// One statement, as a generator-to-be — before an order is chosen, so before any
 /// register is assigned.
+///
+/// `alternatives` is the statement's branches, and the count is the construct, as
+/// it is for the [`Level`] this becomes: none is `never`, one is an ordinary fact
+/// pattern, and several is a disjunction.
 #[derive(Debug, Clone)]
 struct Gen {
-    predicate: PredicateId,
-    /// The key pattern node, which sargeability walks once the order is fixed.
-    key: NodeId,
+    alternatives: Box<[Alt]>,
     /// The variable the whole row binds, from `X = test.Foo …`.
     row: Option<Symbol>,
     span: NodeSpan,
@@ -476,7 +493,9 @@ impl Flattener<'_> {
             match stmt {
                 QueryStmt::Implicit(node) => {
                     if let Some(generator) = self.generator(*node, None) {
-                        self.hoist_within(generator.key, &mut stmts);
+                        for alt in generator.alternatives.clone().iter() {
+                            self.hoist_within(alt.key, &mut stmts);
+                        }
                         stmts.push(Stmt::Scan(generator));
                     }
                 }
@@ -492,9 +511,17 @@ impl Flattener<'_> {
                         _ => None,
                     };
 
-                    if matches!(self.ast.store().kind(*rhs), ExprKind::Fact(..)) {
+                    // A generator on the right — a fact pattern, a disjunction of
+                    // them, or `never`. All three bind the left side to a *row* of
+                    // the level they become, which is why they share this arm.
+                    if matches!(
+                        self.ast.store().kind(*rhs),
+                        ExprKind::Fact(..) | ExprKind::Disjunction(_) | ExprKind::Never
+                    ) {
                         if let Some(generator) = self.generator(*rhs, row) {
-                            self.hoist_within(generator.key, &mut stmts);
+                            for alt in generator.alternatives.clone().iter() {
+                                self.hoist_within(alt.key, &mut stmts);
+                            }
                             stmts.push(Stmt::Scan(generator));
                         }
                     } else if self.is_foldable(*rhs) {
@@ -564,12 +591,31 @@ impl Flattener<'_> {
                     if let Some(row) = generator.row {
                         occurrences.capture(row);
                     }
-                    self.scan_key(
-                        generator.key,
-                        generator.predicate,
-                        &claims,
-                        &mut occurrences,
-                    );
+
+                    // **Captures intersect; reads unite.** A variable only some
+                    // branch binds is not bound after the statement — the branch
+                    // that ran may not have written it — so it cannot count as a
+                    // capture, and a later read of it is then unbound and reported
+                    // where a person can act on it. Anything any branch *reads* has
+                    // to be bound before the statement runs, whichever branch that
+                    // is, so those unite.
+                    let mut per_branch = Vec::with_capacity(generator.alternatives.len());
+
+                    for alt in generator.alternatives.clone().iter() {
+                        let mut branch = Occurrences::default();
+                        self.scan_key(alt.key, alt.predicate, &claims, &mut branch);
+
+                        occurrences.reads.extend(branch.reads.iter().copied());
+                        per_branch.push(branch.captures);
+                    }
+
+                    if let Some((first, rest)) = per_branch.split_first() {
+                        for capture in first {
+                            if rest.iter().all(|branch| branch.contains(capture)) {
+                                occurrences.capture(*capture);
+                            }
+                        }
+                    }
                 }
 
                 // An alias binds what its pattern names and reads what its value is
@@ -748,8 +794,7 @@ impl Flattener<'_> {
 
         let row = self.fresh(stmts.len());
         stmts.push(Stmt::Scan(Gen {
-            predicate,
-            key,
+            alternatives: Box::new([Alt { predicate, key }]),
             row: Some(row),
             span: self.ast.store().span(node),
             placement: Placement::Floating,
@@ -784,14 +829,69 @@ impl Flattener<'_> {
 
     /// One statement as a generator, or a report that it is not one.
     fn generator(&mut self, node: NodeId, row: Option<Symbol>) -> Option<Gen> {
+        let span = self.ast.store().span(node);
+
         match self.ast.store().kind(node) {
             ExprKind::Fact(predicate, key) => Some(Gen {
-                predicate: *predicate,
-                key: *key,
+                alternatives: Box::new([Alt {
+                    predicate: *predicate,
+                    key: *key,
+                }]),
                 row,
-                span: self.ast.store().span(node),
+                span,
                 placement: Placement::Written,
             }),
+
+            // **The empty relation.** No alternative to open, so the level is
+            // exhausted the moment it is entered — which is exactly what a level
+            // with no sources does, and why `never` needs nothing else.
+            ExprKind::Never => Some(Gen {
+                alternatives: Box::new([]),
+                row,
+                span,
+                placement: Placement::Written,
+            }),
+
+            // **A disjunction is one level with one alternative per branch.** Each
+            // branch has to be a generator in its own right: distributing an
+            // alternation that sits *inside* a pattern — Glean's "PLAN B" — means
+            // rewriting the enclosing pattern per branch, and the tree is not ours
+            // to extend here, so that stays deferred with a message saying which
+            // half is missing.
+            //
+            // A `never` branch is **dropped**, which is the identity law made
+            // literal rather than a special case bolted on.
+            ExprKind::Disjunction(branches) => {
+                let branches = branches.clone();
+                let mut alternatives = Vec::with_capacity(branches.len());
+
+                for branch in branches.iter() {
+                    match self.ast.store().kind(*branch) {
+                        ExprKind::Fact(predicate, key) => alternatives.push(Alt {
+                            predicate: *predicate,
+                            key: *key,
+                        }),
+                        ExprKind::Never => {}
+                        _ => {
+                            self.report(
+                                *branch,
+                                Code::NyiDisjunction,
+                                "every branch of a disjunction has to be a fact pattern of \
+                                 its own for now; an alternation inside a pattern is not \
+                                 implemented yet",
+                            );
+                            return None;
+                        }
+                    }
+                }
+
+                Some(Gen {
+                    alternatives: alternatives.into(),
+                    row,
+                    span,
+                    placement: Placement::Written,
+                })
+            }
             _ => {
                 self.report(
                     node,
@@ -1061,10 +1161,50 @@ impl Flattener<'_> {
             match stmts.get(stmt)? {
                 Stmt::Scan(generator) => {
                     let address = Address::new(body.len());
-                    let key_ty = self.schema.get(generator.predicate)?.key().ty.clone();
+                    let mut sources = Vec::with_capacity(generator.alternatives.len());
+                    // Where this level's own bindings start, which is what a later
+                    // branch is reconciled against — the first branch's.
+                    let level_start = self.bindings.len();
 
-                    let mut current = SeekBuilder::new();
-                    self.key(generator.key, &key_ty, address, &mut current);
+                    // Each alternative builds its own seek and its own residuals,
+                    // because they are two key layouts and a `FieldPath` means
+                    // something different in each.
+                    let mut first: Vec<(Symbol, Slot)> = vec![];
+
+                    for (alternative, alt) in generator.alternatives.clone().iter().enumerate() {
+                        let key_ty = self.schema.get(alt.predicate)?.key().ty.clone();
+
+                        let mut current = SeekBuilder::new();
+                        self.key(alt.key, &key_ty, address, &mut current);
+
+                        // **Every branch is walked in the same environment.** Its
+                        // own bindings are taken off before the next one runs, so a
+                        // variable two branches bind is a capture in both rather
+                        // than a capture and then a read of itself — which is what
+                        // an intra-row repeat is, and is a different thing.
+                        let branch = self.bindings.split_off(level_start);
+
+                        if alternative == 0 {
+                            first = branch;
+                        } else {
+                            // **Every branch has to agree about where a variable it
+                            // binds lives.** A register holds one row and the plan
+                            // holds one path into it, so a variable reached at a
+                            // different field in another branch would decode the
+                            // wrong bytes for half the rows — silently.
+                            self.reconcile(alt.key, &first, branch);
+                        }
+
+                        sources.push(Source::Seek {
+                            access: Access {
+                                predicate_id: alt.predicate,
+                                seek_key: current.seek_key(),
+                            },
+                            residuals: current.residuals.into(),
+                        });
+                    }
+
+                    self.bindings.extend(first);
 
                     // After the key: `X = test.Foo {id = X}` cannot typecheck, so
                     // nothing in a level's own key can read the row it binds.
@@ -1073,19 +1213,15 @@ impl Flattener<'_> {
                             row,
                             Slot::Row {
                                 address,
-                                predicate: generator.predicate,
+                                predicate: generator.alternatives.first().map(|alt| alt.predicate),
                             },
                         ));
                     }
 
-                    body.push(Level::seek(
-                        Access {
-                            predicate_id: generator.predicate,
-                            seek_key: current.seek_key(),
-                        },
-                        Box::new([address]),
-                        current.residuals.into(),
-                    ));
+                    body.push(Level {
+                        sources: sources.into(),
+                        binds: Box::new([address]),
+                    });
                 }
 
                 // The order has already put every level this reads into a register,
@@ -1113,6 +1249,59 @@ impl Flattener<'_> {
             body: body.into_iter().map(Step::Level).collect(),
             head: head?,
         })
+    }
+
+    /// Check a later branch's bindings against the ones the first branch made.
+    ///
+    /// A variable both bind has to name the **same place** — the same path, of the
+    /// same type — because the plan carries one path per read and the register
+    /// holds whichever branch's row matched. A variable only one branch binds is
+    /// dropped rather than reported: it is simply not bound after the statement,
+    /// which `collect` already decided by intersecting the captures, and the read
+    /// that wanted it draws `reject/unbound-variable` where a person can see why.
+    fn reconcile(&mut self, at: NodeId, first: &[(Symbol, Slot)], branch: Vec<(Symbol, Slot)>) {
+        for (symbol, slot) in branch {
+            let Some(first) = first
+                .iter()
+                .find(|(bound, _)| *bound == symbol)
+                .map(|(_, slot)| slot.clone())
+            else {
+                continue;
+            };
+
+            // Only the *place* is compared. The two types are equal already:
+            // typecheck unified the branches, and a variable both bind was seen
+            // twice by one environment.
+            let agrees = match (&first, &slot) {
+                (
+                    Slot::Field {
+                        address: a,
+                        path: p,
+                        ..
+                    },
+                    Slot::Field {
+                        address: b,
+                        path: q,
+                        ..
+                    },
+                ) => a == b && p == q,
+                (Slot::Key { address: a, .. }, Slot::Key { address: b, .. }) => a == b,
+                _ => false,
+            };
+
+            if !agrees {
+                let name = self.name(symbol).to_owned();
+                self.report(
+                    at,
+                    Code::NyiDisjunction,
+                    format!(
+                        "`{name}` is at a different field in two branches; a variable a \
+                         disjunction binds has to be in the same place in every branch, \
+                         because the plan reads it from one"
+                    ),
+                );
+            }
+        }
     }
 
     /// **Bind a pattern to the place it names**, piece by piece.
@@ -1333,6 +1522,34 @@ impl Flattener<'_> {
                 ),
             },
 
+            // **An alternation inside a pattern.** Distributing it outward — one
+            // whole pattern per branch, which is what makes it a level's
+            // alternatives — means writing tree nodes the query did not, and the
+            // tree is not flatten's to extend. Reported here rather than left to
+            // decline quietly below, because typecheck now gives `|` a type and so
+            // no longer reports it for us.
+            ExprKind::Disjunction(_) => {
+                level.building = false;
+                self.report(
+                    node,
+                    Code::NyiDisjunction,
+                    "an alternation inside a pattern is not implemented yet; write it as                      whole alternatives — `test.Foo {…} | test.Foo {…}`",
+                );
+            }
+
+            // `never` as a *field* would make the level match nothing, which is a
+            // level with no sources — but this walk builds one seek for the level
+            // it is inside, and it has no way to say "and now the whole thing is
+            // empty" from a field down.
+            ExprKind::Never => {
+                level.building = false;
+                self.report(
+                    node,
+                    Code::NyiNever,
+                    "`never` inside a pattern is not implemented yet; as a statement or a                      branch of a disjunction it works",
+                );
+            }
+
             _ => {
                 let mark = self.diagnostics.len();
 
@@ -1457,7 +1674,7 @@ impl Flattener<'_> {
                 address: from,
                 predicate,
             } => match ty {
-                PredicateTy::Fact(referenced) if referenced == predicate => {
+                PredicateTy::Fact(referenced) if Some(*referenced) == *predicate => {
                     if level.building {
                         level.parts.push(SeekKeyPart::RegisterFactId(*from));
                     } else {
@@ -1710,7 +1927,7 @@ impl Flattener<'_> {
                 // finding the fact first — the deferred half.
                 match self.resolve(*base)? {
                     Slot::Row { address, predicate } => {
-                        let ty = self.schema.get(predicate)?.value()?.ty.clone();
+                        let ty = self.schema.get(predicate?)?.value()?.ty.clone();
                         Some(Slot::Value { address, ty })
                     }
                     Slot::Field {
@@ -1744,7 +1961,9 @@ impl Flattener<'_> {
     fn field_slot(&mut self, node: NodeId, slot: &Slot, name: Symbol) -> Option<Slot> {
         match slot {
             Slot::Row { address, predicate } => {
-                let key_ty = self.schema.get(*predicate)?.key().ty.clone();
+                // `None` is a row of the empty relation: it has no fields to name,
+                // and nothing can read one, because no row ever arrives.
+                let key_ty = self.schema.get((*predicate)?)?.key().ty.clone();
                 let (idx, ty) = field_of(&key_ty, name)?;
 
                 Some(Slot::Field {
@@ -3313,6 +3532,83 @@ mod tests {
         assert_eq!(
             compile("Y where Y = test.Foo _; test.Name Y.value").codes(),
             ["nyi/value-match"]
+        );
+    }
+
+    // ---- disjunction and `never` -------------------------------------------
+
+    /// **A disjunction is one level with an alternative per branch** — not a level
+    /// per branch, and not a DNF expansion across the conjuncts around it.
+    #[test]
+    fn a_disjunction_is_one_level_with_a_source_per_branch() {
+        assert_eq!(
+            shape("X where test.Foo {id = X} | test.Bar {id = X}"),
+            lines(&["r0 <- test.Foo scan | test.Bar scan", "head r0.0:int"]),
+        );
+    }
+
+    /// A branch narrows on its own: each alternative builds its own seek, so one
+    /// can be a seek while another is a scan.
+    #[test]
+    fn each_branch_builds_its_own_seek() {
+        assert_eq!(
+            shape("X where test.Foo {id = 1, name = X} | test.Foo {id = _, name = X}"),
+            lines(&["r0 <- test.Foo seek[k] | test.Foo scan", "head r0.1:str"]),
+        );
+    }
+
+    /// **`never` is a level with no alternative to open** — the empty relation,
+    /// which the machine already had a shape for.
+    #[test]
+    fn never_is_a_level_with_no_sources() {
+        assert_eq!(
+            shape("X where X = never"),
+            lines(&["r0 <- never", "head r0"]),
+        );
+    }
+
+    /// **`never` is the identity of `|`**, and the implementation says so by
+    /// dropping the branch rather than by special-casing it anywhere later.
+    #[test]
+    fn a_never_branch_drops_out_of_a_disjunction() {
+        assert_eq!(
+            shape("X where test.Bar {id = X} | never"),
+            shape("X where test.Bar {id = X}"),
+        );
+    }
+
+    /// **A variable only one branch binds is not bound after the statement.** The
+    /// captures intersect, so the head's read has nothing behind it — reported at
+    /// the read, which is where a person can act on it, rather than as a
+    /// run-time read of a register the taken branch never wrote.
+    #[test]
+    fn a_variable_only_one_branch_binds_does_not_escape() {
+        assert_eq!(
+            compile("Y where test.Foo {id = X, name = Y} | test.Bar {id = X}").codes(),
+            ["reject/unbound-variable"]
+        );
+    }
+
+    /// A variable **both** branches bind has to be in the same place in each: the
+    /// register holds one row and the plan reads it by one path, so a variable at
+    /// a different field in another branch would decode the wrong bytes for half
+    /// the rows.
+    #[test]
+    fn a_variable_at_a_different_field_in_two_branches_is_refused() {
+        assert_eq!(
+            compile("X where test.Edge {from = 1, to = X} | test.Bar {id = X}").codes(),
+            ["nyi/disjunction"]
+        );
+    }
+
+    /// What is left of `nyi/disjunction`: an alternation *inside* a pattern.
+    /// Distributing it outward — Glean's "PLAN B" — means rewriting the enclosing
+    /// pattern once per branch, which needs tree nodes flatten cannot make.
+    #[test]
+    fn an_alternation_inside_a_pattern_is_not_implemented_yet() {
+        assert_eq!(
+            compile("X where test.Bar {id = X}; test.Node {id = 1 | 2}").codes(),
+            ["nyi/disjunction"]
         );
     }
 

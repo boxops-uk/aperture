@@ -156,9 +156,15 @@ partial description of a value, a type is not.
 Flatten lowers the typed, nested query into the flat `Plan`: an ordered `[Generator]` + a
 `head: Project`. Three rules govern it:
 
-- **Disjunction stays a node.** `|` survives flattening as a `FlatDisjunction`
-  (union-of-streams) — it is **never DNF-expanded across sibling conjuncts** (that's
-  exponential blow-up). Glean's "PLAN-B" (`glean/db/Glean/Query/Flatten.hs:398-459`) is the
+- **Disjunction stays a node**, and is now built: `|` becomes **one level with an
+  alternative per branch** ([chapter 4](04-executor.md#the-plan-ir)), never DNF-expanded
+  across sibling conjuncts (that's exponential blow-up). `never` is the same node with no
+  alternatives, so it needs nothing of its own — and a `never` *branch* is dropped, which is
+  the identity law rather than a special case. Two rules make it safe: a branch's captures
+  **intersect** (a variable only one branch binds does not escape, and the read that wanted it
+  draws `reject/unbound-variable` where a person can act on it), and a variable two branches
+  bind has to be **in the same place in each**, since the register holds one row and the plan
+  reads it by one path. Glean's "PLAN-B" (`glean/db/Glean/Query/Flatten.hs:398-459`) is the
   same rule seen from the other side, and it is worth stating as it actually is: it duplicates
   the *enclosing pattern* outward to the nearest enclosing statement, so
   `cxx1.Name ("foo".. | "bar"..)` becomes `(cxx1.Name "foo"..) | (cxx1.Name "bar"..)`
@@ -361,6 +367,8 @@ fixture deliberately does not have, so its guard builds a two-predicate schema o
 
 | construct | code | what it needs |
 |---|---|---|
+| `test.Foo {id = 1 \| 2}` — an alternation **inside** a pattern | `nyi/disjunction` | distributing it outward is one whole pattern per branch, which needs tree nodes flatten cannot make |
+| `test.Foo {id = never}` — `never` **inside** a pattern | `nyi/never` | the field walk builds one seek and cannot say "the level is empty" from a field down |
 | `X = {a = 1, b = Y}` — a value in **no register** | `nyi/value-bind` | a **derived bind**: the value has to be *built*, which is the `Slot` value variant ([Phase 6](#derived-facts)) |
 | `X = Y` with both bound, `X = "a"..`, `gen = gen` | `nyi/bind-unification` | two values compared at runtime and nothing to substitute — a register-to-register residual ([open decisions](open-decisions.md)) |
 | `X.name`, `X.value` where `X` came out of a reference field | `nyi/fact-field` | cross-fact navigation: a second lookup, which is a new `Access` kind (`Access::Fetch`) |

@@ -744,9 +744,10 @@ Nothing in focus lowers one yet — `nyi/disjunction` is still reported — so w
 is `flatten` and `ty.rs`, plus `never` decided alongside them.
 
 **Tasks (coarse — decompose at pickup, per the rule at the top of this file):**
-- **6b-a. Disjunction.** ~~The per-branch discriminant on `Cursor`~~ ✅. Left: flatten lowers a
-  `FlatDisjunction` to a multi-source level, `ty.rs` gives `|` a type, `never` decided alongside
-  it. No DNF expansion across conjuncts. The classification the note asks for — a disjunction
+- **6b-a. Disjunction.** ✅ — the cursor discriminant, flatten lowering `|` to a multi-source
+  level, `ty.rs` giving `|` a type, and `never` decided alongside it (a fresh type variable,
+  which is what "the identity of `|`" means with no subtyping; no `Ty::Never` constructor).
+  What is left is an alternation *inside* a pattern, which keeps `nyi/disjunction`. No DNF expansion across conjuncts. The classification the note asks for — a disjunction
   whose branches only *filter* becomes a test rather than a level, and single-generator branches
   normalise to `Source::Seek` — is flatten's, and is what keeps the common case off the token.
 - **6b-b. Range-restriction safety across branches.** Every branch must bind the same variable

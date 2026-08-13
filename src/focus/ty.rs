@@ -141,7 +141,7 @@ impl Checker<'_> {
     fn stmt(&mut self, ast: &Ast, stmt: &QueryStmt<NodeId>) {
         match stmt {
             QueryStmt::Implicit(id) => {
-                self.infer(ast, *id);
+                self.generator(ast, *id);
             }
             QueryStmt::Negation(id) => {
                 self.nyi(ast, *id, Code::NyiNegation, "negation");
@@ -149,6 +149,34 @@ impl Checker<'_> {
             }
             QueryStmt::Bind(lhs, rhs) => self.bind(ast, *lhs, *rhs),
         }
+    }
+
+    /// A pattern in **generating** position — a statement, or the right side of a
+    /// bind that generates.
+    ///
+    /// The difference from [`infer`](Self::infer) is disjunction, and it is a real
+    /// one: as a *value*, `A | B` needs one type, so the branches unify. As a
+    /// *statement* each branch generates on its own, so `test.Foo _ | test.Bar _`
+    /// is two perfectly good generators whose types could not unify and do not
+    /// need to — the statement produces rows, not a value.
+    ///
+    /// Both still have one type when something reads them, which is why a
+    /// generating disjunction that *binds* its row still unifies: that is
+    /// [`bind`](Self::bind)'s question, asked of the result rather than here.
+    fn generator(&mut self, ast: &Ast, id: NodeId) -> Ty {
+        let ExprKind::Disjunction(branches) = ast.store().kind(id) else {
+            return self.infer(ast, id);
+        };
+
+        let branches = branches.clone();
+        let mut last = Ty::Error;
+
+        for branch in branches.iter() {
+            last = self.generator(ast, *branch);
+        }
+
+        self.annotate(id, last.clone());
+        last
     }
 
     /// `lhs = rhs`.
@@ -309,10 +337,14 @@ impl Checker<'_> {
             // variables are scoped to it, and it has already been reported, so
             // descending would only add diagnostics about a construct we have
             // declined.
-            ExprKind::Never => {
-                self.nyi(ast, id, Code::NyiNever, "the empty pattern `never`");
-                Ty::Error
-            }
+            // **`never` is polymorphic**, which is what "the identity of `|`" means
+            // in a system with no subtyping: a fresh variable takes whatever type
+            // the position demands, so `A | never` is `A`'s type and `never` alone
+            // is whatever it is asked to be. Phase 2 declined a `Ty::Never`
+            // constructor as speculative; this is the same answer without one, and
+            // the empty relation needs nothing else — it matches no rows, so no
+            // value of any type ever comes out of it.
+            ExprKind::Never => self.fresh_var(),
             ExprKind::Select(..) => {
                 self.nyi(
                     ast,
@@ -322,12 +354,29 @@ impl Checker<'_> {
                 );
                 Ty::Error
             }
+            // **Every branch has the one type the disjunction has.** Unified rather
+            // than merely compared, so a branch may *inform* the type — `never | 1`
+            // is `int`, and the fresh variable `never` contributed is what makes
+            // that work.
+            //
+            // Variables are deliberately **not** scoped per branch here. A variable
+            // some branch does not bind is a *safety* question, not a typing one:
+            // flatten takes the intersection of what the branches capture, and range
+            // restriction then reports the read that has nothing behind it — at the
+            // read, which is where a person can act on it.
             ExprKind::Disjunction(branches) => {
-                self.nyi(ast, id, Code::NyiDisjunction, "disjunction");
+                let branches = branches.clone();
+                let result = self.fresh_var();
+
                 for branch in branches.iter() {
-                    self.infer(ast, *branch);
+                    let branch_ty = self.infer(ast, *branch);
+
+                    if let Err(err) = self.unify(&result, &branch_ty) {
+                        self.report(ast, *branch, err);
+                    }
                 }
-                Ty::Error
+
+                result
             }
             ExprKind::Subquery(_) => {
                 self.nyi(ast, id, Code::NyiSubquery, "a subquery");
@@ -1018,12 +1067,7 @@ mod tests {
     #[test]
     fn deferred_constructs_report_themselves() {
         for (source, code) in [
-            ("X where X = never", "nyi/never"),
             ("X.alt? where X = test.Foo _", "nyi/union-select"),
-            (
-                "X where test.Foo {id = X} | test.Bar {id = X}",
-                "nyi/disjunction",
-            ),
             (
                 "X where test.Foo {id = X}; !test.Bar {id = X}",
                 "nyi/negation",
@@ -1211,7 +1255,7 @@ mod tests {
     /// the distinction is the whole point of the permissive grammar.
     #[test]
     fn deferred_messages_say_yet() {
-        let checked = compile("X where X = never");
+        let checked = compile("X.alt? where X = test.Foo _");
         let first = checked.diagnostics.iter().next().expect("a diagnostic");
         assert!(
             first.message.contains("not implemented yet"),
