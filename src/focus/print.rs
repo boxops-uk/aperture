@@ -22,7 +22,7 @@ use std::fmt::Write as _;
 use crate::focus::{
     iter::Address,
     plan::{FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Step},
-    schema::{LocalInterner, PredicateTy, Schema, Symbol},
+    schema::{LocalInterner, PredicateRef, PredicateTy, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},
 };
 
@@ -87,6 +87,18 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
         let key_ty = predicate.as_ref().map(|p| p.key().ty);
         let field = |path: &FieldPath| field_name(key_ty, path, schema);
 
+        // The same for a path read out of some *other* register — named against
+        // the key of whatever predicate that register holds, which is a different
+        // predicate with different field names. Naming it against this level's key
+        // gave `r0.module` for a register holding a `src.Module`, whose key has no
+        // `module` field at all.
+        let register_field = |address: &Address, path: &FieldPath| {
+            let predicate = register_key(plan, address, schema);
+            let key_ty = predicate.as_ref().map(|p| p.key().ty);
+
+            format!("{address}.{}", field_name(key_ty, path, schema))
+        };
+
         let _ = write!(out, "  {} <- {name}", Address::new(level));
 
         match &generator.access.seek_key {
@@ -98,7 +110,7 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
                     .map(|part| match part {
                         SeekKeyPart::Bytes(_) => "<const>".to_owned(),
                         SeekKeyPart::RegisterField { address, path } => {
-                            format!("{address}.{}", field(path))
+                            register_field(address, path)
                         }
                         SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
                     })
@@ -115,7 +127,11 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
                 ResidualOp::EqConst(_) => write!(out, "\n       where {at} == <const>"),
                 ResidualOp::Prefix(_) => write!(out, "\n       where {at} starts with <const>"),
                 ResidualOp::EqRegisterField { address, path } => {
-                    write!(out, "\n       where {at} == {address}.{}", field(path))
+                    write!(
+                        out,
+                        "\n       where {at} == {}",
+                        register_field(address, path)
+                    )
                 }
                 ResidualOp::EqRegisterFactId(address) => {
                     write!(out, "\n       where {at} == {address}#")
@@ -141,20 +157,7 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
 /// predicate that register holds is recorded by the level that binds it — so the field
 /// has a name here as much as in a seek, just one indirection further away.
 fn projection(plan: &Plan, project: &Project, schema: &Schema, interner: &LocalInterner) -> String {
-    // Found by asking which level *binds* this register, rather than by indexing
-    // the body with the register number. Those were the same number while every
-    // register came from a level of its own; a derived bind writes a register with
-    // no level behind it, so indexing would name an unrelated predicate's fields.
-    let key_of = |address: &Address| {
-        plan.body
-            .iter()
-            .filter_map(|step| match step {
-                Step::Scan(generator) => Some(generator),
-                Step::Derive(_) => None,
-            })
-            .find(|generator| generator.binds.contains(address))
-            .and_then(|generator| schema.get(generator.access.predicate_id))
-    };
+    let key_of = |address: &Address| register_key(plan, address, schema);
 
     match project {
         Project::Lit(value) => format!("{value:?}"),
@@ -182,6 +185,27 @@ fn projection(plan: &Plan, project: &Project, schema: &Schema, interner: &LocalI
                 .join(", ")
         ),
     }
+}
+
+/// The predicate whose key a register holds.
+///
+/// Found by asking which level *binds* this register, rather than by indexing the
+/// body with the register number. Those were the same number while every register
+/// came from a level of its own; a derived bind writes a register with no level
+/// behind it, so indexing would name an unrelated predicate's fields.
+fn register_key<'a>(
+    plan: &Plan,
+    address: &Address,
+    schema: &'a Schema,
+) -> Option<PredicateRef<'a>> {
+    plan.body
+        .iter()
+        .filter_map(|step| match step {
+            Step::Scan(generator) => Some(generator),
+            Step::Derive(_) => None,
+        })
+        .find(|generator| generator.binds.contains(address))
+        .and_then(|generator| schema.get(generator.access.predicate_id))
 }
 
 /// A field path as the schema names it — `of`, or `outer.inner` for a nested step.
@@ -604,6 +628,7 @@ pub fn escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::focus::{
+        compile::Compilation,
         corpus,
         cst::CstNode,
         diag::Diagnostics,
@@ -612,6 +637,44 @@ mod tests {
         syntax::{proptest::arb_query_spec, source_range},
     };
     use ::proptest::prelude::*;
+
+    /// **A register's field is named against that register's predicate.**
+    ///
+    /// The rendering exists to answer "which field narrowed this scan", so a wrong
+    /// name is worse than an index: both `from` and `id` are real field names here,
+    /// and naming `r0`'s path against *this* level's key silently swapped one for
+    /// the other. Nothing caught it because this renderer had no test and only the
+    /// shell called it.
+    #[test]
+    fn a_spliced_register_is_named_against_its_own_predicate() {
+        let schema = corpus::schema();
+
+        // `r0` holds a `test.Edge` (key `{from, to}`); the level seeking on it is a
+        // `test.Foo` (key `{id, name}`). Path 0 is `from` there and `id` here.
+        let mut compilation = Compilation::new(
+            "X where test.Edge {from = X, to = _}; test.Foo {id = X, name = _}",
+            &schema,
+        );
+        let compiled = compilation.plan().expect("a plan");
+        let rendered = plan(&compiled, &schema, compilation.interner());
+
+        assert!(
+            rendered.contains("seek[r0.from]"),
+            "expected the register's own field name, got:\n{rendered}"
+        );
+
+        // And a scalar-keyed level reading a record-keyed register: the field has a
+        // name on one side and none on the other.
+        let mut compilation =
+            Compilation::new("X where test.Foo {name = X, id = _}; test.Name X", &schema);
+        let compiled = compilation.plan().expect("a plan");
+        let rendered = plan(&compiled, &schema, compilation.interner());
+
+        assert!(
+            rendered.contains("seek[r0.name]"),
+            "expected the register's own field name, got:\n{rendered}"
+        );
+    }
 
     /// Parse and lower `source`, requiring both to be clean.
     fn tree(source: &str) -> (Ast, LocalInterner, Schema) {
