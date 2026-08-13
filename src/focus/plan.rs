@@ -524,7 +524,8 @@ pub mod proptest {
     use ::proptest::prelude::*;
 
     use super::{
-        Access, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Step,
+        Access, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
+        Source, Step,
     };
     use crate::focus::{
         fixtures::{compose, i64_field, interner_with, str_field},
@@ -659,7 +660,17 @@ pub mod proptest {
         /// The `(level, field)` spliced into this level's scan prefix; `None` is a
         /// full scan of the predicate.
         seek: Option<(usize, usize)>,
-        residual: Option<ResidualSpec>,
+        /// One entry per [`Source`], each holding that source's residual — so the
+        /// length is the construct: one is a scan, more is a **disjunction**.
+        ///
+        /// Every alternative reads the same predicate and the same seek, and
+        /// differs only in what it filters. That is deliberate rather than a
+        /// simplification: sources over *different* predicates would bind one
+        /// register to two key layouts, which needs the exported-value rule the
+        /// language cannot ask for yet ([the query-surface note]).
+        ///
+        /// [the query-surface note]: ../../../docs/query-surface.md
+        sources: Vec<Option<ResidualSpec>>,
     }
 
     #[derive(Debug, Clone)]
@@ -734,39 +745,51 @@ pub mod proptest {
                 .iter()
                 .enumerate()
                 .map(|(level, spec)| {
-                    Level::seek(
-                        Access {
-                            predicate_id: PredicateId(spec.predicate as u32),
-                            seek_key: match spec.seek {
-                                None => SeekKey::Prefix(Box::new([])),
-                                Some((ref_level, ref_field)) => {
-                                    SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
-                                        address: Address::new(ref_level),
-                                        path: FieldPath::field(ref_field),
-                                    }]))
+                    let access = Access {
+                        predicate_id: PredicateId(spec.predicate as u32),
+                        seek_key: match spec.seek {
+                            None => SeekKey::Prefix(Box::new([])),
+                            Some((ref_level, ref_field)) => {
+                                SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                                    address: Address::new(ref_level),
+                                    path: FieldPath::field(ref_field),
+                                }]))
+                            }
+                        },
+                    };
+
+                    let sources = spec
+                        .sources
+                        .iter()
+                        .map(|residual| Source::Seek {
+                            access: access.clone(),
+                            residuals: match residual {
+                                None => Box::new([]) as Box<[Residual]>,
+                                Some(ResidualSpec::EqConst { field, val }) => {
+                                    Box::new([Residual {
+                                        path: FieldPath::field(*field),
+                                        op: ResidualOp::EqConst(val.encode().into_boxed_slice()),
+                                    }])
                                 }
+                                Some(ResidualSpec::EqRegisterField {
+                                    field,
+                                    level: ref_level,
+                                    ref_field,
+                                }) => Box::new([Residual {
+                                    path: FieldPath::field(*field),
+                                    op: ResidualOp::EqRegisterField {
+                                        address: Address::new(*ref_level),
+                                        path: FieldPath::field(*ref_field),
+                                    },
+                                }]),
                             },
-                        },
-                        Box::new([Address::new(level)]),
-                        match &spec.residual {
-                            None => Box::new([]),
-                            Some(ResidualSpec::EqConst { field, val }) => Box::new([Residual {
-                                path: FieldPath::field(*field),
-                                op: ResidualOp::EqConst(val.encode().into_boxed_slice()),
-                            }]),
-                            Some(ResidualSpec::EqRegisterField {
-                                field,
-                                level: ref_level,
-                                ref_field,
-                            }) => Box::new([Residual {
-                                path: FieldPath::field(*field),
-                                op: ResidualOp::EqRegisterField {
-                                    address: Address::new(*ref_level),
-                                    path: FieldPath::field(*ref_field),
-                                },
-                            }]),
-                        },
-                    )
+                        })
+                        .collect();
+
+                    Level {
+                        sources,
+                        binds: Box::new([Address::new(level)]),
+                    }
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice();
@@ -837,6 +860,8 @@ pub mod proptest {
         field: u8,
         reference: u8,
         constant: u8,
+        /// Whether this level gets a second [`Source`] — see [`LevelSpec::sources`].
+        alternative: u8,
     }
 
     #[derive(Debug, Clone)]
@@ -973,10 +998,27 @@ pub mod proptest {
                 ),
             };
 
+            // A second alternative on some levels, filtering differently, so the
+            // battery sees a level whose rows come from more than one source —
+            // and, at a cut point, a suspend taken while the *second* one is live.
+            let mut sources = vec![residual];
+
+            if draw.alternative.is_multiple_of(3) {
+                sources.push(Some(ResidualSpec::EqConst {
+                    field,
+                    val: constant_for(
+                        &facts[predicate],
+                        field,
+                        fields[field],
+                        draw.constant.wrapping_add(1),
+                    ),
+                }));
+            }
+
             resolved.push(LevelSpec {
                 predicate,
                 seek,
-                residual,
+                sources,
             });
         }
 
@@ -1024,17 +1066,19 @@ pub mod proptest {
             0u8..PICKS,
             0u8..PICKS,
             0u8..PICKS,
+            0u8..PICKS,
         )
-            .prop_map(|(predicate, seek, residual, field, reference, constant)| {
-                LevelDraw {
+            .prop_map(
+                |(predicate, seek, residual, field, reference, constant, alternative)| LevelDraw {
                     predicate,
                     seek,
                     residual,
                     field,
                     reference,
                     constant,
-                }
-            })
+                    alternative,
+                },
+            )
     }
 
     fn arb_head() -> impl Strategy<Value = HeadDraw> {

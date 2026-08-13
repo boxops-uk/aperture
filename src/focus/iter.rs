@@ -3382,6 +3382,84 @@ mod tests {
         }
     }
 
+    /// **The census.** The battery above says nothing about disjunction unless
+    /// the generator draws one — and, more sharply, unless it takes a cut *while
+    /// a source other than the first is live*. That second half is the whole
+    /// claim: resuming into the first alternative when the row came from a later
+    /// one is precisely the bug the source index on a cursor entry prevents, and
+    /// a battery that only ever suspends inside source 0 cannot see it.
+    ///
+    /// Counted over the generator rather than asserted per case, for the reason
+    /// Phase 4's census records: it is a claim about what is *drawn*, and one
+    /// case proves nothing either way.
+    #[test]
+    fn the_battery_reaches_a_cut_inside_a_later_source() {
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 300;
+
+        let mut runner = TestRunner::deterministic();
+        let mut multi_source = 0usize;
+        let mut cut_in_a_later_source = 0usize;
+
+        for _ in 0..RUNS {
+            let spec = arb_plan_and_store()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+            let interner = spec.interner();
+            let (store, plan) = spec.build(&interner);
+
+            if plan.body.iter().all(|step| match step {
+                Step::Level(level) => level.sources.len() < 2,
+                Step::Derive(_) => true,
+            }) {
+                continue;
+            }
+            multi_source += 1;
+
+            // Suspend after every row, and look for a cursor that names a later
+            // alternative — which is a cut taken while that alternative was live.
+            let mut ex = Executor::new(store, plan);
+            loop {
+                let out = ex
+                    .enumerate(
+                        (),
+                        |(), mut row| {
+                            row.to_value(&interner)?;
+                            Ok(Stream::Suspend(()))
+                        },
+                        &CancellationToken::new(),
+                    )
+                    .expect("a run");
+
+                let Iteratee::Suspended((), cursor) = out else {
+                    break;
+                };
+
+                if cursor.0.iter().any(|entry| entry.source > 0) {
+                    cut_in_a_later_source += 1;
+                }
+
+                let (store, plan) = spec.build(&interner);
+                ex = Executor::resume(store, plan, cursor).expect("resume");
+            }
+        }
+
+        assert!(
+            multi_source > 0,
+            "{RUNS} generated plans held no level with more than one source"
+        );
+        assert!(
+            cut_in_a_later_source > 0,
+            "{multi_source} multi-source plan(s), but no cut was ever taken while a \
+             source other than the first was live — the source index is untested"
+        );
+    }
+
     // ---- The same battery, against fjall (1d) -----------------------------
     //
     // I4 is only half-tested on `MemStore`: a `Cursor` is bytes-only and a resume
