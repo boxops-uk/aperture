@@ -293,9 +293,10 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X where test.Foo {id = X}; test.Bar {id = Y}; X = Y",
-        Diagnosed(Code::NyiBindUnification),
-        "`var = var` with **both** sides already bound — the hard half of \
-         `pattern = pattern` (docs/open-decisions.md)",
+        Supported("1; 2"),
+        "`var = var` with **both** sides already bound: a residual on whichever \
+         level binds later, which is where a value already in a register is \
+         compared against another",
     ),
     entry(
         "X where test.Foo {id = X} = test.Bar {id = X}",

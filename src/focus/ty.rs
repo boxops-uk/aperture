@@ -242,6 +242,24 @@ impl Checker<'_> {
                 }
             }
 
+            // **Two variables the query has already mentioned.** Symmetric, and not
+            // a definition of either: both are somewhere by the time this runs, so
+            // it constrains them to be equal per row. Typing it is just making the
+            // two agree; flatten decides where the comparison goes.
+            ExprKind::Var(symbol)
+                if self.lookup(*symbol).is_some()
+                    && matches!(ast.store().kind(rhs), ExprKind::Var(other)
+                        if self.lookup(*other).is_some()) =>
+            {
+                let left = Ty::Var(self.lookup(*symbol).expect("bound above"));
+                self.annotate(lhs, left.clone());
+
+                let right = self.infer(ast, rhs);
+                if let Err(err) = self.unify(&left, &right) {
+                    self.report(ast, rhs, err);
+                }
+            }
+
             // A record on the left: a **destructuring**, not unification. Every
             // variable in it is bound to the piece of the right side it lines up
             // with, which is the same substitution a scalar bind gets and needs
@@ -1073,10 +1091,6 @@ mod tests {
                 "nyi/negation",
             ),
             ("X where X = (Y where test.Foo {id = Y})", "nyi/subquery"),
-            (
-                "X where test.Foo {id = X}; test.Bar {id = Y}; X = Y",
-                "nyi/bind-unification",
-            ),
         ] {
             let checked = compile(source);
             assert_eq!(codes(&checked), [code], "for {source:?}");
@@ -1206,8 +1220,6 @@ mod tests {
     #[test]
     fn genuine_unification_is_still_deferred() {
         for source in [
-            // `var = var`, both sides already bound — wants a register compare.
-            "X where test.Foo {id = X}; test.Bar {id = Y}; X = Y",
             // A field read on the right is per-row, so there is nothing to fold —
             // and the types agree here, so it is the shape being refused and not them.
             "X where test.Foo {name = X}; Y = test.Foo _; X = Y.name",

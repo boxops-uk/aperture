@@ -217,6 +217,27 @@ struct Claims {
     rows: Vec<Symbol>,
     /// Variables an [`Alias`] names.
     aliased: Vec<Symbol>,
+    /// Variables some fact pattern's key can **capture**.
+    ///
+    /// Not a claim — several statements may offer to capture one variable and the
+    /// order picks which does — but the one thing that tells `X = Y` apart from
+    /// an alias: if a key can bind `X`, then `X = Y` compares two bound values
+    /// rather than giving `Y` a second name.
+    capturable: Vec<Symbol>,
+}
+
+/// Two places whose values have to be **equal per row** — `X = Y` with both
+/// already bound.
+///
+/// Held until every level exists, because the constraint belongs to whichever of
+/// the two binds *later*: a residual is checked against the row a level is
+/// scanning, so comparing against a register only means anything once that
+/// register is filled.
+#[derive(Debug, Clone)]
+struct Compare {
+    left: Slot,
+    right: Slot,
+    at: NodeId,
 }
 
 /// What flatten works out *before* an order is chosen: the statements, the
@@ -384,6 +405,7 @@ pub fn dependencies(
         interner,
         diagnostics,
         bindings: vec![],
+        compares: vec![],
         hoisted: vec![],
     };
 
@@ -428,6 +450,7 @@ fn flatten_reporting(
         interner,
         diagnostics,
         bindings: vec![],
+        compares: vec![],
         hoisted: vec![],
     };
 
@@ -465,6 +488,9 @@ struct Flattener<'a> {
     /// Append-only, and searched from the back: a variable is bound once, at its
     /// first occurrence in the chosen order, and every later occurrence reads it.
     bindings: Vec<(Symbol, Slot)>,
+    /// Equalities between two already-bound places, applied once every level
+    /// exists — see [`Compare`].
+    compares: Vec<Compare>,
     /// Nested fact pattern → the row variable it was **hoisted** to.
     ///
     /// A generator written inside another has no name, and everything downstream —
@@ -622,7 +648,20 @@ impl Flattener<'_> {
                 // rooted at, which is the shape `reorder` was written for: reads it
                 // cannot satisfy itself, captures it offers.
                 Stmt::Alias(alias) => {
-                    self.scan_pattern(alias.pattern, &mut occurrences);
+                    // **`X = Y` with both sides bare variables a key can bind is a
+                    // compare, not a definition**: it reads both and binds
+                    // neither, so it has to run after both. Anything else — a
+                    // field read, a variable no key mentions — *defines* its left
+                    // side, and reordering is free to run it first.
+                    let compares = self.bare_capturable(alias.pattern, &claims)
+                        && self.bare_capturable(alias.value, &claims);
+
+                    if compares {
+                        self.scan_read(alias.pattern, &mut occurrences);
+                    } else {
+                        self.scan_pattern(alias.pattern, &mut occurrences);
+                    }
+
                     self.scan_read(alias.value, &mut occurrences);
                 }
             }
@@ -659,6 +698,18 @@ impl Flattener<'_> {
     fn claims(&mut self, stmts: &[Stmt]) -> Claims {
         let mut claims = Claims::default();
 
+        // What every key could capture, gathered first so that the pass below can
+        // tell a compare from an alias whatever order the statements are in.
+        for stmt in stmts {
+            if let Stmt::Scan(generator) = stmt {
+                for alt in generator.alternatives.clone().iter() {
+                    let mut names = vec![];
+                    self.key_captures(alt.key, &mut names);
+                    claims.capturable.extend(names);
+                }
+            }
+        }
+
         for stmt in stmts {
             // A record pattern claims each of its pieces, and a wildcard claims
             // nothing — so a statement claims a *set*, not a name.
@@ -668,6 +719,15 @@ impl Flattener<'_> {
                     (vec![row], generator.span.clone(), true)
                 }
                 Stmt::Alias(alias) => {
+                    // A **compare** claims nothing: it says two things are equal,
+                    // not what either one is, so the keys that mention them still
+                    // capture them.
+                    if self.bare_capturable(alias.pattern, &claims)
+                        && self.bare_capturable(alias.value, &claims)
+                    {
+                        continue;
+                    }
+
                     let mut names = vec![];
                     self.pattern_claims(alias.pattern, &mut names);
                     (names, alias.span.clone(), false)
@@ -720,6 +780,30 @@ impl Flattener<'_> {
             ExprKind::Record(fields) => {
                 for (_, piece) in fields.iter() {
                     self.pattern_claims(*piece, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether `node` is a bare variable some key pattern can capture.
+    fn bare_capturable(&self, node: NodeId, claims: &Claims) -> bool {
+        matches!(self.ast.store().kind(node), ExprKind::Var(symbol)
+            if claims.capturable.contains(symbol))
+    }
+
+    /// Every variable a key pattern could **capture** — every bare variable in it,
+    /// at any depth.
+    ///
+    /// Deliberately shape-only, like [`Claims`] itself: whether a given statement
+    /// actually captures a variable depends on the order, and this is asked before
+    /// one is chosen.
+    fn key_captures(&self, node: NodeId, out: &mut Vec<Symbol>) {
+        match self.ast.store().kind(node) {
+            ExprKind::Var(symbol) => out.push(*symbol),
+            ExprKind::Record(fields) => {
+                for (_, piece) in fields.clone().iter() {
+                    self.key_captures(*piece, out);
                 }
             }
             _ => {}
@@ -1238,6 +1322,8 @@ impl Flattener<'_> {
             }
         }
 
+        self.apply_compares(&mut body);
+
         let head = self.project(*self.ast.query().head());
 
         if self.diagnostics.len() != mark {
@@ -1249,6 +1335,84 @@ impl Flattener<'_> {
             body: body.into_iter().map(Step::Level).collect(),
             head: head?,
         })
+    }
+
+    /// Turn each recorded [`Compare`] into a residual on the level that binds
+    /// **later**.
+    ///
+    /// A residual is checked against the row a level is scanning, against
+    /// registers filled by levels outside it — so `X = Y` belongs to whichever of
+    /// the two is inner. That is the same rule sargeability follows for a key
+    /// field reading an outer register, reached from the other direction: there
+    /// the field is written where the level is, here the level is chosen from
+    /// where the fields are.
+    ///
+    /// Both sides must be a **field of a row**. Two rows would compare identities
+    /// (`EqRegisterFactId` — nothing writes one yet), and anything else is not in
+    /// a register to be compared.
+    fn apply_compares(&mut self, body: &mut [Level]) {
+        for compare in std::mem::take(&mut self.compares) {
+            let (
+                Slot::Field {
+                    address: left,
+                    path: left_path,
+                    ..
+                },
+                Slot::Field {
+                    address: right,
+                    path: right_path,
+                    ..
+                },
+            ) = (&compare.left, &compare.right)
+            else {
+                self.report(
+                    compare.at,
+                    Code::NyiBindUnification,
+                    "matching these two against each other is not implemented yet; both \
+                     sides have to be a field of a row",
+                );
+                continue;
+            };
+
+            // Same register: an intra-row repeat, which is its own deferral and
+            // its own decision ([open decisions]).
+            if left == right {
+                self.report(
+                    compare.at,
+                    Code::NyiRepeatedVariable,
+                    "matching two fields of the *same* row against each other is not \
+                     implemented yet",
+                );
+                continue;
+            }
+
+            let (inner, outer, inner_path, outer_path) = if left.index() > right.index() {
+                (left, right, left_path, right_path)
+            } else {
+                (right, left, right_path, left_path)
+            };
+
+            let Some(level) = body.get_mut(inner.index()) else {
+                continue;
+            };
+
+            // Every alternative gets it: a variable a disjunction binds is in the
+            // same place in each, so one residual is right for all of them.
+            for source in level.sources.iter_mut() {
+                let Source::Seek { residuals, .. } = source;
+                let mut extended = residuals.to_vec();
+
+                extended.push(Residual {
+                    path: inner_path.clone(),
+                    op: ResidualOp::EqRegisterField {
+                        address: *outer,
+                        path: outer_path.clone(),
+                    },
+                });
+
+                *residuals = extended.into();
+            }
+        }
     }
 
     /// Check a later branch's bindings against the ones the first branch made.
@@ -1326,18 +1490,17 @@ impl Flattener<'_> {
                 // last silently. Typecheck cannot decide this — it would have to
                 // decide it in source order, and only `bindings` knows whether the
                 // variable is already a substitution rather than a capture.
-                if self.lookup(symbol).is_some() {
-                    let name = self.name(symbol).to_owned();
-                    self.report(
-                        pattern,
-                        Code::NyiBindUnification,
-                        format!(
-                            "an earlier statement already says what `{name}` is; matching two \
-                             values against each other is not implemented yet"
-                        ),
-                    );
-                } else {
-                    self.bindings.push((symbol, slot));
+                match self.lookup(symbol) {
+                    // **Both sides are already somewhere**, so this is a compare
+                    // rather than a name for a place: the two have to be equal
+                    // per row, which is a residual on whichever level binds
+                    // later. Recorded here and applied once every level exists.
+                    Some(bound) => self.compares.push(Compare {
+                        left: bound,
+                        right: slot,
+                        at: pattern,
+                    }),
+                    None => self.bindings.push((symbol, slot)),
                 }
             }
 
@@ -3532,6 +3695,57 @@ mod tests {
         assert_eq!(
             compile("Y where Y = test.Foo _; test.Name Y.value").codes(),
             ["nyi/value-match"]
+        );
+    }
+
+    // ---- comparing two bound values ----------------------------------------
+
+    /// **`X = Y` with both sides bound is a residual on the level that binds
+    /// later.** It needs no step of its own and nothing new in the machine: a
+    /// residual is checked against the row a level is scanning, against registers
+    /// filled outside it, which is exactly the shape of the constraint.
+    #[test]
+    fn comparing_two_bound_variables_is_a_residual_on_the_inner_level() {
+        assert_eq!(
+            shape("X where test.Foo {id = X}; test.Bar {id = Y}; X = Y"),
+            lines(&[
+                "r0 <- test.Foo scan",
+                "r1 <- test.Bar scan where 0 == r0.0",
+                "head r0.0:int",
+            ]),
+        );
+    }
+
+    /// The comparison is **symmetric**, and the order it is written in does not
+    /// change the plan: the residual belongs to whichever level is inner, which is
+    /// a fact about the order `reorder` chose rather than about the source.
+    #[test]
+    fn a_comparison_reads_both_sides_whichever_way_it_is_written() {
+        assert_eq!(
+            shape("X where test.Foo {id = X}; test.Bar {id = Y}; X = Y"),
+            shape("X where test.Foo {id = X}; test.Bar {id = Y}; Y = X"),
+        );
+    }
+
+    /// A comparison **claims neither side**, so the keys that mention them still
+    /// capture them — and it is *read*-only, so it cannot be ordered before the
+    /// levels that bind what it compares.
+    #[test]
+    fn a_comparison_is_ordered_after_both_levels_it_reads() {
+        let deps = deps_of("X where test.Bar {id = Y}; X = Y; test.Foo {id = X, name = _}");
+
+        // Written second, and it must not run until both are bound.
+        assert!(deps.stmt(1).expect("the comparison").captures.is_empty());
+        assert_eq!(deps.stmt(1).expect("the comparison").reads.len(), 2);
+    }
+
+    /// Two fields of the **same** row is a different question — an intra-row
+    /// repeat, which is its own deferral and its own decision.
+    #[test]
+    fn comparing_two_fields_of_one_row_is_still_deferred() {
+        assert_eq!(
+            compile("X where test.Edge {from = X, to = Y}; X = Y").codes(),
+            ["nyi/repeated-variable"]
         );
     }
 

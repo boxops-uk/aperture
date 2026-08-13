@@ -370,7 +370,7 @@ fixture deliberately does not have, so its guard builds a two-predicate schema o
 | `test.Foo {id = 1 \| 2}` — an alternation **inside** a pattern | `nyi/disjunction` | distributing it outward is one whole pattern per branch, which needs tree nodes flatten cannot make |
 | `test.Foo {id = never}` — `never` **inside** a pattern | `nyi/never` | the field walk builds one seek and cannot say "the level is empty" from a field down |
 | `X = {a = 1, b = Y}` — a value in **no register** | `nyi/value-bind` | a **derived bind**: the value has to be *built*, which is the `Slot` value variant ([Phase 6](#derived-facts)) |
-| `X = Y` with both bound, `X = "a"..`, `gen = gen` | `nyi/bind-unification` | two values compared at runtime and nothing to substitute — a register-to-register residual ([open decisions](open-decisions.md)) |
+| `X = "a"..`, `gen = gen`, `X = Y.name` with both bound | `nyi/bind-unification` | nothing to substitute and no single field to compare — `X = Y` with both bound is **built**, as a residual on the level that binds later |
 | `X.name`, `X.value` where `X` came out of a reference field | `nyi/fact-field` | cross-fact navigation: a second lookup, which is a new `Access` kind (`Access::Fetch`) |
 | `test.Name Y.value` — a value in a key position | `nyi/value-match` | a residual class over the fetched value buffer, never in the scan ([I6](invariants.md#i6)) |
 | `test.Nested Y; test.Wide {outer = Y}` — a whole key matched **into a record field** | `nyi/whole-key` | flat against wrapped: the same record, not the same bytes ([chapter 3](03-storage-model.md#a-stored-key-is-flat)) |
