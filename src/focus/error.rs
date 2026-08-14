@@ -108,9 +108,6 @@ pub enum ApertureError {
     #[error("operation cancelled")]
     Cancelled,
 
-    #[error("unknown symbol: {0:?}")]
-    UnknownSymbol(Symbol),
-
     #[error("store error: {0}")]
     Store(#[from] StoreError),
 
@@ -256,6 +253,16 @@ pub enum FactError {
 pub enum StoreCodecError {
     #[error("unexpected end of input")]
     UnexpectedEof,
+
+    /// A [`Symbol`] the interner cannot resolve, hit while turning stored bytes
+    /// into a [`Value`](crate::focus::tuple::Value).
+    ///
+    /// A codec fault rather than an engine one: symbols are interned per query
+    /// and a stored record's field names are read back through that interner, so
+    /// the failure belongs to the decode that needed the name, not to whatever
+    /// asked for the row.
+    #[error("unknown symbol: {0:?}")]
+    UnknownSymbol(Symbol),
 
     #[error("unexpected mark: {0:#x}")]
     UnexpectedMark(u8),

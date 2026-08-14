@@ -907,7 +907,7 @@ fn project<S: FactStore>(
             // register walks the row once between them all.
             let span = get_field_span(offsets, &key, *address, path)?;
 
-            decode_typed(interner, &key[span], ty)
+            Ok(decode_typed(interner, &key[span], ty)?)
         }
 
         Project::Value { address, ty } => {
@@ -918,7 +918,7 @@ fn project<S: FactStore>(
             let entity = store
                 .point(reg.fact_id)?
                 .ok_or(ApertureError::DanglingFactId(reg.fact_id))?;
-            decode_typed(interner, &entity.value, ty)
+            Ok(decode_typed(interner, &entity.value, ty)?)
         }
 
         Project::Record(fields) => {
@@ -927,7 +927,7 @@ fn project<S: FactStore>(
             for (field_name, field_proj) in fields.iter() {
                 let field_name = interner
                     .try_resolve(*field_name)
-                    .ok_or(ApertureError::UnknownSymbol(*field_name))?
+                    .ok_or(StoreCodecError::UnknownSymbol(*field_name))?
                     .to_owned();
 
                 let value = project(interner, field_proj, state, store, offsets)?;

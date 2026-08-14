@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use crate::focus::{
-    error::{ApertureError, StoreCodecError},
+    error::StoreCodecError,
     plan::FactId,
     schema::{LocalInterner, PredicateId, PredicateTy, Symbol},
 };
@@ -494,7 +494,8 @@ pub fn encode_key(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodec
 /// encodes, decodes, sorts and projects as a well-formed reference. The only
 /// thing that ever notices is a query that **follows** it, which reads the row on
 /// the other end against the *declared* predicate's key layout and so must
-/// refuse ([`ApertureError::ReferenceCrossesPredicate`](crate::focus::error::ApertureError)).
+/// refuse (`ApertureError::ReferenceCrossesPredicate`, raised in the executor —
+/// named rather than linked, because the codec sits below it).
 /// A query that merely reads the field back never notices at all.
 fn checked_fact_ref(predicate: PredicateId, id: FactId) -> Result<(), StoreCodecError> {
     if id.sequence() == 0 {
@@ -954,7 +955,7 @@ pub fn decode_typed(
     interner: &LocalInterner,
     bytes: &[u8],
     ty: &PredicateTy,
-) -> Result<Value, ApertureError> {
+) -> Result<Value, StoreCodecError> {
     let mut dec = TupleDecoder::new(bytes);
 
     let value = decode_typed_at(interner, &mut dec, ty)?;
@@ -966,7 +967,7 @@ pub fn decode_typed(
             .copied()
             .ok_or(StoreCodecError::UnexpectedEof)?;
 
-        return Err(ApertureError::Decode(StoreCodecError::UnexpectedMark(mark)));
+        return Err(StoreCodecError::UnexpectedMark(mark));
     }
 
     Ok(value)
@@ -989,7 +990,7 @@ pub fn decode_key(
     interner: &LocalInterner,
     bytes: &[u8],
     ty: &PredicateTy,
-) -> Result<Value, ApertureError> {
+) -> Result<Value, StoreCodecError> {
     let mut dec = TupleDecoder::new(bytes);
 
     let value = match ty {
@@ -1002,7 +1003,7 @@ pub fn decode_key(
                 let symbol = Symbol::Schema(*name);
                 let field_name = interner
                     .try_resolve(symbol)
-                    .ok_or(ApertureError::UnknownSymbol(symbol))?
+                    .ok_or(StoreCodecError::UnknownSymbol(symbol))?
                     .to_owned();
 
                 out.push((field_name, value));
@@ -1023,7 +1024,7 @@ pub fn decode_key(
             .copied()
             .ok_or(StoreCodecError::UnexpectedEof)?;
 
-        return Err(ApertureError::Decode(StoreCodecError::UnexpectedMark(mark)));
+        return Err(StoreCodecError::UnexpectedMark(mark));
     }
 
     Ok(value)
@@ -1033,7 +1034,7 @@ pub fn decode_typed_at(
     interner: &LocalInterner,
     dec: &mut TupleDecoder<'_>,
     ty: &PredicateTy,
-) -> Result<Value, ApertureError> {
+) -> Result<Value, StoreCodecError> {
     // I5 probe: this is the single funnel for typed field/value decoding.
     #[cfg(any(test, feature = "proptest"))]
     decode_probe::bump();
@@ -1067,7 +1068,7 @@ pub fn decode_typed_at(
 
             for (name, field_ty) in fields.iter() {
                 if dec.is_record_end()? {
-                    return Err(ApertureError::Decode(StoreCodecError::BadRecord));
+                    return Err(StoreCodecError::BadRecord);
                 }
 
                 let value = decode_typed_at(interner, dec, field_ty)?;
@@ -1075,14 +1076,14 @@ pub fn decode_typed_at(
                 let symbol = Symbol::Schema(*name);
                 let field_name = interner
                     .try_resolve(symbol)
-                    .ok_or(ApertureError::UnknownSymbol(symbol))?
+                    .ok_or(StoreCodecError::UnknownSymbol(symbol))?
                     .to_owned();
 
                 out.push((field_name, value));
             }
 
             if !dec.is_record_end()? {
-                return Err(ApertureError::Decode(StoreCodecError::BadRecord));
+                return Err(StoreCodecError::BadRecord);
             }
 
             Ok(Value::Record(out.into_boxed_slice()))
@@ -2075,7 +2076,7 @@ pub(crate) mod tests {
     /// Unchecked, `Fact(0)` accepts an id tagged for predicate 1: the bytes
     /// encode, decode and project as a well-typed reference to the wrong
     /// predicate. The fault surfaces only if a query later *follows* it — as
-    /// [`ApertureError::ReferenceCrossesPredicate`](crate::focus::error::ApertureError),
+    /// `ApertureError::ReferenceCrossesPredicate`,
     /// raised in the executor, layers away from the write that was wrong — or
     /// never at all, for a query that only reads the field back.
     #[test]
@@ -2106,10 +2107,10 @@ pub(crate) mod tests {
         assert!(
             matches!(
                 decode_typed(&interner, &bytes, &ty),
-                Err(ApertureError::Decode(StoreCodecError::FactRefPredicate {
+                Err(StoreCodecError::FactRefPredicate {
                     expected: 0,
                     found: 1
-                }))
+                })
             ),
             "decoding a reference tagged for another predicate must be rejected",
         );
@@ -2153,7 +2154,7 @@ pub(crate) mod tests {
         assert!(
             matches!(
                 decode_typed(&interner, &bytes, &ty),
-                Err(ApertureError::Decode(StoreCodecError::ReservedFactId))
+                Err(StoreCodecError::ReservedFactId)
             ),
             "and so must the typed decode above it",
         );
