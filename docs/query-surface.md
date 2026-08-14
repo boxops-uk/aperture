@@ -361,9 +361,13 @@ breach I7 while a `Box<dyn Iterator>` would.
 
 Each stage ends green and re-proves only what it changed:
 
-1. **`Test` as a step kind** — negation, `X = Y` with both bound, and the comparison operators
-   that have wanted a home since Phase 4. No cursor change; resume gains the skip rule. Retires
-   `nyi/negation` and half of `nyi/bind-unification`.
+1. **`Test` as a step kind** — negation and the comparison operators that have wanted a home
+   since Phase 4. No cursor change; resume gains the skip rule. Retires `nyi/negation`.
+   `X = Y` with both bound was on this list and did **not** need it: a residual on the level
+   that binds later is the same constraint one loop deeper, and it costs no step and no cursor
+   entry. Nor did `X = "a"..`, which narrows the level that binds `X` rather than testing after
+   it. What is left of `nyi/bind-unification` is pattern-pushing into a generator or a field
+   read, which is a flatten question and not a step kind.
 2. **`Level { sources }` at N = 0 and 1** — a pure refactor: `never` arrives, today's plans
    compile to N = 1, and every existing battery must stay green untouched. This is the diff that
    should be boring, and doing it alone is what makes the next one legible.

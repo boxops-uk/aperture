@@ -300,9 +300,52 @@ pub const CORPUS: &[Entry] = &[
          compared against another",
     ),
     entry(
+        "X where test.Name X; X = \"a\"..",
+        Supported("abc; ann; anna"),
+        "a **pattern** on the right of a bind: a prefix denotes a range, so there is \
+         nothing for `X` to be — it says what the value wherever `X` lives has to \
+         look like. Applied by the level that captures `X`, so the field is an \
+         output *and* a seek, and this is the same range scan `test.Name \"a\"..` is",
+    ),
+    entry(
+        "X where X = \"a\"..; test.Name X",
+        Supported("abc; ann; anna"),
+        "the same, written before the statement that binds `X` — a constraint is \
+         collected from the whole body, so it lands on the level that captures the \
+         variable whatever order that level runs in",
+    ),
+    entry(
+        "X where test.Foo {name = X}; X = \"a\"..",
+        Supported("ann; ann"),
+        "the same constraint behind an **open** field, where there is no seek left \
+         to narrow and it filters instead — sargeability is a property of the \
+         order, as it is for a prefix written in the key",
+    ),
+    entry(
+        "Y where X = test.Foo _; Y = X.name; Y = \"a\"..",
+        Supported("ann; ann"),
+        "constraining a variable an **alias** binds: no capture to narrow, so it \
+         becomes a residual on the level holding the row the alias names",
+    ),
+    entry(
+        "X where X = \"abc\"; X = \"z\"..",
+        Supported(""),
+        "both sides known at compile time, and they disagree — so the query is the \
+         **empty relation**, which is a level with no source to open. Answering it \
+         as \"no constraint\" would mean `true` where it means no rows",
+    ),
+    entry(
         "X where test.Foo {id = X} = test.Bar {id = X}",
         Diagnosed(Code::NyiBindUnification),
-        "generator = generator — also the hard half",
+        "generator = generator — the left side is not a target at all, so there is \
+         nothing to bind and the pattern would have to be pushed into the row. What \
+         is left of the hard half, with a field read on the left",
+    ),
+    entry(
+        "X where Y = test.Foo _; Y.name = X",
+        Diagnosed(Code::NyiBindUnification),
+        "a **field read on the left**: it names a place, and naming a place is not \
+         binding it — the same pattern-pushing the generator above wants",
     ),
     entry(
         "X where P = test.Nested _; {inner = X} = P.outer",

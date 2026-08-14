@@ -181,14 +181,16 @@ impl Checker<'_> {
 
     /// `lhs = rhs`.
     ///
-    /// What is checked here is the **left side**: a variable being bound, a
-    /// wildcard, or a record whose every leaf is one of those — all three are a
-    /// destructuring, which binds names to pieces and compares nothing. What the
-    /// right side has to be for that to work is flatten's question, because it is
-    /// the phase that knows where a value lives.
+    /// What is checked here is the **left side, and only its shape**: a variable, a
+    /// wildcard, or a record whose every leaf is one of those. What the right side
+    /// has to be — and which of the four things a bind can mean it then is — is
+    /// flatten's question, because it is the phase that knows where a value lives
+    /// and it is the phase that sees the whole body rather than the statements
+    /// above this one.
     ///
-    /// What stays deferred here is a left side that is neither: a literal (which
-    /// can never be a target), or a generator — both want genuine unification
+    /// What stays deferred here is a left side that is none of the three: a literal
+    /// (which can never be a target), a generator, or a field read — each wants
+    /// pattern-pushing rather than a bind
     /// ([open decisions](../../../docs/open-decisions.md)).
     fn bind(&mut self, ast: &Ast, lhs: NodeId, rhs: NodeId) {
         match ast.store().kind(lhs) {
@@ -197,28 +199,27 @@ impl Checker<'_> {
                 self.annotate(lhs, ty);
             }
 
-            // A variable the query has not mentioned yet, or one it has mentioned
-            // that this statement says what *is* — a row, or a compile-time constant.
-            // Neither is unification. `test.Ref {of = P}; P = test.Foo …` says `P` is
-            // one variable named twice and `reorder` picks the loop order;
-            // `test.Foo {id = N}; N = 1` says `N` is `1`, which flatten substitutes at
-            // every use. Both are questions about *where in the plan* the answer comes
-            // from, and deciding either here would decide it in source order — the one
-            // order the query might not have used.
+            // **A variable on the left, and that is the whole gate.** What the
+            // statement *does* — introduce the variable, say what it is, compare it
+            // against something else, or constrain where it already lives — is
+            // flatten's question, because only flatten knows where a value comes
+            // from. `test.Ref {of = P}; P = test.Foo …` says `P` is one variable
+            // named twice and `reorder` picks the loop order; `test.Foo {id = N}; N
+            // = 1` says `N` is `1`, which flatten substitutes at every use; `X = Y`
+            // with both bound is a residual on whichever level binds later; `X =
+            // "a"..` narrows the level that captures `X`.
             //
-            // What is left for `nyi/bind-unification` needs two things compared at
-            // runtime, with nothing constant to substitute: `X = Y` with both bound
-            // (which wants a register-to-register residual), a generator or a record on
-            // the left, or a field read on the right.
+            // This arm used to ask whether the variable was **already mentioned**,
+            // which decided all four in *source* order — the one order the query
+            // might not have used, and the thing this phase gave up deciding when
+            // `reorder` took the question over. `F = G` compiled or did not
+            // depending on whether the statement that mentions `G` was written
+            // above or below it, and the plans were identical either way.
             //
             // Claiming the same variable *twice* — two rows, or two constants — is
             // unification too, and flatten refuses it: only flatten knows whether a
             // variable is already a row or a constant rather than a capture.
-            ExprKind::Var(symbol)
-                if self.lookup(*symbol).is_none()
-                    || matches!(ast.store().kind(rhs), ExprKind::Fact(..))
-                    || ast.is_constant(rhs) =>
-            {
+            ExprKind::Var(symbol) => {
                 let symbol = *symbol;
                 // A fresh variable is introduced *before* the right side is
                 // inferred, so that both occurrences in `X = {a = X}` are the same
@@ -238,24 +239,6 @@ impl Checker<'_> {
 
                 let ty = self.infer(ast, rhs);
                 if let Err(err) = self.unify(&Ty::Var(var), &ty) {
-                    self.report(ast, rhs, err);
-                }
-            }
-
-            // **Two variables the query has already mentioned.** Symmetric, and not
-            // a definition of either: both are somewhere by the time this runs, so
-            // it constrains them to be equal per row. Typing it is just making the
-            // two agree; flatten decides where the comparison goes.
-            ExprKind::Var(symbol)
-                if self.lookup(*symbol).is_some()
-                    && matches!(ast.store().kind(rhs), ExprKind::Var(other)
-                        if self.lookup(*other).is_some()) =>
-            {
-                let left = Ty::Var(self.lookup(*symbol).expect("bound above"));
-                self.annotate(lhs, left.clone());
-
-                let right = self.infer(ast, rhs);
-                if let Err(err) = self.unify(&left, &right) {
                     self.report(ast, rhs, err);
                 }
             }
@@ -1226,25 +1209,21 @@ mod tests {
         }
     }
 
-    /// The shapes that genuinely need unification stay deferred — the narrowings
-    /// above must not have swallowed them.
+    /// **What typecheck still defers is a property of the left side alone.**
     ///
-    /// What these have in common is **two things to compare at runtime and nothing
-    /// constant to substitute**, which is why they are the ones left: each wants a
-    /// register-to-register residual, or a structural decomposition, or both.
+    /// Each of these has something on the left that is not a target: a generator, a
+    /// field read, a literal leaf. Pushing a pattern *into* one is a different
+    /// operation from binding — there is nothing to give a name to — and it is the
+    /// only part of `pattern = pattern` that has no answer here.
     #[test]
-    fn genuine_unification_is_still_deferred() {
+    fn a_left_side_that_is_not_a_target_is_still_deferred() {
         for source in [
-            // A field read on the right is per-row, so there is nothing to fold —
-            // and the types agree here, so it is the shape being refused and not them.
-            "X where test.Foo {name = X}; Y = test.Foo _; X = Y.name",
-            // A prefix denotes a range rather than a value, so nothing can be
-            // substituted for it either.
-            "X where test.Foo {name = X}; X = \"a\"..",
-            // Generator against generator: the left side is not a variable at all, so
-            // there is nothing to bind — and "these two facts are the same fact" is the
-            // same thing flatten refuses when two statements claim one row.
+            // Generator against generator: "these two facts are the same fact", which
+            // is also what flatten refuses when two statements claim one row.
             "X where test.Foo {id = X} = test.Bar {id = X}",
+            // A field read on the left names a place, but naming it is not binding
+            // it: the pattern would have to be pushed into the row it comes from.
+            "X where Y = test.Foo _; Y.name = X",
         ] {
             assert_eq!(
                 all_codes(source),
@@ -1252,6 +1231,39 @@ mod tests {
                 "for {source:?}"
             );
         }
+    }
+
+    /// **Source order no longer decides what a bind means.**
+    ///
+    /// Whether a variable has been *mentioned above* used to gate this arm, so
+    /// `X = Y` typechecked when the statement binding `Y` was written first and drew
+    /// `nyi/bind-unification` when it was written second — for the same query, with
+    /// the same plan. That is the decision `reorder` took over, and typecheck kept a
+    /// copy of it.
+    ///
+    /// Which of the four things a bind can be is flatten's answer now, so all this
+    /// checks is that typecheck has stopped answering: the shapes pass, and the
+    /// corpus pins what each compiles to.
+    #[test]
+    fn a_bind_is_typed_the_same_whichever_order_it_is_written_in() {
+        for source in [
+            "X where test.Foo {id = X}; test.Bar {id = Y}; X = Y",
+            "X where test.Foo {id = X}; X = Y; test.Bar {id = Y}",
+            "X where X = Y; test.Foo {id = X}; test.Bar {id = Y}",
+            // A field read on the right, and a prefix: neither is a value that can
+            // be substituted, and both are perfectly well typed.
+            "X where test.Foo {name = X}; Y = test.Foo _; X = Y.name",
+            "X where test.Foo {name = X}; X = \"a\"..",
+        ] {
+            assert_eq!(all_codes(source), [] as [&str; 0], "for {source:?}");
+        }
+
+        // The types still have to agree, and a mismatch is a mismatch rather than a
+        // deferral — the thing the old gate hid.
+        assert_eq!(
+            all_codes("X where test.Foo {id = X}; X = \"a\".."),
+            ["reject/type-mismatch"]
+        );
     }
 
     /// **Where the record gate now is: the left side only.**

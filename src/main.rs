@@ -945,7 +945,15 @@ fn print_plan(source: &str, schema: &Schema) {
 /// matched by id. Same answer, and which one is right is a property of the
 /// question: a fetch suits a reference each row has exactly one of, and a join
 /// suits one where the *other* side is what narrows.
-const EXAMPLES: [&str; 7] = [
+///
+/// The last is prefix search again, and the thing it shows is that **naming the
+/// answer costs nothing**. `F` is the file path, captured — ordinarily the thing that
+/// closes a seek prefix, because an output cannot narrow a scan — and `F = "query"..`
+/// says what that output has to look like, so the level that binds it seeks the range
+/// instead. `:plan` shows `src.File seek[<const>]`, the same range the prefix written
+/// in the pattern reaches, and then the join into `src.Module` by id
+/// ([chapter 7](../docs/07-compilation.md#what-a-bind-can-mean)).
+const EXAMPLES: [&str; 8] = [
     "X where X = src.SearchByName {name = \"encode\"..}",
     "D where D = src.Decl {name = \"encode\"..}",
     "D.name where D = src.Decl {module = src.Module {file = src.File \"store/codec.py\"}}",
@@ -953,6 +961,7 @@ const EXAMPLES: [&str; 7] = [
     "D.value where D = src.Decl {name = \"encode_key\"}",
     "{file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = \"encode_str\"}}",
     "M where src.Import {from = M, to = src.Module {name = \"store.codec\"}}",
+    "F where src.Module {file = src.File F}; F = \"query\"..",
 ];
 
 /// One shell command.

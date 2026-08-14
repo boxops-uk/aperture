@@ -193,3 +193,14 @@ decoded data.
   no `Slot` arm. So `Y = X.file` is an **alias**: no register, no step, the same plan as the
   read it names. `nyi/value-bind` now means only *this value is in no register and would have to
   be built*.
+- **A bind means one of four things, and flatten decides which** — a row bind (a level), a
+  constant fold, an alias, or a **constraint**
+  ([chapter 7](docs/07-compilation.md#what-a-bind-can-mean)). Only the first takes a register and
+  none is a `Step`. Typecheck checks the left side's shape and the types, and nothing else: it
+  used to ask whether a variable had been *mentioned above*, which decided in source order — the
+  one order the query might not have used. A constraint (`X = "a"..`) is the one worth knowing by
+  shape: it is collected from the whole body before an order is chosen, exactly as the constant
+  fold is, and applied by whichever level **captures** the variable, so `test.Name X; X = "a"..`
+  is the same range seek `test.Name "a"..` is. Applying it afterwards as a residual would answer
+  the same rows and read the whole predicate to find them — do not "simplify" it into
+  `apply_compares`.

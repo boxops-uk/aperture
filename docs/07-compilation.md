@@ -203,6 +203,7 @@ only be extended while every field so far is fully determined. The first field t
 | a string prefix (`"ab"..`) | a seek component, and closes the prefix *after* itself | `Prefix` residual |
 | a variable bound at an outer level, or a field read of one (`Y.name`) | a **splice** — `SeekKeyPart::RegisterField` | `EqRegisterField` residual |
 | a variable bound *here* (a capture) | closes it — an output cannot narrow | — |
+| a capture the body **constrains** (`X = "a"..` elsewhere) | a seek component, and closes the prefix after itself | `Prefix` residual |
 | a wildcard, or a field the pattern omits | closes it | — |
 | a record giving only *some* of its fields | closes it, and its given fields become residuals one step deeper | — |
 
@@ -361,6 +362,67 @@ still checked and still refused, because flatten's safety pass runs over the ord
 chosen — by `reorder` or by a caller. What changed is that being written in a bad order is no
 longer the same thing as being handed one.
 
+<a id="what-a-bind-can-mean"></a>
+### What a bind can mean, and who decides
+
+`pattern = pattern` is one piece of syntax with four meanings, and **which one is flatten's
+answer, not typecheck's**. Typecheck checks the *shape of the left side* — a variable, a
+wildcard, or a record whose every leaf is one of those — makes the two types agree, and stops.
+
+| the right side | what the statement is | what it costs |
+|---|---|---|
+| a generator (`test.Foo {…}`, `\|`, `never`) | a **row bind** — the level's register | a level |
+| a constant, to any depth | a **substitution** — folded at every use | nothing |
+| anything naming a place (`Y`, `Y.name`, `Y.value`, a subquery's head) | an **alias** — a second name for that place | nothing |
+| a **pattern** (`"a"..`) | a **constraint** — the value wherever the left side lives has to match it | nothing, or a narrower seek |
+
+Only the first takes a register, and none of the four is a `Step`.
+
+**Typecheck used to decide this, in source order**, by asking whether the left side had already
+been mentioned *above*. That is the one order the query might not have used, and it is the
+decision `reorder` took over: `F = G` compiled or drew `nyi/bind-unification` depending on
+whether the statement mentioning `G` was written above or below it, for the same query and the
+same plan. Flatten decides instead, from the whole body — which is also the only place a claim
+made twice (`X = test.Foo _; X = test.Bar _`) can be seen at all.
+
+Two consequences fall out of moving it.
+
+**`X = Y` is symmetric, and so is the plan.** Whichever side some fact pattern can bind is where
+the value comes from, and the other is the name for it; with *both* bindable it is a compare
+belonging to neither, and lands as a residual on whichever level binds later. Written the way
+round that names the bound side first, an alias used to claim it, demoting the key that offered
+to capture it to a read — so nothing bound it and the free variable was unbound too. Two
+diagnostics for a query with a perfectly good plan.
+
+**A constraint narrows the level that binds its variable**, and that is what makes it worth
+distinguishing from a residual. `test.Name X; X = "a"..` is `test.Name "a"..` with a name for the
+answer, and a name must not cost a range scan its range: the field is an *output*, ordinarily the
+thing that closes a seek prefix, and a prefix constraint on it narrows to a range all the same —
+because a range is what a seek is. So the constraint is collected from the whole body **before an
+order is chosen**, exactly as the constant fold is, and applied by whichever level turns out to
+capture the variable. Applying it afterwards, as a residual on a level already built, would give
+the same rows and read the whole predicate to find them.
+
+The rest follows from where the variable ends up living:
+
+- **Captured at a key field** — the seek narrows, or a `Prefix` residual filters if the prefix
+  has already closed. Two constraints on one variable both hold: the first ends the seek, the
+  rest filter.
+- **Bound by an alias** — no capture to narrow, so a `Prefix` residual on the level holding the
+  row the alias names.
+- **Folded to a constant** — both sides are known, so it is decided at compile time: a tautology
+  that folds away, or the **empty relation**, which is a level with no source to open. Answering
+  that one as "no constraint" would mean `true` where it means no rows — the trap
+  `{a = 1} = {a = 2}` is refused for.
+- **Nowhere** — `reject/unbound-variable`. A constraint binds nothing, so it is a *read*, and
+  the safety check is what turns "constrains a variable nothing binds" into a diagnostic rather
+  than a constraint quietly dropped.
+
+Being a read is also the one thing it costs: it imposes an ordering edge that buys nothing at run
+time, since the level that captures the variable applies it wherever that level runs. `reorder`
+can always satisfy it — a constraint captures nothing, so it can go last — and in exchange the
+unbound case has an owner.
+
 <a id="what-flatten-defers-and-why"></a>
 ### What flatten defers, and why
 
@@ -376,7 +438,7 @@ fixture deliberately does not have, so its guard builds a two-predicate schema o
 | `test.Foo {id = 1 \| 2}` — an alternation **inside** a pattern | `nyi/disjunction` | distributing it outward is one whole pattern per branch, which needs tree nodes flatten cannot make |
 | `test.Foo {id = never}` — `never` **inside** a pattern | `nyi/never` | the field walk builds one seek and cannot say "the level is empty" from a field down |
 | `X = {a = 1, b = Y}` — a value in **no register** | `nyi/value-bind` | a **derived bind**: the value has to be *built*, which is the `Slot` value variant ([Phase 6](#derived-facts)) |
-| `X = "a"..`, `gen = gen`, `X = Y.name` with both bound | `nyi/bind-unification` | nothing to substitute and no single field to compare — `X = Y` with both bound is **built**, as a residual on the level that binds later |
+| `gen = gen`, `Y.name = X` — a left side that is **not a target** | `nyi/bind-unification` | nothing to bind: the pattern would have to be *pushed into* the generator or the row the read names |
 | `X.value.name` — a reference held in a fact's **value** | `nyi/fact-field` | a fetch reads its id out of a register's *key* bytes; a value is in the other column family, so this is a fetch whose reference is itself a fetch |
 | `test.Name Y.value` — a value in a key position | `nyi/value-match` | a residual class over the fetched value buffer, never in the scan ([I6](invariants.md#i6)) |
 | `test.Nested Y; test.Wide {outer = Y}` — a whole key matched **into a record field** | `nyi/whole-key` | flat against wrapped: the same record, not the same bytes ([chapter 3](03-storage-model.md#a-stored-key-is-flat)) |
@@ -386,9 +448,17 @@ fixture deliberately does not have, so its guard builds a two-predicate schema o
 A field read names a *place* — a register plus a path — so binding a name to it is the same
 substitution a constant bind is: no register, no step, and the same plan as writing the read
 where the name is used. What is left under `nyi/value-bind` is the case where the right side is
-in no register at all and would have to be constructed. So the two bind deferrals now divide on
-*where a value is*: nothing anywhere (`nyi/value-bind`) against two things each somewhere
-(`nyi/bind-unification`).
+in no register at all and would have to be constructed.
+
+**`X = "a"..` is not on it either, and it left by a different door.** A prefix is not a value, so
+there was nothing for `X` to be — which is why it looked like unification. But it is not two
+things compared: it is one thing *constrained*, and the answer is to narrow wherever `X` already
+lives. See [what a bind can mean](#what-a-bind-can-mean) below.
+
+So `nyi/bind-unification` no longer means "two runtime values". It means the **left side is not a
+target**: a generator or a field read, where there is no variable to bind and the pattern would
+have to be pushed inward. That is a different operation from binding, and the only part of
+`pattern = pattern` still without an answer.
 
 That split is what makes [`Slot`](#where-a-value-lives) the single substitution. One function —
 `resolve` — answers "where does this expression's value live" for every position that can

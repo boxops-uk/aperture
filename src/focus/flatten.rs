@@ -8,49 +8,56 @@
 //!
 //! Four things happen here, in this order, and the order is the design:
 //!
-//! 1. **Collect** the statements into generators. A statement is a fact pattern —
-//!    `test.Foo {…}`, optionally bound to a variable by `X = test.Foo {…}` — and
-//!    each becomes one loop level holding one register. A fact pattern written
-//!    *inside* another is a generator too, and is **hoisted** into a level of its
-//!    own, bound to a name the query did not write; everything after this point
-//!    sees an ordinary row bind.
+//! 1. **Collect** the statements. A statement is a fact pattern — `test.Foo {…}`,
+//!    optionally bound to a variable by `X = test.Foo {…}` — and each becomes one
+//!    loop level holding one register. A fact pattern written *inside* another is a
+//!    generator too, and is **hoisted** into a level of its own, bound to a name the
+//!    query did not write; everything after this point sees an ordinary row bind.
+//!    Two kinds of statement iterate nothing and are settled here: a **substitution**
+//!    (a folded constant, or an alias naming a place) and a **constraint** — `X =
+//!    "a"..`, a pattern the value wherever `X` lives has to match.
 //! 2. **Safety.** Every variable a seek, residual or the head *reads* must be
 //!    **captured** by some generator's key pattern. That is the whole of what
 //!    correctness needs — see [`reorder`](crate::focus::reorder) for why it is not
 //!    an ordering problem — and a query with an uncaptured variable is rejected
 //!    (`reject/unbound-variable`), not answered.
-//! 3. **Reorder**, which is the identity. Correct rather than a stub, for the same
-//!    reason: any order that binds before it reads gives the same answer.
+//! 3. **Reorder**, over the dependency graph collect built: any order that binds
+//!    before it reads gives the same answer, so which one is a performance choice
+//!    among the safe ones rather than a correctness question.
 //! 4. **Sargeability**, walking each level's key fields *in the chosen order* and
 //!    deciding, per field, whether it narrows the scan (a **seek**), is filled from
 //!    a register bound at an outer level (a **splice**), or filters rows as they
 //!    come (a **residual**). This is order-dependent — a variable being captured
-//!    cannot seek, because it is an output — which is why it runs after the order
-//!    is fixed rather than before.
+//!    cannot seek, because it is an output, unless a constraint says what the output
+//!    has to look like — which is why it runs after the order is fixed rather than
+//!    before.
 //!
 //! # What it does not do
 //!
-//! **Read *through* a fact reference.** A fact-typed key field holds a `FactId`, and
-//! that id is enough to *follow* a reference — [`SeekKeyPart::RegisterFactId`] splices
-//! it, so a join through one costs no store read. Reaching the fact it names is the
-//! other half: `X.name` or `X.value` where `X` came out of a reference field needs a
-//! second lookup the `Plan` IR has no access kind for (`nyi/fact-field`). Getting the
-//! first half wrong *silently* is the trap the split exists to close — a register
-//! holds its own row's key bytes, which are not the referenced fact's, and comparing
-//! them would give wrong answers rather than an error.
+//! **Read through a reference held in a fact's *value*.** Following a reference is a
+//! compare ([`SeekKeyPart::RegisterFactId`], no store read) and reading through one
+//! is a [`Source::Fetch`] level, so both halves work — but a fetch reads the id out
+//! of a register's *key* bytes, and a value is in the other column family
+//! (`nyi/fact-field`).
 //!
-//! **Bind a computed value.** `X = 42`, `X = Y`, `X = Y.name` bind a variable to
-//! something no generator produced. That is a *derived bind* and needs the value
-//! slots Phase 6 adds (`nyi/value-bind`).
+//! **Bind a value that is in no register.** `X = {a = 1, b = Y}` mentions a captured
+//! variable, so it differs per row and would have to be *built*. That is a derived
+//! bind ([`Step::Derive`]), and nothing in focus lowers one yet (`nyi/value-bind`).
+//! A constant folds and a field read is an alias; neither is this.
 //!
 //! **Match on a value.** A value lives in `entities`, and [I6] keeps `entities`
 //! out of the scan loop, so `.value` may be projected but not matched
 //! (`nyi/value-match`).
 //!
-//! **Bind a whole record key.** A stored key is its fields back to back with no
-//! wrapper ([chapter 3]), so a record key is not *a* field and has no
-//! [`FieldPath`]. A scalar key is one field and binds fine; a record key needs its
-//! fields named (`nyi/whole-key`).
+//! **Match a whole key into a record field.** A stored key is its fields back to
+//! back with no wrapper ([chapter 3]) and a record *field* keeps its wrapper, so the
+//! same record is not the same bytes (`nyi/whole-key`). Binding a whole key works —
+//! it decomposes into the per-field questions.
+//!
+//! **Push a pattern into something that is not a target.** `test.Foo {…} = test.Bar
+//! {…}` and `Y.name = X` have no variable to bind, so they are not binds at all
+//! (`nyi/bind-unification`), and a variable at two key fields of one row needs a
+//! same-row residual the executor has no operator for (`nyi/repeated-variable`).
 //!
 //! Each of those is a corpus entry, so the promise is checked rather than
 //! described ([`corpus`](crate::focus::corpus)).
@@ -162,7 +169,7 @@ impl Stmt {
     fn placement(&self) -> Placement {
         match self {
             Stmt::Scan(generator) => generator.placement,
-            Stmt::Alias(_) => Placement::Floating,
+            Stmt::Alias(_) | Stmt::Constrain(_) => Placement::Floating,
         }
     }
 }
@@ -184,15 +191,44 @@ struct Alias {
     span: NodeSpan,
 }
 
-/// One statement before an order is chosen: a level to iterate, or a substitution.
+/// A **pattern the value at a place has to match** — `X = "a"..`.
 ///
-/// One sequence rather than two collections, for the reason [`Step`] gives: an
-/// order is a single thing, and two collections joined by an index would be two
+/// The third thing a bind's right side can be, beside a generator and a value. A
+/// string prefix denotes a *range*, so there is nothing for `X` to be bound to and
+/// nothing to substitute at `X`'s uses: what it says is that wherever `X` already
+/// lives, the bytes there start with these. So it binds nothing, takes no register
+/// and emits no [`Step`] — it narrows the level that binds `X` instead.
+///
+/// It is a statement all the same, because it **reads** `X`, and the safety check
+/// is what turns "constrains a variable nothing binds" into a diagnostic rather
+/// than a constraint quietly dropped. Where it sits in the order does not matter:
+/// [`constraints`](Flattener::constraints) is collected from the whole body before
+/// any statement is lowered, exactly as the constant fold is, so the level that
+/// captures `X` sees it whenever that level runs.
+#[derive(Debug, Clone)]
+struct Constraint {
+    /// The variable being constrained — the only thing the *order* has to know,
+    /// since it is the statement's one read.
+    ///
+    /// The pattern itself is not here: it belongs to
+    /// [`constraints`](Flattener::constraints), which is keyed by variable because
+    /// that is what the level applying it has in hand — a key field knows the
+    /// variable it is capturing and nothing about which statement mentioned it.
+    var: NodeId,
+    span: NodeSpan,
+}
+
+/// One statement before an order is chosen: a level to iterate, a substitution, or
+/// a pattern something already bound has to match.
+///
+/// One sequence rather than three collections, for the reason [`Step`] gives: an
+/// order is a single thing, and collections joined by an index would be several
 /// sources of truth for it.
 #[derive(Debug, Clone)]
 enum Stmt {
     Scan(Gen),
     Alias(Alias),
+    Constrain(Constraint),
 }
 
 impl Stmt {
@@ -200,6 +236,7 @@ impl Stmt {
         match self {
             Stmt::Scan(generator) => generator.span.clone(),
             Stmt::Alias(alias) => alias.span.clone(),
+            Stmt::Constrain(constraint) => constraint.span.clone(),
         }
     }
 }
@@ -408,6 +445,8 @@ pub fn dependencies(
         compares: vec![],
         hoisted: vec![],
         fetched: vec![],
+        constraints: vec![],
+        constrained: vec![],
     };
 
     Some(flattener.collect()?.deps)
@@ -454,6 +493,8 @@ fn flatten_reporting(
         compares: vec![],
         hoisted: vec![],
         fetched: vec![],
+        constraints: vec![],
+        constrained: vec![],
     };
 
     let collected = flattener.collect()?;
@@ -510,6 +551,16 @@ struct Flattener<'a> {
     /// `X`. A register holds one row and a path is fixed, so the pair names one
     /// reference for the whole plan.
     fetched: Vec<(Address, FieldPath, Address)>,
+    /// Variable → a **pattern its value has to match**, from `X = "a"..`.
+    ///
+    /// Collected from the whole body before an order is chosen, exactly as the
+    /// constant fold is and for the same reason: the level that captures the
+    /// variable applies it, and which level that is depends on the order. A
+    /// variable may carry more than one — every one of them has to hold.
+    constraints: Vec<(Symbol, NodeId)>,
+    /// The variables whose constraints a **capture** has already applied, so the
+    /// pass over what is left does not apply them twice.
+    constrained: Vec<Symbol>,
 }
 
 impl Flattener<'_> {
@@ -613,6 +664,21 @@ impl Flattener<'_> {
                         // and `reorder` would be free to run that first. A constant
                         // is what `N` *is*, in every order, so it cannot wait.
                         self.fold_into(*lhs, *rhs);
+                    } else if matches!(self.ast.store().kind(*rhs), ExprKind::Prefix(_)) {
+                        // A **pattern**, not a value: a range has nothing for the
+                        // left side to be, so this constrains where that side
+                        // already lives rather than binding it — see
+                        // [`Constraint`]. Recorded here for the same reason the
+                        // fold above is: the level that captures the variable has
+                        // to see it whatever order that level runs in.
+                        if let ExprKind::Var(symbol) = self.ast.store().kind(*lhs) {
+                            self.constraints.push((*symbol, *rhs));
+                        }
+
+                        stmts.push(Stmt::Constrain(Constraint {
+                            var: *lhs,
+                            span: self.ast.store().span(*rhs),
+                        }));
                     } else if self.names_a_location(*rhs) {
                         // An **alias**: the right side denotes a place — a register,
                         // a field inside one, a fact's value — so the left side is a
@@ -654,6 +720,10 @@ impl Flattener<'_> {
         // the projection, which runs once every level has bound, and nothing reads it.
         let head = *self.ast.query().head();
         self.hoist_node(head, &mut stmts);
+
+        // `X = Y` is symmetric and its spelling is not, so the direction is settled
+        // before anything asks what a statement binds.
+        self.orient(&mut stmts);
 
         // Which variables some statement has already said what *are*, rather than
         // offering to bind — see [`Claims`]. Decided here, from the whole statement
@@ -715,6 +785,12 @@ impl Flattener<'_> {
 
                     self.scan_read(alias.value, &mut occurrences);
                 }
+
+                // A pure **read**: it says what the value at a place has to look
+                // like, and binds nothing. So the statement that binds the variable
+                // has to run first — which costs nothing, since the constraint is
+                // applied by that statement rather than by this one.
+                Stmt::Constrain(constraint) => self.scan_read(constraint.var, &mut occurrences),
             }
 
             deps.push(StmtDeps {
@@ -736,6 +812,54 @@ impl Flattener<'_> {
             deps: Deps::new(deps),
             head_reads: head.reads,
         })
+    }
+
+    /// **Which side of `X = Y` defines the other**, settled before anything else
+    /// asks what a statement binds.
+    ///
+    /// The statement is symmetric and the two spellings of it are not: whichever
+    /// side some fact pattern can bind is where the value comes from, and the other
+    /// is a second name for it. Written the way round that names the *bound* side
+    /// first, the alias would claim it — and then the key that offered to capture it
+    /// is demoted to a read, so nothing binds it and the free variable is unbound
+    /// too. Two diagnostics, for a query with a perfectly good plan.
+    ///
+    /// Only `X = Y` with both sides bare variables can be turned round, because only
+    /// then is the flipped statement still a bind: a field read on the left is
+    /// pattern-pushing, not an alias. And only when exactly one side is bound
+    /// elsewhere — with both, the statement is a **compare** that belongs to neither
+    /// side, which [`claims`](Self::claims) decides from the same fact.
+    fn orient(&self, stmts: &mut [Stmt]) {
+        // Every variable some statement can bind: a row it names, or a bare
+        // variable in a key it could capture. Shape only, as [`Claims`] is — which
+        // is what makes the direction a property of the query and not of the order.
+        let mut bound = vec![];
+
+        for stmt in stmts.iter() {
+            if let Stmt::Scan(generator) = stmt {
+                bound.extend(generator.row);
+
+                for alt in generator.alternatives.iter() {
+                    self.key_captures(alt.key, &mut bound);
+                }
+            }
+        }
+
+        let defined = |node: NodeId| {
+            matches!(self.ast.store().kind(node), ExprKind::Var(symbol)
+                if bound.contains(symbol))
+        };
+
+        for stmt in stmts.iter_mut() {
+            let Stmt::Alias(alias) = stmt else { continue };
+
+            if matches!(self.ast.store().kind(alias.value), ExprKind::Var(_))
+                && defined(alias.pattern)
+                && !defined(alias.value)
+            {
+                std::mem::swap(&mut alias.pattern, &mut alias.value);
+            }
+        }
     }
 
     /// Every variable a statement **claims**, reporting a second claim.
@@ -783,6 +907,11 @@ impl Flattener<'_> {
                     self.pattern_claims(alias.pattern, &mut names);
                     (names, alias.span.clone(), false)
                 }
+
+                // A constraint claims nothing — it does not say what a variable
+                // *is*, so the key that mentions it still captures it. That is the
+                // whole difference between `X = "a".."` and `X = "a"`.
+                Stmt::Constrain(_) => continue,
             };
 
             for name in claimed {
@@ -1396,6 +1525,11 @@ impl Flattener<'_> {
             .filter(|(_, slot)| matches!(slot, Slot::Const(_)))
             .map(|(symbol, _)| *symbol)
             .collect();
+        // **One variable, one diagnostic.** "Nothing binds `X`" is a fault of the
+        // query rather than of the statement that noticed, and several statements
+        // can read one unbound variable — a constraint and the head, most simply.
+        // Saying it once per reader would be the same sentence twice.
+        let mut missing: Vec<Symbol> = vec![];
         let mut ok = true;
 
         for &stmt in order {
@@ -1406,8 +1540,9 @@ impl Flattener<'_> {
             };
 
             for read in deps.reads.iter() {
-                if !bound.contains(read) {
+                if !bound.contains(read) && !missing.contains(read) {
                     let at = statement.span();
+                    missing.push(*read);
                     self.unbound(*read, at);
                     ok = false;
                 }
@@ -1417,8 +1552,9 @@ impl Flattener<'_> {
         }
 
         for read in &collected.head_reads {
-            if !bound.contains(read) {
+            if !bound.contains(read) && !missing.contains(read) {
                 let at = self.ast.store().span(*self.ast.query().head());
+                missing.push(*read);
                 self.unbound(*read, at);
                 ok = false;
             }
@@ -1544,6 +1680,12 @@ impl Flattener<'_> {
                         self.bind_pattern(pattern, slot);
                     }
                 }
+
+                // Applied by the level that binds the variable, or by
+                // `apply_constraints` below where no level does — never from here,
+                // because where a constraint belongs has nothing to do with where
+                // the statement stating it was written.
+                Stmt::Constrain(_) => {}
             }
         }
 
@@ -1552,6 +1694,7 @@ impl Flattener<'_> {
         self.fetch_within(*self.ast.query().head(), &mut body);
 
         self.apply_compares(&mut body);
+        self.apply_constraints(&mut body);
 
         let head = self.project(*self.ast.query().head());
 
@@ -1887,17 +2030,21 @@ impl Flattener<'_> {
             ExprKind::Wildcard => level.building = false,
 
             // First occurrence in this order: the field is an *output*, so it cannot
-            // narrow the scan.
+            // narrow the scan — unless a `X = "a"..` elsewhere in the body says what
+            // the output has to look like, which narrows it to a range and is why
+            // this arm asks [`constrain`](Self::constrain) rather than closing the
+            // prefix itself.
             ExprKind::Var(symbol) if self.lookup(*symbol).is_none() => {
-                level.building = false;
+                let symbol = *symbol;
                 self.bindings.push((
-                    *symbol,
+                    symbol,
                     Slot::Field {
                         address,
                         path: path.clone(),
                         ty: ty.clone(),
                     },
                 ));
+                self.constrain(symbol, ty, path, level);
             }
 
             // A **range**, and so the one narrowing that is not a slot: there is no
@@ -2174,6 +2321,164 @@ impl Flattener<'_> {
                         path: path.clone(),
                         op: ResidualOp::Prefix(bytes.into()),
                     });
+                }
+            }
+        }
+    }
+
+    /// Narrow the field that **captures** a variable by every pattern the body
+    /// constrains it with — and close the seek prefix, which a capture always does.
+    ///
+    /// This is what makes `test.Name X; X = "an"..` the same plan as
+    /// `test.Name "an"..`: the field is an output *and* a range, and a range is
+    /// still a seek. Applied here rather than as a residual after the fact because
+    /// after the fact is too late — a seek prefix is built while the level's key is
+    /// walked, so a constraint that arrives later can only filter rows the scan has
+    /// already produced, which is the difference between a range and a scan.
+    ///
+    /// A variable may carry several, and each is narrowed in turn: the first ends
+    /// the seek prefix (a prefix is the last thing that can be in one) and the rest
+    /// filter, which is exactly what "all of them hold" means.
+    fn constrain(
+        &mut self,
+        symbol: Symbol,
+        ty: &PredicateTy,
+        path: &FieldPath,
+        level: &mut SeekBuilder,
+    ) {
+        let patterns: Vec<NodeId> = self
+            .constraints
+            .iter()
+            .filter(|(constrained, _)| *constrained == symbol)
+            .map(|(_, pattern)| *pattern)
+            .collect();
+
+        if patterns.is_empty() {
+            level.building = false;
+            return;
+        }
+
+        self.constrained.push(symbol);
+
+        for pattern in patterns {
+            match self.constant(pattern, ty) {
+                Some(constant) => Self::narrow_by(constant, path, level),
+                // Typecheck rejects a prefix against a non-string variable first;
+                // reported rather than declined so no path refuses a plan silently.
+                None => {
+                    level.building = false;
+                    self.report(
+                        pattern,
+                        Code::RejectTypeMismatch,
+                        "this prefix is not a pattern for that variable's type",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The constraints **no capture applied** — every one whose variable is bound
+    /// somewhere other than a key field of a level being walked.
+    ///
+    /// An alias is the case that matters: `Y = X.name; Y = "a"..` constrains a place
+    /// inside a row already bound, so there is no seek left to narrow and the answer
+    /// is a residual on the level that row belongs to. The rest are reported, and
+    /// **reporting is the point** — a constraint silently dropped is a query that
+    /// answers with rows it was told to exclude, which is worse than one that
+    /// refuses.
+    fn apply_constraints(&mut self, body: &mut Vec<Level>) {
+        for (symbol, pattern) in std::mem::take(&mut self.constraints) {
+            if self.constrained.contains(&symbol) {
+                continue;
+            }
+
+            match self.lookup(symbol) {
+                Some(Slot::Field { address, path, ty }) => {
+                    let Some(constant) = self.constant(pattern, &ty) else {
+                        self.report(
+                            pattern,
+                            Code::RejectTypeMismatch,
+                            "this prefix is not a pattern for that variable's type",
+                        );
+                        continue;
+                    };
+
+                    let (Const::Prefix(bytes) | Const::Bytes(bytes)) = constant;
+                    let Some(level) = body.get_mut(address.index()) else {
+                        continue;
+                    };
+
+                    // Every alternative gets it, as a compare does: a variable a
+                    // disjunction binds is in the same place in each branch.
+                    for source in level.sources.iter_mut() {
+                        let residuals = source.residuals_mut();
+                        let mut extended = residuals.to_vec();
+
+                        extended.push(Residual {
+                            path: path.clone(),
+                            op: ResidualOp::Prefix(bytes.clone().into()),
+                        });
+
+                        *residuals = extended.into();
+                    }
+                }
+
+                // **A constant against a pattern**, both known now: `X = "abc"; X =
+                // "a".."`. Nothing to check per row, so the answer is the whole
+                // query — either the constraint holds and the statement is a
+                // tautology, or it does not and the query is the empty relation,
+                // which is a level with no source to open. That is `never`'s level,
+                // written by a statement that did not say `never`.
+                Some(Slot::Const(folded)) => {
+                    let (Some(Const::Bytes(value)), Some(Const::Prefix(prefix))) = (
+                        self.constant(folded, &PredicateTy::Str),
+                        self.constant(pattern, &PredicateTy::Str),
+                    ) else {
+                        self.report(
+                            pattern,
+                            Code::RejectTypeMismatch,
+                            "this prefix is not a pattern for that variable's type",
+                        );
+                        continue;
+                    };
+
+                    if !value.starts_with(&prefix) {
+                        body.push(Level {
+                            sources: Box::new([]),
+                            binds: Box::new([Address::new(body.len())]),
+                        });
+                    }
+                }
+
+                // **A fact's value**, which is the one slot a string prefix can be
+                // well typed against and still have nowhere to go: the bytes are in
+                // `entities`, and [I6] keeps `entities` out of the scan loop. Same
+                // deferral a prefix written at a key field draws.
+                //
+                // [I6]: ../../../docs/invariants.md#i6
+                Some(Slot::Value { .. }) => self.report(
+                    pattern,
+                    Code::NyiValueMatch,
+                    "matching on a fact's value is not implemented yet; a value is fetched \
+                     per row, and residuals run inside the scan",
+                ),
+
+                // A whole key or a row. Both are a type error against a string
+                // prefix, so typecheck has reported it — but a quiet decline here
+                // would be a plan missing a constraint, so this says so rather than
+                // trusting that.
+                Some(_) => self.report(
+                    pattern,
+                    Code::NyiBindUnification,
+                    "matching this against a pattern is not implemented yet",
+                ),
+
+                // Nothing binds it, and nothing read it either — the safety check
+                // only sees reads, and this statement's read is of a variable no
+                // generator offers. Same fault, said the same way.
+                None => {
+                    let at = self.ast.store().span(pattern);
+                    self.unbound(symbol, at);
                 }
             }
         }
@@ -3057,6 +3362,182 @@ mod tests {
         }
     }
 
+    // ---- a pattern a bound variable has to match ----------------------------
+
+    /// **A capture the body constrains is still a seek**, and that is the whole
+    /// point of the construct.
+    ///
+    /// `test.Name X; X = "a"..` is the same question as `test.Name "a"..` with a
+    /// name for the answer, and a name must not cost a range scan its range. The
+    /// field is an output — ordinarily the thing that *closes* a seek prefix — and a
+    /// prefix constraint on it narrows to a range all the same, because a range is
+    /// what a seek is.
+    ///
+    /// Applying it as a residual after the level was built would give the same rows
+    /// and read the whole predicate to find them, which is the difference this
+    /// asserts by shape rather than by answer.
+    #[test]
+    fn a_constrained_capture_narrows_the_scan_that_binds_it() {
+        let flattened = compile("X where test.Name X; X = \"a\"..");
+        let plan = flattened.plan();
+
+        assert_eq!(
+            describe(plan, &flattened.interner),
+            lines(&["r0 <- test.Name seek[k]", "head r0.0:str"])
+        );
+
+        // The same bytes the prefix written at the field seeks — `put_str` without
+        // its terminator, which is what every string starting with it begins with.
+        let mut expected = str_field("a");
+        expected.pop().expect("a terminated string");
+        match &plan
+            .level(0)
+            .expect("a level")
+            .sole_source()
+            .expect("one source")
+            .seek_key()
+            .expect("a seek")
+        {
+            SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
+            other => panic!("expected a prefix seek, got {other:?}"),
+        }
+
+        assert_eq!(rows("X where test.Name X; X = \"a\"..").len(), 3);
+    }
+
+    /// A constant ahead of the constrained field **extends** the seek, and the
+    /// prefix ends it — the rule a prefix written in the key follows, reached from
+    /// the other direction.
+    #[test]
+    fn a_constraint_extends_a_seek_that_is_still_building() {
+        assert_eq!(
+            shape("X where test.Foo {id = 1, name = X}; X = \"a\".."),
+            lines(&["r0 <- test.Foo seek[k]", "head r0.1:str"])
+        );
+
+        // ...and behind an open field there is no seek left to extend, so it
+        // filters. Same constraint, different level: sargeability is a property of
+        // the order, not of the statement.
+        assert_eq!(
+            shape("X where test.Foo {name = X}; X = \"a\".."),
+            lines(&["r0 <- test.Foo scan where 1 ^= k", "head r0.1:str"])
+        );
+
+        assert_eq!(rows("X where test.Foo {name = X}; X = \"a\"..").len(), 2);
+    }
+
+    /// **Where the constraint is written does not matter**, which is what makes it a
+    /// constraint rather than a step.
+    ///
+    /// It is collected from the whole body before an order is chosen — as the
+    /// constant fold is, and for the same reason: the level that captures the
+    /// variable applies it, and which level that is, is the order's answer. So every
+    /// order gives one plan, not merely one set of rows.
+    #[test]
+    fn a_constraint_lands_wherever_it_is_written() {
+        let expected = shape("X where test.Edge {from = X}; test.Node {id = X}; X = 1");
+
+        for source in [
+            "X where X = 1; test.Edge {from = X}; test.Node {id = X}",
+            "X where test.Edge {from = X}; X = 1; test.Node {id = X}",
+        ] {
+            assert_eq!(shape(source), expected, "for {source:?}");
+        }
+
+        let constrained = shape("X where test.Name X; X = \"a\"..");
+        assert_eq!(shape("X where X = \"a\"..; test.Name X"), constrained);
+    }
+
+    /// **Every constraint on a variable holds.** The first narrows to a range —
+    /// nothing can follow a prefix in a seek — and the rest filter, which is exactly
+    /// what a conjunction of them means.
+    #[test]
+    fn two_constraints_on_one_variable_both_hold() {
+        assert_eq!(
+            shape("X where test.Name X; X = \"a\"..; X = \"an\".."),
+            lines(&["r0 <- test.Name seek[k] where 0 ^= k", "head r0.0:str"])
+        );
+
+        assert_eq!(
+            rows("X where test.Name X; X = \"a\"..; X = \"an\".."),
+            strs(&["ann", "anna"]),
+        );
+    }
+
+    /// A variable an **alias** binds is in a register a level already filled, so
+    /// there is no seek left to narrow and the answer is a residual on that level.
+    ///
+    /// This is the arm no capture reaches, and it has to exist or the constraint
+    /// would be dropped: a query answering with rows it was told to exclude is worse
+    /// than one that refuses.
+    #[test]
+    fn a_constraint_on_an_alias_filters_the_row_it_names() {
+        assert_eq!(
+            shape("Y where X = test.Foo _; Y = X.name; Y = \"a\".."),
+            lines(&["r0 <- test.Foo scan where 1 ^= k", "head r0.1:str"])
+        );
+
+        assert_eq!(
+            rows("Y where X = test.Foo _; Y = X.name; Y = \"a\".."),
+            strs(&["ann", "ann"]),
+        );
+    }
+
+    /// **A constant against a pattern is decided at compile time**, because both
+    /// sides are known: either the statement is a tautology and folds away with the
+    /// rest of the bind, or the query is the empty relation.
+    ///
+    /// The second is `never`'s level — a level with no source to open — written by a
+    /// statement that did not say `never`. Answering it as "no constraint" instead
+    /// would mean *true* where it means the empty relation, which is the same trap
+    /// `{a = 1} = {a = 2}` is refused for.
+    #[test]
+    fn a_constraint_a_constant_meets_folds_and_one_it_cannot_empties_the_query() {
+        assert_eq!(
+            shape("X where X = \"abc\"; X = \"a\".."),
+            lines(&["head \"abc\""])
+        );
+        assert_eq!(rows("X where X = \"abc\"; X = \"a\".."), strs(&["abc"]));
+
+        assert_eq!(
+            shape("X where X = \"abc\"; X = \"z\".."),
+            lines(&["r0 <- never", "head \"abc\""])
+        );
+        assert_eq!(rows("X where X = \"abc\"; X = \"z\".."), vec![]);
+    }
+
+    /// A **disjunction**'s branches each bind the variable, so each narrows itself.
+    ///
+    /// One residual would have been right too and one seek would not: a branch's
+    /// seek is its own, and a level's alternatives are two key layouts.
+    #[test]
+    fn every_branch_of_a_disjunction_is_constrained() {
+        assert_eq!(
+            shape("X where test.Name X | test.Name X; X = \"a\".."),
+            lines(&[
+                "r0 <- test.Name seek[k] | test.Name seek[k]",
+                "head r0.0:str"
+            ])
+        );
+    }
+
+    /// Constraining a variable **nothing binds** is the missing generator it looks
+    /// like, and not a deferral: the statement is fine and the query never says
+    /// where the value comes from.
+    ///
+    /// Said once, though it is read twice — by this statement and by the head.
+    #[test]
+    fn a_constraint_on_a_variable_nothing_binds_is_unbound() {
+        assert_eq!(
+            compile("X where X = \"a\"..").codes(),
+            ["reject/unbound-variable"]
+        );
+        assert_eq!(
+            compile("Y where test.Name Y; X = \"a\"..").codes(),
+            ["reject/unbound-variable"]
+        );
+    }
+
     /// A variable bound at an outer level is an *input*, so it splices into the
     /// seek — the join the storage model is built for.
     #[test]
@@ -3591,6 +4072,51 @@ mod tests {
         );
     }
 
+    /// **`X = Y` is symmetric, and so is the plan it compiles to** — which side is
+    /// written first says nothing about which one the value comes from.
+    ///
+    /// [`Flattener::orient`] settles that from the body: the side some fact pattern
+    /// can bind is where the value is, and the other is a name for it. Written the
+    /// other way round the alias used to claim the *bound* side, demoting the key
+    /// that offered to capture it to a read — so nothing bound it, the free variable
+    /// was unbound as well, and a query with a perfectly good plan drew two
+    /// diagnostics.
+    #[test]
+    fn which_side_of_a_bind_is_written_first_does_not_matter() {
+        // One side capturable: the other is the name, whichever way round.
+        assert_eq!(
+            shape("Y where test.Foo {name = X}; X = Y"),
+            shape("Y where test.Foo {name = X}; Y = X"),
+        );
+
+        // A row on one side, and the same.
+        assert_eq!(
+            shape("Y where P = test.Foo _; P = Y"),
+            shape("Y where P = test.Foo _; Y = P"),
+        );
+
+        // Both sides capturable is the case that must *not* be turned round: it is
+        // a compare, belonging to neither side, and the plan is a residual on
+        // whichever level binds later.
+        assert_eq!(
+            shape("X where test.Foo {id = X}; test.Bar {id = Y}; X = Y"),
+            shape("X where test.Foo {id = X}; test.Bar {id = Y}; Y = X"),
+        );
+
+        // ...including written *above* the statement that binds one of its sides.
+        // That order used to be refused outright, because typecheck asked whether a
+        // variable had been mentioned yet rather than whether the body binds it.
+        assert_eq!(
+            shape("X where test.Foo {id = X}; X = Y; test.Bar {id = Y}"),
+            shape("X where test.Foo {id = X}; test.Bar {id = Y}; X = Y"),
+        );
+
+        assert_eq!(
+            rows("Y where test.Foo {name = X}; X = Y"),
+            rows("X where test.Foo {name = X}"),
+        );
+    }
+
     /// A `.value` alias projects, and still cannot be matched: a value is fetched
     /// per row and never enters the scan ([I6](../../../docs/invariants.md#i6)).
     /// The deferral is the value one, reported where the match is attempted.
@@ -3603,6 +4129,15 @@ mod tests {
 
         assert_eq!(
             compile("Y where X = test.Foo _; Y = X.value; test.Name Y").codes(),
+            ["nyi/value-match"],
+        );
+
+        // A **constraint** on a value is the same deferral by the same rule — and
+        // the one slot a string prefix can be well typed against and still have
+        // nowhere to go, which is why it needs an arm of its own rather than falling
+        // through to "typecheck already said so".
+        assert_eq!(
+            compile("Y where X = test.Foo _; Y = X.value; Y = \"a\"..").codes(),
             ["nyi/value-match"],
         );
     }
@@ -3619,15 +4154,19 @@ mod tests {
     }
 
     /// **One variable, one claim.** Two statements saying what a name is, is
-    /// unification rather than an ordering question — the rule two rows already
-    /// meet, and one an alias meets at typecheck: the second bind's right side is
-    /// neither a fact nor a constant, so the gate that lets a name be re-stated
-    /// does not open. Flatten's own claim check ([`Flattener::claims`]) is the
-    /// backstop for the shapes that gate does let through, such as two rows.
+    /// unification rather than an ordering question — *these two places hold the
+    /// same value* — and flatten's claim check ([`Flattener::claims`]) is where it
+    /// is seen, because only there is every statement in hand at once.
+    ///
+    /// It is the only backstop now. Typecheck used to catch it incidentally, by
+    /// refusing any bind whose left side was already mentioned; that gate is gone,
+    /// because it decided in source order.
     #[test]
     fn a_variable_may_be_claimed_once() {
+        // Two names for two different places. The types agree — both are `str` —
+        // so it is the second claim being refused and not a mismatch.
         assert_eq!(
-            front_end_codes("Y where X = test.Foo _; Y = X.name; Y = X.id"),
+            front_end_codes("Z where X = test.Foo _; Y = test.Foo _; Z = X.name; Z = Y.name"),
             ["nyi/bind-unification"],
         );
 
@@ -3731,8 +4270,13 @@ mod tests {
         assert_eq!(rows("X where X = \"ann\""), strs(&["ann"]));
 
         // A *prefix* is not a value — it denotes a range, so there is nothing for a
-        // variable bound to it to be.
-        assert_eq!(compile("X where X = \"a\"..").codes(), ["nyi/value-bind"]);
+        // variable bound to it to be, and nothing here binds `X` at all. It is a
+        // **constraint** on where `X` lives, and this query gives it nowhere: the
+        // fault is the missing generator, which is what it now says.
+        assert_eq!(
+            compile("X where X = \"a\"..").codes(),
+            ["reject/unbound-variable"]
+        );
 
         // A record of constants is a constant. The left side is a plain variable, so
         // this is an ordinary bind and not the `pattern = pattern` unification a
@@ -4851,6 +5395,12 @@ pub mod proptest {
     /// case exists.
     const PREFIXES: [&str; 3] = ["", "a", "b"];
 
+    /// Prefixes to draw for a **constraint** — `V0 = "a"..`. `"b"` is left to the
+    /// key-field prefix above on purpose: it matches one string of the three, and a
+    /// filter that severe applied to a quarter of the population thins the rows
+    /// every other property in this file runs over (the census is what says so).
+    const CONSTRAINT_PREFIXES: [&str; 2] = ["", "a"];
+
     /// A generated key field's type: a scalar, a record of scalars, or a **reference**
     /// to a fact of [`REFERENCED`].
     #[derive(Debug, Clone)]
@@ -5027,12 +5577,29 @@ pub mod proptest {
         /// `facts[p]` — predicate `p`'s facts, deduplicated and sorted by key.
         facts: Vec<Vec<Fact>>,
         stmts: Vec<StmtSpec>,
+        /// `V{var} = "prefix"..` — a **constraint** on a variable some statement
+        /// captures. At most one, because it is a statement like any other and the
+        /// order properties run every permutation of the body.
+        ///
+        /// Drawn only over variables the query already captures, since a constraint
+        /// binds nothing: constraining one nothing binds is
+        /// `reject/unbound-variable`, not a query this generator may draw.
+        constraints: Vec<(usize, &'static str)>,
         head: Vec<HeadItem>,
     }
 
     impl QueryAndStore {
+        /// The body's length — generators **and** constraints, since an order names
+        /// every statement flatten collected and a constraint is one of them.
         pub fn statements(&self) -> usize {
-            self.stmts.len()
+            self.stmts.len() + self.constraints.len()
+        }
+
+        /// How many variables this query constrains, for the census: the source
+        /// cannot be asked, because a **key field** may be a string prefix too and
+        /// the two read alike.
+        pub fn constraints(&self) -> usize {
+            self.constraints.len()
         }
 
         /// The schema the query is written against: `gen.P0…`, fields `f0…`, and
@@ -5134,7 +5701,12 @@ pub mod proptest {
         }
 
         fn statement_source(&self, stmt: usize) -> String {
-            let spec = &self.stmts[stmt];
+            // The constraints sit past the generators, so an index names one thing
+            // whichever list it falls in.
+            let Some(spec) = self.stmts.get(stmt) else {
+                let (var, prefix) = self.constraints[stmt - self.stmts.len()];
+                return format!("V{var} = {prefix:?}..");
+            };
 
             let fields: Vec<String> = spec
                 .fields
@@ -5201,7 +5773,7 @@ pub mod proptest {
         }
 
         pub fn identity(&self) -> Vec<usize> {
-            (0..self.stmts.len()).collect()
+            (0..self.statements()).collect()
         }
 
         /// Every **safe** order of the body.
@@ -5228,18 +5800,44 @@ pub mod proptest {
             permutations(&self.identity())
         }
 
-        /// Whether `order` binds every row before a reference field reads it.
+        /// Whether `order` binds every row before a reference field reads it, and
+        /// every constrained variable before the constraint reads it.
         fn respects(&self, order: &[usize]) -> bool {
             let mut bound: Vec<usize> = vec![];
+            let mut captured: Vec<usize> = vec![];
 
             for &stmt in order {
-                let spec = &self.stmts[stmt];
+                // A **constraint**: it binds nothing and reads its variable, so
+                // some earlier statement has to mention that variable — the first
+                // that does is the one that captures it, whichever it is.
+                let Some(spec) = self.stmts.get(stmt) else {
+                    let (var, _) = self.constraints[stmt - self.stmts.len()];
+
+                    if !captured.contains(&var) {
+                        return false;
+                    }
+
+                    continue;
+                };
 
                 for pat in &spec.fields {
                     if let FieldPat::Leaf(Leaf::Row(row)) = pat
                         && !bound.contains(row)
                     {
                         return false;
+                    }
+                }
+
+                for pat in &spec.fields {
+                    match pat {
+                        FieldPat::Leaf(Leaf::Var(var)) => captured.push(*var),
+                        FieldPat::Nested(subs) => {
+                            captured.extend(subs.iter().filter_map(|leaf| match leaf {
+                                Leaf::Var(var) => Some(*var),
+                                _ => None,
+                            }))
+                        }
+                        _ => {}
                     }
                 }
 
@@ -5274,11 +5872,21 @@ pub mod proptest {
 
         fn walk(&self, order: &[usize], depth: usize, env: &mut Env, rows: &mut Vec<Value>) {
             if depth == order.len() {
-                rows.push(self.project(env));
+                if self.constrained(env) {
+                    rows.push(self.project(env));
+                }
                 return;
             }
 
-            let spec = &self.stmts[order[depth]];
+            // A **constraint** iterates nothing: it is checked once the whole row is
+            // built, which is the same set of rows in the same order as checking it
+            // the moment its variable is bound. The model reads it that way because
+            // the reading is obviously right — the compiler is the one claiming a
+            // seek is the same thing.
+            let Some(spec) = self.stmts.get(order[depth]) else {
+                self.walk(order, depth + 1, env, rows);
+                return;
+            };
 
             for (index, fact) in self.facts[spec.predicate].iter().enumerate() {
                 let saved = env.clone();
@@ -5292,6 +5900,20 @@ pub mod proptest {
 
                 *env = saved;
             }
+        }
+
+        /// Whether every constraint holds of this row.
+        fn constrained(&self, env: &Env) -> bool {
+            self.constraints.iter().all(|(var, prefix)| {
+                match env.vars[*var]
+                    .as_ref()
+                    .expect("a constrained variable is captured")
+                {
+                    FieldVal::Str(text) => text.starts_with(prefix),
+                    // Only `Str` positions are drawn a prefix.
+                    FieldVal::Int(_) => unreachable!("a prefix constrains a string"),
+                }
+            })
         }
 
         fn project(&self, env: &Env) -> Value {
@@ -5601,6 +6223,7 @@ pub mod proptest {
         var_tys: Vec<u8>,
         stmts: Vec<StmtDraw>,
         heads: Vec<HeadDraw>,
+        constraint: u8,
     ) -> QueryAndStore {
         let schema: Vec<PredSpec> = predicates
             .iter()
@@ -5798,6 +6421,31 @@ pub mod proptest {
             });
         }
 
+        // A **constraint**, over a variable the query captures and whose type a
+        // prefix is a pattern for. Drawn from `used_vars` rather than from the whole
+        // pool because a constraint binds nothing: one on a variable no key mentions
+        // is `reject/unbound-variable`, not a query this generator may draw.
+        //
+        // At most one. It is a statement like any other, so every extra one
+        // multiplies the permutations the order properties re-run each case over.
+        // Whether and which are separate digits of the draw: half the queries that
+        // *can* carry one do, and those spread evenly over the prefixes. A
+        // constraint is a filter, so the rate is a trade against the row count the
+        // whole battery runs on — the census measures both ends of it.
+        let constraints: Vec<(usize, &'static str)> = used_vars
+            .iter()
+            .filter(|v| var_tys[**v] == FieldTy::Str)
+            .find_map(|v| {
+                constraint.is_multiple_of(2).then(|| {
+                    (
+                        *v,
+                        CONSTRAINT_PREFIXES[constraint as usize / 2 % CONSTRAINT_PREFIXES.len()],
+                    )
+                })
+            })
+            .into_iter()
+            .collect();
+
         // The head: every variable the query captured (so nothing is bound and then
         // ignored), plus whatever the draws ask of the rows that are bound.
         let mut head: Vec<HeadItem> = used_vars.iter().map(|v| HeadItem::Var(*v)).collect();
@@ -5847,6 +6495,7 @@ pub mod proptest {
             schema,
             facts,
             stmts: resolved,
+            constraints,
             head,
         }
     }
@@ -5939,10 +6588,23 @@ pub mod proptest {
             prop::collection::vec(0u8..PICKS, VARS),
             prop::collection::vec(arb_stmt(), 1..=MAX_STMTS),
             prop::collection::vec(arb_head(), 0..=3),
+            // Wider than `PICKS`: the draw carries *whether* to constrain and
+            // *which* prefix as separate digits.
+            0u8..(2 * CONSTRAINT_PREFIXES.len() as u8),
         )
-            .prop_map(|(npredicates, predicates, facts, var_tys, stmts, heads)| {
-                resolve(npredicates, predicates, facts, var_tys, stmts, heads)
-            })
+            .prop_map(
+                |(npredicates, predicates, facts, var_tys, stmts, heads, constraint)| {
+                    resolve(
+                        npredicates,
+                        predicates,
+                        facts,
+                        var_tys,
+                        stmts,
+                        heads,
+                        constraint,
+                    )
+                },
+            )
     }
 }
 
@@ -6442,6 +7104,7 @@ mod battery {
         let mut multi_statement = 0;
         let mut with_rows = 0;
         let mut with_join = 0;
+        let mut with_constraint = 0;
         let mut with_const = 0;
         let mut with_wildcard = 0;
         let mut rows_total = 0;
@@ -6485,6 +7148,9 @@ mod battery {
             if source.contains('_') {
                 with_wildcard += 1;
             }
+            if spec.constraints() > 0 {
+                with_constraint += 1;
+            }
 
             let _ = &source;
         }
@@ -6513,6 +7179,13 @@ mod battery {
         assert!(
             through_a_reference * 25 > RUNS,
             "only {through_a_reference}/{RUNS} queries follow a reference"
+        );
+        // A tenth is enough to say the order properties actually re-run a
+        // constrained query over every permutation. Oftener than that and the row
+        // count above starts to suffer, which is the trade the draw is tuned for.
+        assert!(
+            with_constraint * 10 > RUNS,
+            "only {with_constraint}/{RUNS} queries constrain a variable"
         );
     }
 }
