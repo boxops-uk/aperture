@@ -49,8 +49,9 @@ use byteview::ByteView;
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
 
 use crate::focus::{
-    error::{ApertureError, StoreError},
+    error::{ApertureError, FormatError, StoreError},
     fact::{self, Fact},
+    format::{FORMAT_KEY, FormatVersion, META_KEYSPACE},
     plan::{Entity, FactId, FactStore, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
     schema::{PREDICATE_ID_SIZE, PredicateId, Schema},
 };
@@ -118,6 +119,11 @@ impl FjallDb {
             }
         }
 
+        // Before a single row is read: does this build understand what wrote them?
+        // A fresh directory is stamped here, which is what makes this also the
+        // *create* path.
+        Self::stamp_or_check_format(&db, !ids.is_empty())?;
+
         let mut predicates = BTreeMap::new();
         for id in ids {
             let predicate = PredicateId(id);
@@ -128,6 +134,42 @@ impl FjallDb {
             db,
             predicates: RwLock::new(Arc::new(predicates)),
         })
+    }
+
+    /// Check the [format stamp](crate::focus::format), or write it if this
+    /// database is new ([I15](../../docs/invariants.md#i15)).
+    ///
+    /// `holds_facts` is what separates the two cases, and it is asked of the
+    /// keyspace listing rather than of the stamp: an *unstamped* database with
+    /// predicate trees in it was written by something else — an older build, or not
+    /// Aperture at all — and stamping it would be this build certifying bytes it has
+    /// never read. An unstamped *empty* directory is a create, and gets the stamp.
+    ///
+    /// Runs before any predicate tree is opened, because a version this build
+    /// cannot read is a reason not to touch the rows at all.
+    fn stamp_or_check_format(db: &Database, holds_facts: bool) -> Result<(), ApertureError> {
+        let meta = db
+            .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
+            .map_err(StoreError::Backend)?;
+
+        if let Some(stamp) = meta.get(FORMAT_KEY).map_err(StoreError::Backend)? {
+            FormatVersion::decode(&stamp)?.check_readable()?;
+            return Ok(());
+        }
+
+        if holds_facts {
+            return Err(FormatError::Unstamped.into());
+        }
+
+        let mut batch = db.batch();
+        batch.insert(
+            &meta,
+            FORMAT_KEY,
+            FormatVersion::CURRENT.encode().as_slice(),
+        );
+        batch.commit().map_err(StoreError::Backend)?;
+
+        Ok(())
     }
 
     /// Create the trees for `predicates` now rather than on first write.
@@ -998,6 +1040,124 @@ mod tests {
         let entity = reader.point(written).expect("point").expect("present");
         assert_eq!(entity.key.to_vec(), key);
         assert_eq!(entity.value.to_vec(), vec![9]);
+    }
+
+    /// [I15](../../docs/invariants.md#i15) — a database says which encoding wrote
+    /// it, and a build that does not understand the answer refuses it.
+    ///
+    /// The three cases are the whole rule: a new directory is **stamped**, a
+    /// stamped one is **checked**, and one holding facts without a stamp is
+    /// **refused** rather than adopted. The last is the case the invariant exists
+    /// for — every database written before stamping existed is that shape, and
+    /// silently adopting one would be this build certifying bytes it has never
+    /// read.
+    #[test]
+    fn a_database_says_which_format_wrote_it() {
+        let dir = TempDir::new().expect("tempdir");
+        let predicate = PredicateId(1);
+
+        // Create: a fresh directory is stamped, and the stamp survives a reopen
+        // rather than being rewritten each time.
+        {
+            let db = FjallDb::open(dir.path()).expect("create");
+            assert_eq!(read_stamp(&db), Some(FormatVersion::CURRENT));
+            db.put_fact(predicate, &[1], &[]).expect("put");
+        }
+
+        let db = FjallDb::open(dir.path()).expect("reopen");
+        assert_eq!(read_stamp(&db), Some(FormatVersion::CURRENT));
+        drop(db);
+
+        // Check: a version this build does not implement is refused before a row
+        // is read. Bumping only the codec half is the sharper case — the storage
+        // layout is untouched, so nothing about the *rows* looks wrong.
+        write_stamp(
+            dir.path(),
+            &FormatVersion {
+                codec: FormatVersion::CURRENT.codec + 1,
+                ..FormatVersion::CURRENT
+            }
+            .encode(),
+        );
+
+        assert!(
+            matches!(
+                FjallDb::open(dir.path()),
+                Err(ApertureError::Format(FormatError::Unreadable { .. }))
+            ),
+            "a database from another format must be refused, not read",
+        );
+
+        // Refuse: the same database with the stamp removed — which is exactly what
+        // every database written before this invariant existed looks like.
+        remove_stamp(dir.path());
+
+        assert!(
+            matches!(
+                FjallDb::open(dir.path()),
+                Err(ApertureError::Format(FormatError::Unstamped))
+            ),
+            "an unstamped database holding facts must be refused, not stamped",
+        );
+    }
+
+    /// A stamp that is present but **corrupt** is a refusal too, and a distinct
+    /// one: the metadata is bytes on disk like any other and gets no more trust
+    /// than a row does (conventions: errors, not panics, on data paths).
+    #[test]
+    fn a_corrupt_format_stamp_is_reported() {
+        let dir = TempDir::new().expect("tempdir");
+
+        FjallDb::open(dir.path()).expect("create");
+        write_stamp(dir.path(), b"not a stamp");
+
+        assert!(
+            matches!(
+                FjallDb::open(dir.path()),
+                Err(ApertureError::Format(
+                    FormatError::BadMagic { .. } | FormatError::Truncated { .. }
+                ))
+            ),
+            "a corrupt stamp must be reported, not decoded into a version",
+        );
+    }
+
+    /// The stamp as stored, or `None` for a database carrying none.
+    fn read_stamp(db: &FjallDb) -> Option<FormatVersion> {
+        let meta = db
+            .db
+            .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
+            .expect("meta keyspace");
+
+        meta.get(FORMAT_KEY)
+            .expect("read the stamp")
+            .map(|bytes| FormatVersion::decode(&bytes).expect("decode the stamp"))
+    }
+
+    /// Overwrite the stamp of the database at `path`, which must be closed.
+    ///
+    /// Written through a bare fjall handle rather than through [`FjallDb`], since
+    /// what it is producing is a database this build cannot open.
+    fn write_stamp(path: &std::path::Path, bytes: &[u8]) {
+        let db = Database::builder(path).open().expect("open raw");
+        let meta = db
+            .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
+            .expect("meta keyspace");
+        let mut batch = db.batch();
+        batch.insert(&meta, FORMAT_KEY, bytes);
+        batch.commit().expect("write the stamp");
+    }
+
+    /// Remove the stamp from the database at `path`, which must be closed —
+    /// turning it into a pre-stamp database.
+    fn remove_stamp(path: &std::path::Path) {
+        let db = Database::builder(path).open().expect("open raw");
+        let meta = db
+            .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
+            .expect("meta keyspace");
+        let mut batch = db.batch();
+        batch.remove(&meta, FORMAT_KEY);
+        batch.commit().expect("remove the stamp");
     }
 
     /// [I11](../../docs/invariants.md#i11) — a `FactId` is stable, unique, and

@@ -106,6 +106,7 @@ Know these by number — they are the guardrails every change is checked against
 | [I12](docs/invariants.md#i12) | Both column families are written atomically. | [3](docs/03-storage-model.md) |
 | [I13](docs/invariants.md#i13) | The DB's schema is embedded and frozen at create. | [6](docs/06-types-and-schema.md) |
 | [I14](docs/invariants.md#i14) | A derived bind is a pure function of the fact bindings. | [7](docs/07-compilation.md) |
+| [I15](docs/invariants.md#i15) | A DB says which format wrote it; an unreadable one is refused. | [3](docs/03-storage-model.md) |
 
 **Operational invariants `ops-I1`–`ops-I10`** (lifecycle, single-writer, reproducibility,
 one-write-funnel) are a **separate namespace** — always written `ops-Ix` — and live in

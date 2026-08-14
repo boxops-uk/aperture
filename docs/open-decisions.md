@@ -214,6 +214,32 @@ of Phase 5 it is also **queried** end to end: `test.Ref {of = test.Foo {id = 1}}
 reference by splicing the id the marker distinguishes, which is the use the distinct marker was
 doubted to support.
 
+### An on-disk format version — settled: two numbers in DB metadata
+
+**Settled and built** as [I15](invariants.md#i15) —
+[chapter 3](03-storage-model.md#the-format-stamp-i15) is where it now lives. The question was
+never *whether*, only where the field lives and what it covers, and both halves are answered:
+it lives in a **metadata keyspace** (`meta`, the same block the embedded schema will use when
+[I13](invariants.md#i13) lands), and it is **two numbers, separately** — `codec` for the marker
+table and per-type encodings, `storage` for row framing, keyspace naming and the `FactId`
+split. They move for different reasons, so one number would refuse a database over a change
+that cannot affect it.
+
+The rule is **equality**: a build reads exactly what it writes, and an unstamped database
+holding facts is refused rather than adopted. "Readable up to N" is the additive refinement,
+deliberately not taken while there is no past encoding to make it about.
+
+What it does *not* do is make anything migratable. [I3](invariants.md#i3) still binds every
+database stamped `codec 1`; what changed is that a future codec is now a different number
+rather than an impossibility, which is what a migration would need and could never have had.
+Taken now because the cost was twelve bytes and a check at open, and every unwritten feature —
+arrays, unions, stored schemas, operational metadata — would otherwise have landed more
+encoding behind a door with no handle.
+
+The **resume cursor** carries its own version, on a separate counter, for the same reason and
+against the build rather than the database
+([chapter 5](05-resume.md#the-cursor--bytes-nothing-else)).
+
 ### Storage codec vs transport (wire) codec — settled
 
 **One storage (tuple) codec for both keys *and* values** — values are tuple-encoded too, so

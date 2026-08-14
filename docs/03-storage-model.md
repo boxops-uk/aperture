@@ -401,6 +401,64 @@ snapshot guarantee.
 
 ---
 
+## The format stamp ([I15](invariants.md#i15))
+
+Every database carries, in a metadata keyspace of its own, twelve bytes that say which
+encoding wrote it: the magic `APERTURE`, then two `u16` version numbers.
+
+```
+   0            8      10      12
+  ┌─────────────┬───────┬───────┐
+  │ "APERTURE"  │ codec │storage│
+  └─────────────┴───────┴───────┘
+```
+
+It is written **once, when the DB is created** — a directory with no keyspaces in it — and
+checked at every open, before a predicate tree is touched. `meta` is not a predicate keyspace
+and carries neither the `keys.` nor the `entities.` prefix, so it is invisible to the walk
+that [recovers predicates at open](#one-keyspace-per-predicate--for-both-column-families).
+It is also where the [embedded schema](06-types-and-schema.md) goes when
+[I13](invariants.md#i13) lands, which is the reason for a metadata block rather than a bare
+version key.
+
+**Why two numbers.** They freeze different things and move for different reasons: `codec` is
+the marker table and the per-type encodings ([chapter 2](02-tuple-codec.md)), `storage` is
+everything on this page — row framing in each column family, keyspace naming, the `FactId`
+split. A new type's marker moves the first and reshapes no row; a change to the `entities`
+framing moves the second and touches no marker. One number would refuse a DB over a change
+that cannot affect it, and could not tell a reader which half it failed to understand.
+
+**Three cases, and the third is the one that matters.**
+
+| the database | what happens |
+|---|---|
+| a new directory | stamped with the current versions — this is the *create* path |
+| stamped, versions understood | opened |
+| stamped, versions not understood | refused, naming both |
+| **holds facts, no stamp** | **refused** |
+
+An unstamped database with predicate trees in it was written by something else — an older
+build, or not Aperture at all. Stamping it on the way past would be this build certifying
+bytes it has never read, which is precisely the silent misread the stamp exists to prevent.
+Every database written before this existed is that shape, and refusing them is the honest
+answer: there is nothing to migrate *to* yet, and nothing that could say what to migrate
+*from*.
+
+The rule is **equality**, not "readable up to N". The marker table is append-only, so a newer
+reader could in principle read older bytes — but that is a promise about every past encoding,
+and it costs nothing to make later, once there is a past encoding to make it about.
+
+What this changes about [I3](invariants.md#i3) is worth stating precisely, because it is
+easy to overread: **nothing is migratable now**. I3 still binds every database stamped
+`codec 1`, and renumbering a marker under that stamp is as wrong as it ever was. What the
+stamp buys is that a *future* codec is a different number rather than an impossibility. It
+was taken now rather than later for one reason — arrays, unions, stored schemas and
+operational metadata are all still unwritten, so today the field costs twelve bytes and a
+check at open, and every one of those features would otherwise land more encoding behind a
+door with no handle.
+
+---
+
 ## Storage codec vs transport codec
 
 Worth stating once, clearly (it recurs):
@@ -424,6 +482,7 @@ does not apply to the other.
 | [I6](invariants.md#i6) | Values never enter the scan hot loop. | `exec::no_value_fetch_in_scan` (store spy) |
 | [I11](invariants.md#i11) | `FactId` is stable, unique, never reused within a DB. | `store::factid_unique_monotonic`, `store::exhausted_sequence_space_is_an_error` |
 | [I12](invariants.md#i12) | A fact is written to both column families atomically. | `store::no_half_present_facts_after_writes`, `store::no_half_present_facts` (crash) |
+| [I15](invariants.md#i15) | A DB says which format wrote it; an unreadable one is refused. | `store::a_database_says_which_format_wrote_it`, `store::a_corrupt_format_stamp_is_reported` |
 
 I6 is stated here because it's a *storage-shape* decision, and enforced in the
 [executor](04-executor.md).

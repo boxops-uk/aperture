@@ -47,9 +47,9 @@ about one subsystem.
 2. [**The tuple codec**](docs/02-tuple-codec.md) — how values become order-preserving,
    self-delimiting bytes. The marker table and why it's frozen. *(Invariants I1–I3.)*
 3. [**The storage model**](docs/03-storage-model.md) — the two column families, one
-   keyspace per predicate, `FactId` allocation, the atomic two-CF write, and how a fact is
-   **written by hand** (the three silent traps in `put_fact` that `focus::fact` exists to
-   close). *(I11–I12.)*
+   keyspace per predicate, `FactId` allocation, the atomic two-CF write, the **format
+   stamp** that says which encoding wrote a DB, and how a fact is **written by hand** (the
+   three silent traps in `put_fact` that `focus::fact` exists to close). *(I11–I12, I15.)*
 4. [**The executor (the VM)**](docs/04-executor.md) — the plan IR, the register file, and
    the `enumerate` nested-loop driver. Why it's a defunctionalised state machine. *(I5–I7,
    I9.)*

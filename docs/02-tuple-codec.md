@@ -48,7 +48,8 @@ So I1 is **a divergence of this design's own, and the divergent half of it is cu
 unspent**: `ResidualOp` (`src/focus/plan.rs`) has no ordering arm, and `<` and `>` are not
 lexer tokens, so an order comparison does not even lex. The bet is kept because it costs
 almost nothing to hold and cannot be retrofitted — the marker table freezes the moment data
-exists ([I3](invariants.md#i3)), and there is no format version to migrate under. What *is*
+exists ([I3](invariants.md#i3)), and the [format stamp](03-storage-model.md#the-format-stamp-i15)
+buys a *future* codec a number, not a migration for the one already written. What *is*
 spent today is the weaker, store-level half of the same property: the scan is lexicographic,
 and resume re-seeks against that order
 ([chapter 3](03-storage-model.md#the-order-a-scan-is-promised-in)).
@@ -162,14 +163,19 @@ skip-family, chosen so their marker byte places the type where it should sort. R
 an existing marker after data exists silently corrupts every stored key. There is a
 golden-bytes test pinning every marker precisely so a renumber breaks loudly.
 
-**And there is no on-disk format version, so I3 holds *forever*, not until a migration.** A
-migration presupposes detection, and nothing written here says which encoding wrote it —
-neither the store nor the embedded schema carries a version. Glean has both halves of the escape
-hatch this lacks: a DB binary-representation version with negotiated readable/writable sets, and
-a separately versioned bytecode ABI carrying its own lowest-supported floor
-(`glean/bytecode/def/Glean/Bytecode/Generate/Instruction.hs:86-96`). This is recorded as the gap
-it is rather than repaired here — it is cheap while no long-lived artifact exists and not after,
-and it is listed with the [other undecided things](glean-comparison.md).
+**I3 still holds forever for every database already written, and a format version is what makes
+that a bound rather than a dead end.** A migration presupposes detection, and for a while nothing
+written here said which encoding wrote it. Now it does: every DB carries a
+[format stamp](03-storage-model.md#the-format-stamp-i15) whose `codec` half is exactly this
+table's version ([I15](invariants.md#i15)), checked at open. Read the gain narrowly — a database
+stamped `codec 1` is bound by this section as strictly as before, and renumbering a marker under
+that stamp corrupts it just the same. What the stamp buys is that a *future* codec is a different
+number rather than an impossibility. Glean has the same two halves, one of them finer-grained
+than ours: a DB binary-representation version with negotiated readable/writable sets, and a
+separately versioned bytecode ABI carrying its own lowest-supported floor
+(`glean/bytecode/def/Glean/Bytecode/Generate/Instruction.hs:86-96`). The negotiated *set* is the
+refinement we deliberately have not taken — our rule is equality, because "readable up to N" is a
+promise about every past encoding and there is not yet a past encoding to make it about.
 
 **A reserved band is not the whole decision for a container type.** For a scalar it genuinely is:
 pick a marker in the right skip-family, the type slots in where it sorts, nothing existing moves.

@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::focus::{
+    format::FormatVersion,
     iter::Address,
     plan::{FactId, PlanFingerprint},
     schema::{PredicateId, Symbol},
@@ -112,6 +113,44 @@ pub enum ApertureError {
 
     #[error("store error: {0}")]
     Store(#[from] StoreError),
+
+    #[error("{0}")]
+    Format(#[from] FormatError),
+}
+
+/// A database this build cannot read, decided from its
+/// [format stamp](crate::focus::format) before a single row is touched
+/// ([I15](../../docs/invariants.md#i15)).
+///
+/// Every variant is a *refusal*, and that is the point of the type: without a
+/// stamp the alternative is not an error but a silent misread, since bytes written
+/// under another encoding decode into plausible-looking values.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum FormatError {
+    /// A database holding facts but carrying no stamp: written before stamping
+    /// existed, or by something that is not Aperture.
+    ///
+    /// Refused rather than stamped with the current version, which would be a
+    /// build asserting that data it has never read was written by itself.
+    #[error(
+        "this database holds facts but carries no format stamp, so nothing says \
+         which encoding wrote it"
+    )]
+    Unstamped,
+
+    /// A stamp naming a format this build does not implement.
+    #[error("this database is {found}; this build reads {current}")]
+    Unreadable {
+        found: FormatVersion,
+        current: FormatVersion,
+    },
+
+    #[error("the format stamp is {len} bytes, not {expected}")]
+    Truncated { len: usize, expected: usize },
+
+    #[error("the format stamp does not begin with the Aperture magic (found {found:?})")]
+    BadMagic { found: [u8; 8] },
 }
 
 /// Faults raised by the storage backend itself, or by rows on disk that don't

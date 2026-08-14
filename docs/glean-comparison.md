@@ -211,11 +211,17 @@ variable no generator binds, and in focus a `Fact` type can only come from a fac
 (which binds it) or a fact-typed key field (which captures it), so the precondition never
 holds. [Chapter 7](07-compilation.md).
 
-### No on-disk format version
+### No on-disk format version — closed
 
-Glean versions both its DB format and its bytecode ABI. **Aperture versions nothing** — so
-[I3](invariants.md#i3) must hold forever, because a reader has no way to detect which encoding
-it is looking at. Not a decision, an omission. [Chapter 2](02-tuple-codec.md).
+Glean versions both its DB format and its bytecode ABI; Aperture versioned nothing, so
+[I3](invariants.md#i3) had to hold forever, a reader having no way to detect which encoding it was
+looking at. It was an omission rather than a decision, and it is now
+[I15](invariants.md#i15): twelve bytes in a `meta` keyspace, `codec` and `storage` numbered
+separately, checked at open, with an unstamped DB holding facts refused rather than adopted.
+The remaining divergence is deliberate and narrow — Glean negotiates *sets* of readable and
+writable versions where our rule is equality, which is the additive refinement to make once
+there is a past encoding to make it about. [Chapter 2](02-tuple-codec.md),
+[chapter 3](03-storage-model.md#the-format-stamp-i15).
 
 ### Operational capabilities
 

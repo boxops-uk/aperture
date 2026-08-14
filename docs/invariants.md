@@ -40,6 +40,7 @@ green. See [testing](testing.md).
 | [I12](#i12) | A fact is written to both column families atomically. | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) | [ch3](03-storage-model.md) | ✅ green |
 | [I13](#i13) | The DB's schema is embedded and frozen at create. | `schema::ingest_rejects_incompatible_schema` + `fingerprint_is_order_independent` | [ch6](06-types-and-schema.md) | Phase 8 |
 | [I14](#i14) | A derived bind is a pure function of the fact bindings. | `iter::a_derive_is_recomputed_across_every_cut_point` | [ch7](07-compilation.md) | ✅ green (hand-built plans) |
+| [I15](#i15) | A DB says which format wrote it; an unreadable one is refused. | `store::a_database_says_which_format_wrote_it` + `a_corrupt_format_stamp_is_reported` | [ch3](03-storage-model.md) | ✅ green |
 
 ---
 
@@ -54,7 +55,8 @@ only a self-delimiting **canonical** encoding, no ordering: Glean's fact keys ar
 that mis-order, and it serves prefix seeks on them. So I1 is a **divergence whose divergent half
 is unspent** — `ResidualOp` has no ordering arm and `<`/`>` are not lexer tokens, so no query can
 ask for a range yet. Kept because it is nearly free to hold and impossible to retrofit: the marker
-table freezes the moment data exists ([I3](#i3)) and there is no format version to migrate under.
+table freezes the moment data exists ([I3](#i3)), and [I15](#i15)'s stamp versions the *next*
+codec rather than migrating the one holding today's rows.
 What *is* spent today is the weaker store-level half — a scan yields rows in lexicographic key
 order, which resume re-seeks against ([I4](#i4)) — and that is a **commitment**: it forecloses the
 truncated `keys` row Glean adopted when it dropped ordered iteration, and there is no key-size
@@ -87,10 +89,13 @@ overflowing.
 ### I3 — The marker table is frozen on disk
 Marker values and their order are semantic (a marker is the MSB of a value's sort key).
 Once data exists they can't change without migration; new types go in reserved bands.
-**There is no on-disk format version anywhere in Aperture, so I3 must hold *forever*** — a
-migration presupposes detection, and nothing a reader is handed says which encoding wrote it.
-Glean versions both its DB binary representation (readable/writable sets negotiated at open) and
-its bytecode ABI; that is the escape hatch I3 lacks, recorded as the gap it is. Two further things
+**I3 must hold forever for every database already written**, and what changed is only that a
+*future* encoding can now be a different one: a migration presupposes detection, and until
+[I15](#i15) nothing a reader was handed said which encoding wrote it. Glean versions both its DB
+binary representation (readable/writable sets negotiated at open) and its bytecode ABI; the
+[format stamp](03-storage-model.md#the-format-stamp-i15) is that escape hatch, and it makes
+nothing migratable — a database stamped `codec 1` is bound by this invariant exactly as it was,
+so renumbering a marker under that stamp is as wrong as it ever was. Two further things
 the table freezes: every marker a value can *begin* with stays below `MARK_ESCAPE` (otherwise
 string ordering inverts across a record boundary), and for a *container* type the reserved band is
 not the whole decision — length-prefix versus terminator decides whether an array can be
@@ -249,6 +254,45 @@ scan the machine re-enters the derive from beneath and recomputes it anyway, so 
 > instead, and the first real producer will be a primitive or a subquery. So this invariant is
 > currently held by construction rather than by pressure from the language, and the guard is
 > what will catch the first producer getting it wrong.
+
+<a id="i15"></a>
+### I15 — A database says which format wrote it, and an unreadable one is refused
+Every DB carries a **format stamp** — `codec` and `storage` version numbers in its metadata
+keyspace, written once when the DB is created and checked at every open before a row is read
+([chapter 3](03-storage-model.md#the-format-stamp-i15)). A build reads exactly the versions it
+writes; anything else, including a database holding facts with **no** stamp, is refused.
+
+This is the invariant [I3](#i3) was waiting for. I3 has to hold *forever* only because nothing
+said which encoding wrote a DB, and a migration presupposes detection — so the marker table
+could never be renumbered even in a new format, because no reader could tell the two apart.
+That is now a decision rather than a fact: I3 still binds every DB stamped `codec 1`, and a
+future codec is a different number rather than an impossibility. Nothing may be migrated yet
+and nothing here promises a migration; what exists is the discriminator that makes one
+possible, taken early because every unwritten feature — arrays, unions, an embedded schema —
+lands more encoding behind the door while it is missing.
+
+**Two numbers, because two things are frozen and they move separately.** `codec` covers the
+marker table and per-type encodings ([chapter 2](02-tuple-codec.md)); `storage` covers row
+framing, keyspace naming and the `FactId` split ([chapter 3](03-storage-model.md)). One number
+would refuse a DB over a change that cannot affect it, and could not say which half a reader
+failed to understand.
+
+**The rule is equality, and the refusals are the point.** "Readable up to N" is the plausible
+refinement — the marker table is append-only, so a newer reader *could* read older bytes — but
+it is a promise about every past encoding, and it costs nothing to add once there is a past
+encoding to make it about. An *unstamped* database holding facts is refused rather than
+stamped: adopting one would be this build certifying bytes it has never read, which is exactly
+the silent misread the stamp exists to prevent.
+
+*Guards:* `store::a_database_says_which_format_wrote_it` — a fresh directory is stamped, the
+stamp survives a reopen, a bumped version is refused, and a stamped DB with its stamp removed
+is refused. Plus `store::a_corrupt_format_stamp_is_reported`: the stamp is bytes on disk like
+any other and gets no more trust than a row does. Both mutation-checked.
+
+> **What it does not cover.** The stamp says what is *on disk*. A resume
+> [`Cursor`](05-resume.md) is in flight rather than on disk and carries its own version, for
+> the same reason and on a separate counter — the two move independently, and a cursor is
+> checked against the build that reads it rather than against a database.
 
 ---
 
