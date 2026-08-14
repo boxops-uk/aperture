@@ -115,7 +115,10 @@ battery draws a multi-source level and cuts inside one. Over **compiled** plans 
 `flatten::resume_of_a_compiled_plan_equals_the_query`, which draws its loop order rather than
 taking the identity: where a step that binds nothing *sits* is a property of the order, and the
 [census](testing.md) asserts the battery reaches a negation placed above a scan — the placement
-Phase 6 found to be the only one that observes a restore fault at all.
+Phase 6 found to be the only one that observes a restore fault at all. Plus
+`…_of_a_negated_plan_…`, the same experiment with the draw **forced**: the general battery draws
+a negation in about one case in fifteen, which says the shape is reached and not that it is
+covered.
 
 <a id="i5"></a>
 ### I5 — Row-slot / register model

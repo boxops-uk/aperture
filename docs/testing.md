@@ -121,6 +121,13 @@ The tier tells you which generator to build.
    exactly at the next value's start; a schema fingerprint is invariant under file layout.
    Needs **pair-generation** and an **independent oracle** — a hand-written comparator you
    trust, *not* the code under test. *(codec ordering/skip; schema identity.)*
+   **A tier-2 property can say what a tier-3 one structurally cannot**, and negation is the
+   worked example: the model is a second reading of the same specification, so if the model and
+   the engine share a wrong idea of what `!` means, they agree. Running one query three ways —
+   `!S`, `S`, and neither — and relating the three answers uses no model at all
+   (`flatten::a_negation_and_its_assertion_partition_the_rows`). Write **both** halves of such a
+   law: the version that only said "the two halves cover everything" passed happily against a
+   negation that never filtered anything, which the mutation check is how we found out.
 3. **Model-based / differential** — the deep tier. Define an obviously-correct **model** (a
    slow reference), run the real system, assert output-equality. Write the model **first**;
    it doubles as a permanent oracle. *(executor: resume == uninterrupted run, the model

@@ -6176,15 +6176,21 @@ pub mod proptest {
         }
 
         fn statement_source(&self, stmt: usize) -> String {
-            let (spec, negated) = match self.which(stmt) {
-                Which::Gen(spec) => (spec, false),
+            match self.which(stmt) {
+                Which::Gen(spec) => self.pattern_source(spec),
                 Which::Constrain(index) => {
                     let (var, prefix) = self.constraints[index];
-                    return format!("V{var} = {prefix:?}..");
+                    format!("V{var} = {prefix:?}..")
                 }
-                Which::Negate(spec) => (spec, true),
-            };
+                // `!` prefixes the statement, so it sits outside the bind — which a
+                // negation never has anyway, there being no row to name.
+                Which::Negate(spec) => format!("!{}", self.pattern_source(spec)),
+            }
+        }
 
+        /// One statement's pattern, with no `!` — what a negation negates, and what
+        /// the same statement would be if it were asserted instead.
+        fn pattern_source(&self, spec: &StmtSpec) -> String {
             let fields: Vec<String> = spec
                 .fields
                 .iter()
@@ -6210,15 +6216,57 @@ pub mod proptest {
                 None => String::new(),
             };
 
-            // `!` prefixes the statement, so it sits outside the bind — which a
-            // negation never has anyway, there being no row to name.
-            let bang = if negated { "!" } else { "" };
+            format!("{bind}gen.P{} {{{}}}", spec.predicate, fields.join(", "))
+        }
 
-            format!(
-                "{bang}{bind}gen.P{} {{{}}}",
-                spec.predicate,
-                fields.join(", ")
-            )
+        /// Whether this draw carries a negation — the queries the complement law
+        /// below is about, and the reason it is `prop_filter`ed rather than assumed.
+        pub fn has_negation(&self) -> bool {
+            !self.negations.is_empty()
+        }
+
+        /// The same query with its negation written **positively** — `!S` becomes
+        /// `S`, so the statement generates where it used to filter.
+        ///
+        /// This and [`source_without_the_negation`](Self::source_without_the_negation)
+        /// are the two halves the complement law compares against: a row of the
+        /// unfiltered query either has a witness, in which case the positive form
+        /// produces it, or it has none, in which case the negation keeps it. Nothing
+        /// about that reasoning goes through the model, which is the point of
+        /// stating it — the model and the executor could agree about what a negation
+        /// means and both be wrong.
+        pub fn source_asserting_the_negation(&self) -> String {
+            self.source_with(|this, spec| Some(this.pattern_source(spec)))
+        }
+
+        /// The same query with the negation **dropped** — the rows it filters.
+        pub fn source_without_the_negation(&self) -> String {
+            self.source_with(|_, _| None)
+        }
+
+        /// The same query with its negation written **twice**, which must answer
+        /// exactly as once: a filter is idempotent, and a step that got its
+        /// one-bit frame state wrong would not be.
+        pub fn source_negating_twice(&self) -> String {
+            self.source_with(|this, spec| {
+                let pattern = this.pattern_source(spec);
+                Some(format!("!{pattern}; !{pattern}"))
+            })
+        }
+
+        /// The query with each negation rewritten by `render`, or dropped where it
+        /// returns `None`. Statement order is the written one.
+        fn source_with(&self, render: impl Fn(&Self, &StmtSpec) -> Option<String>) -> String {
+            let body: Vec<String> = self
+                .identity()
+                .into_iter()
+                .filter_map(|stmt| match self.which(stmt) {
+                    Which::Negate(spec) => render(self, spec),
+                    _ => Some(self.statement_source(stmt)),
+                })
+                .collect();
+
+            format!("{} where {}", self.head_source(), body.join("; "))
         }
 
         /// The spec's facts in insertion order: `(predicate, key bytes, value bytes,
@@ -7258,6 +7306,7 @@ mod battery {
         ty,
     };
     use ::proptest::prelude::*;
+    use std::collections::BTreeSet;
     use tempfile::TempDir;
 
     /// Compile `source` against `schema`, in the given loop order.
@@ -7313,6 +7362,24 @@ mod battery {
         collect_rows(spec.build_store(), plan, &interner).expect("run")
     }
 
+    /// Run **some other spelling** of a spec's query against the spec's store, in
+    /// the order `reorder` picks.
+    ///
+    /// The order has to be chosen rather than given: the spellings the complement
+    /// law compares have different statement *counts*, so there is no one
+    /// permutation to hand all of them.
+    fn run_source(spec: &QueryAndStore, schema: &Schema, source: &str) -> Vec<Value> {
+        let (plan, interner) = plan_of_chosen(schema, source);
+
+        collect_rows(spec.build_store(), plan, &interner).expect("run")
+    }
+
+    /// Whether `part` appears within `whole` in order, gaps allowed.
+    fn is_subsequence(part: &[Value], whole: &[Value]) -> bool {
+        let mut rest = whole.iter();
+        part.iter().all(|row| rest.any(|other| other == row))
+    }
+
     proptest! {
         /// **The headline gate: a flattened plan runs to the rows the query
         /// means.**
@@ -7325,6 +7392,94 @@ mod battery {
             let identity = spec.identity();
 
             prop_assert_eq!(run(&spec, &identity), spec.expected());
+        }
+
+        /// **The complement law: a negation and its assertion partition the rows.**
+        ///
+        /// Every property above compares the engine against the *model*, and a model
+        /// is a second reading of the same specification — which is exactly the
+        /// comparison that cannot catch a wrong idea of what negation *means*, since
+        /// both readings would share it. This one uses no model at all. It runs one
+        /// query three ways — with `!S`, with `S`, and with neither — and asserts the
+        /// relations between the three answers that hold whatever negation means, as
+        /// long as it means the absence of what the same statement asserts:
+        ///
+        /// 1. **A filter only removes.** The negated query's rows are a subsequence
+        ///    of the unfiltered query's — same rows, same order, some missing.
+        /// 2. **Nothing falls between the two halves.** Every row of the unfiltered
+        ///    query is answered by `!S` or produced by `S`.
+        /// 3. **The half that cannot be produced survives.** A row `S` never yields
+        ///    is a row with no witness, so `!S` must keep it.
+        /// 4. **And the half that can is gone.** A row both halves answer is only
+        ///    possible where the unfiltered query answers that projection *twice* —
+        ///    one row with a witness and one without. Without (4) the law is
+        ///    one-sided and a negation that never filtered anything would satisfy
+        ///    every other clause; the mutation is the argument for its being here.
+        /// 5. **Filtering twice is filtering once.** `!S; !S` answers as `!S` —
+        ///    which is a claim about the frame's one bit of state as much as about
+        ///    the semantics.
+        ///
+        /// Sets rather than multisets in (2)–(4), and deliberately: the positive
+        /// form is a **level**, so it produces one row per witness where the negation
+        /// produces one per surviving row, and two rows of the unfiltered query may
+        /// project identically when the head does not name what distinguishes them.
+        /// That is the exception (4) states rather than assumes; counting would be
+        /// asserting something about multiplicity, which is a different law.
+        #[test]
+        fn a_negation_and_its_assertion_partition_the_rows(
+            spec in arb_query_and_store().prop_filter(
+                "the draw carries a negation",
+                QueryAndStore::has_negation,
+            ),
+        ) {
+            let schema = spec.schema();
+
+            let filtered = run_source(&spec, &schema, &spec.source());
+            let matched = run_source(&spec, &schema, &spec.source_asserting_the_negation());
+            let unfiltered = run_source(&spec, &schema, &spec.source_without_the_negation());
+
+            prop_assert!(
+                is_subsequence(&filtered, &unfiltered),
+                "a negation invented or reordered rows: {:?} is not a subsequence of {:?}",
+                filtered,
+                unfiltered
+            );
+
+            let split: BTreeSet<&Value> = filtered.iter().chain(matched.iter()).collect();
+            let whole: BTreeSet<&Value> = unfiltered.iter().collect();
+            prop_assert_eq!(
+                &split,
+                &whole,
+                "rows answered by neither half, for {:?}",
+                spec.source()
+            );
+
+            for row in &unfiltered {
+                if !matched.contains(row) {
+                    prop_assert!(
+                        filtered.contains(row),
+                        "{:?} has no witness and was dropped anyway, for {:?}",
+                        row,
+                        spec.source()
+                    );
+                }
+            }
+
+            for row in filtered.iter().filter(|row| matched.contains(row)) {
+                prop_assert!(
+                    unfiltered.iter().filter(|other| *other == row).count() > 1,
+                    "{:?} has a witness and survived the negation anyway, for {:?}",
+                    row,
+                    spec.source()
+                );
+            }
+
+            prop_assert_eq!(
+                run_source(&spec, &schema, &spec.source_negating_twice()),
+                filtered,
+                "negating twice is not negating once, for {:?}",
+                spec.source()
+            );
         }
 
         /// **Every loop order gives the same rows.**
@@ -7712,21 +7867,68 @@ mod battery {
             schedule in arb_interruption_schedule(),
             which in 0usize..8,
         ) {
-            let schema = spec.schema();
-            let orders = spec.orders();
-            let order = &orders[which % orders.len()];
-
-            let (plan, interner) = plan_of(&schema, &spec.source(), order);
-            let model = spec.expected_in_order(order);
-
-            let cuts = cut_points(&schedule, model.len());
-            let (rows, suspends) =
-                run_with_suspends(|| (spec.build_store(), plan.clone()), &interner, &cuts)
-                    .unwrap();
-
-            prop_assert_eq!(suspends, cuts.len(), "expected one suspend per scheduled row");
-            prop_assert_eq!(rows, model, "schedule {:?} of order {:?} changed the run", cuts, order);
+            resume_matches_the_model(&spec, &schedule, which)?;
         }
+
+        /// **The same claim, over draws that are guaranteed to filter.**
+        ///
+        /// The property above draws a negation in about one case in fifteen — the
+        /// generator keeps the rate low because a probe rejects rows, and rows are
+        /// what the resume battery cuts through. One in fifteen is enough to say the
+        /// shape is *reached* (the census says so) and too few to call it covered,
+        /// so this is the same experiment with the draw forced, which is what
+        /// disjunction got for the same reason. The cost is a redraw, not a weaker
+        /// generator: `prop_filter` retries until it has a negation, so this runs a
+        /// full battery of them.
+        #[test]
+        fn resume_of_a_negated_plan_equals_the_query(
+            spec in arb_query_and_store().prop_filter(
+                "the draw carries a negation",
+                QueryAndStore::has_negation,
+            ),
+            schedule in arb_interruption_schedule(),
+            which in 0usize..8,
+        ) {
+            resume_matches_the_model(&spec, &schedule, which)?;
+        }
+    }
+
+    /// Run `spec` in a drawn loop order, cutting where `schedule` says, and compare
+    /// against the model **in that order**.
+    ///
+    /// The order is drawn rather than the identity because that is what places a
+    /// step which binds nothing — a derive, a test — *above* a scan, and Phase 6
+    /// established that no other placement observes a restore fault.
+    fn resume_matches_the_model(
+        spec: &QueryAndStore,
+        schedule: &[bool],
+        which: usize,
+    ) -> Result<(), TestCaseError> {
+        let schema = spec.schema();
+        let orders = spec.orders();
+        let order = &orders[which % orders.len()];
+
+        let (plan, interner) = plan_of(&schema, &spec.source(), order);
+        let model = spec.expected_in_order(order);
+
+        let cuts = cut_points(schedule, model.len());
+        let (rows, suspends) =
+            run_with_suspends(|| (spec.build_store(), plan.clone()), &interner, &cuts).unwrap();
+
+        prop_assert_eq!(
+            suspends,
+            cuts.len(),
+            "expected one suspend per scheduled row"
+        );
+        prop_assert_eq!(
+            rows,
+            model,
+            "schedule {:?} of order {:?} changed the run",
+            cuts,
+            order
+        );
+
+        Ok(())
     }
 
     /// Seed a fjall DB with a spec's facts, in the spec's order.
