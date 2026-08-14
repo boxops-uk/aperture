@@ -240,7 +240,7 @@ Features that are *designed-for and additive* (a new enum arm, a new access kind
 "open decisions" — they have a settled shape and a kept seam, listed in
 [`PLAN.md`](../PLAN.md) "Deferred features" and [Operations §11](aperture-cli-design.md):
 order comparisons (a *new* `ResidualOp` arm — plus a token, since they do not lex today; see
-above), cross-fact navigation (`Access::Fetch`), `evolves`, cross-DB queries. The two that are *not* additive — derived facts and (now-resolved) the
+above), `evolves`, cross-DB queries. The two that are *not* additive — derived facts and (now-resolved) the
 `FactRef` marker — are handled as deliberate machine/codec changes
 ([chapter 7](07-compilation.md), [chapter 2](02-tuple-codec.md)).
 

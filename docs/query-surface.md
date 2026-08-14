@@ -2,19 +2,29 @@
 
 > **Status: a proposal, not design of record.** It argues one architecture for everything focus
 > still parses and cannot run — disjunction, negation, `never`, subqueries — plus the deferred
-> items that would otherwise arrive one machine change at a time (`Access::Fetch`, primitives,
+> items that would otherwise arrive one machine change at a time (`Source::Fetch`, primitives,
 > comparisons, union select). Sequencing stays the maintainer's ([`PLAN.md`](../PLAN.md) Phase
 > 6b). Where it recommends against something already written down, it says so.
 >
-> **What has been built from it:** §10's stage 2 (`Level { sources }`, at 0, 1 and N) and the
+> **What has been built from it:** §10's stage 2 (`Level { sources }`, at 0, 1 and N), the
 > cursor half of stage 3 (an entry carries the alternative that produced it, with
-> [I4](invariants.md#i4) re-proved over generated multi-source plans). The vocabulary in §2 is
-> otherwise unbuilt — no `Test`, no `Source::Group`, no `Source::Fetch` — and §3's export rule
-> is stated but not needed until flatten can emit a branch that binds.
+> [I4](invariants.md#i4) re-proved over generated multi-source plans), and **stage 5**
+> (`Source::Fetch`). The rest of §2's vocabulary is unbuilt — no `Test`, no `Source::Group` —
+> and §3's export rule is stated but not needed until flatten can emit a branch that binds.
+>
+> **Where stage 5 diverged.** The note said a fetch would contribute nothing to the cursor, by
+> the recompute rule; it contributes an ordinary entry instead. Both are sound — the row is
+> determined by the outer registers either way — but saving one keeps a single rule for the
+> whole token (one entry per level, paired by order) rather than a second rule about which
+> levels count, and it keeps the fact-id check, which is what catches a cursor replayed against
+> a store where the reference has moved. The recompute rule is an option, not an obligation.
+> The prediction that held is the important one: **no new `Step`, no arm in `enumerate`, no
+> change to the token's shape.**
 
 The question it answers is not "can each of these be built" — each can — but **what shape does
-the executor end up in if they all are**. The executor is 989 lines of implementation today
-([`iter.rs`](../src/focus/iter.rs)); `enumerate` is one loop with two arms. The failure mode to
+the executor end up in if they all are**. The executor was 989 lines of implementation when this
+was written and is 1,157 after two of the stages below
+([`iter.rs`](../src/focus/iter.rs)); `enumerate` is still one loop with two arms. The failure mode to
 avoid is the one where each feature adds an arm to that loop, an arm to the `Cursor`, and an
 [I4](invariants.md#i4) obligation of its own — six features later the machine is unreviewable
 and the resume proof is a case analysis nobody can hold in their head.
@@ -53,9 +63,12 @@ lopsided:
 | `X = Y`, both bound | 0 or 1 | no | none |
 | comparisons (`<`, `>`) | 0 or 1 | no | none |
 | union select (`.alt?`) | 0 or 1, plus a bind | no | none |
-| `Access::Fetch` (through a reference) | exactly 1, deterministic | no | none |
+| `Source::Fetch` (through a reference) — **built** | exactly 1, deterministic | no | none¹ |
 | primitives (arithmetic, strings) | exactly 1 | no | none |
 | **`\|` (disjunction)** | **N** | **yes** | **a source index** |
+
+¹ As built it does carry an entry, for the reason in the status block — but nothing in the
+token's *shape* changed, which is what this column is about.
 
 **Only disjunction touches the resume token.** Everything else is a filter, a deterministic
 bind, or a compile-time rewrite. That is the finding this note is built on: the phase reads like
@@ -82,7 +95,11 @@ struct Level {
 
 enum Source {
     Seek { access: Access, residuals: Box<[Residual]> },
-    Fetch { of: Address, residuals: Box<[Residual]> },   // through a reference
+    // Built. `of` turned out to need a path and the declared predicate too: the
+    // reference is a *field* of a register, and how the fetched row's bytes are
+    // read has to be checked against what the schema says it points at.
+    Fetch { reference: Address, path: FieldPath,
+            predicate_id: PredicateId, residuals: Box<[Residual]> },
     Group(Box<[Step]>),                                   // a branch containing joins
 }
 
@@ -355,8 +372,11 @@ Each stage ends green and re-proves only what it changed:
    mid-branch. The single largest step, and the only one that touches the token.
 4. **`Source::Group`** — branches with joins; the recursive cursor entry and the inductive I4
    proof. Deferrable behind a diagnostic if the corpus says nobody writes one.
-5. **`Source::Fetch`** — reaching a fact through a reference, which by then is a source arm and
-   not a project of its own. Retires `nyi/fact-field`; no cursor change, by the recompute rule.
+5. ✅ **`Source::Fetch`** — reaching a fact through a reference, which by then was a source arm
+   and not a project of its own, exactly as predicted: no `Step`, no `enumerate` arm, no change
+   to the token's shape. Done out of order, ahead of stages 1, 3 (the flatten half) and 4,
+   because it was what the corpus and the shell were actually short of. `nyi/fact-field` now
+   means only a reference held in a fact's *value*.
 
 `Test` first is deliberate: it is the stage with no cursor consequence, it retires two diagnostics
 on its own, and it forces the reads-edge work in §5 while the resume token is still untouched.

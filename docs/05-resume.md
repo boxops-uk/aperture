@@ -141,6 +141,15 @@ At a derive step, recompute its value into its slot. Nothing is consumed from th
 nothing needs to be: purity ([I14](invariants.md#i14)) is what makes recomputing equivalent to
 having saved it.
 
+**A [`Fetch`](04-executor.md#fetching-through-a-reference) level takes no saved position, and
+still consumes an entry.** Step 1 has nothing to do for it: the row is whichever one the
+reference names, so re-binding the *outer* registers is what puts the level back where it was
+— the recompute rule, arrived at from the other direction. What it keeps is step 3, and that
+is not ceremony: the check is what catches a cursor replayed against a store where the
+reference now names another fact, which is the one way this level can silently move. Saving an
+ordinary entry rather than nothing also keeps one rule for the whole token — one entry per
+level, paired by order — instead of a second rule about which levels count.
+
 Then set `depth` to the innermost step and hand back to `enumerate`, which — because
 that innermost frame's scan is already open and positioned — calls `next()` and thereby
 **advances past** the last-emitted row. Outer levels are *not* advanced; they stay pinned on

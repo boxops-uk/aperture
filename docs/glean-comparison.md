@@ -240,10 +240,14 @@ nested spelling now compiles — to the *same plan* as the two-statement form, w
 in which it is a spelling rather than a second way to run a query.
 
 Aperture and Angle agree on the mechanism, too: a reference is followed by its **id**, so a
-join through one reads no second fact. What Aperture still defers is reaching *through* a
-reference to a field or value of the fact it names (`nyi/fact-field`), which is a lookup rather
-than a compare. Angle does that freely; here it needs the `Access::Fetch` kind the IR has not
-grown yet.
+join through one reads no second fact. Reading *through* a reference — a field or value of the
+fact it names — is the other half, and a lookup rather than a compare; Angle does it freely, and
+Aperture now does it as a
+[`Source::Fetch`](04-executor.md#fetching-through-a-reference) level, one point read per row of
+the level above it. The two halves stay distinct in the IR on purpose: the cheap one is a
+compare against an id already in a register, and conflating them is how a key gets spliced where
+an id belongs. What is left deferred is narrow — a reference held in a fact's *value*
+(`nyi/fact-field`), where the id is not in a register's key bytes to read.
 
 ---
 

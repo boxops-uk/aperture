@@ -696,10 +696,12 @@ the recorded consequence that `(!A) | B` is inexpressible unless `!` moves into 
 - **Does negation read the store inside the row loop — and is that I6?** `!test.Bar {id = X}`
   per outer row is a probe: *does this seek find nothing*. [I6](docs/invariants.md#i6) is about
   **values** — residuals on key fields are checked against the `keys` CF only — so a key-only
-  probe does not breach it as written. But it is the same shape as the deferred
-  `Access::Fetch`, which this plan treats as real work with a new slot kind. Decide explicitly
-  between a probe in the scan loop, a semijoin frame, and deferring negation again; do **not**
-  inherit "additive" as an answer.
+  probe does not breach it as written. `Source::Fetch` has since answered the same question one
+  way: a lookup gets its own **level**, so it happens once per row the level above it produces
+  rather than once per row a scan examines, and I6 holds with room to spare. A negation probe
+  cannot take that shape — it binds nothing and produces no row — so decide explicitly between a
+  probe in the scan loop, a semijoin frame, and deferring negation again; do **not** inherit
+  "additive" as an answer.
 - **Does `never` get a type?** Phase 2 declined `Ty::Never` because a type for it would be
   speculative. Disjunction is exactly what makes it non-speculative — `never` is the identity
   of `|` — so the decision belongs *inside* 6b-a, not before it. `never` implemented alone is a
@@ -727,7 +729,7 @@ where the monotonicity argument fails — so re-prove completeness here rather t
 
 **Architecture note, written before pickup:** [`docs/query-surface.md`](docs/query-surface.md)
 argues one shape for this whole phase and for the deferred items behind it, on the finding that
-**only disjunction touches the resume token** — negation, `never`, subqueries, `Access::Fetch`,
+**only disjunction touches the resume token** — negation, `never`, subqueries, `Source::Fetch`,
 primitives and comparisons are all filters, deterministic binds, or compile-time rewrites, and a
 construct costs cursor work only if it can be mid-flight when a row is handed out. Two of its
 recommendations amend this phase and are not yet folded into the tasks below: negation's
@@ -950,7 +952,9 @@ discover after schemas exist:**
   exactly that freedom, so a deriver implemented as "run the plan and put what the body produces"
   is wrong in the same way. It is the same family of bug as the
   [I14](docs/invariants.md#i14) guard's lesson — only a derive step placed *above* a scan observes
-  the fault — and as the deferred `Access::Fetch` hazard.
+  the fault — and as the `Source::Fetch` ordering hazard
+  ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)), which is dormant only
+  because no fact is derived yet.
 
 **Tasks (coarse — decompose at pickup):** a `derivation` on the schema's `Predicate` (there is
 none today, and `focus`'s grammar has no `predicate` keyword — both are Phase 8's to add); the
@@ -1050,8 +1054,7 @@ a big-bang restructure ahead of need.
 
 ## Deferred features (additive — must not reshape the machine)
 
-Not on the critical path; each is additive: cross-fact navigation (`Access::Fetch` — reading
-*through* a reference, the fourth piece in the table below); order comparisons (`ResidualOp`
+Not on the critical path; each is additive: order comparisons (`ResidualOp`
 arms); `pattern = pattern` full unification (easy half in Phase 4, reject the three hard
 cases); `evolves`; cross-DB query. Detail and kept seams:
 [`CLAUDE.md` scope](CLAUDE.md#scope-phases--open-decisions),
@@ -1093,10 +1096,21 @@ work. A new plan shape has to be *reached by the generator*, or the resume batte
 about it — so the `(query, store)` generator grew fact-typed fields, and reaching the residual
 form reliably took a deliberate draw rather than a chance one (2 in 300 left to chance).
 
-**Still open: reading *through* a reference** — `P.name` or `P.value` where `P` came out of a
-field. `nyi/fact-field`, and the fourth and largest piece: the already-listed `Access::Fetch`,
-a point read per row and a new slot kind. Everything in the table above is a compare against an
-id already in a register, which is why none of it needed one.
+**The fourth piece — reading *through* a reference — landed in Phase 6b**, and it was the
+largest of the four as estimated, but not in the way the estimate said. It needed no new slot
+kind: `Source::Fetch` is a source arm, the register it binds is `predicate_id ++ key` (byte for
+byte the row a scan would have produced), and `dereference` substitutes the fetched row for the
+reference between resolving a base and reading a field out of it — so `Slot` gained nothing and
+`field_slot` got shorter. What it did need was a new **frame** shape: the frame's `scan` became
+`Rows`, a scan or a fetched row, which is the one place a point read and a range differ to the
+machine.
+
+Everything in the table above is a compare against an id already in a register, which is why
+none of it needed a lookup; this is the one that does, and it is a lookup per row the level
+above it *produces* rather than per row a scan examines — which is why
+[I6](docs/invariants.md#i6) holds with its "or navigated" clause rather than despite it.
+
+`nyi/fact-field` now means one narrow thing: a reference held in a fact's **value**.
 
 ---
 

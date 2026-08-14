@@ -119,13 +119,19 @@ Decode lazily at read sites only. *Why & how:* [chapter 4](04-executor.md#the-re
 ### I6 — Values never enter the scan hot loop
 Residuals on *key* fields are checked against the `keys` CF only; a value is fetched from
 `entities` only when projected/navigated. Value patterns are a distinct residual class over
-the fetched buffer. **An Aperture strengthening, not an adopted idea:** Glean has the same
+the fetched buffer. **Navigated** is now real and not a promissory note:
+[`Source::Fetch`](04-executor.md#fetching-through-a-reference) reads `entities` for the fact a
+reference names — its *identity*, which is what that CF is for — and it is a level, so it is
+opened once per row the level above it **produces**, never once per row a scan examines. That
+distinction is the whole of I6: a lookup inside the filter loop is what it forbids. **An Aperture strengthening, not an adopted idea:** Glean has the same
 key-only/key-value split at its iterator, but a non-wild value pattern marks the seek as needing a
 value and it then fetches one for every row the scan *examines* — a second store lookup per row,
 which is exactly what I6 forbids. Cheap to hold here partly because value patterns are deferred
 (`nyi/value-match`), so the query that tempts the fetch cannot be written yet. *Why & how:*
 [chapter 3](03-storage-model.md#why-two-not-one). *Guard:*
-`exec::no_value_fetch_in_scan` (store spy fails on unexpected `point()`).
+`exec::no_value_fetch_in_scan` (store spy fails on unexpected `point()`), plus
+`exec::a_fetch_reads_entities_once_per_row_it_is_opened_for`, which counts point reads against
+rows *produced* rather than examined.
 
 <a id="i7"></a>
 ### I7 — The executor is a defunctionalised state machine

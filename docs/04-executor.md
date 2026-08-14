@@ -61,7 +61,9 @@ struct Level {
 }
 
 enum Source {
-    Seek { access: Access, residuals: Box<[Residual]> },
+    Seek  { access: Access, residuals: Box<[Residual]> },
+    Fetch { reference: Address, path: FieldPath,        // the fact a reference names
+            predicate_id: PredicateId, residuals: Box<[Residual]> },
 }
 ```
 
@@ -91,6 +93,50 @@ export a value instead, and that rule is [the query-surface note](query-surface.
 - **`binds`** = the registers (`Address`es) this generator fills when a row matches. Note
   several variables can bind to the *same* row — see the row-slot model below.
 - **`residuals`** = filters applied to each scanned row *before* it counts as a match.
+
+### Fetching through a reference
+
+A `Source::Fetch` is the level whose rows are **one row**: the fact a reference names.
+`reference` is a register bound at an outer level, `path` a fact-typed field of its key — so
+the id is already in hand, and this is the point read that
+[`SeekKeyPart::RegisterFactId`](#the-two-halves-of-a-reference) does not need.
+
+It is a *source* and not a step, and that is the whole reason `enumerate` is unchanged by it.
+A point read is a relation of at most one row, and the machine's job over such a relation is
+a scan's exactly: open it, drain it, move on, back up when there is no next.
+
+The register it binds is **`predicate_id ++ key`** — byte for byte the row a scan of that fact
+would have produced. That uniformity is what keeps everything downstream ignorant of where a
+row came from: a seek splices a fetched field, a residual compares against one, the head
+projects one, and the [cursor](05-resume.md) saves one. `entities` stores the key beside the
+value without the predicate tag, so putting the tag back is one allocation, once per opening
+of the level — the same footing as the seek prefix's, and not per row.
+
+Two checks, both about reading the right bytes rather than about the query:
+
+- **The declared predicate is checked against the stored id.** Not redundant with the tag the
+  id already carries: every residual path on this source, and every projection off the
+  register it binds, was compiled against the *declared* key layout, so a reference naming
+  another predicate would decode a different type's bytes at those offsets and answer with
+  whatever was there. Refused (`ReferenceCrossesPredicate`), which is the same family of fault
+  as splicing a key where an id belongs.
+- **A reference naming no fact is reported**, not skipped. Both column families are written
+  together ([I12](invariants.md#i12)) and ids are never reused ([I11](invariants.md#i11)), so
+  there is no legitimate way to reach one; dropping the row would answer short in silence.
+
+#### The two halves of a reference
+
+Following one and reading through one are different plans, and the split is deliberate:
+
+| | what it does | what it costs |
+|---|---|---|
+| `SeekKeyPart::RegisterFactId` / `ResidualOp::EqRegisterFactId` | **follows** a reference: compares the id a field holds against a bound row's identity | nothing beyond the scan it narrows — the id is in the register ([I6](invariants.md#i6)) |
+| `Source::Fetch` | **reads through** a reference: binds the fact the id names | one `entities` point read per row of the level above it |
+
+That is also why a fetch does not breach I6. What I6 forbids is a value lookup *per row the
+scan examines*, which is what a value pattern would cost; a fetch is a level of its own, so it
+is opened only once an outer row has already survived every residual on it — and what it reads
+out of `entities` is the row's **identity**, which is what that column family is for.
 
 ### Residuals
 
@@ -180,20 +226,32 @@ variable.
 
 ```rust
 struct StackFrame {
-    scan: Option<Scan>,           // the live cursor into `keys`, or None if closed
+    rows: Option<Rows>,           // the open source's remaining rows, or None if closed
     source: usize,                // which of the level's sources is being drained
     current: Option<Register>,     // the row this level is currently sitting on
     field_offsets: Box<[FieldOffsets]>, // per-variable field-offset cache
     derived_produced: bool,        // a Derive step's whole state (unused by scans)
+}
+
+enum Rows {
+    Scan(Scan),                        // a live cursor into `keys`
+    Fetched(Option<(ByteView, FactId)>), // the one row a reference names
 }
 ```
 
 Execution state is a stack of frames, **one per step**, not one per level: a derive step needs a
 frame too, though all it uses is the last field.
 
-- **`scan`** is the fjall (or `MemStore`) iterator for this level's range. It is `None`
+- **`rows`** is what the open source has left to hand out. It is `None`
   when the level is closed — opening it fresh on descent is what makes byte-resume possible
   ([chapter 5](05-resume.md)).
+
+  Two shapes, one iterator, because `next` — the loop that ticks the deadline and checks
+  residuals — is written once for both. A `Seek` source opens a fjall (or `MemStore`) iterator
+  over its range. A [`Fetch`](#fetching-through-a-reference) source does its point read *at
+  open* and holds the single row it found, so draining it is the same `None` a scan gives at
+  its end. Anything else added later that is "a relation the machine walks" belongs here, not
+  in `enumerate`.
 - **`source`** is which alternative is being drained. It only moves forward while the level
   is open, and is reset when the level closes — a level re-entered from an outer level's next
   row produces all of its alternatives again, rather than resuming where the last pass through

@@ -175,15 +175,21 @@ decoded data.
   (binding a row a field already named is an **ordering** question, which `reorder` now answers;
   the feature itself stays deferred) — and cancellation counting rows examined is settled in
   the executor.
-- **What flatten defers** — a value in no register, reading *through* a fact reference, matching
-  on a value, a whole record key, an intra-row repeat — each has a code and a corpus entry
-  ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). `nyi/fact-field` is the
-  load-bearing one, and it is now a *split* rather than a blanket: **following** a reference is
-  supported (the splice is off `Register::fact_id`), reaching the fact it names is not. The
-  danger the split guards is that a register also holds its own row's key bytes — splicing
-  those where an id belongs would compare a key against an id and quietly match nothing.
+- **What flatten defers** — a value in no register, matching on a value, an alternation *inside*
+  a pattern, an intra-row repeat — each has a code and a corpus entry
+  ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). **Both halves of reaching a
+  fact through a reference now work**, and they stay distinct in the IR because they are
+  different plans: *following* one is a compare against an id already in a register
+  (`SeekKeyPart::RegisterFactId`, no store read), *reading through* one is a
+  [`Source::Fetch`](docs/04-executor.md#fetching-through-a-reference) level — one point read per
+  row of the level above it, binding `predicate_id ++ key` so the fetched fact is an ordinary
+  register from there on. The danger the split guards is that a register also holds its own
+  row's key bytes; splicing those where an id belongs compares a key against an id and quietly
+  matches nothing. `nyi/fact-field` is now only a reference held in a fact's *value*.
   **`Slot` is the single substitution**, and `flatten::resolve` the only function that answers
   *where does this expression's value live* — for a key field, the head, an alias's right side,
-  and a record's pieces alike, with a constant as an ordinary arm rather than a parallel path.
-  So `Y = X.file` is an **alias**: no register, no step, the same plan as the read it names.
-  `nyi/value-bind` now means only *this value is in no register and would have to be built*.
+  and a record's pieces alike, with a constant as an ordinary arm rather than a parallel path;
+  `dereference` sits inside it and answers a reference with the row it names, so a fetch added
+  no `Slot` arm. So `Y = X.file` is an **alias**: no register, no step, the same plan as the
+  read it names. `nyi/value-bind` now means only *this value is in no register and would have to
+  be built*.

@@ -937,10 +937,19 @@ fn print_plan(source: &str, schema: &Schema) {
 /// range of the index. `src.Decl` leads with the module, so by the time the scan
 /// reaches the name it can only filter what it has already read. Same rows, and
 /// `:plan` shows what it cost to get them.
-const EXAMPLES: [&str; 6] = [
+///
+/// The fourth is the **other** pair, and the other half of navigation: it *reads
+/// through* the reference the third *joins* on. `D.module.name` is a point read per
+/// declaration (`fetch[r0.module]`), where the join spelling —
+/// `src.Decl {module = src.Module {name = M}}` — is a second scan whose rows are
+/// matched by id. Same answer, and which one is right is a property of the
+/// question: a fetch suits a reference each row has exactly one of, and a join
+/// suits one where the *other* side is what narrows.
+const EXAMPLES: [&str; 7] = [
     "X where X = src.SearchByName {name = \"encode\"..}",
     "D where D = src.Decl {name = \"encode\"..}",
     "D.name where D = src.Decl {module = src.Module {file = src.File \"store/codec.py\"}}",
+    "{decl = D.name, module = D.module.name} where D = src.Decl {name = \"encode\"..}",
     "D.value where D = src.Decl {name = \"encode_key\"}",
     "{file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = \"encode_str\"}}",
     "M where src.Import {from = M, to = src.Module {name = \"store.codec\"}}",

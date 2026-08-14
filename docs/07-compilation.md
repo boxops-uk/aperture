@@ -377,7 +377,7 @@ fixture deliberately does not have, so its guard builds a two-predicate schema o
 | `test.Foo {id = never}` — `never` **inside** a pattern | `nyi/never` | the field walk builds one seek and cannot say "the level is empty" from a field down |
 | `X = {a = 1, b = Y}` — a value in **no register** | `nyi/value-bind` | a **derived bind**: the value has to be *built*, which is the `Slot` value variant ([Phase 6](#derived-facts)) |
 | `X = "a"..`, `gen = gen`, `X = Y.name` with both bound | `nyi/bind-unification` | nothing to substitute and no single field to compare — `X = Y` with both bound is **built**, as a residual on the level that binds later |
-| `X.name`, `X.value` where `X` came out of a reference field | `nyi/fact-field` | cross-fact navigation: a second lookup, which is a new `Access` kind (`Access::Fetch`) |
+| `X.value.name` — a reference held in a fact's **value** | `nyi/fact-field` | a fetch reads its id out of a register's *key* bytes; a value is in the other column family, so this is a fetch whose reference is itself a fetch |
 | `test.Name Y.value` — a value in a key position | `nyi/value-match` | a residual class over the fetched value buffer, never in the scan ([I6](invariants.md#i6)) |
 | `test.Nested Y; test.Wide {outer = Y}` — a whole key matched **into a record field** | `nyi/whole-key` | flat against wrapped: the same record, not the same bytes ([chapter 3](03-storage-model.md#a-stored-key-is-flat)) |
 | `Edge {from = X, to = X}` | `nyi/repeated-variable` | a same-row `EqField` residual — the [Phase 4 decision](open-decisions.md) |
@@ -407,17 +407,34 @@ exactly, so a pattern has to name every field, and `{extra = _, inner = X}` is t
 "only this piece".
 
 **Reaching a fact through a reference** is the one that would have been dangerous to leave
-implicit, and it is now split at exactly the line the danger falls on. *Following* a reference
-is supported: a register holds the fact id of the row it is bound to, and
-`SeekKeyPart::RegisterFactId` splices that — so a join through a reference costs no store read
-and [I6](invariants.md#i6) stays structural. What is still deferred is reaching the fact the
-reference *names*, its key fields or its value, which is a second lookup.
+implicit, and it is split at exactly the line the danger falls on — not because either half is
+missing now, but because the two are different plans. *Following* a reference is a compare: a
+register holds the fact id of the row it is bound to, `SeekKeyPart::RegisterFactId` splices
+that, and a join through a reference costs no store read at all, so
+[I6](invariants.md#i6) stays structural. *Reading through* one is a lookup: the fields of the
+fact an id names are bytes in that fact's key, and no register holds them, so flatten hoists a
+[`Source::Fetch`](04-executor.md#fetching-through-a-reference) level to bind it.
 
 The trap the split closes is that a register also holds its own row's **key bytes**, and those
 are not the referenced fact's. Splicing them where an id belongs compares two different things
 and matches nothing — a silently empty answer rather than an error, which is why the operator
 is defined off `Register::fact_id` and the executor's guard fixture separates a row's key from
 its id on purpose (an integer field and a reference differ only in their marker byte).
+
+**A fetch is hoisted the way a nested generator is**, and for the same reason: the thing being
+read has no name, and everything downstream is written in terms of registers. It is hoisted
+*before* the reading statement's own address is taken, which keeps two properties true at once
+— a register is still its level's position in the body, and the fetch is an **outer** level, so
+its field can splice into the seek below it. Two reads of one reference share one fetch, keyed
+by the reference's *place* rather than by the expression naming it: `X.file.name` and
+`X.file.line` are two nodes and one point read. A chain of references is a chain of fetches,
+innermost first.
+
+`Slot` gained no arm for it. `dereference` sits between resolving a base and reading a field or
+a value out of it, and answers with the row a reference names — so a fetched fact is an
+ordinary register from there on, and `field_slot` got *shorter* rather than gaining a case.
+What is left under `nyi/fact-field` is a reference held in a fact's **value**: a fetch reads
+its id out of a register's key bytes, and a value lives in the other column family.
 
 **Hoisting is not deferred either.** A fact pattern denotes the facts matching it, so it is a
 generator wherever it is written — in a key field, in the head, under a field read. Flatten
@@ -556,8 +573,13 @@ nothing for, because [I5](invariants.md#i5) already puts the whole row in the re
 fetch is required, that fetch has to be emitted **last**, because the fact may be produced by a
 derived-fact generator and does not exist until then — and nothing otherwise stops a later phase
 moving it earlier. That is the same family as I14's "the derive step must sit above a scan" case,
-and it becomes a live risk the moment `Access::Fetch` lands: **a fact read must never be ordered
+and it is live now that `Source::Fetch` has landed: **a fact read must never be ordered
 above the step that produces the fact it reads**, and `reorder` is where that would go wrong.
+Today it cannot: a fetch is not a statement `reorder` sees at all — flatten hoists it during
+`emit`, immediately before the statement that reads it and therefore after the level binding
+the reference. That is an accident of there being no derived-fact generators yet, and the
+hazard returns with them ([Phase 8b](../PLAN.md)), because a fetch of a *derived* fact would
+have to be ordered against the step that produces it.
 
 ### Folding a constant bind
 
