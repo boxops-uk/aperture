@@ -4356,6 +4356,48 @@ mod tests {
         );
     }
 
+    /// **A reference held in a fact's value** is what is left of
+    /// `nyi/fact-field`.
+    ///
+    /// A fetch reads its id out of a register's *key* bytes, and a value is in the
+    /// other column family — so following one would mean a fetch whose reference is
+    /// itself a fetch, which nothing holds. Needs a bespoke schema: no fixture
+    /// predicate has a fact-typed value, which is also why this arm used to decline
+    /// **quietly** and why the `flatten_ordered` promise-guard is what would have
+    /// caught it.
+    #[test]
+    fn reading_through_a_reference_in_a_value_is_not_implemented_yet() {
+        use crate::focus::schema::Predicate;
+        use ::lasso::Rodeo;
+        use std::sync::Arc;
+
+        let mut names = Rodeo::new();
+        let mut sym = |s: &str| names.get_or_intern(s);
+
+        // `t.Owner`'s *value* is a reference to a `t.Thing`, whose key has a name.
+        let predicates = vec![
+            Predicate {
+                name: sym("t.Thing"),
+                key: PredicateTy::Record(Arc::from([(sym("name"), PredicateTy::Str)])),
+                value: None,
+            },
+            Predicate {
+                name: sym("t.Owner"),
+                key: PredicateTy::Record(Arc::from([(sym("id"), PredicateTy::Int)])),
+                value: Some(PredicateTy::Fact(PredicateId(0))),
+            },
+        ];
+        let schema = Schema::new(names.into_reader(), Arc::from(predicates));
+
+        let mut compilation = Compilation::new("O.value.name where O = t.Owner _", &schema);
+
+        assert!(compilation.plan().is_none(), "expected no plan");
+        assert_eq!(
+            compilation.diagnostics().codes().collect::<Vec<_>>(),
+            ["nyi/fact-field"],
+        );
+    }
+
     // ---- reorder ------------------------------------------------------------
 
     /// The dependency graph is over *variables*, not statements — so two fact
