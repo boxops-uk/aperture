@@ -202,8 +202,12 @@ spend that density — substitution vectors indexed by `id − base`, fact sets 
 stacking test — so stacking is one consumer of five. Within a predicate the sequence stays dense,
 so each of those survives as a per-predicate instance keyed by the tag; only a fact set *spanning*
 predicates degrades. Against that, Glean has **no concurrent writer at all** at the storage layer
-and buys parallelism back with the whole rebase/substitution subsystem, which per-predicate
-counters delete.
+and buys parallelism back with the whole rebase/substitution subsystem, whose *allocation* half
+per-predicate counters delete — not its reference-relocation half, which no id scheme deletes
+([an open decision](open-decisions.md#what-a-reference-is-in-a-fact-file)).
+**One live tension, unresolved:** "never reused" and Phase 8b's O(1) re-derivation by *tree
+drop* cannot both hold, because the high-water mark is recovered from the very tree being
+dropped — [open decision](open-decisions.md#re-derivation-and-what-happens-to-the-high-water-mark).
 *Why & how:* [chapter 3](03-storage-model.md#factid-allocation-i11). *Guards:*
 `store::factid_unique_monotonic` + `store::exhausted_sequence_space_is_an_error` +
 `store::untaggable_predicate_is_rejected`. The reserved sequence is guarded where stored bytes

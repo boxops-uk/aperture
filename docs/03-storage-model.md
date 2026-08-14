@@ -137,6 +137,15 @@ consequences, all load-bearing:
   why `entities` is split too: were it shared, dropping a derived predicate's `keys` tree
   would strand its values as unreclaimable garbage.
 
+  **The tree delete is O(1); re-derivation is not just the tree delete.** The high-water mark
+  is recovered from the last `entities` key (below), so dropping the tree discards the
+  allocator's evidence and the next write to the predicate is sequence 1 again — reusing ids
+  that dependent predicates may still reference, against [I11](invariants.md#i11). What rule
+  makes the two consistent is
+  [an open decision](open-decisions.md#re-derivation-and-what-happens-to-the-high-water-mark);
+  read this bullet as the physical layout permitting a wholesale drop, not as re-derivation
+  being solved.
+
 Splitting `entities` is only possible because a [`FactId` is tagged with its predicate](#factid-allocation-i11):
 `point()` is handed a bare id and no predicate, so an untagged id would turn identity lookup
 into a search across every predicate's tree.
@@ -263,9 +272,38 @@ Three things follow from the tag, and they are the reason for it:
   batch inserted out of sequence is an error, and the code says "we do *not* support concurrent
   writes" in as many words — and buys the parallelism back with a whole rebase subsystem: a
   writer builds a local fact set and every id in it is renamed through a substitution on merge.
-  The snowflake deletes that subsystem rather than reimplementing it.
+  The snowflake deletes the **allocation bottleneck** that subsystem exists to work around.
+  It does **not** delete reference relocation — see below.
 - **Uniqueness across predicates is structural**, not enforced: the tag partitions the id
   space, so two predicates cannot collide however their sequences are allocated.
+
+**What the snowflake does not buy: references still have to be relocated.** It is tempting
+to read "no global allocator" as "no rebasing", and that is too strong. Glean's substitution
+has two causes and the tag addresses one of them.
+
+- **Allocation.** A writer cannot mint final ids because the counter is shared. The tag
+  removes this *across* predicates — and only across them. Two workers on the *same*
+  predicate still share that predicate's counter, which is why the bullet above is careful to
+  say "on different predicates".
+- **Dedup.** Two producers independently emit a fact with the same key. At the merge frontier
+  they are one fact with one id ([operations §5](aperture-cli-design.md) dedups byte-identical
+  facts), so one of the two ids loses and every reference to it has to be redirected. That is
+  a substitution, and no id scheme deletes it.
+
+And there is a third thing, specific to this design rather than inherited from Glean: **a
+reference can sit in a key**, and it does — `test.Ref : { of : test.Foo }` in the fixture
+schema, `Reference` in the example code index. A key containing a reference has no bytes until
+the target's id is final, and therefore no sort position either. The ingest pipeline in
+[operations §5](aperture-cli-design.md) has workers encode storage tuples *and sort* before the
+per-predicate merge assigns ids, which those two steps cannot both satisfy. Resolving that is
+[an open decision](open-decisions.md#what-a-reference-is-in-a-fact-file) and it gates the
+fact-file format, not the engine.
+
+Ordinary hand-written facts are unaffected, and the reason is worth stating: `put` returns the
+id, so the fact you write next names this one by a value you already hold
+([below](#writing-a-fact-by-hand)). Referential integrity is a consequence of write order. That
+works precisely because a single writer is assigning ids as it goes — which is the thing a
+portable fact file does not have.
 
 **Sequence 0 is reserved**, so no valid id is `FactId(0)`: a zeroed or corrupt eight bytes is
 detectably not a fact, which is worth having on a path where I11 is what makes a bytes-only

@@ -357,6 +357,14 @@ Ingest facts from fact files or stdin.
      (the "hidden unchecked write" — it needs no per-key reads because the merge already
      established the invariants). One keyspace per predicate ⇒ per-predicate ingests are
      independent trees and may overlap.
+- **Steps 2 and 3 are not yet consistent, and one open decision is why.** A key may contain a
+  fact **reference**, and a reference is a final DB-local `FactId` — which step 3 assigns. So a
+  key holding one has no bytes, and therefore no sort position, at step 2. Dedup in step 3 makes
+  it worse in the same direction: collapsing two ids into one means redirecting every reference
+  to the loser. What a fact file's reference actually is —
+  [open decision](open-decisions.md#what-a-reference-is-in-a-fact-file) — determines whether this
+  is a pre-pass, a stratified ingest, or a substitution table. Do not implement the pipeline
+  before answering it.
 - Schema validation against the DB's embedded schema on every path; a fact file's header
   fingerprint (§8) is checked for compatibility (subset containment, §7) before ingest.
 - Session typing per ops-I6: file ingestion is `ingest`, arbitrary tool sessions are `tool`. Both
@@ -555,6 +563,10 @@ Interactive psql-like REPL.
 - **Envelope:** header (magic, format version, producing-schema fingerprint) → blocks → optional
   footer (block offsets, per-predicate grouping) for O(1) split assignment when the file was
   finalized under our control.
+- **How a fact in a block names another fact is undefined**, and is the one thing here that
+  cannot be filled in later: it decides whether a block is sortable in isolation (see §5) and
+  whether a file can carry a self-contained subgraph at all.
+  [Open decision](open-decisions.md#what-a-reference-is-in-a-fact-file).
 - **Block = `[sync marker][block header: magic, predicate id, n, length, CRC32][n facts]`.**
   RLE of the predicate ID: indexers writing in visitation order emit small blocks (bursts);
   the post-merge writer emits huge ones; blocks coalesce monotonically through k-merges until

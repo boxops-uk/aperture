@@ -816,7 +816,20 @@ side) is the part the streaming path still owes, by a different mechanism.
   handling is order-independent), [I13](docs/invariants.md#i13) (validate ingest against the
   embedded schema — against the still-hardcoded schema until Phase 8).
 - **Note:** the [`FactRef` marker](docs/open-decisions.md) is already resolved (own marker
-  `0x51`), so writing fact-typed fields is unblocked — no pre-work here.
+  `0x51`), so writing fact-typed *bytes* is unblocked — no pre-work there.
+
+**Blocked until one decision is made: what a reference *is* in a fact file.**
+[Open decision](docs/open-decisions.md#what-a-reference-is-in-a-fact-file), and it has to be
+answered before the format is written down rather than discovered while writing it. A stored
+reference is a final DB-local `FactId`, which an independent producer cannot know; and because
+**a reference can sit in a key**, a key holding one has no bytes — and so no sort position —
+until the target's id is final. That is not compatible with the pipeline as specified, which has
+workers encode storage tuples *and sort* (step 2) before the per-predicate merge assigns ids
+(step 3). The per-predicate snowflake does not settle this: it deletes the global allocation
+bottleneck, not reference relocation
+([chapter 3](docs/03-storage-model.md#factid-allocation-i11)). It also reaches `ops-I4`, whose
+"hash the canonical schema and base facts" is underspecified while a base fact contains a
+physical id.
 
 **Phase-specific rules:** the encoder must agree **byte-for-byte** with the read-path decoder
 (the round-trip property is the guard); dedup byte-identical facts silently and **reject
@@ -960,12 +973,24 @@ discover after schemas exist:**
 none today, and `focus`'s grammar has no `predicate` keyword — both are Phase 8's to add); the
 derive phase in the lifecycle, reading a sealed snapshot and writing through the one write funnel
 (`ops-I5`); `DerivedAndStored` vs derive-on-demand as a schema-level distinction; re-derivation
-as a tree drop; derived-on-derived via sealed rounds — for which the shape to copy exists: a
+(**not simply a tree drop** — see below); derived-on-derived via sealed rounds — for which the
+shape to copy exists: a
 per-predicate completion list in the sidecar (Glean's `metaCompletePredicates`,
 `glean/if/internal.thrift:74-80`, appended at `glean/db/Glean/Query/Derive.hs:242-251`) plus a
 topological sort of the derivation graph with concurrency inside each stratum
 (`glean/tools/gleancli/GleanCLI/Derive.hs:86-132`), which computes the round boundaries from the
 schema instead of asking the operator to declare them.
+
+**Blocked until one decision is made: re-derivation cannot be *only* a tree drop.**
+[Open decision](docs/open-decisions.md#re-derivation-and-what-happens-to-the-high-water-mark).
+Dropping a predicate's two trees is O(1) and is what the physical layout was chosen for — but
+the allocator's high-water mark is recovered from the last key of the very `entities` tree being
+deleted, so the next write to that predicate starts at sequence 1 and reuses ids, against
+[I11](docs/invariants.md#i11). Meanwhile any dependent predicate already written still holds
+references to the ids that were dropped. Whatever rule is chosen (a fresh DB per build, or
+in-place on a Writable DB with the dependent subtree dropped alongside), it has to be decided
+before this phase writes a derived fact, because the failure mode is a silently wrong answer
+rather than an error.
 
 **Acceptance:**
 - [ ] A schema declaring a derived predicate parses, derives, and the derived facts are queryable

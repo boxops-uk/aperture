@@ -170,17 +170,32 @@ decoded data.
   overlapping predicates accept each other's cursors and answer short, silently
   ([chapter 5](docs/05-resume.md)). Interned names are deliberately outside the fingerprint —
   a `Symbol` is per-query, so hashing one would fail a legitimate resume.
-- **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — two, both from
+- **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — four. Two from
   comparing the design against Glean: **multiplicity** (arrays *and* one fact per element — Glean
   writes both, deliberately; decide before the Phase 8 schema DSL fixes how schemas are written)
   and **primitives** (arithmetic, string functions, conditionals: not built, not even lexed, not
-  ruled out). Everything the file
-  was originally opened for has settled: intra-row repeated variables are **rejected**
-  (`nyi/repeated-variable`, Phase 4), the `pattern = pattern` *scope* is settled — split across
-  typecheck and flatten, and one case of it turned out never to have been unification at all
-  (binding a row a field already named is an **ordering** question, which `reorder` now answers;
-  the feature itself stays deferred) — and cancellation counting rows examined is settled in
-  the executor.
+  ruled out). Two that an external audit found asserted but never decided, each **gating a
+  phase and cheapest to answer before it**: **what a reference is in a fact file** (a stored
+  reference is a final DB-local `FactId` no independent producer can know — and since a reference
+  can sit in a *key*, a key holding one has no sort position until the target's id is final,
+  which the Phase 7 pipeline's encode-and-sort-then-merge order cannot supply; the snowflake
+  deletes the allocation bottleneck, **not** reference relocation); **re-derivation vs I11** (the
+  high-water mark is recovered from the `entities` tree, so Phase 8b's O(1) tree drop restarts
+  sequences at 1 and reuses ids that dependent predicates still reference). The audit's third —
+  an **on-disk format version** — is now [I15](docs/invariants.md#i15), settled and built: a
+  twelve-byte stamp in a `meta` keyspace, `codec` and `storage` versioned separately, checked at
+  open, with an unstamped DB holding facts **refused** rather than adopted. It makes nothing
+  migratable — I3 still binds every DB stamped `codec 1` — it makes a future codec a different
+  number rather than an impossibility.
+  Everything the file was originally opened for has settled: intra-row repeated variables
+  are **rejected**
+  (`nyi/repeated-variable`, Phase 4), `pattern = pattern` is settled — the gate is the **left
+  side's shape alone**, and most of what was filed as unification turned out not to be it
+  (binding a row a field already named is an **ordering** question `reorder` answers; `X = Y`
+  with both bound is a residual on the level that binds later; `X = "a"..` is a **constraint**
+  that narrows the level binding `X`) — and cancellation counting rows examined is settled in
+  the executor. What is left of `nyi/bind-unification` is a left side that is not a target at
+  all — `gen = gen`, `Y.name = X` — which is **pattern-pushing**, not binding.
 - **What flatten defers** — a value in no register, matching on a value, an alternation *inside*
   a pattern, an intra-row repeat — each has a code and a corpus entry
   ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). **Both halves of reaching a
