@@ -5751,6 +5751,14 @@ mod tests {
 /// | three-field keys | more than one residual on a level |
 /// | a **row bind** (`R0 = gen.P0 {…}`) | `Project::FactRef`, and a register a head reads through |
 /// | a predicate with a **value** | `Project::Value` — a point read at projection |
+/// | a **negation** over a captured variable | a `Step::Test`, and a probe that seeks or filters |
+/// | a **second branch** on a statement | a level with two `Source`s — and, on a negation, a test with two |
+///
+/// The last two also carry the **algebraic laws**, which are the properties that use
+/// no model at all: a negation and its assertion partition the rows, a disjunction is
+/// the concatenation of its branches, and `!(A | B)` is `!A; !B`. Each is
+/// `prop_filter`ed onto the draws that can carry it, which costs a redraw rather than
+/// a weaker generator.
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use std::{collections::BTreeSet, sync::Arc};
@@ -5954,7 +5962,18 @@ pub mod proptest {
         /// statement binds any given row variable: binding one twice is
         /// `nyi/bind-unification`, not a query this generator may draw.
         row: Option<usize>,
-        fields: Vec<FieldPat>,
+        /// One field pattern per **branch** — `gen.P {…} | gen.P {…}`. One branch is
+        /// an ordinary statement; more is a disjunction.
+        ///
+        /// Always the **same predicate**, and every branch keeps the *variable*
+        /// leaves of the first in the same fields. Both are forced rather than
+        /// chosen: a register holds one row and the plan holds one path into it, so
+        /// a variable a disjunction binds has to live at the same place in every
+        /// branch, and a variable only some branch binds does not escape the
+        /// statement at all. Branches therefore differ only in what they *match* —
+        /// which is the shape Glean distributes an alternation inside a pattern
+        /// into, and the one worth generating.
+        branches: Vec<Vec<FieldPat>>,
     }
 
     impl StmtSpec {
@@ -5971,13 +5990,19 @@ pub mod proptest {
             }
 
             let mut out = vec![];
-            for field in &self.fields {
+            for field in self.branches.iter().flatten() {
                 match field {
                     FieldPat::Leaf(leaf) => of(leaf, &mut out),
                     FieldPat::Nested(subs) => subs.iter().for_each(|leaf| of(leaf, &mut out)),
                 }
             }
             out
+        }
+
+        /// The first branch — what a single-branch statement *is*, and what the
+        /// others are built from.
+        fn first(&self) -> &[FieldPat] {
+            &self.branches[0]
         }
     }
 
@@ -6190,9 +6215,22 @@ pub mod proptest {
 
         /// One statement's pattern, with no `!` — what a negation negates, and what
         /// the same statement would be if it were asserted instead.
+        ///
+        /// Every branch, joined by `|`. A disjunction is **flat** in the grammar, so
+        /// this is the whole of rendering one.
         fn pattern_source(&self, spec: &StmtSpec) -> String {
-            let fields: Vec<String> = spec
-                .fields
+            let branches: Vec<String> = spec
+                .branches
+                .iter()
+                .map(|fields| self.branch_source(spec, fields))
+                .collect();
+
+            format!("{}{}", bind_source(spec), branches.join(" | "))
+        }
+
+        /// One branch of a statement: `gen.P{n} {…}`, with no bind and no `|`.
+        fn branch_source(&self, spec: &StmtSpec, branch: &[FieldPat]) -> String {
+            let fields: Vec<String> = branch
                 .iter()
                 .enumerate()
                 .filter_map(|(f, pat)| match pat {
@@ -6211,12 +6249,7 @@ pub mod proptest {
                 })
                 .collect();
 
-            let bind = match spec.row {
-                Some(row) => format!("R{row} = "),
-                None => String::new(),
-            };
-
-            format!("{bind}gen.P{} {{{}}}", spec.predicate, fields.join(", "))
+            format!("gen.P{} {{{}}}", spec.predicate, fields.join(", "))
         }
 
         /// Whether this draw carries a negation — the queries the complement law
@@ -6251,6 +6284,72 @@ pub mod proptest {
             self.source_with(|this, spec| {
                 let pattern = this.pattern_source(spec);
                 Some(format!("!{pattern}; !{pattern}"))
+            })
+        }
+
+        /// Whether some statement is a **disjunction** — the queries the branch laws
+        /// below are about.
+        pub fn has_disjunction(&self) -> bool {
+            self.disjunctive_statement().is_some()
+        }
+
+        /// Whether the negation is over more than one branch — `!(A | B)`, which is
+        /// what De Morgan's law needs.
+        pub fn has_disjunctive_negation(&self) -> bool {
+            self.negations.iter().any(|spec| spec.branches.len() > 1)
+        }
+
+        /// The first statement with more than one branch.
+        ///
+        /// The first rather than all of them: the laws rewrite one statement and
+        /// leave the rest of the query alone, which is what makes the comparison
+        /// about that statement.
+        fn disjunctive_statement(&self) -> Option<usize> {
+            self.stmts.iter().position(|spec| spec.branches.len() > 1)
+        }
+
+        /// The query with the disjunctive statement's branches replaced by `chosen`
+        /// — indices into its branch list, written in the order given.
+        ///
+        /// `&[0]` is that statement with only its first branch, `&[1, 0]` is the
+        /// same disjunction with its branches swapped.
+        pub fn source_with_branches(&self, chosen: &[usize]) -> String {
+            let target = self
+                .disjunctive_statement()
+                .expect("a disjunctive statement to rewrite");
+
+            let body: Vec<String> = self
+                .identity()
+                .into_iter()
+                .map(|stmt| {
+                    if stmt != target {
+                        return self.statement_source(stmt);
+                    }
+
+                    let spec = &self.stmts[target];
+                    let branches: Vec<String> = chosen
+                        .iter()
+                        .map(|&k| self.branch_source(spec, &spec.branches[k]))
+                        .collect();
+
+                    format!("{}{}", bind_source(spec), branches.join(" | "))
+                })
+                .collect();
+
+            format!("{} where {}", self.head_source(), body.join("; "))
+        }
+
+        /// The same query with `!(A | B)` written as `!A; !B` — the other side of
+        /// De Morgan's law.
+        pub fn source_de_morgan(&self) -> String {
+            self.source_with(|this, spec| {
+                Some(
+                    spec.branches
+                        .iter()
+                        .map(|branch| format!("!{}", this.branch_source(spec, branch)))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
             })
         }
 
@@ -6365,7 +6464,7 @@ pub mod proptest {
                     }
                 };
 
-                for pat in &spec.fields {
+                for pat in spec.branches.iter().flatten() {
                     if let FieldPat::Leaf(Leaf::Row(row)) = pat
                         && !bound.contains(row)
                     {
@@ -6373,7 +6472,10 @@ pub mod proptest {
                     }
                 }
 
-                for pat in &spec.fields {
+                // Captures from the **first** branch: every branch binds the same
+                // variables at the same fields by construction, so one of them is
+                // the answer and reading all of them would double-count.
+                for pat in spec.first() {
                     match pat {
                         FieldPat::Leaf(Leaf::Var(var)) => captured.push(*var),
                         FieldPat::Nested(subs) => {
@@ -6434,17 +6536,26 @@ pub mod proptest {
                 return;
             };
 
-            for (index, fact) in self.facts[spec.predicate].iter().enumerate() {
-                let saved = env.clone();
+            // **Branch-major**, which is what the machine does with a level's
+            // sources: it drains the first alternative, then the next. So a
+            // disjunction *concatenates* its branches rather than merging them, and
+            // a fact matching two branches is answered twice. Written out here as
+            // two loops for the same reason the rest of the model is written the
+            // slow way — it is the obvious reading, and the compiler is the one
+            // making a claim about it.
+            for branch in &spec.branches {
+                for (index, fact) in self.facts[spec.predicate].iter().enumerate() {
+                    let saved = env.clone();
 
-                if matches(spec, fact, env) {
-                    if let Some(row) = spec.row {
-                        env.rows[row] = Some((spec.predicate, index));
+                    if matches(branch, fact, env) {
+                        if let Some(row) = spec.row {
+                            env.rows[row] = Some((spec.predicate, index));
+                        }
+                        self.walk(order, depth + 1, env, rows);
                     }
-                    self.walk(order, depth + 1, env, rows);
-                }
 
-                *env = saved;
+                    *env = saved;
+                }
             }
         }
 
@@ -6471,9 +6582,11 @@ pub mod proptest {
         /// answer while reading at most one row, which is the thing worth checking.
         fn witnessed(&self, env: &Env) -> bool {
             self.negations.iter().any(|spec| {
-                self.facts[spec.predicate]
-                    .iter()
-                    .any(|fact| matches(spec, fact, &mut env.clone()))
+                spec.branches.iter().any(|branch| {
+                    self.facts[spec.predicate]
+                        .iter()
+                        .any(|fact| matches(branch, fact, &mut env.clone()))
+                })
             })
         }
 
@@ -6547,6 +6660,14 @@ pub mod proptest {
         rows: Vec<Option<(usize, usize)>>,
     }
 
+    /// `R0 = `, or nothing — the row a statement binds, rendered.
+    fn bind_source(spec: &StmtSpec) -> String {
+        match spec.row {
+            Some(row) => format!("R{row} = "),
+            None => String::new(),
+        }
+    }
+
     fn leaf_source(leaf: &Leaf) -> Option<String> {
         match leaf {
             Leaf::Omitted => None,
@@ -6558,13 +6679,14 @@ pub mod proptest {
         }
     }
 
-    /// Match one statement against one fact, binding what it captures.
+    /// Match one **branch** of a statement against one fact, binding what it
+    /// captures.
     ///
     /// Leaves partial bindings behind on failure; the caller restores from its own
     /// copy, which is what makes backtracking here trivial and the model easy to
     /// believe.
-    fn matches(spec: &StmtSpec, fact: &Fact, env: &mut Env) -> bool {
-        for (f, pat) in spec.fields.iter().enumerate() {
+    fn matches(branch: &[FieldPat], fact: &Fact, env: &mut Env) -> bool {
+        for (f, pat) in branch.iter().enumerate() {
             match pat {
                 FieldPat::Leaf(leaf) => {
                     if !matches_leaf(leaf, &fact.key[f], env) {
@@ -6680,6 +6802,10 @@ pub mod proptest {
         predicate: u8,
         row: u8,
         fields: Vec<FieldDraw>,
+        /// Whether this statement is a **disjunction**, and which values the second
+        /// branch matches — two digits of one draw, as the constraint and negation
+        /// draws are.
+        branch: u8,
     }
 
     #[derive(Debug, Clone)]
@@ -6789,6 +6915,7 @@ pub mod proptest {
         let FilterDraw {
             constraint,
             negation,
+            negation_branches,
         } = filters;
 
         let schema: Vec<PredSpec> = predicates
@@ -6980,10 +7107,25 @@ pub mod proptest {
             }
 
             used_vars.extend(here);
+
+            // A **second branch**, on a quarter of the statements: the same pattern
+            // with everything that binds nothing re-matched against another value
+            // occurring at that position. Keeping the variable leaves exactly where
+            // they are is what makes the branches agree about what they bind, which
+            // is the rule flatten enforces and the one a generator has to respect to
+            // draw a query at all.
+            let branches = match draw.branch.is_multiple_of(4) {
+                true => vec![
+                    alternative_branch(&fields, &facts[predicate], draw.branch / 4),
+                    fields,
+                ],
+                false => vec![fields],
+            };
+
             resolved.push(StmtSpec {
                 predicate,
                 row,
-                fields,
+                branches,
             });
         }
 
@@ -7040,13 +7182,17 @@ pub mod proptest {
             let occurs: Vec<(usize, usize, usize)> = resolved
                 .iter()
                 .flat_map(|spec| {
-                    spec.fields
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(field, pat)| match pat {
-                            FieldPat::Leaf(Leaf::Var(var)) => Some((spec.predicate, field, *var)),
-                            _ => None,
-                        })
+                    spec.branches.iter().flat_map(|branch| {
+                        branch
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(field, pat)| match pat {
+                                FieldPat::Leaf(Leaf::Var(var)) => {
+                                    Some((spec.predicate, field, *var))
+                                }
+                                _ => None,
+                            })
+                    })
                 })
                 .collect();
 
@@ -7078,25 +7224,38 @@ pub mod proptest {
                     let (predicate, field, var) =
                         candidates[negation as usize / 4 % candidates.len()];
 
+                    let branch: Vec<FieldPat> = schema[predicate]
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .map(|(f, _)| {
+                            FieldPat::Leaf(if f == field {
+                                Leaf::Var(var)
+                            } else {
+                                // Unmentioned rather than a wildcard: the two
+                                // mean the same thing to the plan, and this way
+                                // a record or reference field needs no pattern
+                                // of its own.
+                                Leaf::Omitted
+                            })
+                        })
+                        .collect();
+
+                    // A **second branch** for the negation too, on half of them:
+                    // `!(A | B)` is the shape De Morgan's law is about, and it is
+                    // also the only way a *test* gets more than one source.
+                    let branches = match negation_branches.is_multiple_of(2) {
+                        true => vec![
+                            alternative_branch(&branch, &facts[predicate], negation_branches / 2),
+                            branch,
+                        ],
+                        false => vec![branch],
+                    };
+
                     vec![StmtSpec {
                         predicate,
                         row: None,
-                        fields: schema[predicate]
-                            .fields
-                            .iter()
-                            .enumerate()
-                            .map(|(f, _)| {
-                                FieldPat::Leaf(if f == field {
-                                    Leaf::Var(var)
-                                } else {
-                                    // Unmentioned rather than a wildcard: the two
-                                    // mean the same thing to the plan, and this way
-                                    // a record or reference field needs no pattern
-                                    // of its own.
-                                    Leaf::Omitted
-                                })
-                            })
-                            .collect(),
+                        branches,
                     }]
                 }
             }
@@ -7155,6 +7314,43 @@ pub mod proptest {
             negations,
             head,
         }
+    }
+
+    /// **A second branch of a pattern**: the same leaves, with everything that binds
+    /// nothing re-matched against another value occurring at that position.
+    ///
+    /// Variables and row reads are copied across untouched, and that is the whole
+    /// discipline: a disjunction's branches must bind the same variables at the same
+    /// fields, because a register holds one row and the plan holds one path into it.
+    /// A generator that varied them would draw queries flatten is right to refuse,
+    /// and would test the refusal rather than the disjunction.
+    ///
+    /// A position with no scalar values to draw from — a reference field, a record
+    /// matched whole — keeps whatever the first branch had, so the branches differ
+    /// only where they can.
+    fn alternative_branch(base: &[FieldPat], facts: &[Fact], pick: u8) -> Vec<FieldPat> {
+        let other = |leaf: &Leaf, occurring: Vec<FieldVal>| match leaf {
+            Leaf::Var(_) | Leaf::Row(_) => leaf.clone(),
+            _ if occurring.is_empty() => leaf.clone(),
+            _ => Leaf::Const(GenVal::Scalar(
+                occurring[pick as usize % occurring.len()].clone(),
+            )),
+        };
+
+        base.iter()
+            .enumerate()
+            .map(|(f, pat)| match pat {
+                FieldPat::Leaf(leaf) => {
+                    FieldPat::Leaf(other(leaf, occurring_scalars(facts, f, None)))
+                }
+                FieldPat::Nested(subs) => FieldPat::Nested(
+                    subs.iter()
+                        .enumerate()
+                        .map(|(g, leaf)| other(leaf, occurring_scalars(facts, f, Some(g))))
+                        .collect(),
+                ),
+            })
+            .collect()
     }
 
     /// The scalar values occurring at one leaf position across a predicate's facts —
@@ -7217,11 +7413,13 @@ pub mod proptest {
             0u8..PICKS,
             0u8..PICKS,
             prop::collection::vec(arb_field(), MAX_ARITY),
+            0u8..(4 * PICKS),
         )
-            .prop_map(|(predicate, row, fields)| StmtDraw {
+            .prop_map(|(predicate, row, fields, branch)| StmtDraw {
                 predicate,
                 row,
                 fields,
+                branch,
             })
     }
 
@@ -7236,6 +7434,9 @@ pub mod proptest {
         constraint: u8,
         /// Whether to negate, and which (predicate, field, variable) triple.
         negation: u8,
+        /// Whether the negation is over a **disjunction** — `!(A | B)`, the shape
+        /// De Morgan's law is about — and which values its second branch matches.
+        negation_branches: u8,
     }
 
     fn arb_head() -> impl Strategy<Value = HeadDraw> {
@@ -7261,12 +7462,16 @@ pub mod proptest {
             // Wider than `PICKS`: each digit carries *whether* to draw the
             // statement and *which* one, so a constraint lands on half the queries
             // that can carry one and a negation on a quarter.
-            (0u8..(2 * CONSTRAINT_PREFIXES.len() as u8), 0u8..(4 * PICKS)).prop_map(
-                |(constraint, negation)| FilterDraw {
+            (
+                0u8..(2 * CONSTRAINT_PREFIXES.len() as u8),
+                0u8..(4 * PICKS),
+                0u8..(2 * PICKS),
+            )
+                .prop_map(|(constraint, negation, negation_branches)| FilterDraw {
                     constraint,
                     negation,
-                },
-            ),
+                    negation_branches,
+                }),
         )
             .prop_map(
                 |(npredicates, predicates, facts, var_tys, stmts, heads, filters)| {
@@ -7482,6 +7687,105 @@ mod battery {
             );
         }
 
+        /// **A disjunction is the concatenation of its branches**, and nothing else.
+        ///
+        /// The second law that needs no model. Run the query with `A | B`, then once
+        /// with `A` alone and once with `B` alone: every complete answer uses exactly
+        /// one branch for that statement, so the disjunction's rows are the two
+        /// answers put together — **as a multiset**, which is the whole content of
+        /// the claim. Nothing is merged, nothing is deduplicated, and a fact matching
+        /// both branches is answered twice.
+        ///
+        /// A multiset rather than a sequence because the concatenation is per outer
+        /// row: a disjunction nested inside another loop yields `A`-rows then
+        /// `B`-rows *for each row above it*, where running the branches separately
+        /// groups all of `A`'s first. Same rows, different interleaving, and the
+        /// interleaving is the nested loop's business rather than the disjunction's.
+        #[test]
+        fn a_disjunction_is_the_concatenation_of_its_branches(
+            spec in arb_query_and_store().prop_filter(
+                "the draw carries a disjunction",
+                QueryAndStore::has_disjunction,
+            ),
+        ) {
+            let schema = spec.schema();
+
+            let both = run_source(&spec, &schema, &spec.source());
+            let first = run_source(&spec, &schema, &spec.source_with_branches(&[0]));
+            let second = run_source(&spec, &schema, &spec.source_with_branches(&[1]));
+
+            let mut apart = first;
+            apart.extend(second);
+            apart.sort();
+
+            let mut together = both;
+            together.sort();
+
+            prop_assert_eq!(
+                together,
+                apart,
+                "a disjunction lost, merged or invented rows, for {:?}",
+                spec.source()
+            );
+        }
+
+        /// **Branch order is not part of the answer.** `A | B` and `B | A` differ in
+        /// the order rows arrive — the machine drains one source before the next —
+        /// and in nothing else.
+        #[test]
+        fn swapping_two_branches_answers_the_same_multiset(
+            spec in arb_query_and_store().prop_filter(
+                "the draw carries a disjunction",
+                QueryAndStore::has_disjunction,
+            ),
+        ) {
+            let schema = spec.schema();
+
+            let mut written = run_source(&spec, &schema, &spec.source_with_branches(&[0, 1]));
+            let mut swapped = run_source(&spec, &schema, &spec.source_with_branches(&[1, 0]));
+
+            written.sort();
+            swapped.sort();
+
+            prop_assert_eq!(written, swapped, "for {:?}", spec.source());
+        }
+
+        /// **De Morgan: `!(A | B)` is `!A; !B`.**
+        ///
+        /// The one classical law of this family that focus can *write down*, and it
+        /// relates two different machines: a single test over two sources, and two
+        /// tests over one each. Compared exactly rather than as a multiset — neither
+        /// spelling binds anything, so both filter the same row sequence in place.
+        ///
+        /// Its partners do not survive the trip. **Double negation is not a law
+        /// here**, and not even syntax: `!` prefixes a statement, `!!S` does not
+        /// parse, and the reason it should not is that `S` binds and multiplies rows
+        /// while `!!S` could only filter — `¬¬` is identity for a proposition and
+        /// cannot be for a generator. What *is* the law is idempotence, `!S; !S ≡
+        /// !S`, which the complement property asserts. **Distributivity** —
+        /// `Q; (A | B) ≡ (Q; A) | (Q; B)` — has no right-hand side to test: `|`
+        /// joins patterns, not statement lists, and a disjunction of subqueries is
+        /// `nyi/disjunction`.
+        #[test]
+        fn de_morgan_holds_for_a_negated_disjunction(
+            spec in arb_query_and_store().prop_filter(
+                "the draw carries a negated disjunction",
+                QueryAndStore::has_disjunctive_negation,
+            ),
+        ) {
+            let schema = spec.schema();
+
+            let negated_disjunction = run_source(&spec, &schema, &spec.source());
+            let conjoined_negations = run_source(&spec, &schema, &spec.source_de_morgan());
+
+            prop_assert_eq!(
+                negated_disjunction,
+                conjoined_negations,
+                "!(A | B) and !A; !B disagreed, for {:?}",
+                spec.source()
+            );
+        }
+
         /// **Every loop order gives the same rows.**
         ///
         /// The reorderability claim, over generated queries: reordering the body
@@ -7580,6 +7884,8 @@ mod battery {
         negation_splice: bool,
         negation_residual: bool,
         negation_above_a_scan: bool,
+        disjunctive_level: bool,
+        disjunctive_negation: bool,
     }
 
     impl Shapes {
@@ -7619,6 +7925,11 @@ mod battery {
                     "a negation placed *above* a scan, where a step that binds \
                      nothing has to be re-entered from below",
                 ),
+                (self.disjunctive_level, "a level with more than one source"),
+                (
+                    self.disjunctive_negation,
+                    "a negation over more than one source — `!(A | B)`",
+                ),
             ] {
                 if !present {
                     out.push(what);
@@ -7651,10 +7962,14 @@ mod battery {
                 // bound register can reach a probe — narrowing its seek, or
                 // filtering its rows — are counted separately.
                 let level = match step {
-                    Step::Level(level) => level,
+                    Step::Level(level) => {
+                        self.disjunctive_level |= level.sources.len() > 1;
+                        level
+                    }
                     Step::Derive(_) => continue,
                     Step::Test(Test::Absent(sources)) => {
                         self.negation_test = true;
+                        self.disjunctive_negation |= sources.len() > 1;
 
                         for source in sources.iter() {
                             self.negation_splice |= matches!(
@@ -8012,6 +8327,7 @@ mod battery {
         let mut with_rows = 0;
         let mut with_join = 0;
         let mut with_constraint = 0;
+        let mut with_disjunction = 0;
         let mut with_const = 0;
         let mut with_wildcard = 0;
         let mut rows_total = 0;
@@ -8058,6 +8374,9 @@ mod battery {
             if spec.constraints() > 0 {
                 with_constraint += 1;
             }
+            if spec.has_disjunction() {
+                with_disjunction += 1;
+            }
 
             let _ = &source;
         }
@@ -8079,13 +8398,15 @@ mod battery {
             with_wildcard * 3 > RUNS,
             "only {with_wildcard}/{RUNS} queries use a wildcard"
         );
-        // **The average, and it moved when the negation draw landed** — 433 rows
-        // over these 200 queries before it, 392 after, all of the difference being
-        // rows a probe legitimately rejected. The bound is set below that at 1.5
-        // rows a query, with the room stated rather than shaved to fit: a filter
-        // this generator draws on purpose costs rows on purpose, and the assertion
-        // that carries the "not degenerate" claim is `with_rows` above — more than
-        // half of all queries still answer at least one row.
+        // **The average, and it has moved twice.** 433 rows over these 200 queries
+        // before the negation draw landed, 392 after — all of the difference being
+        // rows a probe legitimately rejected — and 614 once statements could be
+        // disjunctions, which concatenate their branches and so add rows where a
+        // negation removes them. The bound stays at 1.5 rows a query, below the
+        // lowest of the three, with the room stated rather than shaved to fit: a
+        // filter this generator draws on purpose costs rows on purpose, and the
+        // assertion that carries the "not degenerate" claim is `with_rows` above —
+        // more than half of all queries still answer at least one row.
         assert!(
             rows_total * 2 > RUNS * 3,
             "{rows_total} rows over {RUNS} queries is too thin"
@@ -8100,6 +8421,13 @@ mod battery {
         assert!(
             with_constraint * 10 > RUNS,
             "only {with_constraint}/{RUNS} queries constrain a variable"
+        );
+        // A disjunction costs no rows — it adds them — so this one is a third
+        // rather than a tenth. The branch laws are `prop_filter`ed onto exactly
+        // these draws, and a filter is only cheap while what it keeps is common.
+        assert!(
+            with_disjunction * 3 > RUNS,
+            "only {with_disjunction}/{RUNS} queries draw a disjunction"
         );
     }
 }

@@ -375,9 +375,11 @@ Each stage ends green and re-proves only what it changed:
 2. **`Level { sources }` at N = 0 and 1** — a pure refactor: `never` arrives, today's plans
    compile to N = 1, and every existing battery must stay green untouched. This is the diff that
    should be boring, and doing it alone is what makes the next one legible.
-3. **N sources, all `Seek`** — disjunction proper, the export rule of §3, the source index in the
-   cursor, I4 re-proved with the census extended to draw a disjunctive plan *and* a cut taken
-   mid-branch. The single largest step, and the only one that touches the token.
+3. ✅ **N sources, all `Seek`** — disjunction proper, the export rule of §3, the source index in
+   the cursor, I4 re-proved with the census extended to draw a disjunctive plan *and* a cut taken
+   mid-branch. The single largest step, and the only one that touches the token. The *query*
+   generator learned to draw `A | B` later, with the algebraic laws, which is what put compiled
+   disjunctive plans through the same batteries the hand-built ones had been going through.
 4. **`Source::Group`** — branches with joins; the recursive cursor entry and the inductive I4
    proof. Deferrable behind a diagnostic if the corpus says nobody writes one.
 5. ✅ **`Source::Fetch`** — reaching a fact through a reference, which by then was a source arm

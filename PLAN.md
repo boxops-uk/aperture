@@ -788,7 +788,14 @@ is `flatten` and `ty.rs`, plus `never` decided alongside them.
       sources here, so the plan is **linear** in the branches written.
 - [x] [I4](docs/invariants.md#i4) holds over plans containing a disjunction, at every scheduled
       cut point, on `MemStore` **and** fjall, with the census asserting the battery reaches a
-      disjunctive plan and a cut taken mid-branch.
+      disjunctive plan and a cut taken mid-branch — over hand-built plans (`plan::proptest`) and
+      now over **compiled** ones too, the query generator having learned to draw `A | B`.
+- [x] The **algebraic laws** that need no model, added once the metamorphic scaffolding for
+      negation existed: a negation and its assertion partition the rows, a disjunction is the
+      concatenation of its branches, `A | B` answers as `B | A`, and `!(A | B)` as `!A; !B`.
+      Double negation and distributivity are *not* on that list, and the reasons are recorded
+      where the laws are: `!!S` does not parse and could not be an identity if it did, and `|`
+      joins patterns rather than statement lists.
 - [x] Branch scope is the **intersection**, and a variable two branches bind in different places
       is rejected with a diagnostic naming it — never a run-time error.
 - [x] `never`, negation and subqueries each either run, or draw a **narrowed** diagnostic
