@@ -198,6 +198,26 @@ pub enum StoreError {
         expected: PredicateId,
         found: FactId,
     },
+
+    /// A second, *differing* fact offered for a key that already holds one.
+    ///
+    /// A key maps to exactly one fact, so the alternative to refusing is to
+    /// overwrite the `keys` row and strand the first fact's entity — a fact no
+    /// query can reach, and one no bijection check can attribute to anything
+    /// ([I12](../../docs/invariants.md#i12)). Last-writer-wins is the one outcome
+    /// an immutable store cannot have.
+    ///
+    /// A byte-identical fact is *not* this: it dedups to the id already there,
+    /// which is the merge frontier's rule for the same situation
+    /// ([operations §5](../../docs/aperture-cli-design.md)).
+    #[error(
+        "{predicate:?} already holds a different fact keyed the same way, as {existing:?}; \
+         a key is written once"
+    )]
+    KeyAlreadyWritten {
+        predicate: PredicateId,
+        existing: FactId,
+    },
 }
 
 /// A fault in a **write**: a fact that does not fit the schema it is being written
@@ -251,6 +271,27 @@ pub enum StoreCodecError {
 
     #[error("bad record")]
     BadRecord,
+
+    /// A fact reference naming a **different predicate** than the field it sits in
+    /// is declared to reference, caught at the typed codec boundary — the only one
+    /// holding both the declared type and the id whose tag answers it.
+    ///
+    /// The read-path counterpart is
+    /// [`ApertureError::ReferenceCrossesPredicate`], raised when a query *follows*
+    /// such a reference. Both exist because they catch it at different moments: this
+    /// one before the bytes are written, that one for bytes some other writer
+    /// produced.
+    #[error("a reference declared to name predicate {expected} names predicate {found}")]
+    FactRefPredicate { expected: u32, found: u32 },
+
+    /// A fact reference whose sequence is 0, which is reserved so that zeroed or
+    /// truncated bytes are detectably not a fact ([I11]). The stored-row decoder
+    /// enforces the same rule as [`StoreError::FactIdSequence`]; this is it at the
+    /// tuple codec, which is what reads a reference embedded in a key.
+    ///
+    /// [I11]: ../../docs/invariants.md#i11
+    #[error("fact-id sequence 0 is reserved, so these bytes are not a fact reference")]
+    ReservedFactId,
 
     #[error("integer overflow")]
     Overflow,

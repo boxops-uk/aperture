@@ -206,17 +206,32 @@ and buys parallelism back with the whole rebase/substitution subsystem, which pe
 counters delete.
 *Why & how:* [chapter 3](03-storage-model.md#factid-allocation-i11). *Guards:*
 `store::factid_unique_monotonic` + `store::exhausted_sequence_space_is_an_error` +
-`store::untaggable_predicate_is_rejected`.
+`store::untaggable_predicate_is_rejected`. The reserved sequence is guarded where stored bytes
+become an id, which is two places and not one:
+`store::a_zeroed_fact_id_is_rejected_at_decode` for a `keys` row, and
+`codec::a_fact_ref_of_the_reserved_sequence_is_rejected` for a reference embedded **in a key** —
+a property nothing checks is only an intention. `codec::a_typed_fact_ref_must_name_the_declared_predicate`
+and `fact::a_reference_must_name_the_declared_predicate` are the other half of what the tag makes
+checkable: the id says which predicate it belongs to, so a reference into the wrong one is a
+compare rather than a lookup, and it is caught before the bytes exist.
 
 <a id="i12"></a>
 ### I12 — A fact is written to both column families atomically
 `keys` and `entities` are written in one fjall batch — a fact is never half-present. A
 dangling half is silent corruption at projection; a dangling entity is invisible to every
 query. **Adopted, not diverged:** Glean commits its two families in one wider batch, carrying its
-id counter and per-predicate stats rows along with them. *Why & how:* [chapter 3](03-storage-model.md#the-atomic-two-cf-write-i12). *Guards:*
+id counter and per-predicate stats rows along with them.
+**Atomicity is not the whole of the bijection.** A batch is all-or-nothing, but writing the
+*same key twice* overwrites the `keys` row and strands the first fact's entity — an orphan the
+batch is innocent of. `FjallDb::put` refuses that in every build (identical fact ⇒ the id
+already assigned; same key, different value ⇒ `KeyAlreadyWritten`); `put_fact` is the bulk
+primitive and still leaves it to its caller, checked by a debug assertion, because Phase 7's
+merge frontier establishes it more cheaply upstream.
+*Why & how:* [chapter 3](03-storage-model.md#the-atomic-two-cf-write-i12). *Guards:*
 `store::no_half_present_facts_after_writes` (the two CFs in exact bijection over generated
 writes) + `store::no_half_present_facts` (a child process aborted mid-write; the bijection
-must survive recovery).
+must survive recovery) + `store::put_is_write_once_and_says_so_in_release` and
+`store::writing_a_key_twice_is_caught_in_debug` (the two halves of the write-once rule).
 
 <a id="i13"></a>
 ### I13 — The DB's schema is embedded and frozen at create

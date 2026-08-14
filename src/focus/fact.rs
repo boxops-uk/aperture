@@ -191,9 +191,20 @@ fn checked(
     };
 
     match (ty, value) {
-        (PredicateTy::Int, Value::Int(_))
-        | (PredicateTy::Str, Value::Str(_))
-        | (PredicateTy::Fact(_), Value::FactRef(_)) => Ok(value.clone()),
+        (PredicateTy::Int, Value::Int(_)) | (PredicateTy::Str, Value::Str(_)) => Ok(value.clone()),
+
+        // A reference has to name the predicate the field *declares*, and the id
+        // carries its predicate in its own tag, so this is a compare rather than a
+        // lookup. Not merely a nicety: the read path reads the referenced row
+        // against the declared predicate's key layout, so a reference to another
+        // predicate is a fact that either errors when followed or answers with
+        // another type's bytes — and neither is visible from the field itself.
+        // Sequence 0 is no fact's id, here for the same reason.
+        (PredicateTy::Fact(predicate), Value::FactRef(id))
+            if id.predicate() == *predicate && id.sequence() != 0 =>
+        {
+            Ok(value.clone())
+        }
 
         (PredicateTy::Record(field_tys), Value::Record(given)) => {
             let mut out = Vec::with_capacity(field_tys.len());
@@ -255,12 +266,18 @@ fn describe(ty: &PredicateTy) -> String {
 }
 
 /// What was offered, in the same vocabulary.
+///
+/// A reference names the predicate it points at, so that the mismatch this most
+/// often reports — the right *kind* of value pointing at the wrong predicate —
+/// reads as two predicates rather than as "expected a reference, got a
+/// reference".
 fn shape(value: &Value) -> String {
     match value {
         Value::Null => "null".to_owned(),
         Value::Int(_) => "int".to_owned(),
         Value::Str(_) => "string".to_owned(),
-        Value::FactRef(_) => "a reference".to_owned(),
+        Value::FactRef(id) if id.sequence() == 0 => "the reserved fact id".to_owned(),
+        Value::FactRef(id) => format!("a reference to predicate {}", id.predicate().0),
         Value::Record(fields) => format!("a record of {} field(s)", fields.len()),
     }
 }
@@ -600,5 +617,47 @@ mod tests {
 
         assert_eq!(predicate, PredicateId(9));
         assert_eq!(key, crate::focus::tuple::fact_ref_bytes(target));
+    }
+
+    /// ...and it has to be the id of a fact of the **declared** predicate.
+    ///
+    /// `test.Ref` declares `of : test.Foo`, so an id the store returned for a
+    /// `test.Bar` is a type error even though both are ids. The tag inside the id
+    /// is what makes it checkable here, before any bytes exist — which is where
+    /// this module's whole argument says a fact's mistakes belong. Left to the
+    /// read path it is not a type error at all: the field reads back as a
+    /// perfectly well-formed reference, and only a query that *follows* it
+    /// discovers that the row on the other end has another predicate's key
+    /// layout.
+    #[test]
+    fn a_reference_must_name_the_declared_predicate() {
+        struct Ref(FactId);
+        impl Fact for Ref {
+            const PREDICATE: &'static str = "test.Ref";
+            fn key(&self) -> Value {
+                record([("of", self.0.to_value())])
+            }
+        }
+
+        let elsewhere = FactId::new(PredicateId(1), 1).expect("a fact id");
+        let error = encoded(&Ref(elsewhere)).expect_err("test.Bar is not test.Foo");
+
+        assert!(
+            matches!(error, FactError::TypeMismatch { .. }),
+            "got {error:?}"
+        );
+        assert!(
+            error.to_string().contains("reference to predicate 0")
+                && error.to_string().contains("reference to predicate 1"),
+            "the message should name both predicates: {error}"
+        );
+
+        // And the reserved sequence, which is no fact's id at all.
+        assert!(
+            encoded(&Ref(FactId::from_raw(0)))
+                .expect_err("sequence 0 is reserved")
+                .to_string()
+                .contains("reserved"),
+        );
     }
 }

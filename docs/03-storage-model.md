@@ -352,14 +352,22 @@ batch is the only thing standing between "immutable, self-consistent store" and
 ## Writing a fact by hand
 
 `put_fact(predicate, key_bytes, value_bytes)` is the primitive, and it is the wrong thing to
-hand a person. Three of its preconditions are invisible at the call site, and each fails
-*silently* — the write succeeds and the fact is simply never found:
+hand a person. Four of its preconditions are invisible at the call site, and each fails
+*silently* — the write succeeds and the fact is simply never found, or is found and is wrong:
 
 | what a caller has to know | what happens if they don't |
 |---|---|
 | a record key is **flat**; only a record *inside* a field keeps its wrapper | the seek builds the flat form and never meets the wrapped one |
 | field order is the **schema's declaration order**, which a Rust struct has no reason to share | fields land in the wrong positions and decode as each other |
 | only the schema says whether a predicate has a value side at all | a value written where none is expected, or missing where one is |
+| a reference must name the predicate its field **declares** | it encodes, sorts and projects as a perfectly good reference; the only thing that notices is a query that *follows* it, which reads the far row against the declared predicate's layout |
+
+That last one is the one the [snowflake](#factid-allocation-i11) makes cheap to close: the id
+carries its own predicate in its tag, so checking it is a compare rather than a lookup, and the
+typed codec is the only boundary holding both the declared type and the id. It is checked there
+and in `focus::fact`, before any bytes exist. Sequence 0 is refused in the same places, for the
+same reason it is reserved — zeroed or truncated bytes should be *detectably* not a fact
+([I11](invariants.md#i11)).
 
 So `FjallDb::put(&schema, &fact)` takes a **well-typed value** instead: a type implementing
 `focus::fact::Fact` names its predicate and gives its key fields *by name*, and the write
@@ -372,6 +380,20 @@ The id it returns **is** what a reference to that fact is, so a fact pointing at
 the value the earlier write handed back. Referential integrity is then a consequence of write
 order rather than a check: nothing can point at a fact that has not been written, because
 there is no id for it yet.
+
+**A key is written once, and this is the layer that enforces it.** `put_fact` leaves the rule to
+its caller — it is the primitive bulk ingest is built on, and the check is a point lookup per
+fact. `put` is not that caller: it already pays schema resolution and a full encode per fact, so
+it pays the lookup too, with the semantics the merge frontier already commits to
+([operations §5](aperture-cli-design.md)) — a **byte-identical** fact dedups to the id already
+assigned, and a **same-key, different-value** fact is refused. Inheriting a bulk primitive's
+contract is what made the fourth silent precondition: writing a key twice overwrites its `keys`
+row and strands the first fact's entity, an orphan no query can reach and no bijection check can
+attribute to anything ([I12](invariants.md#i12)), which is last-writer-wins in a store whose whole
+premise is that nothing changes. It is a check and not a lock — two threads writing the *same*
+key can both miss it — and what rules that out is
+[ops-I1](aperture-cli-design.md)'s single writer per DB, not this lookup, which is here for the
+sequential mistake, the one that actually happens.
 
 Two things this is deliberately not. It is **not bulk ingestion** — it materialises a value per
 fact, which is right for a deriver writing thousands and wrong for a loader writing millions;

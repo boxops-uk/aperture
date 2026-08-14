@@ -6,7 +6,7 @@ use serde::{Serialize, Serializer, ser::SerializeMap};
 use crate::focus::{
     error::{ApertureError, StoreCodecError},
     plan::FactId,
-    schema::{LocalInterner, PredicateTy, Symbol},
+    schema::{LocalInterner, PredicateId, PredicateTy, Symbol},
 };
 
 pub const MARK_NULL: u8 = 0x00;
@@ -482,6 +482,35 @@ pub fn encode_key(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodec
     Ok(out)
 }
 
+/// A fact reference against the field it sits in: it must name the **declared**
+/// predicate, and it must not be the reserved id.
+///
+/// The predicate a reference names is inside the id itself — a [`FactId`] is a
+/// snowflake, tagged with its owning predicate — so this costs a shift and a
+/// compare, and the typed codec is the only boundary that holds both halves.
+///
+/// Why it has to be checked *here*, rather than left to the read path: a
+/// wrong-predicate reference is not corrupt in any way the bytes reveal. It
+/// encodes, decodes, sorts and projects as a well-formed reference. The only
+/// thing that ever notices is a query that **follows** it, which reads the row on
+/// the other end against the *declared* predicate's key layout and so must
+/// refuse ([`ApertureError::ReferenceCrossesPredicate`](crate::focus::error::ApertureError)).
+/// A query that merely reads the field back never notices at all.
+fn checked_fact_ref(predicate: PredicateId, id: FactId) -> Result<(), StoreCodecError> {
+    if id.sequence() == 0 {
+        return Err(StoreCodecError::ReservedFactId);
+    }
+
+    if id.predicate() != predicate {
+        return Err(StoreCodecError::FactRefPredicate {
+            expected: predicate.0,
+            found: id.predicate().0,
+        });
+    }
+
+    Ok(())
+}
+
 /// [`encode_typed`] into an encoder already in progress — a field of a record.
 pub fn encode_typed_at(
     enc: &mut TupleEncoder<'_>,
@@ -499,7 +528,8 @@ pub fn encode_typed_at(
             Ok(())
         }
 
-        (PredicateTy::Fact(_), Value::FactRef(id)) => {
+        (PredicateTy::Fact(predicate), Value::FactRef(id)) => {
+            checked_fact_ref(*predicate, *id)?;
             enc.put_fact_id(*id);
             Ok(())
         }
@@ -724,7 +754,19 @@ impl<'a> TupleDecoder<'a> {
 
         self.pos = end;
 
-        Ok(FactId::from_raw(u64::from_be_bytes(buf)))
+        let id = FactId::from_raw(u64::from_be_bytes(buf));
+
+        // Sequence 0 is reserved so that zeroed or truncated bytes are
+        // *detectably* not a fact ([I11](../../docs/invariants.md#i11)), and a
+        // property nothing checks is only an intention. The stored-`keys`-row
+        // decoder (`store::decode_fact_id`) already enforces it; this is the same
+        // rule at the decoder that reads a reference embedded **in a key**, which
+        // is the only other way stored bytes become a `FactId`.
+        if id.sequence() == 0 {
+            return Err(StoreCodecError::ReservedFactId);
+        }
+
+        Ok(id)
     }
 
     pub fn record<R, E>(
@@ -1007,11 +1049,16 @@ pub fn decode_typed_at(
             Ok(Value::Str(s.into_owned()))
         }
 
-        PredicateTy::Fact(_) => {
+        PredicateTy::Fact(predicate) => {
             // A fact reference is encoded with its own marker (MARK_FACT_REF),
             // consistently with `skip` and the `FactId` codec — not the integer
             // codec.
+            //
+            // `take_fact_id` has already rejected the reserved sequence; what is
+            // left is whether the id names the predicate this field is declared
+            // to reference, which only this boundary knows.
             let id = dec.take_fact_id()?;
+            checked_fact_ref(*predicate, id)?;
             Ok(Value::FactRef(id))
         }
 
@@ -1131,7 +1178,10 @@ impl Serialize for Value {
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use super::*;
-    use crate::focus::schema::{PredicateId, PredicateTy, SchemaInterner};
+    use crate::focus::{
+        plan::{MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
+        schema::{PredicateId, PredicateTy, SchemaInterner},
+    };
     use ::proptest::prelude::*;
     use lasso::Rodeo;
     use std::{cmp::Ordering, sync::Arc};
@@ -1288,6 +1338,26 @@ pub mod proptest {
         format!("field_{i}")
     }
 
+    /// A predicate tag, with both ends of the field it occupies drawn explicitly.
+    fn arb_predicate_id() -> impl Strategy<Value = u32> {
+        prop_oneof![
+            Just(0u32),
+            Just(MAX_TAGGABLE_PREDICATE),
+            0u32..=MAX_TAGGABLE_PREDICATE,
+        ]
+    }
+
+    /// A **valid** fact-id sequence: 1-based, since 0 is reserved, and up to the
+    /// width of the field. Both edges injected, because a sequence at either end
+    /// is where the tag and the sequence meet in the encoded bytes.
+    fn arb_sequence() -> impl Strategy<Value = u64> {
+        prop_oneof![
+            Just(1u64),
+            Just(MAX_FACT_SEQUENCE),
+            1u64..=MAX_FACT_SEQUENCE
+        ]
+    }
+
     /// A pair of values sharing one schema, drawn together so ordering/round-trip
     /// properties can compare `a` against `b`. Injects the known integer/string
     /// edges explicitly rather than trusting random draws to hit them, and
@@ -1319,11 +1389,24 @@ pub mod proptest {
                 a: Value::Str(a),
                 b: Value::Str(b),
             }),
-            (any::<u64>(), any::<u64>()).prop_map(|(a, b)| TypedPairSpec {
-                ty: TySpec::Fact(PredicateId(0)),
-                a: Value::FactRef(FactId::from_raw(a)),
-                b: Value::FactRef(FactId::from_raw(b)),
-            }),
+            // Both halves of a pair share one type, so both references are tagged
+            // for the *same* predicate — which is what the schema means and, since
+            // `encode_typed` now checks it, the only thing it will encode. Drawing
+            // the tag and the sequence separately rather than an arbitrary `u64`
+            // costs no byte coverage: a valid id ranges over the whole 64-bit space
+            // except the reserved sequences, so ordering is still exercised across
+            // both fields and their boundary.
+            (arb_predicate_id(), arb_sequence(), arb_sequence()).prop_map(|(predicate, a, b)| {
+                TypedPairSpec {
+                    ty: TySpec::Fact(PredicateId(predicate)),
+                    a: Value::FactRef(
+                        FactId::new(PredicateId(predicate), a).expect("a drawn id is valid"),
+                    ),
+                    b: Value::FactRef(
+                        FactId::new(PredicateId(predicate), b).expect("a drawn id is valid"),
+                    ),
+                }
+            },),
         ];
 
         leaf.prop_recursive(
@@ -1981,6 +2064,99 @@ pub(crate) mod tests {
         // ...and `decode_typed` round-trips it (interner unused for a fact ref).
         let interner = LocalInterner::new(SchemaInterner::new(Rodeo::new().into_reader()));
         assert_eq!(decode_typed(&interner, &bytes, &ty).unwrap(), value);
+    }
+
+    /// A fact reference carries the predicate it names in the id's own tag, so
+    /// "does this reference name what the field is declared to reference" is a
+    /// comparison the typed codec can make **for free** — and this is the only
+    /// boundary that can make it, because it is the only one holding both the
+    /// declared type and the id.
+    ///
+    /// Unchecked, `Fact(0)` accepts an id tagged for predicate 1: the bytes
+    /// encode, decode and project as a well-typed reference to the wrong
+    /// predicate. The fault surfaces only if a query later *follows* it — as
+    /// [`ApertureError::ReferenceCrossesPredicate`](crate::focus::error::ApertureError),
+    /// raised in the executor, layers away from the write that was wrong — or
+    /// never at all, for a query that only reads the field back.
+    #[test]
+    fn a_typed_fact_ref_must_name_the_declared_predicate() {
+        use crate::focus::schema::{PredicateId, SchemaInterner};
+        use lasso::Rodeo;
+
+        let ty = PredicateTy::Fact(PredicateId(0));
+        let elsewhere = FactId::new(PredicateId(1), 7).expect("a valid id");
+
+        assert!(
+            matches!(
+                encode_typed_for_test(&ty, &Value::FactRef(elsewhere)),
+                Err(StoreCodecError::FactRefPredicate {
+                    expected: 0,
+                    found: 1
+                })
+            ),
+            "encoding a reference tagged for another predicate must be rejected",
+        );
+
+        // The decode side is checked independently, because the bytes need not
+        // have come from this encoder: a fact file, another DB, a corrupt row.
+        let mut bytes = Vec::new();
+        TupleEncoder::new(&mut bytes).put_fact_id(elsewhere);
+
+        let interner = LocalInterner::new(SchemaInterner::new(Rodeo::new().into_reader()));
+        assert!(
+            matches!(
+                decode_typed(&interner, &bytes, &ty),
+                Err(ApertureError::Decode(StoreCodecError::FactRefPredicate {
+                    expected: 0,
+                    found: 1
+                }))
+            ),
+            "decoding a reference tagged for another predicate must be rejected",
+        );
+    }
+
+    /// Sequence 0 is reserved so that zeroed or corrupt bytes are *detectably*
+    /// not a fact ([I11]) — and a property nothing checks is only an intention.
+    /// [`decode_fact_id`](crate::focus::store) already enforces it for a stored
+    /// `keys` row; this is the same rule at the other decoder, the one that reads
+    /// a reference embedded **in a key**.
+    ///
+    /// [I11]: ../../../docs/invariants.md#i11
+    #[test]
+    fn a_fact_ref_of_the_reserved_sequence_is_rejected() {
+        use crate::focus::schema::{PredicateId, SchemaInterner};
+        use lasso::Rodeo;
+
+        let ty = PredicateTy::Fact(PredicateId(0));
+
+        assert!(
+            matches!(
+                encode_typed_for_test(&ty, &Value::FactRef(FactId::from_raw(0))),
+                Err(StoreCodecError::ReservedFactId)
+            ),
+            "encoding the reserved id must be rejected",
+        );
+
+        // Eight zero bytes behind the marker — the shape a truncated or zeroed
+        // row actually takes.
+        let bytes = [MARK_FACT_REF, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        assert!(
+            matches!(
+                TupleDecoder::new(&bytes).take_fact_id(),
+                Err(StoreCodecError::ReservedFactId)
+            ),
+            "the decoder itself must reject the reserved sequence",
+        );
+
+        let interner = LocalInterner::new(SchemaInterner::new(Rodeo::new().into_reader()));
+        assert!(
+            matches!(
+                decode_typed(&interner, &bytes, &ty),
+                Err(ApertureError::Decode(StoreCodecError::ReservedFactId))
+            ),
+            "and so must the typed decode above it",
+        );
     }
 
     // ---- a stored key is flat, a nested record is not ----------------------

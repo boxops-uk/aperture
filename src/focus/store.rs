@@ -73,6 +73,13 @@ struct Trees {
     entities: Keyspace,
 }
 
+/// A fact already in the store, as [`FjallDb::put`] needs to see it: the id it
+/// was given, and its value bytes to compare a re-offered fact against.
+struct StoredFact {
+    id: FactId,
+    value: Vec<u8>,
+}
+
 /// A predicate's trees plus its own id allocator
 /// ([I11](../../docs/invariants.md#i11)).
 struct Predicate {
@@ -294,13 +301,103 @@ impl FjallDb {
     /// The returned id is what a *reference* to this fact is, so the next fact that
     /// points at it takes this value.
     ///
+    /// # A key is written once, and this is where that is enforced
+    ///
+    /// [`put_fact`](Self::put_fact) leaves the write-once contract to its caller,
+    /// because it is the primitive bulk ingest is built on and the check is a point
+    /// lookup per fact. **`put` is not that caller.** It is the documented way to
+    /// write a fact by hand, it already pays schema resolution and a full encode per
+    /// fact, and inheriting a bulk primitive's contract is how a duplicate key came
+    /// to silently strand a fact in release builds. So it pays the lookup, and the
+    /// semantics are the ones the merge frontier already commits to
+    /// ([operations §5](../../docs/aperture-cli-design.md)):
+    ///
+    /// - a **byte-identical** fact dedups — the id already assigned comes back, and
+    ///   nothing is written;
+    /// - a **same-key, different-value** fact is rejected
+    ///   ([`StoreError::KeyAlreadyWritten`]).
+    ///
+    /// Never last-writer-wins, which is what the unchecked path silently did.
+    ///
+    /// This is a check, not a lock: two threads writing the *same key* at once can
+    /// both miss it and both write. What rules that out is
+    /// [ops-I1](../../docs/aperture-cli-design.md)'s single writer per DB, not this
+    /// lookup — which is here for the sequential mistake, the one that actually
+    /// happens.
+    ///
     /// # Errors
     ///
-    /// [`ApertureError::Fact`] if the value does not fit the schema, and whatever
-    /// [`put_fact`](Self::put_fact) reports otherwise.
+    /// [`ApertureError::Fact`] if the value does not fit the schema,
+    /// [`StoreError::KeyAlreadyWritten`] if the key holds a different fact, and
+    /// whatever [`put_fact`](Self::put_fact) reports otherwise.
     pub fn put<F: Fact>(&self, schema: &Schema, fact: &F) -> Result<FactId, ApertureError> {
         let (predicate, key, value) = fact::encode(schema, fact)?;
+
+        if let Some(existing) = self.fact_at(predicate, &key)? {
+            return if existing.value == value {
+                Ok(existing.id)
+            } else {
+                Err(StoreError::KeyAlreadyWritten {
+                    predicate,
+                    existing: existing.id,
+                }
+                .into())
+            };
+        }
+
         self.put_fact(predicate, &key, &value)
+    }
+
+    /// The fact already stored under `(predicate, key_fields)`, if there is one:
+    /// its id and its value bytes, which is what [`put`](Self::put) compares
+    /// against to tell a duplicate from a conflict.
+    ///
+    /// Reads the trees live rather than through a snapshot — a writer wants what is
+    /// there *now*, not a repeatable read.
+    fn fact_at(
+        &self,
+        predicate: PredicateId,
+        key_fields: &[u8],
+    ) -> Result<Option<StoredFact>, ApertureError> {
+        let handle = self.predicate(predicate)?;
+
+        let mut index_key = Vec::with_capacity(PREDICATE_ID_SIZE + key_fields.len());
+        index_key.extend_from_slice(&predicate.0.to_be_bytes());
+        index_key.extend_from_slice(key_fields);
+
+        let Some(id) = handle
+            .trees
+            .keys
+            .get(&index_key)
+            .map_err(StoreError::Backend)?
+        else {
+            return Ok(None);
+        };
+
+        let id = decode_fact_id(&id)?;
+
+        // A `keys` row without its `entities` row is a broken I12, not a fact
+        // this key does not have — reported rather than read as "free to write".
+        let entity = handle
+            .trees
+            .entities
+            .get(id.raw().to_be_bytes())
+            .map_err(StoreError::Backend)?
+            .ok_or(ApertureError::DanglingFactId(id))?;
+
+        // The row is `[key_len u32 BE][key][value]`; only the value is wanted, the
+        // key being `key_fields` by construction.
+        let framing: [u8; KEY_LEN_LEN] = entity
+            .get(..KEY_LEN_LEN)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(StoreError::TruncatedEntity(id))?;
+        let key_end = KEY_LEN_LEN + u32::from_be_bytes(framing) as usize;
+        let value = entity
+            .get(key_end..)
+            .ok_or(StoreError::TruncatedEntity(id))?
+            .to_vec();
+
+        Ok(Some(StoredFact { id, value }))
     }
 
     /// Write one fact from **encoded bytes**, allocating its id, with both column
@@ -1282,11 +1379,15 @@ mod tests {
         );
     }
 
-    /// A key is written once ([`FjallDb::put_fact`]). Writing it twice would
-    /// overwrite the `keys` row and strand the first fact's entity — invisible to
-    /// every query, and undetectable without a bijection check. Enforcing that on
-    /// the write path costs a lookup per fact, so it is a debug assertion; this
-    /// is the control proving it is armed.
+    /// A key is written once, at the **primitive** ([`FjallDb::put_fact`]), where
+    /// the contract is the caller's and the check costs a lookup per fact that
+    /// bulk ingest will not pay. Writing it twice overwrites the `keys` row and
+    /// strands the first fact's entity — invisible to every query, and undetectable
+    /// without a bijection check. So it is a debug assertion, and this is the
+    /// control proving it is armed.
+    ///
+    /// [`FjallDb::put`] is the other half of the rule and does not rely on this:
+    /// see `put_is_write_once_and_says_so_in_release`.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "a key is written once")]
@@ -1296,6 +1397,72 @@ mod tests {
 
         db.put_fact(PredicateId(0), &[1, 2], &[]).expect("put");
         let _ = db.put_fact(PredicateId(0), &[1, 2], &[]);
+    }
+
+    /// **`put` enforces write-once, in every build.**
+    ///
+    /// `put_fact` is the bulk primitive and leaves the contract to its caller;
+    /// `put` is the documented way to write a fact by hand, and inheriting a bulk
+    /// primitive's contract is what made a duplicate key silently orphan a fact in
+    /// release. `put` already pays schema resolution and a full encode per fact,
+    /// so one point lookup is noise beside what it is already doing.
+    ///
+    /// The semantics are the merge frontier's, so the two write paths agree
+    /// (operations §5): a byte-identical fact **dedups** to the id already there,
+    /// and a same-key-different-value fact is **rejected**. Never last-writer-wins
+    /// — that is the one outcome an immutable store cannot have, and it is what
+    /// unchecked `put_fact` gave.
+    ///
+    /// Deliberately not `#[cfg(debug_assertions)]`: release is where this was
+    /// broken.
+    #[test]
+    fn put_is_write_once_and_says_so_in_release() {
+        use crate::focus::{
+            fact::{Fact as _, ToValue, record},
+            fixture,
+            tuple::Value,
+        };
+
+        struct Foo(&'static str);
+        impl crate::focus::fact::Fact for Foo {
+            const PREDICATE: &'static str = "test.Foo";
+            fn key(&self) -> Value {
+                record([("id", 1.to_value()), ("name", "ann".to_value())])
+            }
+            fn value(&self) -> Option<Value> {
+                Some(self.0.to_value())
+            }
+        }
+        let _ = Foo::PREDICATE;
+
+        let dir = TempDir::new().expect("tempdir");
+        let db = FjallDb::open(dir.path()).expect("open");
+        let schema = fixture::schema();
+
+        let first = db.put(&schema, &Foo("one")).expect("the first write");
+
+        // Byte-identical: the id already assigned, and no second fact.
+        let again = db
+            .put(&schema, &Foo("one"))
+            .expect("an identical fact dedups rather than failing");
+        assert_eq!(first, again, "an identical fact must not get a second id");
+
+        // Same key, different value: rejected, and nothing written.
+        let conflict = db
+            .put(&schema, &Foo("two"))
+            .expect_err("same key, different value");
+        assert!(
+            matches!(
+                conflict,
+                ApertureError::Store(StoreError::KeyAlreadyWritten { existing, .. })
+                    if existing == first
+            ),
+            "got {conflict:?}"
+        );
+
+        // One fact, and the two column families still agree about it — which is
+        // the property (I12) the orphaned row broke.
+        assert_eq!(assert_bijection(&db), 1);
     }
 
     /// [`FjallDb::reader`] costs the same whatever the schema's size.
