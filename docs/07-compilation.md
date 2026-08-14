@@ -216,6 +216,23 @@ Two consequences worth stating, because both look like details and are not:
   not that field's, so a constant record containing one is not a constant at all
   (`Const::Prefix` inside a record is refused, and the field falls back to residuals).
 
+**Reading the decision back.** `focus::print::plan` — what `:plan` shows — renders a seek as
+the key it seeks, one entry per key field in the same declared order the table above is walked
+in, so which row of that table each field took is visible without reasoning about it:
+
+```
+focus> :plan X where X = src.SearchByName {name = "encode"..}
+  r0 <- src.SearchByName seek[name = "encode".., to = _]
+  head r0#
+```
+
+A pin is decoded back to the literal it came from (`..` for a string prefix, which is a range
+rather than an equality), a splice reads `r0.name` or `r0#`, and `_` is a field the seek never
+reached — so the boundary between the pins and the `_`s is the point the scan starts reading
+rows, which is the whole of what sargeability decided. Constants are decoded against the
+field's **declared** type, so bytes that do not decode are shown as bytes rather than guessed
+at; that means a plan built by hand, or one built against another schema.
+
 A plan addresses a field with a **`FieldPath`**: a top-level field, plus a step per record it
 is nested inside. Flat is the fast path — the executor's field-offset cache holds exactly
 those — and a nested step re-derives its offsets per read. `FieldPath` is why
@@ -424,6 +441,47 @@ can always satisfy it — a constraint captures nothing, so it can go last — a
 unbound case has an owner.
 
 <a id="what-flatten-defers-and-why"></a>
+### Negation — a filter, and an ordering rule that needs no mechanism
+
+`!test.Bar {id = X}` is a statement, not a pattern ([Phase 2's grammar
+resolution](../PLAN.md)), and flatten lowers it to a [`Step::Test`](04-executor.md#the-plan-ir):
+the same seek a scan of `test.Bar` would have used, with the rows tested for absence instead of
+iterated. It takes no register, emits no row of its own, and costs the [resume
+token](05-resume.md) nothing.
+
+**Everything it names is a read.** Glean states the scope half as `FlatNegation -> mempty` —
+nothing inside a negated group escapes it, because the branch that would have bound a variable is
+the branch that must not have matched. Flatten gets there by walking the key exactly as it walks
+a scan's and then moving every capture into `reads`, and that one move buys the *ordering* rule
+as well:
+
+> Glean, `Note [Reordering negations]`: *"To ensure consistent semantics regardless of the order
+> of statements in the source query we always move negated subqueries after the binding of all
+> variables from the parent scope that it uses."*
+
+That is a **reads-edge, not an immovability tag**. `reads` is precisely what the [runnable
+frontier](#reorder--the-runnable-frontier) will not run a statement before, so `!(A X); B X` is
+forced to run as `B X; !(A X)` by the algorithm that was already there — no new kind of
+constraint, and no exception to the completeness argument, since `reads` is still structural and
+`bound` still only grows. The rule matters semantically rather than for speed: an unbound
+variable inside a negation would behave as a wildcard, so running it early asks a *different
+question*.
+
+Which leaves the variable that is bound **nowhere else**. Its standard reading is existential —
+`!test.Edge {from = X, to = Y}` means "no edge out of `X` at all" — and that is the opposite of
+what every other statement in focus does with a name. The two readings are indistinguishable at a
+glance and the existential one is already spellable as `_`, so flatten refuses rather than
+choosing: `reject/unbound-variable`, with a message naming the wildcard.
+
+**Hoisting is the one thing a negation must not inherit.** A fact pattern inside an ordinary
+statement's key becomes [a level of its own](#what-flatten-defers-and-why); inside a negation's
+key that would change the answer. `¬∃f∃r` and `∀f ¬∃r` agree wherever the hoisted level produces
+rows and disagree exactly when it produces none — the negation is then vacuously true, while the
+hoisted plan has an empty level above the test and answers nothing at all. So `nyi/negation` here
+is a refusal to lower it wrongly, not a feature waiting its turn. A **fetch** may be hoisted out,
+and is: a reference names exactly one fact ([I12](invariants.md#i12)), so the level above the
+test always produces exactly one row.
+
 ### What flatten defers, and why
 
 Everything below **parses and typechecks**, then draws one specific `nyi/…` naming it — the
@@ -443,6 +501,8 @@ fixture deliberately does not have, so its guard builds a two-predicate schema o
 | `test.Name Y.value` — a value in a key position | `nyi/value-match` | a residual class over the fetched value buffer, never in the scan ([I6](invariants.md#i6)) |
 | `test.Nested Y; test.Wide {outer = Y}` — a whole key matched **into a record field** | `nyi/whole-key` | flat against wrapped: the same record, not the same bytes ([chapter 3](03-storage-model.md#a-stored-key-is-flat)) |
 | `Edge {from = X, to = X}` | `nyi/repeated-variable` | a same-row `EqField` residual — the [Phase 4 decision](open-decisions.md) |
+| `!(Y where …)` — a negated **subquery** | `nyi/negation` | a level *inside* a test, which is the one shape this phase would have had to add to the machine |
+| `!test.Ref {of = test.Foo {id = 1}}` — a generator **inside** a negation's key | `nyi/negation` | not a lowering that is missing but one that would be **wrong**: see below |
 
 **`X = Y.name` is not on this list any more, and the line it moved across is the useful one.**
 A field read names a *place* — a register plus a path — so binding a name to it is the same

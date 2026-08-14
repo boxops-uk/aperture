@@ -25,6 +25,7 @@ struct Plan {
 enum Step {
     Level(Level),         // a loop level
     Derive(DerivedBind),  // a value to compute — not a loop level
+    Test(Test),           // a filter to pass — not a loop level either
 }
 ```
 
@@ -51,6 +52,38 @@ A `Step::Derive` is chapter 7's [derived bind](07-compilation.md#derived-facts) 
 costs one bit of frame state because arriving at a step from below and from above must differ
 and the loop carries no direction. It contributes no cursor entry — see
 [I14](invariants.md#i14).
+
+A **`Step::Test`** is the third kind and the same shape: one row, and the row it produces is the
+one already standing.
+
+```rust
+enum Test {
+    Absent(Box<[Source]>),  // the row survives iff *no* source produces a row
+}
+```
+
+`Absent` is **negation**, and the sources are the negated statement's alternatives — so the count
+means what it means for a level: one is `!test.Bar {…}`, several is a negated disjunction, and
+*none* is the negation of the empty relation, which every row passes. Each source is drained only
+to its **first** row: the question is whether a witness exists, not how many, so a negation over a
+predicate holding a million matching rows reads one of them.
+
+What makes it cheap to add is that neither of its two outcomes is new to the machine. Passing is
+ascending with the registers untouched; failing is the same backtrack an exhausted level does. So
+negation needed no new direction, no new frame kind, and no reshaping of the loop —
+[I7](invariants.md#i7) holds by construction rather than by care. The frame's one bit of state is
+shared with a derive step, because a frame is one step and a step is one kind.
+
+The probe opens each source, asks for one row, and **closes it again before returning**, so a
+negation holds no iterator between probes and a suspend at any depth has nothing of its to release
+([I8](invariants.md#i8)). It reads `keys` and fetches no value, which is why
+[I6](invariants.md#i6) is untouched; and because it runs once per row the level above it
+*produces* rather than once per row a scan *examines*, its cost is the same shape a
+[fetch](#fetching-through-a-reference) pays.
+
+> **A test is not a level, and the arithmetic depends on it.** A register address counts levels,
+> not steps: a derive and a test bind no row. `Plan::levels()` is what the cursor is checked
+> against, and flatten counts the same way when it assigns addresses.
 
 Each loop level is a `Level`, and its rows come from a list of **sources**:
 
@@ -334,6 +367,15 @@ loop:
         else:            produced = false        # exhausted, on the way back up
                          if depth == 0: return Done
                          depth -= 1
+
+      Test(Absent(sources)):                     # a filter: the row already standing
+        if produced:     produced = false        # exhausted, on the way back up
+                         if depth == 0: return Done
+                         depth -= 1
+        elif no source yields a row:             # open, take one, close — per source
+                         produced = true; depth += 1        # pass, registers untouched
+        elif depth == 0: return Done             # a whole query, and a witness ends it
+        else:            depth -= 1              # drop the row, exactly as exhaustion does
 ```
 
 **A plan with no levels is the unit relation: exactly one row.** Every step is a derived bind

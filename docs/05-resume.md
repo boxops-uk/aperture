@@ -83,9 +83,17 @@ struct Entry { source: usize, row: Register }
 
 One entry per **level**, not per plan step: a [`Step::Derive`](04-executor.md#the-plan-ir) holds
 no row and contributes nothing, because it is recomputed on restore instead
-([I14](invariants.md#i14)). A suspend only ever happens at a full row, so the cursor names
-*every* level — which is what makes resume's replay-by-order sound, and why its length check is
-`!= plan.levels()` rather than a bound.
+([I14](invariants.md#i14)), and a [`Step::Test`](04-executor.md#the-plan-ir) — a negation — holds
+none either, because it binds nothing and its verdict is re-decided rather than replayed. A
+suspend only ever happens at a full row, so the cursor names *every* level — which is what makes
+resume's replay-by-order sound, and why its length check is `!= plan.levels()` rather than a
+bound.
+
+That two of the three step kinds cost the token nothing is the [query-surface
+note](query-surface.md)'s finding rather than a coincidence: a construct pays cursor work only
+if it can be **mid-flight when a row is handed out**, and a filter finishes within the
+evaluation of one row. Disjunction is the one construct so far that is not, which is why it and
+not negation added a field.
 
 **An entry says which of the level's [sources](04-executor.md#the-plan-ir) produced the row**,
 and that is not recoverable from the row itself. Alternatives can overlap, so one fact is
@@ -173,6 +181,20 @@ value-slots.** At a scan step, consuming the next saved row in order:
 At a derive step, recompute its value into its slot. Nothing is consumed from the cursor, and
 nothing needs to be: purity ([I14](invariants.md#i14)) is what makes recomputing equivalent to
 having saved it.
+
+At a **test** step — a [negation](04-executor.md#the-plan-ir) — nothing at all happens except
+marking it produced. It binds no register, so there is no state to rebuild; the row it passed
+was handed to the consumer before the suspend; and the base is frozen (`ops-I2`), so a second
+probe could only agree with the first. Re-running it could therefore never *correct* anything
+and could only fail spuriously, against a database this token cannot detect it is not looking
+at. Marking it produced is not optional in the same way: without the bit the machine arrives
+from below, probes, passes, and ascends into a row it has already emitted.
+
+> **The recompute rule.** In an immutable DB a store read is a pure function of its inputs, so
+> anything whose result is determined by the bindings and the frozen base may be **recomputed
+> on restore, or skipped, instead of saved**. Derived binds ([I14](invariants.md#i14)) are the
+> special case that named it; a fetch by fact id and a filter's verdict are the rest. What the
+> cursor holds is what a *scan* cannot recompute: its position.
 
 **A [`Fetch`](04-executor.md#fetching-through-a-reference) level takes no saved position, and
 still consumes an entry.** Step 1 has nothing to do for it: the row is whichever one the

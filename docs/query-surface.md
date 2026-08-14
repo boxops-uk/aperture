@@ -361,13 +361,17 @@ breach I7 while a `Box<dyn Iterator>` would.
 
 Each stage ends green and re-proves only what it changed:
 
-1. **`Test` as a step kind** — negation and the comparison operators that have wanted a home
-   since Phase 4. No cursor change; resume gains the skip rule. Retires `nyi/negation`.
-   `X = Y` with both bound was on this list and did **not** need it: a residual on the level
-   that binds later is the same constraint one loop deeper, and it costs no step and no cursor
-   entry. Nor did `X = "a"..`, which narrows the level that binds `X` rather than testing after
-   it. What is left of `nyi/bind-unification` is pattern-pushing into a generator or a field
-   read, which is a flatten question and not a step kind.
+1. ✅ **`Test` as a step kind** — landed as `Step::Test(Test::Absent(sources))`, and every
+   prediction in this note held: no cursor change, resume gains the skip rule, and the reads-edge
+   of §5 was the whole of the placement work. The comparison operators it was also meant to house
+   did **not** need it — `X = Y` with both bound is a residual on the level that binds later, the
+   same constraint one loop deeper, and `X = "a"..` narrows the level that binds `X` rather than
+   testing after it. So the step kind arrived for negation alone, which is a narrower claim than
+   this stage made and a cheaper one. Two things it did not retire: `nyi/negation` survives for a
+   negated **subquery** (a level inside a test — stage 4's shape) and for a generator inside a
+   negation's key, where hoisting would change the answer rather than merely be missing. What is
+   left of `nyi/bind-unification` is pattern-pushing into a generator or a field read, which is a
+   flatten question and not a step kind.
 2. **`Level { sources }` at N = 0 and 1** — a pure refactor: `never` arrives, today's plans
    compile to N = 1, and every existing battery must stay green untouched. This is the diff that
    should be boring, and doing it alone is what makes the next one legible.
@@ -401,7 +405,12 @@ on its own, and it forces the reads-edge work in §5 while the resume token is s
 - **How a cost model prices a level with N sources.** The tier ranking (point < prefix < scan) is
   per source, and a level needs one number. Max is the safe reading; it is a guess until there is
   a cost model to put it in.
-- **Whether `Placement` survives.** §5 argues it has no consumer if negation is a reads-edge.
+- ~~**Whether `Placement` survives.**~~ **Answered: it survives, with a different job.** §5 was
+  right that negation needs no immovability tag — the reads-edge was the whole of it, and
+  `reorder` branches on `Placement` nowhere. What keeps the type is
+  `preserves_written_order`, the property that says the frontier returns a source order it did
+  not have to change, which needs to know which statements the *query* wrote. That is a
+  narrower consumer than the one it was kept for, and it is a real one.
 
 ---
 

@@ -156,12 +156,18 @@ decoded data.
   exercised by hand-built plans; its first producer will be a primitive or a subquery. Do not
   "simplify" it away — its resume behaviour is the expensive thing to get wrong later
   ([chapter 7](docs/07-compilation.md#folding-a-constant-bind)).
-- **Additive is not the same as small.** The constructs that parse and typecheck-as-deferred
-  but have no engine — `|`, `never`, `!`, subqueries — are **[Phase 6b](PLAN.md)**, and
+- **Additive is not the same as small.** The constructs that parsed and typechecked-as-deferred
+  and now compile — `|`, `never`, `!`, subqueries — were **[Phase 6b](PLAN.md)**, and
   **union types** are [Phase 8](PLAN.md) (a union cannot be declared before schemas parse, and
   [I10](docs/invariants.md#i10) freezes its discriminants on disk once one is written). Neither
   reshapes the machine, but disjunction extends the resume `Cursor`, so both carry acceptance
-  criteria rather than a bullet. Phase 6b is sequenced *after* Phase 6 on purpose: both touch the
+  criteria rather than a bullet. **A negation is a `Step::Test`** — the third step kind, a filter
+  that binds nothing, takes no cursor entry, and is re-decided on restore rather than replayed;
+  its variables are `reads`, which is the whole of the rule that a negation runs after whatever
+  binds them, so `reorder` needed no new kind of constraint. Do not add one. What still draws
+  `nyi/negation` is a negated **group** and a generator inside a negation's key — the second is a
+  refusal, not a gap: hoisting it out answers differently when it matches nothing. Phase 6b is
+  sequenced *after* Phase 6 on purpose: both touch the
   resume token, so edit it once and re-prove [I4](docs/invariants.md#i4) once. (Phase 6 left the
   cursor's *entries* a `Vec<Register>` in the end — only *fact* slots are ever saved, since a
   derive step is recomputed — but it did change what a cursor entry is counted against.) The

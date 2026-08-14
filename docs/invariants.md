@@ -111,7 +111,11 @@ each level at the saved key **in the alternative that saved it**, re-binds, and 
 re-read `fact_id` matches (else `BadResumeKey`). *Why & how:* [chapter 5](05-resume.md).
 *Guard:* `exec::resume_equals_uninterrupted` (tier-3, every cut point, 1-/2-/3-level,
 MemStore + fjall), with `exec::the_battery_reaches_a_cut_inside_a_later_source` asserting the
-battery draws a multi-source level and cuts inside one.
+battery draws a multi-source level and cuts inside one. Over **compiled** plans it is
+`flatten::resume_of_a_compiled_plan_equals_the_query`, which draws its loop order rather than
+taking the identity: where a step that binds nothing *sits* is a property of the order, and the
+[census](testing.md) asserts the battery reaches a negation placed above a scan — the placement
+Phase 6 found to be the only one that observes a restore fault at all.
 
 <a id="i5"></a>
 ### I5 — Row-slot / register model
@@ -136,7 +140,9 @@ which is exactly what I6 forbids. Cheap to hold here partly because value patter
 [chapter 3](03-storage-model.md#why-two-not-one). *Guard:*
 `exec::no_value_fetch_in_scan` (store spy fails on unexpected `point()`), plus
 `exec::a_fetch_reads_entities_once_per_row_it_is_opened_for`, which counts point reads against
-rows *produced* rather than examined.
+rows *produced* rather than examined, plus `exec::a_negation_probe_fetches_no_value` — the third
+way the machine can read the store, and the same rule: a probe asks whether a **key** exists, and
+runs once per row the level above it produces.
 
 <a id="i7"></a>
 ### I7 — The executor is a defunctionalised state machine
@@ -147,7 +153,10 @@ machine is the *other* road to a serialisable continuation — Glean's VM has no
 so what decides it here is continuation **size** and not version-locking a compiled form.
 *Why & how:*
 [chapter 4](04-executor.md#why-a-state-machine-and-not-recursion--i7). *Guard:* structural —
-the resume battery is impossible to pass under a recursive rewrite; plus review.
+the resume battery is impossible to pass under a recursive rewrite; plus review. **Negation was
+the test of that**, and it passed without a new frame kind: a test's two outcomes are the
+machine's two existing directions — pass is the ascent a derived bind makes, fail is the
+backtrack an exhausted level makes — so the arm added a step kind and no control flow.
 
 <a id="i8"></a>
 ### I8 — Immutable snapshot per query; released at suspend

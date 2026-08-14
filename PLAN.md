@@ -101,6 +101,13 @@ The engine spine exists in `src/focus/`:
   `X where X = 42` compiles to no steps at all and a plan with no levels is the unit relation.
   Nothing in focus lowers a derive step yet: the machinery is exercised by hand-built plans, and
   its first producer will be a primitive or a subquery.
+- **The deferred query surface** (`flatten.rs`, `ty.rs`, `iter.rs`, `plan.rs`, Phase 6b) — the four
+  constructs that parsed and typechecked-as-deferred now compile: **disjunction** is a level with a
+  source per branch, **`never`** is a level with none, a **subquery** inlines, and **negation** is
+  a `Step::Test` — a filter that binds nothing, takes no cursor entry, and whose variables are
+  *reads*, which is the whole of the placement rule Datalog states separately. The machine grew one
+  step kind and no control flow. What each construct still refuses is narrower than the code that
+  reports it suggests, and each refusal has a corpus entry.
 - **Unbuilt:** bulk ingestion, schema parsing, **stored** derivation (gated on the schema DSL —
   [Phase 8b](#phase-8b--stored-derivation)), the wire protocol, and the operational layer.
   `schema.rs` holds Phase 8's guards, written up front and `#[ignore]`d — the only pending
@@ -117,7 +124,7 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
                            │
                            └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ✅ ─┬─▶ 5  REPL ✅  (→ remote-only later)
                                                                                     ├─▶ 6  dynamic derivation ✅ (machine change; I14 green)
-                                                                                    │      └─▶ 6b  deferred query surface  (`|`, never, `!`, subquery)
+                                                                                    │      └─▶ 6b  deferred query surface ✅ (`|`, never, `!`, subquery)
                                                                                     └─▶ 7  ingestion ─▶ 8  schema (+ union types) ─▶ 8b  stored derivation ─▶ 9  operations
 
 Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends on 1 (store + atomic put_fact).
@@ -652,7 +659,7 @@ not yet apply.
 
 ---
 
-## Phase 6b — The deferred query surface
+## Phase 6b — The deferred query surface ✅
 
 **Goal.** Implement the four constructs that **parse and typecheck-as-deferred today but have
 no engine behind them**: disjunction (`|`), the empty pattern (`never`), statement negation
@@ -691,51 +698,49 @@ the recorded consequence that `(!A) | B` is inexpressible unless `!` moves into 
 - *at risk, to be settled here:* [I6](docs/invariants.md#i6) — see the negation decision below.
 - *makes green:* no new invariant, unless the negation decision adds one.
 
-**Decisions this phase must settle at pickup (deliberately not pre-made):**
+**Decisions this phase had to settle at pickup, and how each went:**
 
-- **Does negation read the store inside the row loop — and is that I6?** `!test.Bar {id = X}`
-  per outer row is a probe: *does this seek find nothing*. [I6](docs/invariants.md#i6) is about
-  **values** — residuals on key fields are checked against the `keys` CF only — so a key-only
-  probe does not breach it as written. `Source::Fetch` has since answered the same question one
-  way: a lookup gets its own **level**, so it happens once per row the level above it produces
-  rather than once per row a scan examines, and I6 holds with room to spare. A negation probe
-  cannot take that shape — it binds nothing and produces no row — so decide explicitly between a
-  probe in the scan loop, a semijoin frame, and deferring negation again; do **not** inherit
-  "additive" as an answer.
-- **Does `never` get a type?** Phase 2 declined `Ty::Never` because a type for it would be
-  speculative. Disjunction is exactly what makes it non-speculative — `never` is the identity
-  of `|` — so the decision belongs *inside* 6b-a, not before it. `never` implemented alone is a
-  keyword with no consumer.
-- **Is a subquery inlined?** Phase 2 made group and subquery **one grammar rule** so that "a
-  subquery is the same shape as a query, so lowering reuses the query algebra". If a subquery in
-  a generating position inlines its statements into the enclosing generator list, this is
-  flatten-local and needs no operator at all. Confirm that before budgeting a nested executor.
+- **Does negation read the store inside the row loop — and is that I6?** ✅ **Settled: its own
+  step, and I6 is untouched.** A negation is a `Step::Test`, not a probe inside the scan loop and
+  not a semijoin frame: it runs once per row the level above it *produces*, which is the same
+  shape `Source::Fetch` pays, and it reads `keys` and fetches no value — which is what I6 is
+  about. Guarded rather than argued (`exec::a_negation_probe_fetches_no_value`). The step also
+  closes each probe before returning, so [I8](docs/invariants.md#i8) stays structural.
+- **Does `never` get a type?** ✅ Settled in 6b-a: a fresh type variable, which is what "the
+  identity of `|`" means with no subtyping. No `Ty::Never` constructor.
+- **Is a subquery inlined?** ✅ **Yes, and it needed no operator.** Its statements become the
+  enclosing query's and its head is the value the bind names, which is what Phase 2's
+  one-rule-for-group-and-subquery bought. Two narrow cases keep `nyi/subquery`: a subquery that
+  rebinds an outer name (typecheck scoped them apart, so inlining would conflate two variables),
+  and negation inside one.
 
-**A risk `Deps` cannot express today, and this phase is where it becomes real.** Glean tags every
-statement `Ordered` or `Floating` — "may not move" versus "may"
-(`glean/db/Glean/Query/Flatten/Types.hs:70-77`) — and its negation-placement rule is **semantic**,
-not a heuristic: a negated subquery is forced *after* every parent-scope variable it uses is
-bound, because an unbound variable inside a negation behaves as a wildcard, so moving it changes
-what the query *means* (`Note [Reordering negations]`,
-`glean/db/Glean/Query/Reorder.hs:547-573`). `StmtDeps` records only what a statement can capture
-and what it must read, which cannot say "this one may not move above that one" — and the frontier
-is free to emit anything runnable. Safe today, because nothing in focus is order-sensitive in that
-way; unsafe the moment negation and disjunction have an engine. The `// TODO` in `reorder.rs`
-already names half of it ("move negations/conditionals after their non-locals are bound");
-*expressing* immovability is the design question, and it must be answered before 6b-d lands, not
-after. The same nesting is why Glean's `Reorder` needs a give-up branch where focus's greedy pass
-does not: a nested group's reads depend on how its own branches are ordered, which is exactly
-where the monotonicity argument fails — so re-prove completeness here rather than inheriting it.
+**The risk `Deps` was thought unable to express — answered, and it needed no mechanism.** The
+worry was that Glean tags every statement `Ordered` or `Floating`
+(`glean/db/Glean/Query/Flatten/Types.hs:70-77`) and forces a negated subquery *after* every
+parent-scope variable it uses, semantically rather than heuristically (`Note [Reordering
+negations]`, `glean/db/Glean/Query/Reorder.hs:547-573`) — while `StmtDeps` records only captures
+and reads and so cannot say "this one may not move above that one".
 
-**Architecture note, written before pickup:** [`docs/query-surface.md`](docs/query-surface.md)
-argues one shape for this whole phase and for the deferred items behind it, on the finding that
-**only disjunction touches the resume token** — negation, `never`, subqueries, `Source::Fetch`,
-primitives and comparisons are all filters, deterministic binds, or compile-time rewrites, and a
-construct costs cursor work only if it can be mid-flight when a row is handed out. Two of its
-recommendations amend this phase and are not yet folded into the tasks below: negation's
-placement wants a **reads-edge** rather than an immovability tag (Glean's own rule is "after the
-binding of all parent-scope variables it uses", which is what `reads` means), and branch scope
-wants the **intersection** of what the branches bind rather than 6b-b's rejection.
+It does not need to. Give a negation `reads` = the variables it names and `captures` = nothing,
+and the frontier already refuses to run it before those are bound, because that is the only thing
+the frontier does. `!(A X); B X` is therefore *forced* to run as `B X; !(A X)`, and completeness
+survives untouched: `reads` is still structural and `bound` still only grows. So `Placement`
+gained no consumer here after all — what keeps it is `preserves_written_order`, which is a
+different and narrower claim ([the query-surface note](docs/query-surface.md) §5 predicted both).
+What remains open is only the **nested group** — a negated subquery, where a group's reads depend
+on how its own branches are ordered — and that is exactly the shape still reported as
+`nyi/negation`.
+
+**Architecture note, written before pickup, and it held:**
+[`docs/query-surface.md`](docs/query-surface.md) argued one shape for this whole phase on the
+finding that **only disjunction touches the resume token** — negation, `never`, subqueries,
+`Source::Fetch`, primitives and comparisons are all filters, deterministic binds, or compile-time
+rewrites, and a construct costs cursor work only if it can be mid-flight when a row is handed out.
+Both recommendations that amended this phase were taken: negation's placement is a **reads-edge**
+rather than an immovability tag, and branch scope is the **intersection** of what the branches
+bind rather than 6b-b's rejection. Its status blocks record what it predicted and what it got
+wrong; the one thing it did not foresee is that `Test` would house negation *alone*, since the
+comparisons it was also meant to carry turned out to be residuals.
 
 **The machine half of 6b-a is done** (`plan.rs`, `iter.rs`), ahead of the language, the same way
 Phase 6 built derived binds ahead of a producer: a level's rows come from a list of `Source`s,
@@ -752,38 +757,55 @@ is `flatten` and `ty.rs`, plus `never` decided alongside them.
   What is left is an alternation *inside* a pattern, which keeps `nyi/disjunction`. No DNF expansion across conjuncts. The classification the note asks for — a disjunction
   whose branches only *filter* becomes a test rather than a level, and single-generator branches
   normalise to `Source::Seek` — is flatten's, and is what keeps the common case off the token.
-- **6b-b. Range-restriction safety across branches.** Every branch must bind the same variable
-  set, or the head reads a register the taken branch never wrote. Flatten's safety check is
-  over the *chosen order* today; it now also has to be over *branches*, and the failure must be
-  a diagnostic, not a run-time `UseBeforeBind`.
-- **6b-c. The I4 battery over disjunctive plans**, and the **census** extended. Phase 4's
-  lesson stands: a plan shape the generator never draws is a shape the resume battery says
-  nothing about, so `the_generator_reaches_every_plan_shape` must assert it reaches a
-  disjunction and a mid-branch cut — and the draw must be deliberate, not left to chance.
-- **6b-d. Negation**, per the decision above.
-- **6b-e. Subquery**, per the decision above.
-- **6b-f. Corpus reclassification.** The five entries at `corpus.rs:224`–`246` move from
-  `Diagnosed(code)` to `Supported(rows)` — which is the real gate, since a `Supported` entry
-  cannot be added without saying what it returns (Phase 5). Retire each code from `Code::ALL`
-  as it goes; `every_code_is_in_all` is the reminder.
+- **6b-b. Range-restriction safety across branches.** ✅ — as the **intersection** the note
+  recommends rather than the rejection this task first described: a variable only one branch
+  binds does not escape the statement, and a later read of it is `reject/unbound-variable` where
+  a person can act on it. What *is* rejected outright is a variable two branches bind in
+  **different places** — a register holds one row and the plan holds one path into it, so
+  reaching it at another field would decode the wrong bytes for half the rows, silently.
+- **6b-c. The I4 battery over disjunctive plans**, and the **census** extended. ✅ — the census
+  asserts a disjunctive plan is drawn and a cut taken mid-branch, and it has since grown the
+  same claim for negation: a test is reached, its probe seeks by a bound register and filters by
+  one, and it is drawn *above* a scan.
+- **6b-d. Negation.** ✅ — a `Step::Test(Test::Absent(sources))`: no register, no cursor entry,
+  and neither of its outcomes new to the machine (pass is a derive's ascent, fail is an exhausted
+  level's backtrack). Its variables are reads, which *is* the placement rule. Three refusals
+  rather than one: a negated **subquery** (a level inside a test), a **generator inside its key**
+  (hoisting it out would answer differently when it matches nothing), and a variable **only** the
+  negation names — `reject/unbound-variable`, because the existential reading is already
+  spellable as `_` and the two are indistinguishable at a glance.
+- **6b-e. Subquery.** ✅ — inlined, per the decision above.
+- **6b-f. Corpus reclassification.** Mostly done: negation, disjunction, `never`, subqueries and
+  the constructs behind them are `Supported(rows)` and run against a real `FjallDb`. **No code
+  was retired**, and that is the honest outcome rather than a miss — each of `nyi/disjunction`,
+  `nyi/negation` and `nyi/subquery` now covers a *narrower* construct than it did (an alternation
+  inside a pattern; a negated group or a generator in a negation's key; a subquery rebinding an
+  outer name), and each keeps a corpus entry naming it. `nyi/union-select` is Phase 8's.
 
 **Acceptance:**
-- [ ] Disjunction compiles to a `FlatDisjunction` and runs — with a test that a query whose DNF
-      expansion would be exponential produces a plan **linear** in the branches.
-- [ ] [I4](docs/invariants.md#i4) holds over plans containing a disjunction, at every scheduled
+- [x] Disjunction compiles to one level per statement and runs — `conjoined_disjunctions_do_not_multiply`
+      is the DNF test: three two-branch disjunctions are 8 clauses expanded and 3 levels of 2
+      sources here, so the plan is **linear** in the branches written.
+- [x] [I4](docs/invariants.md#i4) holds over plans containing a disjunction, at every scheduled
       cut point, on `MemStore` **and** fjall, with the census asserting the battery reaches a
       disjunctive plan and a cut taken mid-branch.
-- [ ] A branch binding a different variable set is rejected with a clear diagnostic naming the
-      variable — never a run-time error.
-- [ ] `never`, negation and subqueries each either run, or draw a **narrowed** diagnostic
+- [x] Branch scope is the **intersection**, and a variable two branches bind in different places
+      is rejected with a diagnostic naming it — never a run-time error.
+- [x] `never`, negation and subqueries each either run, or draw a **narrowed** diagnostic
       naming what is still missing — never a parse error and never a panic.
-- [ ] Negation's placement is *forced*, not merely likely: `!(A X); B X` answers exactly as
-      `B X; !(A X)` does, so no negation is ever evaluated with an unbound variable acting as a
-      wildcard — the immovability question above, closed by a test rather than a comment.
-- [ ] Every reclassified corpus entry returns its recorded rows against a real `FjallDb`, and no
-      retired `nyi/` code is left in `Code::ALL`.
-- [ ] All prior engine guards green — the cursor format changed, so this is the claim that
-      matters.
+- [x] Negation's placement is *forced*, not merely likely: `!(A X); B X` compiles to the **same
+      plan** as `B X; !(A X)` — asserted as one plan rather than as one set of rows, since equal
+      rows would also hold if the negation ran first and happened to match nothing.
+- [x] Every reclassified corpus entry returns its recorded rows against a real `FjallDb`. No
+      `nyi/` code was retired: each survivor names a narrower construct and keeps an entry.
+- [x] All prior engine guards green — the cursor format changed, so this is the claim that
+      matters (414 tests).
+
+**What is left of the phase, deliberately:** an alternation *inside* a pattern
+(`nyi/disjunction`), a negated **group** (`nyi/negation`) — which is `Source::Group`, the note's
+stage 4 — and a subquery that rebinds an outer name (`nyi/subquery`). Each is a narrowed
+diagnostic with a corpus entry, and none of them is on the path to
+[Phase 7](#phase-7--transport-codec--fact-writing-ingestion).
 
 ---
 
