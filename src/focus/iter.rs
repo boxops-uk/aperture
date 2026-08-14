@@ -8,7 +8,7 @@ use crate::focus::{
     error::{ApertureError, StoreCodecError, StoreError},
     plan::{
         Access, Computed, FactId, FactStore, FieldPath, Plan, PlanFingerprint, Project, Residual,
-        ResidualOp, SeekKey, SeekKeyPart, Source, Step,
+        ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId},
     tuple::{
@@ -485,13 +485,15 @@ struct StackFrame<S: FactStore> {
     source: usize,
     current: Option<Register>,
     field_offsets: Box<[FieldOffsets]>,
-    /// Whether a [`Step::Derive`] at this position has produced its one value —
-    /// unused by scan steps, which read the same thing off `scan`.
+    /// Whether a step that produces **at most one row** has produced it — a
+    /// [`Step::Derive`]'s value, or a [`Step::Test`]'s pass. Unused by levels, which
+    /// read the same thing off `rows`.
     ///
-    /// This is the whole state a derived bind needs, and it has to live somewhere
-    /// the loop can read: arriving at a step from below and from above must do
-    /// different things, and `enumerate` carries no direction.
-    derived_produced: bool,
+    /// This is the whole state either needs, and it has to live somewhere the loop
+    /// can read: arriving at a step from below and from above must do different
+    /// things, and `enumerate` carries no direction. One bit for both kinds because
+    /// a frame is one step, and a step is one kind.
+    produced: bool,
 }
 
 impl<S: FactStore> StackFrame<S> {
@@ -501,7 +503,7 @@ impl<S: FactStore> StackFrame<S> {
             source: 0,
             current: None,
             field_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
-            derived_produced: false,
+            produced: false,
         }
     }
 
@@ -700,6 +702,40 @@ impl<S: FactStore> StackFrame<S> {
         }
 
         Ok(None)
+    }
+
+    /// Whether **no** source produces a row — the whole of a negation, decided
+    /// against the registers as they stand.
+    ///
+    /// Each source is opened, asked for one row, and **closed again before this
+    /// returns**, which is what keeps [I8](../../docs/invariants.md#i8) structural:
+    /// the frame holds no iterator between probes, so a suspend at any depth has
+    /// nothing of a negation's to release. It also means a probe costs one seek per
+    /// row the level above produces, not one per row a scan examines — the same
+    /// shape of cost [`Source::Fetch`] pays, and the reason
+    /// [I6](../../docs/invariants.md#i6) is untouched: a probe reads `keys` and
+    /// fetches no value.
+    ///
+    /// Stops at the first witness. "Does one exist" is the question, so a negation
+    /// over a predicate holding a million matching rows reads exactly one of them.
+    fn absent(
+        &mut self,
+        store: &S,
+        state: &MachineState,
+        sources: &[Source],
+        deadline: &mut Deadline<'_>,
+    ) -> Result<bool, ApertureError> {
+        for source in sources {
+            self.open(store, source, state, None)?;
+            let witness = self.next(state, source, deadline)?;
+            self.close();
+
+            if witness.is_some() {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 
     fn check_residuals(
@@ -1079,8 +1115,22 @@ impl<S: FactStore> Executor<S> {
                 Step::Derive(derived) => {
                     ex.state
                         .bind(derived.bind, Slot::Value(compute(&derived.value)))?;
-                    frame.derived_produced = true;
+                    frame.produced = true;
                 }
+
+                // **A test is not re-run on restore, and that is sound rather than
+                // thrifty.** It binds nothing, so there is no state to rebuild; the
+                // row it passed was handed out before the suspend; and the base is
+                // frozen ([ops-I2](../../docs/aperture-cli-design.md)), so a second
+                // probe could only agree. Re-running it could therefore never
+                // *correct* anything and could only fail spuriously — against a
+                // different database, which is a case the token cannot detect at all
+                // ([chapter 5](../../docs/05-resume.md)).
+                //
+                // Marked produced all the same: without the bit the machine would
+                // arrive here from below, probe, pass, and ascend into a row it has
+                // already emitted.
+                Step::Test(_) => frame.produced = true,
             }
         }
 
@@ -1216,8 +1266,8 @@ impl<S: FactStore> Executor<S> {
                 // is that it contributes nothing to the cursor and is recomputed on
                 // resume rather than replayed.
                 Step::Derive(derived) => {
-                    if frame.derived_produced {
-                        frame.derived_produced = false;
+                    if frame.produced {
+                        frame.produced = false;
                         if self.depth == 0 {
                             return Ok(Iteratee::Done(acc));
                         }
@@ -1225,8 +1275,34 @@ impl<S: FactStore> Executor<S> {
                     } else {
                         self.state
                             .bind(derived.bind, Slot::Value(compute(&derived.value)))?;
-                        frame.derived_produced = true;
+                        frame.produced = true;
                         self.depth += 1;
+                    }
+                }
+
+                // A test is a one-row generator too, and the row it produces is the
+                // one already standing: it binds nothing, so passing is ascending
+                // with the registers untouched. Failing is *not* a new kind of
+                // control flow either — it is the same backtrack an exhausted level
+                // does, which is why negation needed no new direction in the machine
+                // and no reshaping of this loop.
+                Step::Test(Test::Absent(sources)) => {
+                    if frame.produced {
+                        frame.produced = false;
+                        if self.depth == 0 {
+                            return Ok(Iteratee::Done(acc));
+                        }
+                        self.depth -= 1;
+                    } else if frame.absent(&self.store, &self.state, sources, &mut deadline)? {
+                        frame.produced = true;
+                        self.depth += 1;
+                    } else if self.depth == 0 {
+                        // A negation at the outermost position with nothing above it
+                        // to retry: `!test.Bar {id = 1}` alone is a whole query, and
+                        // a witness makes its answer no rows.
+                        return Ok(Iteratee::Done(acc));
+                    } else {
+                        self.depth -= 1;
                     }
                 }
             }
@@ -3660,6 +3736,142 @@ mod tests {
         assert_eq!(run(store, plan), Vec::<Value>::new());
     }
 
+    // ---- tests, as in the step (Phase 6b) ----------------------------------
+    //
+    // A [`Step::Test`] is a one-row generator too, and the row it produces is the
+    // one already standing. What is worth driving directly is the *shape* of that:
+    // passing is ascending with the registers untouched, failing is the same
+    // backtrack an exhausted level does, and neither leaves an iterator behind.
+    // The compiled battery covers the semantics over generated queries; these pin
+    // the machine's own arms, including the one no query reaches.
+
+    /// A store with `test.Foo`-shaped ids 1, 2, 3 in `foo` and 1, 2 in `bar`.
+    fn two_predicates() -> (PredicateId, PredicateId, MemStore) {
+        let (foo, bar) = (PredicateId(0), PredicateId(1));
+        let mut store = MemStore::new();
+
+        for (sequence, id) in [1i64, 2, 3].into_iter().enumerate() {
+            store.insert(foo, i64_field(id), sequence as u64 + 1);
+        }
+        for (sequence, id) in [1i64, 2].into_iter().enumerate() {
+            store.insert(bar, i64_field(id), sequence as u64 + 1);
+        }
+
+        (foo, bar, store)
+    }
+
+    /// `!bar {id = r{reads}.f0}` — the probe every negation compiles to: a seek
+    /// spliced from a register bound outside it.
+    fn absent_matching(bar: PredicateId, reads: usize) -> Step {
+        Step::Test(Test::Absent(Box::new([Source::Seek {
+            access: Access {
+                predicate_id: bar,
+                seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                    address: Address::new(reads),
+                    path: FieldPath::field(0),
+                }])),
+            },
+            residuals: Box::new([]),
+        }])))
+    }
+
+    /// **The row survives exactly when the probe finds nothing.**
+    #[test]
+    fn a_negation_drops_the_rows_a_witness_matches() {
+        let (foo, bar, store) = two_predicates();
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(scan_all(foo, 0)), absent_matching(bar, 0)]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        assert_eq!(plan.levels(), 1, "a test is not a loop level");
+        assert_eq!(run(store, plan), vec![Value::Int(3)]);
+    }
+
+    /// **A test above a scan backtracks into it**, which is the placement that
+    /// exercises re-entry from below: the inner level is drained, the machine
+    /// returns to the test, and the test has to report exhausted rather than
+    /// probing again and ascending forever.
+    #[test]
+    fn a_negation_above_a_scan_is_re_entered_from_below() {
+        let (foo, bar, store) = two_predicates();
+
+        let plan = Plan {
+            nvars: 2,
+            body: Box::new([
+                Step::Level(scan_all(foo, 0)),
+                absent_matching(bar, 0),
+                Step::Level(scan_all(bar, 1)),
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(1),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        // One surviving `foo` row (3), crossed with both `bar` rows.
+        assert_eq!(run(store, plan), vec![Value::Int(1), Value::Int(2)]);
+    }
+
+    /// **The negation of the empty relation passes everything** — a test with no
+    /// source, which is `!never` and needs no arm of its own.
+    #[test]
+    fn a_negation_with_no_source_passes_every_row() {
+        let (foo, _, store) = two_predicates();
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([
+                Step::Level(scan_all(foo, 0)),
+                Step::Test(Test::Absent(Box::new([]))),
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        assert_eq!(
+            run(store, plan),
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+        );
+    }
+
+    /// **A negation with nothing above it is a whole query**, and both answers are
+    /// the outermost arm: a witness ends the run with no rows, and no witness
+    /// hands out the one row the plan means.
+    #[test]
+    fn a_negation_at_the_outermost_position_answers_for_the_whole_query() {
+        let (_, bar, store) = two_predicates();
+
+        let probe = |key: i64| {
+            Step::Test(Test::Absent(Box::new([Source::Seek {
+                access: Access {
+                    predicate_id: bar,
+                    seek_key: SeekKey::Prefix(i64_field(key).into_boxed_slice()),
+                },
+                residuals: Box::new([]),
+            }])))
+        };
+
+        let plan = |key| Plan {
+            nvars: 0,
+            body: Box::new([probe(key)]),
+            head: Project::Lit(Value::Int(7)),
+        };
+
+        assert_eq!(run(two_predicates().2, plan(1)), Vec::<Value>::new());
+        assert_eq!(run(store, plan(9)), vec![Value::Int(7)]);
+    }
+
     // ---- derive steps (Phase 6) -------------------------------------------
     //
     // A [`Step::Derive`] is a one-row generator: it computes its value on the way
@@ -4213,7 +4425,7 @@ mod tests {
 
             if plan.body.iter().all(|step| match step {
                 Step::Level(level) => level.sources.len() < 2,
-                Step::Derive(_) => true,
+                Step::Derive(_) | Step::Test(_) => true,
             }) {
                 continue;
             }
@@ -4455,6 +4667,39 @@ mod tests {
         assert!(
             calls2.load(Ordering::Relaxed) > 0,
             "a Value head must fetch via point() (I6 positive control)"
+        );
+    }
+
+    /// [I6](../../docs/invariants.md#i6) over a **negation**, which is the one step
+    /// that reads the store without producing a row.
+    ///
+    /// A probe asks whether a key exists, so it belongs in `keys` and nowhere near
+    /// `entities` — and unlike a scan it runs once per row the level above it
+    /// produces, which is exactly the position from which a value fetch would be
+    /// expensive and invisible. Guarded rather than argued, for the same reason
+    /// `Source::Fetch` is: the claim is about what the machine *does*, and the
+    /// spy is what knows.
+    #[test]
+    fn a_negation_probe_fetches_no_value() {
+        let (foo, bar, store) = two_predicates();
+        let (spy, calls) = PointSpy::new(store);
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(scan_all(foo, 0)), absent_matching(bar, 0)]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let rows = collect_rows(spy, plan, &interner_with(&[])).unwrap();
+        assert_eq!(rows, vec![Value::Int(3)]);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "a negation probe fetched a value (I6)"
         );
     }
 

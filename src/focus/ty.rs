@@ -143,9 +143,21 @@ impl Checker<'_> {
             QueryStmt::Implicit(id) => {
                 self.generator(ast, *id);
             }
+            // **A negation is a generator, typed as one.** `!test.Bar {id = X}` has
+            // to name a predicate and match its key like any other statement — the
+            // fields have to exist and the types have to agree — and the only thing
+            // that differs is what happens to the rows, which is not a type.
+            //
+            // The environment is deliberately **not** rolled back afterwards. A
+            // negation binds nothing *outward*, which is Glean's `FlatNegation ->
+            // mempty` and is the rule for **scope** — flatten's, since it is the
+            // phase that decides what captures what. Types are the other question,
+            // and there the answer is the opposite: a variable named inside a
+            // negation and outside it is one variable and must have one type, so
+            // truncating the env here would introduce a second type variable for it
+            // and let `test.Foo {name = X}; !test.Bar {id = X}` typecheck.
             QueryStmt::Negation(id) => {
-                self.nyi(ast, *id, Code::NyiNegation, "negation");
-                self.infer(ast, *id);
+                self.generator(ast, *id);
             }
             QueryStmt::Bind(lhs, rhs) => self.bind(ast, *lhs, *rhs),
         }
@@ -1081,18 +1093,46 @@ mod tests {
     }
 
     /// Every deferred construct reports itself by name, exactly once.
+    ///
+    /// **One is left** — union select, which waits on a `PredicateTy::Union` to
+    /// exist at all ([Phase 8](../../PLAN.md)). Negation was the other, and is now
+    /// a plan; what still carries its code is narrower and is flatten's, so the
+    /// corpus is where those are pinned.
     #[test]
     fn deferred_constructs_report_themselves() {
-        for (source, code) in [
-            ("X.alt? where X = test.Foo _", "nyi/union-select"),
-            (
-                "X where test.Foo {id = X}; !test.Bar {id = X}",
-                "nyi/negation",
-            ),
+        let checked = compile("X.alt? where X = test.Foo _");
+        assert_eq!(codes(&checked), ["nyi/union-select"]);
+    }
+
+    /// **A negation is typechecked, and only its types are typecheck's business.**
+    ///
+    /// The statement is a generator like any other — the predicate has to exist, the
+    /// key has to fit, a wrong type is a type error — and what makes it a negation
+    /// happens entirely later. The last two cases are the ones the environment rule
+    /// is about: a variable named inside a negation and outside it is **one**
+    /// variable with one type, so a mismatch between the two occurrences is caught
+    /// here rather than compiling into a plan that compares an int against a string.
+    #[test]
+    fn a_negation_is_typechecked_like_the_generator_it_is() {
+        for source in [
+            "X where test.Foo {id = X}; !test.Bar {id = X}",
+            "X where test.Foo {id = X}; !test.Edge {from = X, to = _}",
+            "X where test.Foo {id = X}; !(test.Bar {id = X} | test.Node {id = X})",
+            "X where test.Foo {id = X}; !never",
         ] {
-            let checked = compile(source);
-            assert_eq!(codes(&checked), [code], "for {source:?}");
+            assert_eq!(all_codes(source), [] as [&str; 0], "for {source:?}");
         }
+
+        assert_eq!(
+            all_codes("X where test.Name X; !test.Bar {id = X}"),
+            ["reject/type-mismatch"],
+            "a negation reading a variable at the wrong type is still a type error"
+        );
+
+        assert_eq!(
+            all_codes("X where test.Foo {id = X}; !test.Bar {nope = X}"),
+            ["reject/unknown-field"]
+        );
     }
 
     /// **Binding a row a field has already mentioned is an ordering question**, and

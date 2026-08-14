@@ -21,9 +21,12 @@ use std::fmt::Write as _;
 
 use crate::focus::{
     iter::Address,
-    plan::{FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step},
+    plan::{
+        FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+    },
     schema::{LocalInterner, PredicateRef, PredicateTy, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},
+    tuple::{MARK_TERM, TupleDecoder, Value, decode_typed, decode_typed_at},
 };
 
 /// How loosely a pattern binds, from the grammar:
@@ -61,9 +64,20 @@ pub fn print(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> String {
 /// indices, since `of = r0#` is the answer to "did it follow the reference?" and
 /// `1 = r0#` is not.
 ///
-/// Constants render as `<const>`: what matters here is *where* a constant went, and
-/// decoding one back to a literal would need the field's type threaded through every
-/// arm to say something the query already says.
+/// **A seek is rendered as the key it seeks**, field by field in key order:
+/// `seek[name = "encode".., to = _]` says the scan opens on a range of `name` and
+/// walks every `to` in it. That is the whole question a reader brings to this
+/// rendering — how much of the key the scan pinned before it started reading rows —
+/// and the two halves of the answer are both here: a pin decoded back to the literal
+/// it came from (`..` for a string prefix, which is a range rather than an equality),
+/// and `_` for each key field the seek never reached. Constants used to render as
+/// `<const>`, which said where a constant went and nothing about what it was, so
+/// `seek[<const>]` and a seek on the wrong field were the same six characters.
+///
+/// Decoding is against the field's **declared** type, walked from the schema exactly
+/// as the executor will walk it, so bytes that do not decode are shown as bytes
+/// rather than guessed at — that only happens for a plan built by hand or against
+/// another schema, and there the bytes are the honest answer.
 #[must_use]
 pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
     let mut out = String::new();
@@ -72,38 +86,38 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
     let mut level = 0;
 
     for step in plan.body.iter() {
-        let generator = match step {
-            Step::Level(generator) => generator,
+        // What the line is *for* differs — a level names the register it fills, a
+        // test names nothing because it fills nothing — and what follows the arrow
+        // is identical, because a probe and a scan are built the same way.
+        let (sources, opening) = match step {
+            Step::Level(generator) => {
+                let opening = format!("  {} <-", Address::new(level));
+                level += 1;
+                (&generator.sources, opening)
+            }
             // A derived bind names the register it computes, since it has no
             // predicate to be about and no scan to narrow.
             Step::Derive(derived) => {
                 let _ = writeln!(out, "  {} = <computed>", derived.bind);
                 continue;
             }
+            // No register and no arrow: a negation reads a predicate and answers
+            // yes or no about the row already standing.
+            Step::Test(Test::Absent(sources)) => (sources, "  absent".to_owned()),
         };
 
-        // A path read out of some *other* register is named against the key of
-        // whatever predicate that register holds, which is a different predicate
-        // with different field names. Naming it against this level's key gave
-        // `r0.module` for a register holding a `src.Module`, whose key has no
-        // `module` field at all.
-        let register_field = |address: &Address, path: &FieldPath| {
-            let predicate = register_key(plan, address, schema);
-            let key_ty = predicate.as_ref().map(|p| p.key().ty);
-
-            format!("{address}.{}", field_name(key_ty, path, schema))
-        };
-
-        let _ = write!(out, "  {} <-", Address::new(level));
+        out.push_str(&opening);
 
         // A level with no sources produces nothing. Rendered as the keyword for
         // it rather than as a blank, because "this level answers nothing" is the
-        // most important thing a plan can say about itself.
-        if generator.sources.is_empty() {
+        // most important thing a plan can say about itself. Under `absent` it is
+        // the opposite claim and the same word: nothing to find, so every row
+        // passes.
+        if sources.is_empty() {
             out.push_str(" never");
         }
 
-        for (alternative, source) in generator.sources.iter().enumerate() {
+        for (alternative, source) in sources.iter().enumerate() {
             // Alternatives after the first are stacked under the level, so a
             // single-source level — every level focus compiles today — reads
             // exactly as it did before there was more than one.
@@ -121,20 +135,12 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
             match source {
                 Source::Seek { access, .. } => match &access.seek_key {
                     SeekKey::Prefix(bytes) if bytes.is_empty() => out.push_str(" scan"),
-                    SeekKey::Prefix(_) => out.push_str(" seek[<const>]"),
-                    SeekKey::Composite(parts) => {
-                        let parts: Vec<String> = parts
-                            .iter()
-                            .map(|part| match part {
-                                SeekKeyPart::Bytes(_) => "<const>".to_owned(),
-                                SeekKeyPart::RegisterField { address, path } => {
-                                    register_field(address, path)
-                                }
-                                SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
-                            })
-                            .collect();
-
-                        let _ = write!(out, " seek[{}]", parts.join(" "));
+                    seek_key => {
+                        let _ = write!(
+                            out,
+                            " seek[{}]",
+                            seek(plan, schema, interner, key_ty, seek_key)
+                        );
                     }
                 },
 
@@ -146,23 +152,38 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
                 Source::Fetch {
                     reference, path, ..
                 } => {
-                    let _ = write!(out, " fetch[{}]", register_field(reference, path));
+                    let _ = write!(
+                        out,
+                        " fetch[{}]",
+                        register_field(plan, schema, reference, path)
+                    );
                 }
             }
 
             for Residual { path, op } in source.residuals().iter() {
                 let at = field(path);
+                let ty = field_ty(key_ty, path);
 
                 let _ = match op {
-                    ResidualOp::EqConst(_) => write!(out, "\n       where {at} == <const>"),
-                    ResidualOp::Prefix(_) => {
-                        write!(out, "\n       where {at} starts with <const>")
+                    ResidualOp::EqConst(bytes) => {
+                        write!(
+                            out,
+                            "\n       where {at} == {}",
+                            constant(schema, interner, ty, bytes)
+                        )
+                    }
+                    ResidualOp::Prefix(bytes) => {
+                        write!(
+                            out,
+                            "\n       where {at} starts with {}",
+                            prefix(interner, ty, bytes).unwrap_or_else(|| opaque(bytes))
+                        )
                     }
                     ResidualOp::EqRegisterField { address, path } => {
                         write!(
                             out,
                             "\n       where {at} == {}",
-                            register_field(address, path)
+                            register_field(plan, schema, address, path)
                         )
                     }
                     ResidualOp::EqRegisterFactId(address) => {
@@ -173,7 +194,6 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
         }
 
         out.push('\n');
-        level += 1;
     }
 
     let _ = write!(
@@ -182,6 +202,277 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
         projection(plan, &plan.head, schema, interner)
     );
     out
+}
+
+/// A seek, as the key it seeks: one entry per key field, in key order.
+///
+/// The entries are what makes a plan's cost legible. A field the seek **pins** shows
+/// what pins it — a literal, another register's field, another register's identity —
+/// and a field it leaves free shows `_`, so the boundary between them is the point
+/// the scan starts reading rows. `seek[from = 1, to = _]` and `seek[from = 1, to =
+/// 2]` are a range and a point, and a rendering that showed only the pins could not
+/// tell them apart.
+///
+/// The parts are paired with key fields **by position**, which is what they are: a
+/// seek is a byte prefix of the stored key, so the parts are the leading fields in
+/// order and the first field not fully determined ends the seek
+/// ([chapter 7](../../../docs/07-compilation.md)). One constant part can cover
+/// several fields, since a run of them is merged into a single [`SeekKey::Prefix`],
+/// and that is why the walk is a cursor rather than an index.
+fn seek(
+    plan: &Plan,
+    schema: &Schema,
+    interner: &LocalInterner,
+    key_ty: Option<&PredicateTy>,
+    seek_key: &SeekKey,
+) -> String {
+    let mut pins: Vec<(usize, String)> = vec![];
+
+    // The key field the next part pins.
+    let mut cursor = 0;
+
+    let constants = |cursor: &mut usize, bytes: &[u8], pins: &mut Vec<(usize, String)>| {
+        let decoded = constant_fields(schema, interner, key_ty, *cursor, bytes);
+        *cursor += decoded.len();
+        pins.extend(decoded);
+    };
+
+    match seek_key {
+        SeekKey::Prefix(bytes) => constants(&mut cursor, bytes, &mut pins),
+        SeekKey::Composite(parts) => {
+            for part in parts.iter() {
+                match part {
+                    SeekKeyPart::Bytes(bytes) => constants(&mut cursor, bytes, &mut pins),
+                    SeekKeyPart::RegisterField { address, path } => {
+                        pins.push((cursor, register_field(plan, schema, address, path)));
+                        cursor += 1;
+                    }
+                    // The register's *identity*, not any field of it — the compare a
+                    // reference is followed by ([`SeekKeyPart::RegisterFactId`]).
+                    SeekKeyPart::RegisterFactId(address) => {
+                        pins.push((cursor, format!("{address}#")));
+                        cursor += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Everything past the pins is scanned. Named rather than counted, because which
+    // field the seek stopped at is the question — a seek that stops one field short
+    // of the one the query cares about is the whole of what going wrong looks like.
+    for index in cursor..key_arity(key_ty).unwrap_or(cursor) {
+        pins.push((index, "_".to_owned()));
+    }
+
+    pins.iter()
+        .map(
+            |(index, pin)| match key_field_name(schema, key_ty, *index) {
+                Some(name) => format!("{name} = {pin}"),
+                // A scalar key is a single field with no name of its own.
+                None => pin.clone(),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The key fields a run of **constant** seek bytes pins, from field `from`.
+///
+/// A stored key is its top-level fields back to back and the encoding is
+/// self-delimiting ([I2](../../../docs/invariants.md#i2)), so the run is split by
+/// decoding one field at a time against the declared type — the same walk the
+/// executor makes, rather than a second reading of the layout.
+///
+/// The last field may be a **string prefix**, which is a string's encoding with its
+/// terminator dropped and so decodes as a truncation rather than as a value: that is
+/// what a decode failing on the final field means, and it is the difference between
+/// a seek that is an equality and one that is a range.
+fn constant_fields(
+    schema: &Schema,
+    interner: &LocalInterner,
+    key_ty: Option<&PredicateTy>,
+    from: usize,
+    bytes: &[u8],
+) -> Vec<(usize, String)> {
+    let mut pins = vec![];
+    let mut decoder = TupleDecoder::new(bytes);
+    let mut field = from;
+
+    loop {
+        let rest = decoder.remaining();
+
+        if rest.is_empty() {
+            return pins;
+        }
+
+        let Some(ty) = key_field_ty(key_ty, field) else {
+            // Bytes past the key's arity: a plan built by hand, or one built against
+            // another schema. Neither is decodable, and both are worth seeing.
+            pins.push((field, opaque(rest)));
+            return pins;
+        };
+
+        match decode_typed_at(interner, &mut decoder, ty) {
+            Ok(value) => pins.push((field, literal(schema, &value))),
+            Err(_) => {
+                pins.push((
+                    field,
+                    match prefix(interner, Some(ty), rest) {
+                        Some(text) => format!("{text}.."),
+                        None => opaque(rest),
+                    },
+                ));
+                return pins;
+            }
+        }
+
+        field += 1;
+    }
+}
+
+/// A whole field's constant, as the literal it was written as.
+fn constant(
+    schema: &Schema,
+    interner: &LocalInterner,
+    ty: Option<&PredicateTy>,
+    bytes: &[u8],
+) -> String {
+    ty.and_then(|ty| decode_typed(interner, bytes, ty).ok())
+        .map_or_else(|| opaque(bytes), |value| literal(schema, &value))
+}
+
+/// A **string prefix** as the literal it was written as, without the `..`.
+///
+/// The bytes are a string's encoding with its terminator dropped — which is exactly
+/// what makes the pattern a range, since every string beginning with it begins with
+/// these bytes ([I1](../../../docs/invariants.md#i1)). So the terminator is put back
+/// and the codec decodes it, rather than this reimplementing the escaping and
+/// drifting from it.
+fn prefix(interner: &LocalInterner, ty: Option<&PredicateTy>, bytes: &[u8]) -> Option<String> {
+    if !matches!(ty?, PredicateTy::Str) {
+        return None;
+    }
+
+    let mut restored = bytes.to_vec();
+    restored.push(MARK_TERM);
+
+    match decode_typed(interner, &restored, &PredicateTy::Str).ok()? {
+        Value::Str(text) => Some(escape(&text)),
+        _ => None,
+    }
+}
+
+/// A decoded value as focus text — the literal a reader would have written.
+///
+/// A reference is named as the corpus and the shell name one, `test.Foo#1`: the
+/// predicate is inside the id itself, so this needs no store read.
+fn literal(schema: &Schema, value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_owned(),
+        Value::Int(int) => int.to_string(),
+        Value::Str(text) => escape(text),
+        Value::FactRef(id) => {
+            let name = schema
+                .get(id.predicate())
+                .and_then(|p| p.name())
+                .unwrap_or("?");
+
+            format!("{name}#{}", id.sequence())
+        }
+        Value::Record(fields) => format!(
+            "{{{}}}",
+            fields
+                .iter()
+                .map(|(name, field)| format!("{name} = {}", literal(schema, field)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// Bytes no declared type decoded, as bytes.
+///
+/// Reachable only from a plan built by hand or one built against another schema —
+/// and there the bytes are the one true thing left to say, which `<const>` was not.
+fn opaque(bytes: &[u8]) -> String {
+    /// Enough to recognise a marker and the start of a value; a key field can be
+    /// arbitrarily long and this is one line of a plan.
+    const SHOWN: usize = 8;
+
+    let mut out = "0x".to_owned();
+
+    for byte in bytes.iter().take(SHOWN) {
+        let _ = write!(out, "{byte:02x}");
+    }
+
+    if bytes.len() > SHOWN {
+        out.push('…');
+    }
+
+    out
+}
+
+/// How many top-level fields a key has — one, for a scalar.
+fn key_arity(key_ty: Option<&PredicateTy>) -> Option<usize> {
+    match key_ty? {
+        PredicateTy::Record(fields) => Some(fields.len()),
+        _ => Some(1),
+    }
+}
+
+/// The schema's name for a top-level key field; `None` for a scalar key, which is
+/// one field and has no name of its own.
+fn key_field_name<'a>(
+    schema: &'a Schema,
+    key_ty: Option<&PredicateTy>,
+    index: usize,
+) -> Option<&'a str> {
+    match key_ty? {
+        PredicateTy::Record(fields) => {
+            let (name, _) = fields.get(index)?;
+            schema.interner().resolve(*name)
+        }
+        _ => None,
+    }
+}
+
+/// The declared type of a top-level key field.
+fn key_field_ty(key_ty: Option<&PredicateTy>, index: usize) -> Option<&PredicateTy> {
+    match key_ty? {
+        PredicateTy::Record(fields) => fields.get(index).map(|(_, ty)| ty),
+        // A scalar key *is* its one field.
+        scalar => (index == 0).then_some(scalar),
+    }
+}
+
+/// The declared type a [`FieldPath`] lands on — what a constant compared against it
+/// is decoded as.
+fn field_ty<'a>(key_ty: Option<&'a PredicateTy>, path: &FieldPath) -> Option<&'a PredicateTy> {
+    let mut ty = key_field_ty(key_ty, path.field_idx())?;
+
+    for &step in path.steps() {
+        let PredicateTy::Record(fields) = ty else {
+            return None;
+        };
+
+        ty = fields.get(step).map(|(_, ty)| ty)?;
+    }
+
+    Some(ty)
+}
+
+/// A path read out of some *other* register, named against the key of whatever
+/// predicate that register holds.
+///
+/// That is a different predicate with different field names: naming it against the
+/// level's own key gave `r0.module` for a register holding a `src.Module`, whose key
+/// has no `module` field at all.
+fn register_field(plan: &Plan, schema: &Schema, address: &Address, path: &FieldPath) -> String {
+    let predicate = register_key(plan, address, schema);
+    let key_ty = predicate.as_ref().map(|p| p.key().ty);
+
+    format!("{address}.{}", field_name(key_ty, path, schema))
 }
 
 /// One projection, as the row it produces reads.
@@ -193,7 +484,9 @@ fn projection(plan: &Plan, project: &Project, schema: &Schema, interner: &LocalI
     let key_of = |address: &Address| register_key(plan, address, schema);
 
     match project {
-        Project::Lit(value) => format!("{value:?}"),
+        // The same rendering a seek's constant gets: a folded constant is a literal
+        // the query wrote, and `Str("ann")` is the debug form of the box it came in.
+        Project::Lit(value) => literal(schema, value),
         // A row's identity, which is what a reference to it holds.
         Project::FactRef(address) => format!("{address}#"),
         Project::RegisterField { address, path, .. } => {
@@ -235,7 +528,7 @@ fn register_key<'a>(
         .iter()
         .filter_map(|step| match step {
             Step::Level(generator) => Some(generator),
-            Step::Derive(_) => None,
+            Step::Derive(_) | Step::Test(_) => None,
         })
         .find(|level| level.binds.contains(address))
         // `None` for a disjunction spanning predicates: there is no single key to
@@ -670,9 +963,10 @@ mod tests {
         diag::Diagnostics,
         lower::lower,
         parse::parse,
-        plan::{Access, Level as PlanLevel},
+        plan::{Access, FactId, Level as PlanLevel},
         schema::PredicateId,
         syntax::{proptest::arb_query_spec, source_range},
+        tuple::fact_ref_bytes,
     };
     use ::proptest::prelude::*;
 
@@ -696,8 +990,11 @@ mod tests {
         let compiled = compilation.plan().expect("a plan");
         let rendered = plan(&compiled, &schema, compilation.interner());
 
+        // Both names, and each against its own key: `id` is the field being pinned
+        // and `from` is where the bytes come from. They are the two halves the swap
+        // made indistinguishable.
         assert!(
-            rendered.contains("seek[r0.from]"),
+            rendered.contains("seek[id = r0.from"),
             "expected the register's own field name, got:\n{rendered}"
         );
 
@@ -711,6 +1008,197 @@ mod tests {
         assert!(
             rendered.contains("seek[r0.name]"),
             "expected the register's own field name, got:\n{rendered}"
+        );
+    }
+
+    /// Render the plan `source` compiles to, which must be a clean compilation.
+    fn rendered(schema: &Schema, source: &str) -> String {
+        let mut compilation = Compilation::new(source, schema);
+
+        let compiled = compilation.plan().unwrap_or_else(|| {
+            panic!(
+                "{source:?} must compile, got: {:?}",
+                compilation
+                    .diagnostics()
+                    .iter()
+                    .map(|d| &d.message)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+        plan(&compiled, schema, compilation.interner())
+    }
+
+    /// **A seek shows the key it seeks**, decoded back to the literals the query
+    /// wrote and named field by field.
+    ///
+    /// This is the rendering's whole job: `seek[<const>]` said a scan was narrowed
+    /// and nothing about what by, so a seek on the *wrong* constant — the classic
+    /// way a query reads a hundred times the rows it should — rendered identically
+    /// to the right one.
+    #[test]
+    fn a_seek_shows_the_constant_it_seeks() {
+        let schema = corpus::schema();
+
+        // The whole key pinned: a point seek, and no field left free.
+        let plan = rendered(&schema, "X where X = test.Foo {id = 1, name = \"ann\"}");
+        assert!(
+            plan.contains("test.Foo seek[id = 1, name = \"ann\"]"),
+            "expected both constants, got:\n{plan}"
+        );
+
+        // A nested record constant is one field's bytes, and reads as the record it
+        // is rather than as the fields spliced into the key's own list.
+        let plan = rendered(&schema, "X where X = test.Nested {outer = {inner = 7}}");
+        assert!(
+            plan.contains("test.Nested seek[outer = {inner = 7}]"),
+            "expected the record constant, got:\n{plan}"
+        );
+
+        // A scalar key is one field with no name of its own, so there is nothing to
+        // put on the left of the `=`.
+        let plan = rendered(&schema, "X where X = test.Count -42");
+        assert!(
+            plan.contains("test.Count seek[-42]"),
+            "expected the bare constant, got:\n{plan}"
+        );
+    }
+
+    /// **A seek names the key fields it leaves free**, which is where the scan
+    /// begins.
+    ///
+    /// The pins alone cannot say that: `test.Foo {id = 1}` and
+    /// `test.Foo {id = 1, name = "ann"}` are a range and a point, they read a very
+    /// different number of rows, and their pins are the same list with one entry
+    /// more. `_` for the rest is what tells them apart at a glance.
+    #[test]
+    fn a_seek_names_the_key_fields_it_leaves_free() {
+        let schema = corpus::schema();
+
+        let plan = rendered(&schema, "X where X = test.Foo {id = 1}");
+        assert!(
+            plan.contains("test.Foo seek[id = 1, name = _]"),
+            "expected the free field, got:\n{plan}"
+        );
+
+        // A prefix is a range over the field it ends at, so everything after it is
+        // free as well — including the rest of *that* field.
+        let plan = rendered(&schema, "X where X = test.Name \"abc\"..");
+        assert!(
+            plan.contains("test.Name seek[\"abc\"..]"),
+            "expected the range, got:\n{plan}"
+        );
+    }
+
+    /// A **residual** decodes what it compares against too — the same constant, one
+    /// step later in the level, and the one place a reader looks to find out what the
+    /// seek failed to narrow by.
+    #[test]
+    fn a_residual_shows_the_constant_it_filters_by() {
+        let schema = corpus::schema();
+
+        // `id` is a capture, which closes the seek prefix, so the constant at `name`
+        // can only filter.
+        let plan = rendered(&schema, "X where test.Foo {id = X, name = \"ann\"}");
+        assert!(
+            plan.contains("where name == \"ann\""),
+            "expected the constant, got:\n{plan}"
+        );
+
+        let plan = rendered(&schema, "X where test.Foo {id = X, name = \"an\"..}");
+        assert!(
+            plan.contains("where name starts with \"an\""),
+            "expected the prefix, got:\n{plan}"
+        );
+    }
+
+    /// A **folded constant** in the head reads as the literal it was written as.
+    #[test]
+    fn a_folded_constant_reads_as_a_literal() {
+        let schema = corpus::schema();
+
+        assert!(
+            rendered(&schema, "X where X = 42").contains("head 42"),
+            "expected the literal"
+        );
+        assert!(
+            rendered(&schema, "X where X = \"ann\"").contains("head \"ann\""),
+            "expected the quoted string"
+        );
+    }
+
+    /// **A reference is named as a reference**, `test.Foo#1` — the predicate is in
+    /// the id itself, so this costs no store read and no schema walk past the name.
+    ///
+    /// Only a hand-built plan reaches it: focus has no literal for a reference, so a
+    /// fact-typed key field is pinned by a register today
+    /// (`SeekKeyPart::RegisterFactId`) and never by constant bytes.
+    #[test]
+    fn a_constant_reference_is_named_as_one() {
+        let schema = corpus::schema();
+        let interner = LocalInterner::new(schema.interner().clone());
+
+        let foo = predicate_id(&schema, "test.Foo");
+        let refs = predicate_id(&schema, "test.Ref");
+
+        let id = FactId::new(foo, 1).expect("a valid id");
+
+        let compiled = Plan {
+            nvars: 1,
+            body: Step::levels([PlanLevel::seek(
+                Access {
+                    predicate_id: refs,
+                    seek_key: SeekKey::Prefix(fact_ref_bytes(id).to_vec().into()),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([]),
+            )]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let plan = plan(&compiled, &schema, &interner);
+
+        assert!(
+            plan.contains("test.Ref seek[of = test.Foo#1]"),
+            "expected the reference named, got:\n{plan}"
+        );
+    }
+
+    /// **Bytes that do not decode are shown as bytes**, and showing them does not
+    /// panic.
+    ///
+    /// A plan is public and `pub`-fielded, so a seek key is not guaranteed to be
+    /// anything: these are the bytes of a `test.Foo` key handed to a level reading
+    /// `test.Name`, which is a plan built by hand or one built against a schema that
+    /// has since moved. Rendering is a debugging tool and must survive being pointed
+    /// at a broken plan — that is when it is most needed — so this is the
+    /// errors-not-panics rule at a renderer.
+    #[test]
+    fn bytes_that_do_not_decode_are_shown_as_bytes() {
+        let schema = corpus::schema();
+        let interner = LocalInterner::new(schema.interner().clone());
+
+        let compiled = Plan {
+            nvars: 1,
+            body: Step::levels([PlanLevel::seek(
+                Access {
+                    predicate_id: predicate_id(&schema, "test.Name"),
+                    seek_key: SeekKey::Prefix(Box::new([0x49, 0x01, 0xff])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
+                    path: FieldPath::field(0),
+                    op: ResidualOp::EqConst(Box::new([0x49, 0x01])),
+                }]),
+            )]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let plan = plan(&compiled, &schema, &interner);
+
+        assert!(
+            plan.contains("seek[0x4901ff]") && plan.contains("== 0x4901"),
+            "expected the bytes, got:\n{plan}"
         );
     }
 

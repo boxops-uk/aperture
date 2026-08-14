@@ -235,8 +235,56 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X where test.Foo {id = X}; !test.Bar {id = X}",
+        Supported("3"),
+        "**statement-level negation**: a test rather than a level, so it binds no \
+         register and takes no cursor entry — the row standing when it runs either \
+         survives or is dropped. `test.Bar` holds 1 and 2, so only `test.Foo #3` is \
+         left",
+    ),
+    entry(
+        "X where !test.Bar {id = X}; test.Foo {id = X}",
+        Supported("3"),
+        "the same query with the negation written **first**, which is the placement \
+         rule made visible: `X` is a read, so the frontier cannot run the negation \
+         before the statement that binds it, and an unbound variable therefore never \
+         acts as a wildcard",
+    ),
+    entry(
+        "X where test.Foo {id = X}; !(test.Bar {id = X} | test.Edge {from = X, to = _})",
+        Supported("3"),
+        "a **negated disjunction** is one test over both alternatives — the row \
+         survives only if neither finds anything, and the sources are drained to \
+         their first row apiece rather than in full",
+    ),
+    entry(
+        "X where test.Bar {id = X}; !never",
+        Supported("1; 2"),
+        "**the negation of the empty relation**: a test with no source to open, \
+         which every row passes. It needs no arm of its own for the same reason \
+         `never` needed none — \"no source produced a row\" is already true of no \
+         sources",
+    ),
+    entry(
+        "X where test.Foo {id = X}; !test.Edge {from = X, to = Y}",
+        Diagnosed(Code::RejectUnboundVariable),
+        "`Y` occurs **only** inside the negation, where Datalog would read it as \
+         \"any\" — a wildcard. Every other statement here binds what it names and \
+         the two readings look identical, so this is refused rather than guessed \
+         at: `_` says it outright",
+    ),
+    entry(
+        "X where test.Foo {id = X}; !(Y where test.Bar {id = Y})",
         Diagnosed(Code::NyiNegation),
-        "statement-level negation; must move after its non-locals are bound",
+        "negating a **subquery** — a nested group, which is the one construct here \
+         that would need a level inside a test",
+    ),
+    entry(
+        "P where P = test.Foo {id = 1}; !test.Ref {of = test.Foo {id = 2}}",
+        Diagnosed(Code::NyiNegation),
+        "a fact pattern **inside** a negation's key, which hoisting would lift into \
+         a level of its own — and that changes the answer when the hoisted level \
+         matches nothing: the negation is vacuously true where the hoisted plan has \
+         no rows to test at all",
     ),
     entry(
         "X where X = (Y where test.Foo {id = Y})",

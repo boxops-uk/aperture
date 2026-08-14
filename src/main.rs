@@ -150,7 +150,8 @@ fn demo_schema() -> Schema {
         // only after the scan has opened, and the prefix can filter rows but not narrow
         // to them. Keyed with `name` leading — which is also the encoding order, since
         // field lists are sorted — the same prefix is a range, and `:plan` shows the
-        // difference as `seek[<const>]` against `scan`.
+        // difference as `seek[name = "encode".., to = _]` against a `scan` whose
+        // `where name starts with "encode"` is all it has.
         //
         // It is the same names twice over, which is what a *derived* predicate is: data
         // a query could compute, stored keyed the way the query wants to read it.
@@ -919,8 +920,11 @@ fn print_plan(source: &str, schema: &Schema) {
 ///
 /// A shell that advertises a query it cannot answer is worse than one that advertises
 /// none, and that is exactly what this was doing before a query could be run at all.
-/// Each of these is also a `focus::corpus` entry, which is where the claim that they
-/// return rows is actually checked — the corpus gate runs against a real store.
+/// **Nothing checks these strings**, and it is worth being plain about that: they are
+/// written against the code index, and `focus::corpus` — which does run every entry
+/// against a real store — is written against the shared fixture. What the corpus
+/// pins is that each *construct* used here returns rows; that these particular
+/// queries do is checked by typing them, which is what a scaffold is for.
 ///
 /// Between them they reach everything a reference-shaped schema needs — a scalar key,
 /// a value side, a nested record field, a captured reference, and a chain of
@@ -933,10 +937,11 @@ fn print_plan(source: &str, schema: &Schema) {
 ///
 /// The first two are the same question twice, and the pair is the point: **prefix
 /// search**, asked of the predicate keyed for it and of the one that is not.
-/// `src.SearchByName` leads with the name, so the prefix is a `seek[<const>]` — a
-/// range of the index. `src.Decl` leads with the module, so by the time the scan
-/// reaches the name it can only filter what it has already read. Same rows, and
-/// `:plan` shows what it cost to get them.
+/// `src.SearchByName` leads with the name, so the prefix is a
+/// `seek[name = "encode".., to = _]` — a range of the index. `src.Decl` leads with
+/// the module, so by the time the scan reaches the name it can only filter what it
+/// has already read. Same rows, and `:plan` shows what it cost to get them: which key
+/// fields the seek pinned, and which it left `_` for the scan to walk.
 ///
 /// The fourth is the **other** pair, and the other half of navigation: it *reads
 /// through* the reference the third *joins* on. `D.module.name` is a point read per
@@ -946,14 +951,22 @@ fn print_plan(source: &str, schema: &Schema) {
 /// question: a fetch suits a reference each row has exactly one of, and a join
 /// suits one where the *other* side is what narrows.
 ///
-/// The last is prefix search again, and the thing it shows is that **naming the
+/// The last two are **negations**, and they are the query a code index is asked at
+/// review time: what is here that nothing uses. Both are a `Step::Test` — no
+/// register, no row of its own — and the pair shows the same sargeability the seek
+/// examples do, one loop deeper. `!src.Import {from = M}` narrows to
+/// `seek[from = r0#, to = _]`, because `from` leads that key; `!src.Ref {to = D}`
+/// cannot, `to` being last, so it scans and filters. Same shape of answer, and
+/// `:plan` says which one paid for it.
+///
+/// The one before them is prefix search again, and the thing it shows is that **naming the
 /// answer costs nothing**. `F` is the file path, captured — ordinarily the thing that
 /// closes a seek prefix, because an output cannot narrow a scan — and `F = "query"..`
 /// says what that output has to look like, so the level that binds it seeks the range
-/// instead. `:plan` shows `src.File seek[<const>]`, the same range the prefix written
+/// instead. `:plan` shows `src.File seek["query"..]`, the same range the prefix written
 /// in the pattern reaches, and then the join into `src.Module` by id
 /// ([chapter 7](../docs/07-compilation.md#what-a-bind-can-mean)).
-const EXAMPLES: [&str; 8] = [
+const EXAMPLES: [&str; 10] = [
     "X where X = src.SearchByName {name = \"encode\"..}",
     "D where D = src.Decl {name = \"encode\"..}",
     "D.name where D = src.Decl {module = src.Module {file = src.File \"store/codec.py\"}}",
@@ -962,6 +975,8 @@ const EXAMPLES: [&str; 8] = [
     "{file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = \"encode_str\"}}",
     "M where src.Import {from = M, to = src.Module {name = \"store.codec\"}}",
     "F where src.Module {file = src.File F}; F = \"query\"..",
+    "M.name where M = src.Module _; !src.Import {from = M}",
+    "D.name where D = src.Decl _; !src.Ref {to = D}",
 ];
 
 /// One shell command.

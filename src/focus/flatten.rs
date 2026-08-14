@@ -71,7 +71,7 @@ use crate::focus::{
     iter::Address,
     plan::{
         Access, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
-        Source, Step,
+        Source, Step, Test,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
     schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},
@@ -168,7 +168,7 @@ impl Stmt {
     /// emits no level at all — neither has a position a person chose.
     fn placement(&self) -> Placement {
         match self {
-            Stmt::Scan(generator) => generator.placement,
+            Stmt::Scan(generator) | Stmt::Negate(generator) => generator.placement,
             Stmt::Alias(_) | Stmt::Constrain(_) => Placement::Floating,
         }
     }
@@ -227,6 +227,17 @@ struct Constraint {
 #[derive(Debug, Clone)]
 enum Stmt {
     Scan(Gen),
+    /// A statement whose rows must **not** exist — `!test.Bar {id = X}`.
+    ///
+    /// The very same [`Gen`] a scan is built from, because a fact pattern is a
+    /// generator wherever it is written and its seek is built the same way. What
+    /// differs is only what the machine does with the rows it finds, and that is a
+    /// [`Test`] rather than a level: no register, no row, and every variable it
+    /// names a **read**.
+    ///
+    /// `row` is therefore always `None`. There is no row to name — `X = !test.Bar
+    /// {…}` is not expressible, since `!` prefixes a statement.
+    Negate(Gen),
     Alias(Alias),
     Constrain(Constraint),
 }
@@ -234,7 +245,7 @@ enum Stmt {
 impl Stmt {
     fn span(&self) -> NodeSpan {
         match self {
-            Stmt::Scan(generator) => generator.span.clone(),
+            Stmt::Scan(generator) | Stmt::Negate(generator) => generator.span.clone(),
             Stmt::Alias(alias) => alias.span.clone(),
             Stmt::Constrain(constraint) => constraint.span.clone(),
         }
@@ -322,6 +333,65 @@ impl Occurrences {
         if !self.reads.contains(&var) {
             self.reads.push(var);
         }
+    }
+}
+
+/// The plan body under construction: the steps in order, and the count of those
+/// that are **levels**.
+///
+/// The count is the whole reason this is a type rather than a `Vec`. A register
+/// address is the position of the level that fills it, and only a level fills one —
+/// so once a step can be a derive or a [`Test`], `steps.len()` and the next address
+/// are two different numbers. They were the same number for as long as every step
+/// was a level, which is exactly the shape of arithmetic that goes wrong silently:
+/// an address one too high names a register no level ever binds, and a seek splices
+/// whatever the executor finds there.
+///
+/// It is the same distinction [`Plan::levels`] draws for a finished plan, held here
+/// while the plan is being built.
+struct Body {
+    steps: Vec<Step>,
+    levels: usize,
+}
+
+impl Body {
+    fn new(capacity: usize) -> Self {
+        Self {
+            steps: Vec::with_capacity(capacity),
+            levels: 0,
+        }
+    }
+
+    /// The address the **next** level will bind — which is also an address no
+    /// existing register has, and so the one a test can safely be walked against.
+    fn next_address(&self) -> Address {
+        Address::new(self.levels)
+    }
+
+    /// Append a level, returning the register it binds.
+    fn push_level(&mut self, level: Level) -> Address {
+        let address = self.next_address();
+        self.steps.push(Step::Level(level));
+        self.levels += 1;
+        address
+    }
+
+    fn push_test(&mut self, test: Test) {
+        self.steps.push(Step::Test(test));
+    }
+
+    /// The level that binds `address`, to add a residual to it.
+    ///
+    /// By position among the *levels*, which is what an address counts.
+    fn level_mut(&mut self, address: Address) -> Option<&mut Level> {
+        self.levels_mut().nth(address.index())
+    }
+
+    fn levels_mut(&mut self) -> impl Iterator<Item = &mut Level> {
+        self.steps.iter_mut().filter_map(|step| match step {
+            Step::Level(level) => Some(level),
+            Step::Derive(_) | Step::Test(_) => None,
+        })
     }
 }
 
@@ -700,13 +770,10 @@ impl Flattener<'_> {
                     }
                 }
 
-                // Typecheck reports negation, so a query reaching flatten has none.
                 QueryStmt::Negation(node) => {
-                    self.report(
-                        *node,
-                        Code::RejectNotAGenerator,
-                        "a statement has to match facts; this one matches nothing",
-                    );
+                    if let Some(generator) = self.negated(*node) {
+                        stmts.push(Stmt::Negate(generator));
+                    }
                 }
             }
         }
@@ -786,6 +853,35 @@ impl Flattener<'_> {
                     self.scan_read(alias.value, &mut occurrences);
                 }
 
+                // **A negation reads everything and captures nothing**, and those
+                // two halves are one rule rather than two.
+                //
+                // Glean states the scope half as `FlatNegation -> mempty`
+                // (`Query/Scope.hs`): nothing inside a negated group escapes it,
+                // because the branch that would have bound a variable is the branch
+                // that must not have matched. The ordering half is its
+                // `Note [Reordering negations]` — *"always move negated subqueries
+                // after the binding of all variables from the parent scope that it
+                // uses"* — and it is **semantic, not a heuristic**: an unbound
+                // variable inside a negation behaves as a wildcard, so running the
+                // negation earlier asks a different question.
+                //
+                // Both fall out of walking the key and then moving every capture
+                // into `reads`. `reads` is what the frontier will not run a
+                // statement before, so the placement rule *is* the graph — no
+                // immovability tag, no second mechanism, and completeness survives
+                // because `reads` is still structural and `bound` still only grows
+                // ([the query-surface note](../../../docs/query-surface.md)).
+                Stmt::Negate(generator) => {
+                    for alt in generator.alternatives.clone().iter() {
+                        self.scan_key(alt.key, alt.predicate, &claims, &mut occurrences);
+                    }
+
+                    for capture in std::mem::take(&mut occurrences.captures) {
+                        occurrences.read(capture);
+                    }
+                }
+
                 // A pure **read**: it says what the value at a place has to look
                 // like, and binds nothing. So the statement that binds the variable
                 // has to run first — which costs nothing, since the constraint is
@@ -799,6 +895,8 @@ impl Flattener<'_> {
                 placement: stmt.placement(),
             });
         }
+
+        self.negated_wildcards(&stmts, &deps);
 
         let mut head = Occurrences::default();
         self.scan_head(*self.ast.query().head(), &mut head);
@@ -911,7 +1009,11 @@ impl Flattener<'_> {
                 // A constraint claims nothing — it does not say what a variable
                 // *is*, so the key that mentions it still captures it. That is the
                 // whole difference between `X = "a".."` and `X = "a"`.
-                Stmt::Constrain(_) => continue,
+                //
+                // Nor does a negation, and for a stronger reason: it binds nothing
+                // at all, so every variable it names belongs to whatever else in
+                // the query does bind it.
+                Stmt::Constrain(_) | Stmt::Negate(_) => continue,
             };
 
             for name in claimed {
@@ -1200,7 +1302,7 @@ impl Flattener<'_> {
     /// position in the body, and the fetch is an *outer* level — so a seek may
     /// splice it, a residual may compare against it, and the reference it reads
     /// cannot move while it is open.
-    fn fetch_within(&mut self, node: NodeId, body: &mut Vec<Level>) {
+    fn fetch_within(&mut self, node: NodeId, body: &mut Body) {
         match self.ast.store().kind(node) {
             ExprKind::Record(fields) => {
                 for (_, value) in fields.clone().iter() {
@@ -1241,15 +1343,15 @@ impl Flattener<'_> {
         address: Address,
         path: FieldPath,
         predicate: PredicateId,
-        body: &mut Vec<Level>,
+        body: &mut Body,
     ) -> Address {
         if let Some(register) = self.fetched_register(address, &path) {
             return register;
         }
 
-        let register = Address::new(body.len());
+        let register = body.next_address();
 
-        body.push(Level::fetch(
+        body.push_level(Level::fetch(
             address,
             path.clone(),
             predicate,
@@ -1342,6 +1444,122 @@ impl Flattener<'_> {
                 );
                 None
             }
+        }
+    }
+
+    /// **A variable only a negation names would be a wildcard**, and that is a
+    /// meaning worth refusing to guess at.
+    ///
+    /// `test.Foo {id = X}; !test.Bar {id = Y}` reads, to a Datalog eye, as "no
+    /// `test.Bar` exists at all" — `Y` is existentially quantified inside the
+    /// negation, which is the standard reading and Glean's. But every *other*
+    /// statement here binds what it names, and the two readings of `!test.Bar {id =
+    /// Y}` are indistinguishable at a glance, which is the argument for refusing it
+    /// rather than picking one ([the query-surface
+    /// note](../../../docs/query-surface.md)). The wildcard reading is spellable —
+    /// `_` — so this asks for that spelling.
+    ///
+    /// **A rejection, not a deferral**, and it carries the code the safety check
+    /// would have reported anyway: nothing binds the variable, which is exactly
+    /// true. What this adds is the sentence a reader can act on, and a span
+    /// pointing at the negation rather than at whatever read it last.
+    fn negated_wildcards(&mut self, stmts: &[Stmt], deps: &[StmtDeps]) {
+        let mut bindable: Vec<Symbol> = deps
+            .iter()
+            .flat_map(|stmt| stmt.captures.iter().copied())
+            .collect();
+
+        // A folded constant binds before any level runs, so a negation reading one
+        // is reading a value, not quantifying over a predicate.
+        bindable.extend(
+            self.bindings
+                .iter()
+                .filter(|(_, slot)| matches!(slot, Slot::Const(_)))
+                .map(|(symbol, _)| *symbol),
+        );
+
+        for (index, stmt) in stmts.iter().enumerate() {
+            let (Stmt::Negate(generator), Some(occurrences)) = (stmt, deps.get(index)) else {
+                continue;
+            };
+
+            for read in occurrences.reads.iter() {
+                if bindable.contains(read) {
+                    continue;
+                }
+
+                let name = self.name(*read).to_owned();
+                self.diagnostics.error(
+                    Code::RejectUnboundVariable,
+                    format!(
+                        "nothing binds `{name}`, and inside a negation that would quietly \
+                         mean *any* matching fact rather than a value — write `_` if that \
+                         is what you mean"
+                    ),
+                    generator.span.clone(),
+                );
+            }
+        }
+    }
+
+    /// The generator a **negation** tests for emptiness — or `None`, with the
+    /// reason reported.
+    ///
+    /// [`generator`](Self::generator) does the lowering, because a negated pattern
+    /// is a generator like any other: `!never` is a test with no source, which
+    /// every row passes, and `!(A | B)` is one test over both alternatives. Two
+    /// shapes are refused here first, and the second is the one worth knowing.
+    ///
+    /// - **A subquery** — `!(Y where …)` — is a nested group. It is the one
+    ///   construct in this phase that would need a *level inside a test*, so it is
+    ///   named rather than half-built.
+    /// - **A fact pattern inside the key** — `!test.Ref {of = test.Foo {id = 1}}` —
+    ///   would ordinarily be [hoisted](Self::hoist_within) into a level of its own,
+    ///   and hoisting **out of a negation changes what the query means**. `¬∃f∃r`
+    ///   and `∀f ¬∃r` agree on every `f` the hoisted level produces, and disagree
+    ///   exactly when it produces none: the negation is then vacuously true, while
+    ///   the hoisted plan has an empty level above the test and answers no rows at
+    ///   all. So this is not a lowering that is missing, it is one that would be
+    ///   wrong, and the diagnostic says so rather than saying "not yet".
+    fn negated(&mut self, node: NodeId) -> Option<Gen> {
+        if matches!(self.ast.store().kind(node), ExprKind::Subquery(_)) {
+            self.report(
+                node,
+                Code::NyiNegation,
+                "negating a subquery is not implemented yet; a negated group needs a \
+                 level inside a test, which the machine has no shape for",
+            );
+            return None;
+        }
+
+        let generator = self.generator(node, None)?;
+
+        for alt in generator.alternatives.iter() {
+            if self.nests_a_generator(alt.key) {
+                self.report(
+                    alt.key,
+                    Code::NyiNegation,
+                    "a fact pattern inside a negation's key is not implemented yet: \
+                     hoisting it out would answer differently when it matches nothing — \
+                     bind it in a statement of its own first",
+                );
+                return None;
+            }
+        }
+
+        Some(generator)
+    }
+
+    /// Whether a pattern has a **fact pattern inside it** — the thing hoisting
+    /// exists for, asked before hoisting rather than after.
+    fn nests_a_generator(&self, node: NodeId) -> bool {
+        match self.ast.store().kind(node) {
+            ExprKind::Fact(..) => true,
+            ExprKind::Record(fields) => fields
+                .iter()
+                .any(|(_, value)| self.nests_a_generator(*value)),
+            ExprKind::Access(_, base) | ExprKind::Select(_, base) => self.nests_a_generator(*base),
+            _ => false,
         }
     }
 
@@ -1587,7 +1805,7 @@ impl Flattener<'_> {
     /// derives.
     fn emit(&mut self, stmts: &[Stmt], order: &[usize]) -> Option<Plan> {
         let mark = self.diagnostics.len();
-        let mut body: Vec<Level> = Vec::with_capacity(order.len());
+        let mut body = Body::new(order.len());
 
         for &stmt in order {
             match stmts.get(stmt)? {
@@ -1599,7 +1817,7 @@ impl Flattener<'_> {
                         self.fetch_within(alt.key, &mut body);
                     }
 
-                    let address = Address::new(body.len());
+                    let address = body.next_address();
                     let mut sources = Vec::with_capacity(generator.alternatives.len());
                     // Where this level's own bindings start, which is what a later
                     // branch is reconciled against — the first branch's.
@@ -1657,7 +1875,7 @@ impl Flattener<'_> {
                         ));
                     }
 
-                    body.push(Level {
+                    body.push_level(Level {
                         sources: sources.into(),
                         binds: Box::new([address]),
                     });
@@ -1679,6 +1897,51 @@ impl Flattener<'_> {
                     if let Some(slot) = self.resolve(value) {
                         self.bind_pattern(pattern, slot);
                     }
+                }
+
+                // **A negation is the same seek, and no register.** Every variable
+                // it names is bound by now — `collect` made them all reads, and the
+                // safety check over the chosen order is what guarantees the rest —
+                // so the key walk finds every one of them already in a register and
+                // splices or filters. It cannot capture: `field` captures only where
+                // `lookup` finds nothing.
+                //
+                // The address it is walked against is the one the *next* level will
+                // take, which is no register's. That matters for one arm only: the
+                // intra-row check compares a spliced register against this
+                // statement's own, and a test has none to compare against.
+                Stmt::Negate(generator) => {
+                    let address = body.next_address();
+                    let mut sources = Vec::with_capacity(generator.alternatives.len());
+                    let bound = self.bindings.len();
+
+                    for alt in generator.alternatives.clone().iter() {
+                        let key_ty = self.schema.get(alt.predicate)?.key().ty.clone();
+
+                        let mut current = SeekBuilder::new();
+                        self.key(alt.key, &key_ty, address, &mut current);
+
+                        sources.push(Source::Seek {
+                            access: Access {
+                                predicate_id: alt.predicate,
+                                seek_key: current.seek_key(),
+                            },
+                            residuals: current.residuals.into(),
+                        });
+                    }
+
+                    // Nothing above can have bound anything, and a binding recorded
+                    // here would point into a register no level fills. Truncated
+                    // rather than trusted, because the cost of being wrong is a
+                    // seek splicing an unbound register at run time.
+                    debug_assert_eq!(
+                        self.bindings.len(),
+                        bound,
+                        "a negation captured a variable, which nothing binds"
+                    );
+                    self.bindings.truncate(bound);
+
+                    body.push_test(Test::Absent(sources.into()));
                 }
 
                 // Applied by the level that binds the variable, or by
@@ -1703,8 +1966,8 @@ impl Flattener<'_> {
         }
 
         Some(Plan {
-            nvars: body.len(),
-            body: body.into_iter().map(Step::Level).collect(),
+            nvars: body.levels,
+            body: body.steps.into(),
             head: head?,
         })
     }
@@ -1722,7 +1985,7 @@ impl Flattener<'_> {
     /// Both sides must be a **field of a row**. Two rows would compare identities
     /// (`EqRegisterFactId` — nothing writes one yet), and anything else is not in
     /// a register to be compared.
-    fn apply_compares(&mut self, body: &mut [Level]) {
+    fn apply_compares(&mut self, body: &mut Body) {
         for compare in std::mem::take(&mut self.compares) {
             let (
                 Slot::Field {
@@ -1764,7 +2027,7 @@ impl Flattener<'_> {
                 (right, left, right_path, left_path)
             };
 
-            let Some(level) = body.get_mut(inner.index()) else {
+            let Some(level) = body.level_mut(*inner) else {
                 continue;
             };
 
@@ -2386,7 +2649,7 @@ impl Flattener<'_> {
     /// **reporting is the point** — a constraint silently dropped is a query that
     /// answers with rows it was told to exclude, which is worse than one that
     /// refuses.
-    fn apply_constraints(&mut self, body: &mut Vec<Level>) {
+    fn apply_constraints(&mut self, body: &mut Body) {
         for (symbol, pattern) in std::mem::take(&mut self.constraints) {
             if self.constrained.contains(&symbol) {
                 continue;
@@ -2404,7 +2667,7 @@ impl Flattener<'_> {
                     };
 
                     let (Const::Prefix(bytes) | Const::Bytes(bytes)) = constant;
-                    let Some(level) = body.get_mut(address.index()) else {
+                    let Some(level) = body.level_mut(address) else {
                         continue;
                     };
 
@@ -2443,9 +2706,9 @@ impl Flattener<'_> {
                     };
 
                     if !value.starts_with(&prefix) {
-                        body.push(Level {
+                        body.push_level(Level {
                             sources: Box::new([]),
-                            binds: Box::new([Address::new(body.len())]),
+                            binds: Box::new([body.next_address()]),
                         });
                     }
                 }
@@ -2898,7 +3161,7 @@ mod tests {
         lower::lower,
         mem_store::MemStore,
         parse::parse,
-        plan::{FactId, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source},
+        plan::{FactId, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Test},
         tuple::Value,
         ty,
     };
@@ -3004,20 +3267,34 @@ mod tests {
         let mut out = vec![];
 
         for step in plan.body.iter() {
-            let level = match step {
-                Step::Level(level) => level,
+            // A level says which register it fills; a test fills none, and the rest
+            // of the line is the same because the sources are built the same way.
+            let (sources, opening) = match step {
+                Step::Level(level) => (
+                    &level.sources,
+                    format!(
+                        "{} <- ",
+                        level
+                            .binds
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
+                ),
                 // A derived bind, which binds a value rather than a level.
                 Step::Derive(derived) => {
                     out.push(format!("{} = <computed>", derived.bind));
                     continue;
                 }
+                // A negation: the rows that must not exist.
+                Step::Test(Test::Absent(sources)) => (sources, "absent ".to_owned()),
             };
 
             // One alternative per source, joined by `|`. A level flatten emits has
             // exactly one, so these renderings read as they always did; zero
             // sources is the empty relation and renders as the keyword for it.
-            let alternatives = level
-                .sources
+            let alternatives = sources
                 .iter()
                 .map(|source| {
                     let name = schema
@@ -3080,20 +3357,13 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
 
-            let sources = if alternatives.is_empty() {
+            let rendered = if alternatives.is_empty() {
                 "never".to_owned()
             } else {
                 alternatives.join(" | ")
             };
 
-            let binds = level
-                .binds
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-
-            out.push(format!("{binds} <- {sources}"));
+            out.push(format!("{opening}{rendered}"));
         }
 
         out.push(format!("head {}", project(&plan.head, interner)));
@@ -3424,6 +3694,120 @@ mod tests {
         );
 
         assert_eq!(rows("X where test.Foo {name = X}; X = \"a\"..").len(), 2);
+    }
+
+    // ---- negation (Phase 6b) ------------------------------------------------
+
+    /// **A negation is a test, not a level**: no register, no row, and its key is
+    /// built exactly as a scan's is.
+    #[test]
+    fn a_negation_is_a_test_over_the_seek_a_scan_would_have_used() {
+        assert_eq!(
+            shape("X where test.Foo {id = X}; !test.Bar {id = X}"),
+            lines(&[
+                "r0 <- test.Foo scan",
+                "absent test.Bar seek[r0.0]",
+                "head r0.0:int",
+            ])
+        );
+
+        assert_eq!(
+            rows("X where test.Foo {id = X}; !test.Bar {id = X}"),
+            ints(&[3])
+        );
+    }
+
+    /// **The placement rule, and it is forced rather than likely.**
+    ///
+    /// Glean's `Note [Reordering negations]` states it as semantics rather than as
+    /// a heuristic: a negation must run after everything binding the parent-scope
+    /// variables it uses, because an unbound variable inside a negation behaves as
+    /// a wildcard — so moving it changes what the query *asks*. Here that rule
+    /// needs no mechanism at all: a negation's variables are `reads`, and the
+    /// frontier already refuses to run a statement before its reads are bound.
+    ///
+    /// Asserted as **one plan**, not merely one set of rows. Same rows would also
+    /// hold if the negation ran first and matched nothing by accident.
+    #[test]
+    fn a_negation_runs_after_the_statement_that_binds_it() {
+        let expected = shape("X where test.Foo {id = X}; !test.Bar {id = X}");
+        assert_eq!(
+            shape("X where !test.Bar {id = X}; test.Foo {id = X}"),
+            expected
+        );
+
+        assert_eq!(
+            rows("X where !test.Bar {id = X}; test.Foo {id = X}"),
+            rows("X where test.Foo {id = X}; !test.Bar {id = X}")
+        );
+    }
+
+    /// A negated **disjunction** is one test over both alternatives, exactly as a
+    /// disjunction is one level over both.
+    #[test]
+    fn a_negated_disjunction_is_one_test_with_two_sources() {
+        assert_eq!(
+            shape("X where test.Foo {id = X}; !(test.Bar {id = X} | test.Node {id = X})"),
+            lines(&[
+                "r0 <- test.Foo scan",
+                "absent test.Bar seek[r0.0] | test.Node seek[r0.0]",
+                "head r0.0:int",
+            ])
+        );
+
+        // `test.Bar` holds 1 and 2, `test.Node` holds 2 and 3 — so nothing of
+        // `test.Foo` survives both, and the empty answer is the right one.
+        assert_eq!(
+            rows("X where test.Foo {id = X}; !(test.Bar {id = X} | test.Node {id = X})"),
+            ints(&[])
+        );
+    }
+
+    /// **`!never` passes every row** — a test with no source to open. The identity
+    /// law, arrived at by the same counting a level does.
+    #[test]
+    fn negating_the_empty_relation_passes_everything() {
+        assert_eq!(
+            shape("X where test.Bar {id = X}; !never"),
+            lines(&["r0 <- test.Bar scan", "absent never", "head r0.0:int"])
+        );
+
+        assert_eq!(rows("X where test.Bar {id = X}; !never"), ints(&[1, 2]));
+    }
+
+    /// **What a negation refuses, and why each is a refusal rather than a gap.**
+    ///
+    /// The first two would *answer*, wrongly or surprisingly, if lowered by
+    /// analogy; the third needs a shape the machine does not have.
+    #[test]
+    fn a_negation_refuses_what_it_cannot_mean() {
+        // A variable only the negation names is existential — "any `test.Edge`" —
+        // which is the opposite of what every other statement here does with a
+        // name. `_` says it, so this asks for `_`.
+        assert_eq!(
+            front_end_codes("X where test.Foo {id = X}; !test.Edge {from = X, to = Y}"),
+            ["reject/unbound-variable"]
+        );
+
+        // Hoisting a nested generator out of a negation changes the answer when
+        // the hoisted level matches nothing.
+        assert_eq!(
+            front_end_codes("P where P = test.Foo {id = 1}; !test.Ref {of = test.Foo {id = 2}}"),
+            ["nyi/negation"]
+        );
+
+        // A negated group needs a level inside a test.
+        assert_eq!(
+            front_end_codes("X where test.Foo {id = X}; !(Y where test.Bar {id = Y})"),
+            ["nyi/negation"]
+        );
+
+        // A wildcard inside a negation is fine, and is the spelling the first case
+        // asks for.
+        assert_eq!(
+            rows("X where test.Foo {id = X}; !test.Edge {from = X, to = _}"),
+            ints(&[3])
+        );
     }
 
     /// **Where the constraint is written does not matter**, which is what makes it a
@@ -4743,6 +5127,39 @@ mod tests {
         );
     }
 
+    /// **No DNF expansion across conjuncts**, which is the claim that keeps a
+    /// disjunction affordable at all.
+    ///
+    /// Three two-branch disjunctions in conjunction are 2³ = 8 clauses if the
+    /// alternation is distributed over the conjunction, and 3 levels of 2 sources if
+    /// it is not. The plan is **linear in the branches** — one source per branch
+    /// written, no matter how many disjunctions sit beside it — which is what makes
+    /// the exponential shape unreachable rather than merely unlikely.
+    #[test]
+    fn conjoined_disjunctions_do_not_multiply() {
+        let flattened = compile(
+            "X where test.Foo {id = X} | test.Bar {id = X}; \
+             test.Node {id = X} | test.Edge {from = X, to = _}; \
+             test.Count X | test.Nested {outer = {inner = X}}",
+        );
+
+        let sources: Vec<usize> = flattened
+            .plan()
+            .body
+            .iter()
+            .filter_map(|step| match step {
+                Step::Level(level) => Some(level.sources.len()),
+                Step::Derive(_) | Step::Test(_) => None,
+            })
+            .collect();
+
+        assert_eq!(
+            sources,
+            vec![2, 2, 2],
+            "one level per statement, one source per branch"
+        );
+    }
+
     /// A branch narrows on its own: each alternative builds its own seek, so one
     /// can be a seek while another is a scan.
     #[test]
@@ -5540,6 +5957,30 @@ pub mod proptest {
         fields: Vec<FieldPat>,
     }
 
+    impl StmtSpec {
+        /// The field variables this pattern names.
+        ///
+        /// For a generator these are captures-or-reads and the order decides which;
+        /// for a **negation** they are reads outright, which is what makes them an
+        /// ordering constraint the spec has to know about.
+        fn vars(&self) -> Vec<usize> {
+            fn of(leaf: &Leaf, out: &mut Vec<usize>) {
+                if let Leaf::Var(var) = leaf {
+                    out.push(*var);
+                }
+            }
+
+            let mut out = vec![];
+            for field in &self.fields {
+                match field {
+                    FieldPat::Leaf(leaf) => of(leaf, &mut out),
+                    FieldPat::Nested(subs) => subs.iter().for_each(|leaf| of(leaf, &mut out)),
+                }
+            }
+            out
+        }
+    }
+
     /// One predicate: its key field types, and whether it has a value side.
     #[derive(Debug, Clone)]
     struct PredSpec {
@@ -5585,14 +6026,48 @@ pub mod proptest {
         /// binds nothing: constraining one nothing binds is
         /// `reject/unbound-variable`, not a query this generator may draw.
         constraints: Vec<(usize, &'static str)>,
+        /// `!gen.P{p} {f{k} = V{v}}` — a **negation**, over a variable the query
+        /// captures. At most one, for the reason there is at most one constraint.
+        ///
+        /// The same [`StmtSpec`] a generator is, because that is what a negation
+        /// is: a pattern, matched the same way, whose rows must not exist. Drawn
+        /// only over captured variables, since one it alone names is a wildcard
+        /// flatten refuses to guess at (`nyi/negation`).
+        negations: Vec<StmtSpec>,
         head: Vec<HeadItem>,
+    }
+
+    /// What a statement index names.
+    ///
+    /// The body is three lists in one index space — generators, then constraints,
+    /// then negations — and every property that orders statements has to agree
+    /// about which is which. One function answers that, rather than the same
+    /// arithmetic written out at each site.
+    enum Which<'a> {
+        Gen(&'a StmtSpec),
+        Constrain(usize),
+        Negate(&'a StmtSpec),
     }
 
     impl QueryAndStore {
         /// The body's length — generators **and** constraints, since an order names
         /// every statement flatten collected and a constraint is one of them.
         pub fn statements(&self) -> usize {
-            self.stmts.len() + self.constraints.len()
+            self.stmts.len() + self.constraints.len() + self.negations.len()
+        }
+
+        /// Which of the three lists a statement index falls in.
+        fn which(&self, stmt: usize) -> Which<'_> {
+            if let Some(spec) = self.stmts.get(stmt) {
+                return Which::Gen(spec);
+            }
+
+            let past_generators = stmt - self.stmts.len();
+
+            match self.constraints.get(past_generators) {
+                Some(_) => Which::Constrain(past_generators),
+                None => Which::Negate(&self.negations[past_generators - self.constraints.len()]),
+            }
         }
 
         /// How many variables this query constrains, for the census: the source
@@ -5701,11 +6176,13 @@ pub mod proptest {
         }
 
         fn statement_source(&self, stmt: usize) -> String {
-            // The constraints sit past the generators, so an index names one thing
-            // whichever list it falls in.
-            let Some(spec) = self.stmts.get(stmt) else {
-                let (var, prefix) = self.constraints[stmt - self.stmts.len()];
-                return format!("V{var} = {prefix:?}..");
+            let (spec, negated) = match self.which(stmt) {
+                Which::Gen(spec) => (spec, false),
+                Which::Constrain(index) => {
+                    let (var, prefix) = self.constraints[index];
+                    return format!("V{var} = {prefix:?}..");
+                }
+                Which::Negate(spec) => (spec, true),
             };
 
             let fields: Vec<String> = spec
@@ -5733,7 +6210,15 @@ pub mod proptest {
                 None => String::new(),
             };
 
-            format!("{bind}gen.P{} {{{}}}", spec.predicate, fields.join(", "))
+            // `!` prefixes the statement, so it sits outside the bind — which a
+            // negation never has anyway, there being no row to name.
+            let bang = if negated { "!" } else { "" };
+
+            format!(
+                "{bang}{bind}gen.P{} {{{}}}",
+                spec.predicate,
+                fields.join(", ")
+            )
         }
 
         /// The spec's facts in insertion order: `(predicate, key bytes, value bytes,
@@ -5807,17 +6292,29 @@ pub mod proptest {
             let mut captured: Vec<usize> = vec![];
 
             for &stmt in order {
-                // A **constraint**: it binds nothing and reads its variable, so
-                // some earlier statement has to mention that variable — the first
-                // that does is the one that captures it, whichever it is.
-                let Some(spec) = self.stmts.get(stmt) else {
-                    let (var, _) = self.constraints[stmt - self.stmts.len()];
+                // A **constraint** and a **negation** both bind nothing and read
+                // their variables, so an earlier statement has to mention each —
+                // the first that does is the one that captures it, whichever it is.
+                let spec = match self.which(stmt) {
+                    Which::Gen(spec) => spec,
 
-                    if !captured.contains(&var) {
-                        return false;
+                    Which::Constrain(index) => {
+                        let (var, _) = self.constraints[index];
+
+                        if !captured.contains(&var) {
+                            return false;
+                        }
+
+                        continue;
                     }
 
-                    continue;
+                    Which::Negate(spec) => {
+                        if spec.vars().iter().any(|var| !captured.contains(var)) {
+                            return false;
+                        }
+
+                        continue;
+                    }
                 };
 
                 for pat in &spec.fields {
@@ -5872,18 +6369,19 @@ pub mod proptest {
 
         fn walk(&self, order: &[usize], depth: usize, env: &mut Env, rows: &mut Vec<Value>) {
             if depth == order.len() {
-                if self.constrained(env) {
+                if self.constrained(env) && !self.witnessed(env) {
                     rows.push(self.project(env));
                 }
                 return;
             }
 
-            // A **constraint** iterates nothing: it is checked once the whole row is
-            // built, which is the same set of rows in the same order as checking it
-            // the moment its variable is bound. The model reads it that way because
-            // the reading is obviously right — the compiler is the one claiming a
-            // seek is the same thing.
-            let Some(spec) = self.stmts.get(order[depth]) else {
+            // A **constraint** and a **negation** iterate nothing: both are checked
+            // once the whole row is built, which is the same set of rows in the same
+            // order as checking either the moment its variables are bound. The model
+            // reads them that way because the reading is obviously right — the
+            // compiler is the one claiming a seek, or a probe placed mid-plan, is
+            // the same thing.
+            let Which::Gen(spec) = self.which(order[depth]) else {
                 self.walk(order, depth + 1, env, rows);
                 return;
             };
@@ -5913,6 +6411,21 @@ pub mod proptest {
                     // Only `Str` positions are drawn a prefix.
                     FieldVal::Int(_) => unreachable!("a prefix constrains a string"),
                 }
+            })
+        }
+
+        /// Whether any negation finds a **witness** — a fact that matches it — in
+        /// which case this row is not an answer.
+        ///
+        /// The obvious reading, as the rest of the model is: look at every fact of
+        /// the predicate and ask whether one matches. What the compiler claims
+        /// instead is that a seek narrowed by the bound registers finds the same
+        /// answer while reading at most one row, which is the thing worth checking.
+        fn witnessed(&self, env: &Env) -> bool {
+            self.negations.iter().any(|spec| {
+                self.facts[spec.predicate]
+                    .iter()
+                    .any(|fact| matches(spec, fact, &mut env.clone()))
             })
         }
 
@@ -6223,8 +6736,13 @@ pub mod proptest {
         var_tys: Vec<u8>,
         stmts: Vec<StmtDraw>,
         heads: Vec<HeadDraw>,
-        constraint: u8,
+        filters: FilterDraw,
     ) -> QueryAndStore {
+        let FilterDraw {
+            constraint,
+            negation,
+        } = filters;
+
         let schema: Vec<PredSpec> = predicates
             .iter()
             .take(npredicates)
@@ -6446,6 +6964,96 @@ pub mod proptest {
             .into_iter()
             .collect();
 
+        // A **negation**, over a variable the query captures and a scalar field of
+        // that variable's type. Drawn from `used_vars` for the reason a constraint
+        // is, and more strictly: a variable a negation alone names is not a variable
+        // at all but a wildcard, which flatten refuses rather than guesses
+        // (`nyi/negation`).
+        //
+        // One scalar field is enough to reach both shapes a test can take. At the
+        // leading field the variable narrows the probe's seek — a composite seek
+        // spliced from a register — and behind an open one it filters instead, which
+        // is the same sargeability the rest of the generator exercises, now inside a
+        // step that binds nothing.
+        //
+        // At most one, and on a **third** of the queries that can carry one: it is a
+        // statement like any other, so each extra multiplies the permutations every
+        // order property re-runs, and it is the sharpest filter this generator draws
+        // — every row it rejects is a row the resume battery does not get to cut
+        // through. A half was measurably too many
+        // (`the_generator_is_not_degenerate` is what measures it).
+        let negations: Vec<StmtSpec> = {
+            // Where each variable is already matched, which is what a candidate
+            // must **not** be. `test.P {f0 = V}; !test.P {f0 = V}` is a witness by
+            // construction — the row that bound `V` is the row the probe finds — so
+            // it answers nothing, every time. A battery of queries that return no
+            // rows tests nothing about resume, and this is the one shape of that
+            // which is not a coincidence but an identity.
+            let occurs: Vec<(usize, usize, usize)> = resolved
+                .iter()
+                .flat_map(|spec| {
+                    spec.fields
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(field, pat)| match pat {
+                            FieldPat::Leaf(Leaf::Var(var)) => Some((spec.predicate, field, *var)),
+                            _ => None,
+                        })
+                })
+                .collect();
+
+            let candidates: Vec<(usize, usize, usize)> = schema
+                .iter()
+                .enumerate()
+                .flat_map(|(predicate, spec)| {
+                    spec.fields
+                        .iter()
+                        .enumerate()
+                        .filter_map(move |(field, ty)| match ty {
+                            GenTy::Scalar(scalar) => Some((predicate, field, *scalar)),
+                            GenTy::Record(_) | GenTy::Ref => None,
+                        })
+                })
+                .flat_map(|(predicate, field, scalar)| {
+                    used_vars
+                        .iter()
+                        .filter(|var| var_tys[**var] == scalar)
+                        .map(|var| (predicate, field, *var))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|candidate| !occurs.contains(candidate))
+                .collect();
+
+            match candidates.is_empty() || !negation.is_multiple_of(4) {
+                true => vec![],
+                false => {
+                    let (predicate, field, var) =
+                        candidates[negation as usize / 4 % candidates.len()];
+
+                    vec![StmtSpec {
+                        predicate,
+                        row: None,
+                        fields: schema[predicate]
+                            .fields
+                            .iter()
+                            .enumerate()
+                            .map(|(f, _)| {
+                                FieldPat::Leaf(if f == field {
+                                    Leaf::Var(var)
+                                } else {
+                                    // Unmentioned rather than a wildcard: the two
+                                    // mean the same thing to the plan, and this way
+                                    // a record or reference field needs no pattern
+                                    // of its own.
+                                    Leaf::Omitted
+                                })
+                            })
+                            .collect(),
+                    }]
+                }
+            }
+        };
+
         // The head: every variable the query captured (so nothing is bound and then
         // ignored), plus whatever the draws ask of the rows that are bound.
         let mut head: Vec<HeadItem> = used_vars.iter().map(|v| HeadItem::Var(*v)).collect();
@@ -6496,6 +7104,7 @@ pub mod proptest {
             facts,
             stmts: resolved,
             constraints,
+            negations,
             head,
         }
     }
@@ -6568,6 +7177,19 @@ pub mod proptest {
             })
     }
 
+    /// The two statements that **bind nothing**: a constraint and a negation.
+    ///
+    /// Drawn together because they are the same kind of thing to every property
+    /// that orders statements, and because keeping them out of the tuple above
+    /// keeps `resolve`'s parameters countable.
+    #[derive(Debug, Clone, Copy)]
+    struct FilterDraw {
+        /// Whether to constrain, and which prefix — separate digits of one draw.
+        constraint: u8,
+        /// Whether to negate, and which (predicate, field, variable) triple.
+        negation: u8,
+    }
+
     fn arb_head() -> impl Strategy<Value = HeadDraw> {
         (0u8..4, 0u8..PICKS, 0u8..PICKS).prop_map(|(kind, which, field)| HeadDraw {
             kind,
@@ -6588,12 +7210,18 @@ pub mod proptest {
             prop::collection::vec(0u8..PICKS, VARS),
             prop::collection::vec(arb_stmt(), 1..=MAX_STMTS),
             prop::collection::vec(arb_head(), 0..=3),
-            // Wider than `PICKS`: the draw carries *whether* to constrain and
-            // *which* prefix as separate digits.
-            0u8..(2 * CONSTRAINT_PREFIXES.len() as u8),
+            // Wider than `PICKS`: each digit carries *whether* to draw the
+            // statement and *which* one, so a constraint lands on half the queries
+            // that can carry one and a negation on a quarter.
+            (0u8..(2 * CONSTRAINT_PREFIXES.len() as u8), 0u8..(4 * PICKS)).prop_map(
+                |(constraint, negation)| FilterDraw {
+                    constraint,
+                    negation,
+                },
+            ),
         )
             .prop_map(
-                |(npredicates, predicates, facts, var_tys, stmts, heads, constraint)| {
+                |(npredicates, predicates, facts, var_tys, stmts, heads, filters)| {
                     resolve(
                         npredicates,
                         predicates,
@@ -6601,7 +7229,7 @@ pub mod proptest {
                         var_tys,
                         stmts,
                         heads,
-                        constraint,
+                        filters,
                     )
                 },
             )
@@ -6621,7 +7249,7 @@ mod battery {
         lower::lower,
         parse::parse,
         plan::{
-            FactId, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step,
+            FactId, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
             proptest::{arb_interruption_schedule, cut_points},
         },
         schema::{LocalInterner, PredicateTy, Schema},
@@ -6793,6 +7421,10 @@ mod battery {
         fact_id_residual: bool,
         reference_capture: bool,
         fetch_source: bool,
+        negation_test: bool,
+        negation_splice: bool,
+        negation_residual: bool,
+        negation_above_a_scan: bool,
     }
 
     impl Shapes {
@@ -6818,6 +7450,20 @@ mod battery {
                     "a captured reference (`Project::RegisterField` of a `Fact` type)",
                 ),
                 (self.fetch_source, "a `Source::Fetch`"),
+                (self.negation_test, "a `Step::Test`"),
+                (
+                    self.negation_splice,
+                    "a negation whose probe seeks by a bound register",
+                ),
+                (
+                    self.negation_residual,
+                    "a negation whose probe filters by a bound register",
+                ),
+                (
+                    self.negation_above_a_scan,
+                    "a negation placed *above* a scan, where a step that binds \
+                     nothing has to be re-entered from below",
+                ),
             ] {
                 if !present {
                     out.push(what);
@@ -6828,13 +7474,50 @@ mod battery {
         }
 
         fn observe(&mut self, plan: &Plan) {
+            // A test with a level after it — the placement Phase 6's I14 guard
+            // showed to be the only one that observes a restore fault, since a step
+            // below every scan is re-entered from beneath on the way back up
+            // whether or not resume did anything for it.
+            self.negation_above_a_scan |= plan
+                .body
+                .iter()
+                .skip_while(|step| !matches!(step, Step::Test(_)))
+                .any(|step| matches!(step, Step::Level(_)));
+
             for step in plan.body.iter() {
                 // The census is about the shapes a *scan* can take; a derive step
                 // has no seek and no residuals. When the generator learns to draw
                 // one, it gets its own census entry rather than being folded in
                 // here, since "reached a derive step" is a different claim.
-                let Step::Level(level) = step else {
-                    continue;
+                //
+                // A **test** is folded in, because its sources are ordinary sources
+                // and the interesting claim is about them: reaching the step says
+                // nothing if every probe it drew was a bare scan. So the two ways a
+                // bound register can reach a probe — narrowing its seek, or
+                // filtering its rows — are counted separately.
+                let level = match step {
+                    Step::Level(level) => level,
+                    Step::Derive(_) => continue,
+                    Step::Test(Test::Absent(sources)) => {
+                        self.negation_test = true;
+
+                        for source in sources.iter() {
+                            self.negation_splice |= matches!(
+                                source.seek_key(),
+                                Some(SeekKey::Composite(parts))
+                                    if parts.iter().any(|part| matches!(
+                                        part,
+                                        SeekKeyPart::RegisterField { .. }
+                                    ))
+                            );
+
+                            self.negation_residual |= source.residuals().iter().any(|residual| {
+                                matches!(residual.op, ResidualOp::EqRegisterField { .. })
+                            });
+                        }
+
+                        continue;
+                    }
                 };
 
                 // Every alternative counts: a shape reached by the second source
@@ -6924,6 +7607,10 @@ mod battery {
 
         const RUNS: usize = 300;
 
+        /// Safe orders to compile each draw in. Six is where the shapes stop
+        /// arriving, and every one of them is a whole compile.
+        const ORDERS: usize = 6;
+
         let mut runner = TestRunner::deterministic();
         let mut shapes = Shapes::default();
 
@@ -6933,9 +7620,14 @@ mod battery {
                 .unwrap()
                 .current();
             let schema = spec.schema();
-            let (plan, _) = plan_of(&schema, &spec.source(), &spec.identity());
 
-            shapes.observe(&plan);
+            // Several orders, not only the one the query was written in: where a
+            // step that binds nothing *sits* is a property of the order, and the
+            // identity order always writes a negation last.
+            for order in spec.orders().into_iter().take(ORDERS) {
+                let (plan, _) = plan_of(&schema, &spec.source(), &order);
+                shapes.observe(&plan);
+            }
         }
 
         let missing = shapes.missing();
@@ -7005,14 +7697,27 @@ mod battery {
         /// A case whose query matches nothing has no cut points and so says nothing
         /// about resume; that most cases do match is what the population assertion
         /// below is for.
+        ///
+        /// **The order is drawn, not the identity**, and that is what puts a step
+        /// that binds nothing *above* a scan. Phase 6 learned this the expensive
+        /// way: the first [I14](../../docs/invariants.md#i14) guard passed with
+        /// resume's recompute deleted, because the derive sat below the scan and
+        /// `enumerate` re-entered it from beneath on the way back up. A negation is
+        /// the same shape of step and would hide the same fault — written last in
+        /// the source, it is the innermost step and every replay of it is a replay
+        /// the machine would have done anyway.
         #[test]
         fn resume_of_a_compiled_plan_equals_the_query(
             spec in arb_query_and_store(),
             schedule in arb_interruption_schedule(),
+            which in 0usize..8,
         ) {
             let schema = spec.schema();
-            let (plan, interner) = plan_of(&schema, &spec.source(), &spec.identity());
-            let model = spec.expected();
+            let orders = spec.orders();
+            let order = &orders[which % orders.len()];
+
+            let (plan, interner) = plan_of(&schema, &spec.source(), order);
+            let model = spec.expected_in_order(order);
 
             let cuts = cut_points(&schedule, model.len());
             let (rows, suspends) =
@@ -7020,7 +7725,7 @@ mod battery {
                     .unwrap();
 
             prop_assert_eq!(suspends, cuts.len(), "expected one suspend per scheduled row");
-            prop_assert_eq!(rows, model, "schedule {:?} changed the run", cuts);
+            prop_assert_eq!(rows, model, "schedule {:?} of order {:?} changed the run", cuts, order);
         }
     }
 
@@ -7172,8 +7877,15 @@ mod battery {
             with_wildcard * 3 > RUNS,
             "only {with_wildcard}/{RUNS} queries use a wildcard"
         );
+        // **The average, and it moved when the negation draw landed** — 433 rows
+        // over these 200 queries before it, 392 after, all of the difference being
+        // rows a probe legitimately rejected. The bound is set below that at 1.5
+        // rows a query, with the room stated rather than shaved to fit: a filter
+        // this generator draws on purpose costs rows on purpose, and the assertion
+        // that carries the "not degenerate" claim is `with_rows` above — more than
+        // half of all queries still answer at least one row.
         assert!(
-            rows_total > RUNS * 2,
+            rows_total * 2 > RUNS * 3,
             "{rows_total} rows over {RUNS} queries is too thin"
         );
         assert!(

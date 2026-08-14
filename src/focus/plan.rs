@@ -476,15 +476,48 @@ pub struct DerivedBind {
     pub value: Computed,
 }
 
-/// One position in a plan's body: a level to iterate, or a value to compute.
+/// A **filter**: a step that binds nothing, produces no row of its own, and either
+/// passes the row standing when it runs or drops it.
+///
+/// One arm wide on purpose, exactly as [`Computed`] is. What the type is for is the
+/// shape of the seam — a test is a *predicate on the bindings*, so it takes no
+/// register, contributes nothing to a [`Cursor`](crate::focus::iter::Cursor), and is
+/// re-decided on restore rather than replayed. The positive form (`Exists`, for a
+/// subquery whose bindings must not escape) is the additive arm when something needs
+/// one; inventing it now would be a guess about a construct that does not exist yet.
+#[derive(Debug, Clone)]
+pub enum Test {
+    /// **Negation** — the row survives iff *no* source produces a row.
+    ///
+    /// The sources are the negated statement's alternatives, so the count means what
+    /// it means for a [`Level`]: one is `!test.Bar {…}`, several is a negated
+    /// disjunction, and **none is the negation of the empty relation**, which every
+    /// row passes. That last one needs no arm of its own for the same reason `never`
+    /// needed none — "no source produced a row" is already true of no sources.
+    ///
+    /// Each source is drained only until its **first** row: the question is whether a
+    /// witness exists, not how many there are. So a negation costs at most one
+    /// matching row per row the level above it produces, and reads only `keys`
+    /// ([I6](../../../docs/invariants.md#i6) is about values, and a probe fetches
+    /// none).
+    Absent(Box<[Source]>),
+}
+
+/// One position in a plan's body: a level to iterate, a value to compute, or a
+/// filter to pass.
 ///
 /// A single ordered sequence, because `reorder` produces a single order — holding
-/// the two kinds in separate collections joined by an index would mean two sources
+/// the kinds in separate collections joined by an index would mean two sources
 /// of truth for one ordering, with nothing to say which wins.
+///
+/// Only [`Level`] iterates, and that is the distinction the whole machine is built
+/// around: [`Plan::levels`] counts loops, `body.len()` counts steps, and a register
+/// address counts *levels*, because a derive and a test bind no row.
 #[derive(Debug, Clone)]
 pub enum Step {
     Level(Level),
     Derive(DerivedBind),
+    Test(Test),
 }
 
 impl Step {
@@ -548,7 +581,7 @@ impl Plan {
             .iter()
             .filter_map(|step| match step {
                 Step::Level(level) => Some(level),
-                Step::Derive(_) => None,
+                Step::Derive(_) | Step::Test(_) => None,
             })
             .nth(n)
     }
@@ -827,6 +860,18 @@ impl Fingerprint {
                         }
                     }
                 }
+                Step::Test(test) => {
+                    self.byte(2);
+                    match test {
+                        Test::Absent(sources) => {
+                            self.byte(0);
+                            self.len(sources.len());
+                            for source in sources.iter() {
+                                self.source(source);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -918,7 +963,7 @@ mod tests {
 
         let level = |body: &Vec<Step>, n: usize| match &body[n] {
             Step::Level(level) => level.clone(),
-            Step::Derive(_) => panic!("step {n} is a level"),
+            Step::Derive(_) | Step::Test(_) => panic!("step {n} is a level"),
         };
 
         let mutations: Vec<(&str, Plan)> = vec![

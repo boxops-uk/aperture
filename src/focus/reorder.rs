@@ -48,7 +48,10 @@
 //! and can never bind it). Edges fall out of an order rather than constraining it,
 //! and a derived bind — which consumes variables and produces one without
 //! iterating — is the same shape: reads it cannot satisfy itself, captures it
-//! offers.
+//! offers. So is a **negation**, at the extreme: it captures nothing at all, so
+//! every variable it names is a read, and the placement rule Datalog states
+//! separately — a negation runs after everything binding the variables it uses —
+//! is what this graph already says about it.
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 //! [derived binds]: ../../../docs/07-compilation.md#derived-facts
@@ -62,14 +65,24 @@ use crate::focus::schema::Symbol;
 /// distinction: a statement the query wrote sits somewhere in a sequence a person
 /// chose, and one flatten invented — a hoisted generator, an alias — does not.
 ///
-/// Nothing in [`reorder`] branches on it *yet*, and that is deliberate. Glean's own
-/// rule is to run floating statements first, because there they are filters; here
-/// the same rule would move a hoisted generator ahead of the statement that named
-/// it, and the nested and two-statement spellings of one query would stop compiling
-/// to the same plan. What the tag is for is the placement rule
-/// [Phase 6b](../../../PLAN.md) needs — a negation may not run before the
-/// statements binding its non-locals — which is a constraint on *written* order and
-/// so has to know which order that is.
+/// Nothing in [`reorder`] branches on it, and that is deliberate. Glean's own rule
+/// is to run floating statements first, because there they are filters; here the
+/// same rule would move a hoisted generator ahead of the statement that named it,
+/// and the nested and two-statement spellings of one query would stop compiling to
+/// the same plan.
+///
+/// **The consumer it was kept for did not materialise, and that is the interesting
+/// part.** It was held for [Phase 6b](../../../PLAN.md)'s placement rule — a
+/// negation may not run before the statements binding its non-locals — which reads
+/// like a constraint on *written* order. It is not: give a negation `reads` = the
+/// variables it names and `captures` = nothing, and the frontier already refuses to
+/// run it early, because refusing to run a statement before its reads are bound is
+/// the only thing the frontier does. So negation added no mechanism here at all.
+///
+/// What the tag is actually for is [`preserves_written_order`]: "the order you
+/// wrote is the order you get, unless it could not run" is a claim about the
+/// statements a *person* wrote, and a hoisted generator has no written position to
+/// jump.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
     /// The query wrote this statement, here.
@@ -604,10 +617,12 @@ mod tests {
         ///
         /// A statement the query wrote is never taken ahead of an earlier written
         /// one that could have run in its place — the stability that comes free
-        /// from a lowest-numbered-first frontier, and the thing a placement rule
-        /// for negation ([Phase 6b](../../../PLAN.md)) will be stated against. It
-        /// holds with floating statements mixed in, which is what says the tag
-        /// changes nothing about the order today.
+        /// from a lowest-numbered-first frontier. It holds with floating statements
+        /// mixed in, which is what says the tag changes nothing about the order.
+        ///
+        /// This is what makes negation's placement legible rather than lucky: a
+        /// negation moves only because its `reads` are not bound yet, never because
+        /// the frontier felt like reordering.
         #[test]
         fn reorder_keeps_the_written_statements_in_written_order(
             stmts in prop::collection::vec(
