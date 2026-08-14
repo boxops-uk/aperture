@@ -523,6 +523,20 @@ impl Plan {
         self.body.iter().filter(|step| step.is_level()).count()
     }
 
+    /// This plan's identity, for a resume cursor to carry
+    /// ([`PlanFingerprint`], [chapter 5](../../../docs/05-resume.md)).
+    ///
+    /// Recomputed on demand rather than cached in the struct: a `Plan` is public
+    /// and its fields are `pub`, so a cached value would be a second source of
+    /// truth that any construction site could leave stale — and it is computed
+    /// twice per query at most, once at suspend and once at resume.
+    #[must_use]
+    pub fn fingerprint(&self) -> PlanFingerprint {
+        let mut fingerprint = Fingerprint::new();
+        fingerprint.plan(self);
+        PlanFingerprint(fingerprint.0)
+    }
+
     /// The `n`th **loop level**, skipping derive steps.
     ///
     /// The counterpart to [`Plan::levels`], and the accessor anything reasoning
@@ -537,6 +551,286 @@ impl Plan {
                 Step::Derive(_) => None,
             })
             .nth(n)
+    }
+}
+
+/// A **plan's identity**, as a resume cursor carries it
+/// ([chapter 5](../../../docs/05-resume.md)).
+///
+/// A cursor's entries are paired with the plan's levels *by order*, and until this
+/// existed the only thing checked before that pairing was how many there were — so
+/// two plans of the same shape over overlapping predicates accepted each other's
+/// cursors, and the per-level `fact_id` check was all that stood between that and a
+/// wrong answer. It passes whenever the saved key exists in the other plan's scan
+/// too.
+///
+/// Displayed as hex, and never compared for order: it is 64 bits of FNV-1a, so
+/// "different" is certain and "same" is a 2⁻⁶⁴ bet — which is why the exact
+/// level-count check is kept rather than folded into this one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PlanFingerprint(u64);
+
+impl fmt::Debug for PlanFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "plan {:#018x}", self.0)
+    }
+}
+
+/// FNV-1a over a plan's structure, written out explicitly rather than derived.
+///
+/// **Stability is the whole requirement**, and it is why this is not a
+/// `Hash` impl: `DefaultHasher` is documented as free to change between Rust
+/// releases, and a fingerprint that changes under the engine rejects legitimate
+/// resumes — strictly worse than the hole it closes. FNV-1a is fixed forever and is
+/// what Glean fingerprints its continuations with.
+struct Fingerprint(u64);
+
+impl Fingerprint {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn new() -> Self {
+        Self(Self::OFFSET_BASIS)
+    }
+
+    fn byte(&mut self, b: u8) {
+        self.0 ^= u64::from(b);
+        self.0 = self.0.wrapping_mul(Self::PRIME);
+    }
+
+    fn int(&mut self, n: u64) {
+        for b in n.to_be_bytes() {
+            self.byte(b);
+        }
+    }
+
+    fn len(&mut self, n: usize) {
+        self.int(n as u64);
+    }
+
+    /// Length first, then content — so that two adjacent variable-length fields
+    /// cannot be re-split into a different pair that hashes the same.
+    fn bytes(&mut self, b: &[u8]) {
+        self.len(b.len());
+        for &x in b {
+            self.byte(x);
+        }
+    }
+
+    fn address(&mut self, a: Address) {
+        self.len(a.index());
+    }
+
+    fn path(&mut self, p: &FieldPath) {
+        self.len(p.field_idx());
+        self.len(p.steps().len());
+        for &step in p.steps() {
+            self.len(step);
+        }
+    }
+
+    /// A type's **shape**: constructors and arity, with the field names skipped —
+    /// see [`Fingerprint::project`] for why an interned name cannot be hashed.
+    fn ty(&mut self, ty: &PredicateTy) {
+        match ty {
+            PredicateTy::Int => self.byte(0),
+            PredicateTy::Str => self.byte(1),
+            PredicateTy::Fact(p) => {
+                self.byte(2);
+                self.int(u64::from(p.0));
+            }
+            PredicateTy::Record(fields) => {
+                self.byte(3);
+                self.len(fields.len());
+                for (_name, field) in fields.iter() {
+                    self.ty(field);
+                }
+            }
+        }
+    }
+
+    fn value(&mut self, v: &Value) {
+        match v {
+            Value::Null => self.byte(0),
+            Value::Int(i) => {
+                self.byte(1);
+                self.int(*i as u64);
+            }
+            Value::Str(s) => {
+                self.byte(2);
+                self.bytes(s.as_bytes());
+            }
+            Value::FactRef(id) => {
+                self.byte(3);
+                self.int(id.raw());
+            }
+            Value::Record(fields) => {
+                self.byte(4);
+                self.len(fields.len());
+                for (name, field) in fields.iter() {
+                    // A literal's field names are owned strings, not interned
+                    // ones, so these *are* hashable and are part of the answer.
+                    self.bytes(name.as_bytes());
+                    self.value(field);
+                }
+            }
+        }
+    }
+
+    /// The head.
+    ///
+    /// **Record field names are deliberately not hashed.** A [`Symbol`] is an index
+    /// into a per-query interner, so the same query compiled twice — in another
+    /// process, against a fresh interner — names its fields with different numbers,
+    /// and hashing them would make the fingerprint unstable exactly where a wire
+    /// cursor needs it most. The consequence is stated rather than hidden: two plans
+    /// differing only in what their head fields are *called* share a fingerprint.
+    /// Neither positions a scan, which is what a cursor entry is paired with.
+    fn project(&mut self, p: &Project) {
+        match p {
+            Project::Lit(v) => {
+                self.byte(0);
+                self.value(v);
+            }
+            Project::RegisterField { address, path, ty } => {
+                self.byte(1);
+                self.address(*address);
+                self.path(path);
+                self.ty(ty);
+            }
+            Project::FactRef(address) => {
+                self.byte(2);
+                self.address(*address);
+            }
+            Project::Value { address, ty } => {
+                self.byte(3);
+                self.address(*address);
+                self.ty(ty);
+            }
+            Project::Computed(address) => {
+                self.byte(4);
+                self.address(*address);
+            }
+            Project::Record(fields) => {
+                self.byte(5);
+                self.len(fields.len());
+                for (_name, field) in fields.iter() {
+                    self.project(field);
+                }
+            }
+        }
+    }
+
+    fn seek_key(&mut self, key: &SeekKey) {
+        match key {
+            SeekKey::Prefix(bytes) => {
+                self.byte(0);
+                self.bytes(bytes);
+            }
+            SeekKey::Composite(parts) => {
+                self.byte(1);
+                self.len(parts.len());
+                for part in parts.iter() {
+                    match part {
+                        SeekKeyPart::Bytes(bytes) => {
+                            self.byte(0);
+                            self.bytes(bytes);
+                        }
+                        SeekKeyPart::RegisterField { address, path } => {
+                            self.byte(1);
+                            self.address(*address);
+                            self.path(path);
+                        }
+                        SeekKeyPart::RegisterFactId(address) => {
+                            self.byte(2);
+                            self.address(*address);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn residuals(&mut self, residuals: &[Residual]) {
+        self.len(residuals.len());
+        for residual in residuals {
+            self.path(&residual.path);
+            match &residual.op {
+                ResidualOp::EqConst(bytes) => {
+                    self.byte(0);
+                    self.bytes(bytes);
+                }
+                ResidualOp::Prefix(bytes) => {
+                    self.byte(1);
+                    self.bytes(bytes);
+                }
+                ResidualOp::EqRegisterField { address, path } => {
+                    self.byte(2);
+                    self.address(*address);
+                    self.path(path);
+                }
+                ResidualOp::EqRegisterFactId(address) => {
+                    self.byte(3);
+                    self.address(*address);
+                }
+            }
+        }
+    }
+
+    fn source(&mut self, source: &Source) {
+        match source {
+            Source::Seek { access, residuals } => {
+                self.byte(0);
+                self.int(u64::from(access.predicate_id.0));
+                self.seek_key(&access.seek_key);
+                self.residuals(residuals);
+            }
+            Source::Fetch {
+                reference,
+                path,
+                predicate_id,
+                residuals,
+            } => {
+                self.byte(1);
+                self.address(*reference);
+                self.path(path);
+                self.int(u64::from(predicate_id.0));
+                self.residuals(residuals);
+            }
+        }
+    }
+
+    fn plan(&mut self, plan: &Plan) {
+        self.len(plan.nvars);
+        self.len(plan.body.len());
+
+        for step in plan.body.iter() {
+            match step {
+                Step::Level(level) => {
+                    self.byte(0);
+                    self.len(level.sources.len());
+                    for source in level.sources.iter() {
+                        self.source(source);
+                    }
+                    self.len(level.binds.len());
+                    for bind in level.binds.iter() {
+                        self.address(*bind);
+                    }
+                }
+                Step::Derive(derived) => {
+                    self.byte(1);
+                    self.address(derived.bind);
+                    match &derived.value {
+                        Computed::Lit(v) => {
+                            self.byte(0);
+                            self.value(v);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.project(&plan.head);
     }
 }
 
@@ -561,6 +855,265 @@ pub trait FactStore {
     fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, ApertureError>;
 
     fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{proptest::arb_plan_and_store, *};
+    use crate::focus::{fixtures::i64_field, schema::PredicateId};
+    use ::proptest::prelude::*;
+
+    /// A base plan touching most of what a fingerprint has to see: a seek whose
+    /// prefix splices a register field, a residual, a second alternative, a fetch
+    /// through a reference, a derived bind, and a record head.
+    fn base() -> Plan {
+        Plan {
+            nvars: 3,
+            body: Box::new([
+                Step::Level(Level::seek(
+                    Access {
+                        predicate_id: PredicateId(1),
+                        seek_key: SeekKey::Prefix(Box::new([1, 2])),
+                    },
+                    Box::new([Address::new(0)]),
+                    Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::EqConst(i64_field(7).into_boxed_slice()),
+                    }]),
+                )),
+                Step::Level(Level::fetch(
+                    Address::new(0),
+                    FieldPath::field(1),
+                    PredicateId(2),
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                )),
+                Step::Derive(DerivedBind {
+                    bind: Address::new(2),
+                    value: Computed::Lit(Value::Int(42)),
+                }),
+            ]),
+            head: Project::Record(Box::new([])),
+        }
+    }
+
+    /// **Every part of a plan reaches the fingerprint.** A hand-written structural
+    /// hash fails silently in one direction only — a field left out of the walk
+    /// makes two different plans agree, and a cursor from one then resumes into the
+    /// other, which is the exact failure the fingerprint exists to stop.
+    ///
+    /// So the guard is a table of single-element mutations, all of which must land
+    /// on distinct values. It is also the checklist to extend when a plan grows an
+    /// arm: a new `Source`, `ResidualOp` or `Project` variant that nothing here
+    /// distinguishes is one the walk may have forgotten.
+    #[test]
+    fn every_part_of_a_plan_reaches_its_fingerprint() {
+        let with_body = |f: &dyn Fn(&mut Vec<Step>)| {
+            let mut plan = base();
+            let mut body = plan.body.into_vec();
+            f(&mut body);
+            plan.body = body.into_boxed_slice();
+            plan
+        };
+
+        let level = |body: &Vec<Step>, n: usize| match &body[n] {
+            Step::Level(level) => level.clone(),
+            Step::Derive(_) => panic!("step {n} is a level"),
+        };
+
+        let mutations: Vec<(&str, Plan)> = vec![
+            ("the base plan", base()),
+            ("one register fewer", Plan { nvars: 2, ..base() }),
+            (
+                "a different predicate",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    l.sources = Box::new([Source::Seek {
+                        access: Access {
+                            predicate_id: PredicateId(9),
+                            seek_key: SeekKey::Prefix(Box::new([1, 2])),
+                        },
+                        residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "a different seek prefix",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    l.sources = Box::new([Source::Seek {
+                        access: Access {
+                            predicate_id: PredicateId(1),
+                            seek_key: SeekKey::Prefix(Box::new([1, 3])),
+                        },
+                        residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "a spliced register rather than a constant prefix",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    l.sources = Box::new([Source::Seek {
+                        access: Access {
+                            predicate_id: PredicateId(1),
+                            seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                                address: Address::new(0),
+                                path: FieldPath::field(0),
+                            }])),
+                        },
+                        residuals: Box::new([]),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "a different residual constant",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::EqConst(i64_field(8).into_boxed_slice()),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "the same constant at a different field",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(1),
+                        op: ResidualOp::EqConst(i64_field(7).into_boxed_slice()),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "no residual at all",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "a second alternative",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    let sole = l.sources[0].clone();
+                    l.sources = Box::new([sole.clone(), sole]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "a different bind",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    l.binds = Box::new([Address::new(2)]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "the fetch reading a different field",
+                with_body(&|body| {
+                    body[1] = Step::Level(Level::fetch(
+                        Address::new(0),
+                        FieldPath::field(0),
+                        PredicateId(2),
+                        Box::new([Address::new(1)]),
+                        Box::new([]),
+                    ));
+                }),
+            ),
+            (
+                "the fetch naming a different referent",
+                with_body(&|body| {
+                    body[1] = Step::Level(Level::fetch(
+                        Address::new(0),
+                        FieldPath::field(1),
+                        PredicateId(3),
+                        Box::new([Address::new(1)]),
+                        Box::new([]),
+                    ));
+                }),
+            ),
+            (
+                "a different derived value",
+                with_body(&|body| {
+                    body[2] = Step::Derive(DerivedBind {
+                        bind: Address::new(2),
+                        value: Computed::Lit(Value::Int(43)),
+                    });
+                }),
+            ),
+            (
+                "the steps in the other order",
+                with_body(&|body| body.swap(1, 2)),
+            ),
+            (
+                "a different head",
+                Plan {
+                    head: Project::Computed(Address::new(2)),
+                    ..base()
+                },
+            ),
+            (
+                "a head reading a different register",
+                Plan {
+                    head: Project::FactRef(Address::new(1)),
+                    ..base()
+                },
+            ),
+        ];
+
+        let mut seen: Vec<(&str, PlanFingerprint)> = Vec::new();
+        for (name, plan) in &mutations {
+            let fingerprint = plan.fingerprint();
+
+            if let Some((other, _)) = seen.iter().find(|(_, f)| *f == fingerprint) {
+                panic!(
+                    "`{name}` and `{other}` fingerprint the same ({fingerprint:?}) — \
+                     the walk does not distinguish them"
+                );
+            }
+
+            seen.push((name, fingerprint));
+        }
+    }
+
+    /// A fingerprint is a **pure function of the plan**: computed twice, it agrees.
+    #[test]
+    fn a_fingerprint_is_a_function_of_the_plan() {
+        assert_eq!(base().fingerprint(), base().fingerprint());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// **A fingerprint does not depend on the interner**, which is what makes it
+        /// usable on a cursor at all: the token outlives the process, and the same
+        /// query compiled again gets a fresh interner where every name has a
+        /// different number. Hashing those numbers would make a legitimate resume
+        /// fail — strictly worse than the hole the fingerprint closes.
+        ///
+        /// The padding is the whole test: interning two names first shifts every
+        /// symbol the plan carries, and nothing about the query has changed.
+        #[test]
+        fn a_fingerprint_does_not_depend_on_the_interner(spec in arb_plan_and_store()) {
+            use crate::focus::fixtures::interner_with;
+
+            let names = ["r0", "r1", "r2"];
+            let padded: Vec<&str> = ["pad_a", "pad_b"].into_iter().chain(names).collect();
+
+            prop_assert_eq!(
+                spec.build_plan(&interner_with(&names)).fingerprint(),
+                spec.build_plan(&interner_with(&padded)).fingerprint(),
+            );
+        }
+    }
 }
 
 /// Schema-first `(plan, store)` generator — the executor's hard generation case.

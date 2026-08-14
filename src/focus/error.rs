@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::focus::{
     iter::Address,
-    plan::FactId,
+    plan::{FactId, PlanFingerprint},
     schema::{PredicateId, Symbol},
 };
 
@@ -37,6 +37,28 @@ pub enum ApertureError {
     /// untrusted input, not an impossibility.
     #[error("resume cursor names {cursor} level(s) but the plan has {plan}")]
     CursorPlanMismatch { cursor: usize, plan: usize },
+
+    /// A resume cursor built by a **different build** of the engine.
+    ///
+    /// Checked before anything is read out of the cursor, because what the version
+    /// governs is how to read it: a cursor whose layout this build does not know is
+    /// not a cursor it can look inside to find a better diagnostic.
+    #[error("resume cursor is version {cursor}; this build reads version {executor}")]
+    CursorVersion { cursor: u16, executor: u16 },
+
+    /// A resume cursor built from a **different plan** — the hole the level count
+    /// leaves open ([chapter 5](../../docs/05-resume.md)).
+    ///
+    /// A cursor's entries are paired with the plan's levels *by order*, so two
+    /// plans of the same shape over overlapping predicates would accept each
+    /// other's cursors and answer from the wrong rows, with only the per-level
+    /// `fact_id` check between that and a wrong answer — and that check passes
+    /// whenever the saved key exists in the other plan's scan too.
+    #[error("resume cursor was built from a different plan ({cursor:?}, not {plan:?})")]
+    CursorPlan {
+        cursor: PlanFingerprint,
+        plan: PlanFingerprint,
+    },
 
     /// A resume cursor naming an alternative the level it is replayed against
     /// does not have — the same untrusted-input case as

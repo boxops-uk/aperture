@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 use crate::focus::{
     error::{ApertureError, StoreCodecError, StoreError},
     plan::{
-        Access, Computed, FactId, FactStore, FieldPath, Plan, Project, Residual, ResidualOp,
-        SeekKey, SeekKeyPart, Source, Step,
+        Access, Computed, FactId, FactStore, FieldPath, Plan, PlanFingerprint, Project, Residual,
+        ResidualOp, SeekKey, SeekKeyPart, Source, Step,
     },
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId},
     tuple::{
@@ -127,6 +127,27 @@ impl MachineState {
             .ok_or(ApertureError::AddressOutOfBounds(address))?
             .as_ref()
             .ok_or(ApertureError::UseBeforeBind(address))
+    }
+
+    /// Write `slot` to `address` — the **only** way a register is written.
+    ///
+    /// The bound holds because a plan's binds are addresses below its `nvars`, and
+    /// that is a property of the *plan*, which the executor does not verify (see
+    /// [`FieldOffsets`]'s link 2). A `Plan` is public and hand-built, and the
+    /// design names it as a future wire input, so this is untrusted rather than
+    /// impossible — and the convention is errors, not panics, on a data path.
+    ///
+    /// One function rather than the check written out at each site, because the
+    /// sites are what drifted: `enumerate` checked and `resume` indexed directly,
+    /// so the same malformed plan reported down one path and panicked down the
+    /// other (`resume_reports_a_bind_outside_the_register_file`).
+    fn bind(&mut self, address: Address, slot: Slot) -> Result<(), ApertureError> {
+        *self
+            .registers
+            .get_mut(address.0)
+            .ok_or(ApertureError::AddressOutOfBounds(address))? = Some(slot);
+
+        Ok(())
     }
 }
 
@@ -752,7 +773,51 @@ pub struct Entry {
     row: Register,
 }
 
-pub struct Cursor(Vec<Entry>);
+/// Layout version of a [`Cursor`], stamped into every one this build produces.
+///
+/// A cursor is client-held and outlives the process that made it, so a build that
+/// changes what an entry *is* — as disjunction did, adding the source index — must
+/// be able to say so. Without it the next build reads the old layout as the new
+/// one and resumes at a position that means something else
+/// ([chapter 5](../../docs/05-resume.md)).
+///
+/// Separate from the [DB format stamp](crate::focus::format): that says what is on
+/// disk and this says what is in flight, they move for different reasons, and a
+/// cursor is checked against the build that reads it rather than against a database.
+pub const CURSOR_VERSION: u16 = 1;
+
+/// The resume token: **one detached row per open level**, and the two fields that
+/// say which run it belongs to.
+///
+/// The entries are what resume replays; the version and the fingerprint are what
+/// make replaying them safe, since the entries are paired with the plan's levels by
+/// order and are otherwise indistinguishable from another plan's
+/// ([chapter 5](../../docs/05-resume.md)).
+pub struct Cursor {
+    version: u16,
+    plan: PlanFingerprint,
+    entries: Vec<Entry>,
+}
+
+impl Cursor {
+    /// The rows saved, for a test or a wire encoder that needs to look inside.
+    #[must_use]
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    /// Which plan built this cursor.
+    #[must_use]
+    pub fn plan(&self) -> PlanFingerprint {
+        self.plan
+    }
+
+    /// Which cursor layout these bytes are in.
+    #[must_use]
+    pub fn version(&self) -> u16 {
+        self.version
+    }
+}
 
 pub struct Row<'a, S: FactStore> {
     store: &'a S,
@@ -875,14 +940,16 @@ impl<S: FactStore> Executor<S> {
         }
     }
 
-    /// The bytes-only resume point: one detached row per **level**.
+    /// The bytes-only resume point: one detached row per **level**, stamped with
+    /// the cursor layout and the plan it came from.
     ///
     /// Called at a suspend, where every step up to and including `depth` has
     /// produced — so the cursor names every scan step among them, and nothing for
     /// the derive steps, which are recomputed instead. Asserted rather than
     /// assumed: collecting whatever happened to be set would quietly renumber the
     /// levels if a frame in the middle were ever empty, and `resume` pairs cursor
-    /// entries with scan steps **by order**.
+    /// entries with scan steps **by order**. The fingerprint is what makes that
+    /// pairing safe to perform at all.
     pub fn build_cursor(&self) -> Cursor {
         let saved: Vec<Entry> = self
             .stack
@@ -904,27 +971,58 @@ impl<S: FactStore> Executor<S> {
             "a suspend cursor must name every level up to `depth`, contiguously"
         );
 
-        Cursor(saved)
+        Cursor {
+            version: CURSOR_VERSION,
+            plan: self.plan.fingerprint(),
+            entries: saved,
+        }
     }
 
     pub fn resume(store: S, plan: Plan, cursor: Cursor) -> Result<Self, ApertureError> {
         let mut ex = Executor::new(store, plan);
 
-        if cursor.0.is_empty() {
+        // A `Cursor` is bytes-only and rebuilt from the wire, so it is untrusted.
+        // The checks run widening to narrowing, and the two that identify the *run*
+        // come **before** the empty-cursor shortcut below: an empty cursor restarts
+        // the run, which is an answer, so it has to be this plan's answer.
+        //
+        // The version comes first because it governs how to read the rest — a
+        // cursor in a layout this build does not know is not one to look inside for
+        // a better diagnostic.
+        if cursor.version != CURSOR_VERSION {
+            return Err(ApertureError::CursorVersion {
+                cursor: cursor.version,
+                executor: CURSOR_VERSION,
+            });
+        }
+
+        // Then: is this the plan that built it? Entries are paired with levels by
+        // order, so without this two same-shaped plans over overlapping predicates
+        // accept each other's cursors and answer from the wrong rows.
+        let fingerprint = ex.plan.fingerprint();
+        if cursor.plan != fingerprint {
+            return Err(ApertureError::CursorPlan {
+                cursor: cursor.plan,
+                plan: fingerprint,
+            });
+        }
+
+        if cursor.entries.is_empty() {
             return Ok(ex);
         }
 
-        // A `Cursor` is bytes-only and rebuilt from the wire, so it is untrusted:
-        // checked here rather than left to index `plan.body` out of bounds below.
+        // And the exact count, kept rather than folded into the fingerprint: a
+        // fingerprint match is a 2⁻⁶⁴ bet where this is certain, and it is the
+        // check that can say *how* the cursor is wrong.
         //
         // Compared against the **level** count, not the step count: a cursor holds
         // one row per level and a suspend always happens at a full row, so anything
         // other than exactly that many is a cursor this plan did not produce. It was
         // `>` while the two counts were the same number, which let a short cursor
         // half-replay a plan and carry on from the wrong place.
-        if cursor.0.len() != ex.plan.levels() {
+        if cursor.entries.len() != ex.plan.levels() {
             return Err(ApertureError::CursorPlanMismatch {
-                cursor: cursor.0.len(),
+                cursor: cursor.entries.len(),
                 plan: ex.plan.levels(),
             });
         }
@@ -938,7 +1036,7 @@ impl<S: FactStore> Executor<S> {
         // literal: **re-bind the fact-slots, recompute the value-slots**. A scan
         // consumes the next cursor entry in order; a derive recomputes, because the
         // cursor deliberately carries nothing for it.
-        let mut saved_rows = cursor.0.iter();
+        let mut saved_rows = cursor.entries.iter();
 
         for index in 0..ex.plan.body.len() {
             let frame = &mut ex.stack[index];
@@ -973,13 +1071,14 @@ impl<S: FactStore> Executor<S> {
                     }
 
                     for var_address in level.binds.iter() {
-                        ex.state.registers[var_address.0] = Some(Slot::Fact(row.clone()));
+                        ex.state.bind(*var_address, Slot::Fact(row.clone()))?;
                     }
                     frame.current = Some(row);
                 }
 
                 Step::Derive(derived) => {
-                    ex.state.registers[derived.bind.0] = Some(Slot::Value(compute(&derived.value)));
+                    ex.state
+                        .bind(derived.bind, Slot::Value(compute(&derived.value)))?;
                     frame.derived_produced = true;
                 }
             }
@@ -1094,12 +1193,8 @@ impl<S: FactStore> Executor<S> {
                     match frame.next(&self.state, source, &mut deadline)? {
                         Some(register) => {
                             for var_address in level.binds.iter() {
-                                let slot = self
-                                    .state
-                                    .registers
-                                    .get_mut(var_address.0)
-                                    .ok_or(ApertureError::AddressOutOfBounds(*var_address))?;
-                                *slot = Some(Slot::Fact(register.clone()));
+                                self.state
+                                    .bind(*var_address, Slot::Fact(register.clone()))?;
                             }
                             frame.current = Some(register);
                             self.depth += 1;
@@ -1128,12 +1223,8 @@ impl<S: FactStore> Executor<S> {
                         }
                         self.depth -= 1;
                     } else {
-                        let slot = self
-                            .state
-                            .registers
-                            .get_mut(derived.bind.0)
-                            .ok_or(ApertureError::AddressOutOfBounds(derived.bind))?;
-                        *slot = Some(Slot::Value(compute(&derived.value)));
+                        self.state
+                            .bind(derived.bind, Slot::Value(compute(&derived.value)))?;
                         frame.derived_produced = true;
                         self.depth += 1;
                     }
@@ -1695,7 +1786,7 @@ mod tests {
         let Iteratee::Suspended(_, cursor) = suspended else {
             panic!("the plan was supposed to suspend");
         };
-        assert_eq!(cursor.0.len(), 2, "the cursor must name both levels");
+        assert_eq!(cursor.entries.len(), 2, "the cursor must name both levels");
 
         let one_level = Plan {
             nvars: 1,
@@ -1703,10 +1794,104 @@ mod tests {
             head: Project::FactRef(Address::new(0)),
         };
 
+        // Stamped as the one-level plan's own — a wire cursor can lie about its
+        // length as easily as about anything else, and this is the check that
+        // catches that lie.
+        let cursor = restamp(cursor, &one_level);
+
         assert!(matches!(
             Executor::resume(seed(), one_level, cursor),
             Err(ApertureError::CursorPlanMismatch { cursor: 2, plan: 1 })
         ));
+    }
+
+    /// **Resume's register writes are bounds-checked, exactly as enumeration's
+    /// are.**
+    ///
+    /// "A generator only names registers bound at strictly outer levels" is a
+    /// property of the *plan*, which the executor does not verify (see
+    /// [`FieldOffsets`]) — and a `Plan` is public, hand-built here, and named by
+    /// the design as a future wire input. `enumerate` has always answered a bind
+    /// outside the register file with [`ApertureError::AddressOutOfBounds`];
+    /// `resume` indexed `registers` directly and panicked instead. Same malformed
+    /// plan, same untrusted path, two different failure modes — and the convention
+    /// is errors, not panics, on a data path.
+    ///
+    /// The cursor is genuine, taken from a well-formed run: it is the *plan* that
+    /// is wrong, which is why the level count matching does not save it.
+    #[test]
+    fn resume_reports_a_bind_outside_the_register_file() {
+        let person = PredicateId(0);
+
+        let seed = || {
+            let mut store = MemStore::new();
+            store.insert(person, i64_field(1), 1);
+            store
+        };
+
+        let suspend_with = |plan| {
+            let suspended = Executor::new(seed(), plan)
+                .enumerate(
+                    0usize,
+                    |n, _row| Ok(Stream::Suspend(n + 1)),
+                    &CancellationToken::new(),
+                )
+                .expect("run");
+
+            let Iteratee::Suspended(_, cursor) = suspended else {
+                panic!("the plan was supposed to suspend");
+            };
+            cursor
+        };
+
+        // A level whose bind is past the end. `nvars: 0` is the narrowest case:
+        // the register file is empty, so the direct index panicked on the first
+        // write.
+        let cursor = suspend_with(Plan {
+            nvars: 1,
+            body: Step::levels([scan_all(person, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        });
+
+        let no_registers = Plan {
+            nvars: 0,
+            body: Step::levels([scan_all(person, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let cursor = restamp(cursor, &no_registers);
+
+        assert!(
+            matches!(
+                Executor::resume(seed(), no_registers, cursor),
+                Err(ApertureError::AddressOutOfBounds(address)) if address == Address::new(0)
+            ),
+            "a level binding outside the register file must report, not panic",
+        );
+
+        // And the derive arm, which writes its slot on the same walk. It carries
+        // nothing in the cursor, so the level count still matches.
+        let cursor = suspend_with(Plan {
+            nvars: 2,
+            body: Box::new([Step::Level(scan_all(person, 0)), derive(1, Value::Int(42))]),
+            head: Project::Computed(Address::new(1)),
+        });
+
+        let short = Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(scan_all(person, 0)), derive(1, Value::Int(42))]),
+            head: Project::Computed(Address::new(1)),
+        };
+
+        let cursor = restamp(cursor, &short);
+
+        assert!(
+            matches!(
+                Executor::resume(seed(), short, cursor),
+                Err(ApertureError::AddressOutOfBounds(address)) if address == Address::new(1)
+            ),
+            "a derive binding outside the register file must report, not panic",
+        );
     }
 
     // ---- the register file and the cursor, at the seams --------------------
@@ -1817,6 +2002,23 @@ mod tests {
         ));
     }
 
+    /// Re-stamp a genuine cursor as though `plan` had produced it.
+    ///
+    /// What a **forged** cursor is, now that a stamp exists: the entries are real
+    /// and the claim about where they came from is not. Every test that replays one
+    /// plan's cursor against a different plan needs this, because otherwise the
+    /// [`PlanFingerprint`] check answers first and the check actually under test —
+    /// the level count, a bind outside the register file, a position outside its
+    /// source — is never reached. Stamping the *target* plan is what keeps each of
+    /// those guards pointed at what it was written for.
+    fn restamp(cursor: Cursor, plan: &Plan) -> Cursor {
+        Cursor {
+            version: CURSOR_VERSION,
+            plan: plan.fingerprint(),
+            entries: cursor.entries,
+        }
+    }
+
     /// A one-level plan suspended after its first row, as the cursor tests below
     /// need it. Returns the cursor and the model rows.
     fn suspend_after_first_row(store: MemStore, plan: Plan) -> Cursor {
@@ -1920,16 +2122,16 @@ mod tests {
             let cursor = suspend_after_first_row(store, plan);
 
             assert_eq!(
-                cursor.0.len(),
+                cursor.entries.len(),
                 levels,
                 "a {levels}-level plan suspended with {} cursor entr(ies)",
-                cursor.0.len()
+                cursor.entries.len()
             );
 
             // Every entry names a real fact and carries its whole row —
             // `predicate_id ++ key`, so at least the id is present. Read *after*
             // the store that produced the bytes has been dropped.
-            for (level, saved) in cursor.0.iter().enumerate() {
+            for (level, saved) in cursor.entries.iter().enumerate() {
                 assert!(
                     saved.row.bytes.len() > PREDICATE_ID_SIZE,
                     "level {level}'s saved row is {} byte(s) — no key follows the \
@@ -2278,14 +2480,18 @@ mod tests {
         let plan = one_level(Box::new([seek_int(p, 10, 0)]));
         let cursor = suspend_after_first_row(three_int_facts(p), plan);
 
-        // The same plan, and a cursor pointing at an alternative it never had.
-        let forged = Cursor(
-            cursor
-                .0
+        // The same plan — so the stamp is kept — and a cursor pointing at an
+        // alternative that plan never had.
+        let (version, plan_id) = (cursor.version, cursor.plan);
+        let forged = Cursor {
+            version,
+            plan: plan_id,
+            entries: cursor
+                .entries
                 .into_iter()
                 .map(|entry| Entry { source: 7, ..entry })
                 .collect(),
-        );
+        };
 
         let resumed = Executor::resume(
             three_int_facts(p),
@@ -2339,24 +2545,163 @@ mod tests {
             panic!("expected a suspend");
         };
 
-        // Replayed against a plan whose only alternative seeks 10: the level
-        // count matches and source 0 exists, but the saved key is not in it.
+        // Replayed against the *same* plan, but into source 0, which seeks 10:
+        // the plan matches to the byte and source 0 exists, and the saved key is
+        // still not in it. Forging the plan instead of the position would be
+        // rejected by the fingerprint now, and would leave this path — a saved
+        // position outside its source — with no coverage at all.
+        let (version, plan_id) = (cursor.version, cursor.plan);
         let resumed = Executor::resume(
             three_int_facts(p),
-            one_level(Box::new([seek_int(p, 10, 0)])),
-            Cursor(
-                cursor
-                    .0
+            one_level(Box::new([seek_int(p, 10, 0), seek_int(p, 20, 0)])),
+            Cursor {
+                version,
+                plan: plan_id,
+                entries: cursor
+                    .entries
                     .into_iter()
                     .map(|entry| Entry { source: 0, ..entry })
                     .collect(),
-            ),
+            },
         );
 
         assert!(
             matches!(resumed, Err(ApertureError::BadResumeKey)),
             "expected a bad resume key, got {resumed:?}",
             resumed = resumed.map(|_| "an executor")
+        );
+    }
+
+    /// **A cursor is only replayable into the plan that produced it.**
+    ///
+    /// The hole the [`PlanFingerprint`] closes, written as the case that reaches
+    /// it: two plans of one shape over the *same* predicate, where the second's
+    /// scan contains the first's saved row. The level count agrees, the source
+    /// index exists, and the per-level `fact_id` check — everything that stood
+    /// between a stale cursor and a wrong answer before — passes, because the row
+    /// really is there.
+    ///
+    /// The second half is the point. Stripped of its stamp, the same cursor
+    /// resumes *cleanly* into the other plan and answers it without its first row,
+    /// reporting nothing. A silently short answer is the failure mode, and it is
+    /// why this is checked before the entries are read rather than left to the
+    /// checks below.
+    #[test]
+    fn a_cursor_is_only_replayable_into_the_plan_that_built_it() {
+        let p = PredicateId(0);
+        let interner = interner_with(&[]);
+
+        // A: the one row keyed 10. B: every row, 10 among them.
+        let plan_a = || one_level(Box::new([seek_int(p, 10, 0)]));
+        let plan_b = || one_level(scan_all(p, 0).sources);
+
+        assert_eq!(
+            collect_rows(three_int_facts(p), plan_b(), &interner).expect("run"),
+            vec![Value::Int(10), Value::Int(20), Value::Int(30)],
+            "B answers three rows when it is run from the start",
+        );
+
+        let resumed = Executor::resume(
+            three_int_facts(p),
+            plan_b(),
+            suspend_after_first_row(three_int_facts(p), plan_a()),
+        );
+
+        assert!(
+            matches!(resumed, Err(ApertureError::CursorPlan { .. })),
+            "a cursor from another plan must be refused, got {resumed:?}",
+            resumed = resumed.map(|_| "an executor"),
+        );
+
+        // Without the stamp: accepted, and three rows become two.
+        let forged = restamp(
+            suspend_after_first_row(three_int_facts(p), plan_a()),
+            &plan_b(),
+        );
+        let out = Executor::resume(three_int_facts(p), plan_b(), forged)
+            .expect("the fact id agrees, so nothing else objects")
+            .enumerate(
+                Vec::new(),
+                |mut rows, mut row| {
+                    rows.push(row.to_value(&interner)?);
+                    Ok(Stream::Continue(rows))
+                },
+                &CancellationToken::new(),
+            )
+            .expect("run");
+
+        let Iteratee::Done(rows) = out else {
+            panic!("the resumed run was supposed to finish");
+        };
+        assert_eq!(
+            rows,
+            vec![Value::Int(20), Value::Int(30)],
+            "this is the wrong answer the fingerprint exists to refuse",
+        );
+    }
+
+    /// The plan check runs **before** the empty-cursor shortcut.
+    ///
+    /// An empty cursor restarts the run, and restarting is an answer like any
+    /// other — so it has to be an answer to the plan that asked. Checked after the
+    /// shortcut, a cursor from anywhere at all would be accepted as long as it was
+    /// empty.
+    #[test]
+    fn an_empty_cursor_from_another_plan_is_refused() {
+        let p = PredicateId(0);
+
+        let elsewhere = Cursor {
+            version: CURSOR_VERSION,
+            plan: one_level(Box::new([seek_int(p, 10, 0)])).fingerprint(),
+            entries: Vec::new(),
+        };
+
+        let resumed = Executor::resume(
+            three_int_facts(p),
+            one_level(scan_all(p, 0).sources),
+            elsewhere,
+        );
+
+        assert!(
+            matches!(resumed, Err(ApertureError::CursorPlan { .. })),
+            "an empty cursor is still a cursor, got {resumed:?}",
+            resumed = resumed.map(|_| "an executor"),
+        );
+    }
+
+    /// **A cursor from another build is refused before it is read.**
+    ///
+    /// What an entry *is* has already changed once — disjunction added the source
+    /// index — and a cursor outlives the process that made it. Without the version
+    /// the next build reads the old layout as the new one and resumes at a position
+    /// that means something else; the fingerprint cannot catch it, since a plan
+    /// that has not changed fingerprints the same either way.
+    #[test]
+    fn a_cursor_from_another_build_is_refused() {
+        let p = PredicateId(0);
+
+        let cursor = suspend_after_first_row(
+            three_int_facts(p),
+            one_level(Box::new([seek_int(p, 10, 0)])),
+        );
+        let stale = Cursor {
+            version: CURSOR_VERSION.wrapping_add(1),
+            ..cursor
+        };
+
+        let resumed = Executor::resume(
+            three_int_facts(p),
+            one_level(Box::new([seek_int(p, 10, 0)])),
+            stale,
+        );
+
+        assert!(
+            matches!(
+                resumed,
+                Err(ApertureError::CursorVersion { executor, .. }) if executor == CURSOR_VERSION
+            ),
+            "a cursor in another layout must be refused, got {resumed:?}",
+            resumed = resumed.map(|_| "an executor"),
         );
     }
 
@@ -3472,7 +3817,7 @@ mod tests {
             // The structural half: the cursor names levels, not steps.
             let cursor = suspend_after_first_row(mk().0, mk().1);
             assert_eq!(
-                cursor.0.len(),
+                cursor.entries.len(),
                 1,
                 "derive {where_} the scan: a two-step plan with one level must save \
                  one row, not two"
@@ -3893,7 +4238,7 @@ mod tests {
                     break;
                 };
 
-                if cursor.0.iter().any(|entry| entry.source > 0) {
+                if cursor.entries.iter().any(|entry| entry.source > 0) {
                     cut_in_a_later_source += 1;
                 }
 

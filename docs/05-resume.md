@@ -73,7 +73,11 @@ to.
 On suspend, the executor builds a `Cursor` from the frame stack:
 
 ```rust
-struct Cursor(Vec<Entry>);              // one entry per open loop *level*
+struct Cursor {
+    version: u16,           // which cursor layout these bytes are in
+    plan: PlanFingerprint,  // which plan produced them
+    entries: Vec<Entry>,    // one entry per open loop *level*
+}
 struct Entry { source: usize, row: Register }
 ```
 
@@ -96,8 +100,9 @@ no iterator, no snapshot ([I9](invariants.md#i9)'s "copy out only at escape boun
 The saved `Register` is `{ fact_id, key bytes }` — enough to find the row again and to
 prove it's the same one.
 
-That's the entire token. No open cursors, no plan pointer beyond what the caller re-supplies,
-no snapshot — nothing in it that a socket could not carry.
+That's the entire token: two stamps and one detached row per level. No open cursors, no plan
+pointer beyond the fingerprint and what the caller re-supplies, no snapshot — nothing in it
+that a socket could not carry.
 
 **A resume token is client-held on both sides of the comparison.** Glean's continuation is
 opaque bytes handed back to the caller and passed in again
@@ -109,16 +114,44 @@ token **weighs**, itemised in
 [chapter 4](04-executor.md#why-a-state-machine-and-not-recursion--i7), and what it **proves**,
 which is the rest of this chapter.
 
-**The wire form is a seam, not a fact yet.** `Cursor` is an in-process `Vec<Register>`: no
-encoder, **no version tag, no checksum**. The level-count check above is also the *only* plan
-identity it carries — `CursorPlanMismatch` catches a wrong length, not a wrong plan — and
-entries are then paired with scan steps by order, so two same-shaped plans over overlapping
-predicates accept each other's cursors, with the `fact_id` check below the only thing between
-that and a wrong answer. Glean closes both holes with two fields, which is the measure of what
-closing them costs: its continuation carries a version plus an FNV-1 checksum over the blob and
-the return type (`glean/db/Glean/Query/UserQuery.hs:1258-1283`). A version field and a plan
-fingerprint are the cheap part to copy when the encoder lands, and the transport-codec sketch
-kept in `src/focus.rs` is where it goes.
+**A cursor says which run it belongs to**, and it has to, because the entries alone cannot.
+They are paired with the plan's levels *by order*: without the two stamped fields, two plans of
+one shape over overlapping predicates accept each other's cursors, and the per-level `fact_id`
+check is all that stands between that and a wrong answer — a check that passes whenever the
+saved key exists in the other plan's scan too. The failure is a **silently short answer**, not
+an error, which is why both are checked before an entry is read and before the empty-cursor
+shortcut that restarts a run:
+
+| check | catches | error |
+|---|---|---|
+| `version` | a cursor from a build where an entry meant something else | `CursorVersion` |
+| `plan` fingerprint | a cursor from another plan | `CursorPlan` |
+| entry count | a forged length, exactly | `CursorPlanMismatch` |
+| `source` index | an alternative this level does not have | `CursorSourceOutOfRange` |
+| `fact_id` | a saved key that is no longer the row it named | `BadResumeKey` |
+
+Widening to narrowing, and each one earns its place: the version governs how to read the rest,
+the fingerprint is a 2⁻⁶⁴ bet where the entry count is certain, and the count says *how* a
+cursor is wrong where the fingerprint only says *that* it is. The order is also what keeps the
+three checks below it reachable — a test that replays one plan's cursor against another now has
+to re-stamp it first, which is what a forged wire cursor is.
+
+**What the fingerprint covers.** FNV-1a over the plan's structure, written out explicitly
+rather than derived — stability is the whole requirement, and `DefaultHasher` is free to change
+between Rust releases. Interned names are deliberately *not* hashed: a `Symbol` is an index into
+a per-query interner, so the same query compiled in another process names its head fields with
+different numbers, and hashing those would fail a legitimate resume — strictly worse than the
+hole it closes. The consequence, stated rather than hidden: two plans differing only in what
+their head fields are *called* fingerprint the same. Neither positions a scan.
+
+**The wire form is still a seam.** `Cursor` is in-process: the two stamps are fields and the
+checks are real, but there is no encoder and **no checksum**. Glean's continuation carries a
+version plus an FNV-1 checksum over the blob and the return type
+(`glean/db/Glean/Query/UserQuery.hs:1258-1283`); the checksum is the half that cannot be
+written before the blob exists, and the transport-codec sketch kept in `src/focus.rs` is where
+it goes. The two versions are on **separate counters** on purpose: this one says what is in
+flight, the [format stamp](03-storage-model.md#the-format-stamp-i15) says what is on disk, and
+a cursor is checked against the build reading it rather than against a database.
 
 ---
 
@@ -176,8 +209,25 @@ and verifies the row re-read at the key. Glean runs it the other way — save th
 self-consistency check that cannot fail once the id resolves at all. Its token carries no `Repo`
 field either (`glean/if/glean.thrift:397-406`), so a continuation replayed against a *different*
 DB of the same schema finds a valid fact of the right type at that id and **silently resumes at
-the wrong row**: skipped rows and duplicated rows, no error. Key→id catches that case; id→key
-cannot see it.
+the wrong row**: skipped rows and duplicated rows, no error. Key→id can fail, so it can catch
+that; id→key is a tautology and can never catch anything.
+
+**But it is a detector, not a guarantee, and the difference matters.** Key→id catches a
+wrong DB only when the two DBs' key→id mappings *differ at the saved key*. They often do —
+and then the replay stops with `BadResumeKey` rather than answering. They need not. Ids are
+allocated per predicate in write order ([I11](invariants.md#i11)), so two DBs built from the
+same facts in the same order agree on a **prefix** of every predicate's mapping, and a cursor
+saved inside that prefix resumes clean and then goes on to emit the *other* DB's rows. That is
+not an exotic case: it is what an incremental rebuild looks like, which is the likeliest way
+for a stale cursor to meet a DB it was not taken from.
+
+So the honest statement is: key→id is strictly more than Glean has, and strictly less than DB
+identity. **The thing that actually closes it is a DB fingerprint in the token** — the third
+stamp, next to the version tag and the plan fingerprint the cursor now carries (above). Those
+two answer "which build" and "which query"; neither answers "which database", and this is the
+case that needs it. Do not read this paragraph as an argument that the stamp is unnecessary —
+it is the argument that it is, because the check it would be redundant with only *usually*
+fires.
 
 ---
 

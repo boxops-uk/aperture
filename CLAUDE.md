@@ -161,9 +161,14 @@ decoded data.
   [I10](docs/invariants.md#i10) freezes its discriminants on disk once one is written). Neither
   reshapes the machine, but disjunction extends the resume `Cursor`, so both carry acceptance
   criteria rather than a bullet. Phase 6b is sequenced *after* Phase 6 on purpose: both touch the
-  resume token, so edit it once and re-prove [I4](docs/invariants.md#i4) once. (Phase 6 left
-  `Cursor` a `Vec<Register>` in the end — only *fact* slots are ever saved, since a derive step is
-  recomputed — but it did change what a cursor entry is counted against.)
+  resume token, so edit it once and re-prove [I4](docs/invariants.md#i4) once. (Phase 6 left the
+  cursor's *entries* a `Vec<Register>` in the end — only *fact* slots are ever saved, since a
+  derive step is recomputed — but it did change what a cursor entry is counted against.) The
+  token now also carries a **layout version and a plan fingerprint**, checked before any entry is
+  read: entries are paired with levels by order, so without them two same-shaped plans over
+  overlapping predicates accept each other's cursors and answer short, silently
+  ([chapter 5](docs/05-resume.md)). Interned names are deliberately outside the fingerprint —
+  a `Symbol` is per-query, so hashing one would fail a legitimate resume.
 - **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — two, both from
   comparing the design against Glean: **multiplicity** (arrays *and* one fact per element — Glean
   writes both, deliberately; decide before the Phase 8 schema DSL fixes how schemas are written)
