@@ -288,9 +288,9 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "Y where test.Ref {of = P}; Y = P.name",
-        Diagnosed(Code::NyiFactField),
-        "naming a read *through* a reference changes nothing about the second lookup \
-         it needs, so it draws the reference deferral rather than the bind one",
+        Supported("ann; bob"),
+        "naming a read *through* a reference is the same substitution: the alias names \
+         the fetched row's field, so it is the same plan as writing the read in place",
     ),
     entry(
         "X where test.Foo {id = X}; test.Bar {id = Y}; X = Y",
@@ -477,17 +477,36 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X.name where test.Ref {of = X}",
-        Diagnosed(Code::NyiFactField),
-        "**reading through** a reference: `X` holds a fact id, and its fields are in \
-         another fact's key, so this needs cross-fact navigation (`Access::Fetch`). \
-         Capturing and projecting the reference itself is supported",
+        Supported("ann; bob"),
+        "**reading through** a reference: `X` holds a fact id and its fields are in \
+         another fact's key, so the fact it names is fetched into a level of its own \
+         (`Source::Fetch`) and read from there. *Following* a reference still reads \
+         nothing — that is the id compare above",
     ),
     entry(
         "X.value where test.Ref {of = X}",
-        Diagnosed(Code::NyiFactField),
-        "the same through the value side, and the arm that used to decline *quietly* \
-         — reachable only once a reference can be captured, which is what makes the \
-         `flatten_ordered` promise-guard load-bearing here",
+        Supported("one; two"),
+        "the same through the value side: one register, and the value one point read \
+         further off it — the arm that used to decline *quietly*, which is what makes \
+         the `flatten_ordered` promise-guard load-bearing here",
+    ),
+    entry(
+        "N where test.Deep {via = R}; N = R.of.name",
+        Supported("ann; bob"),
+        "a **chain** of references is a chain of fetches, each reading the register the \
+         one before it bound — two hops, three levels, and no join",
+    ),
+    entry(
+        "{a = X.id, b = X.name} where test.Ref {of = X}",
+        Supported("{a = 1, b = ann}; {a = 2, b = bob}"),
+        "two reads of one reference are **one** fetch: a second level would read the \
+         same row again for every row above it, and could never disagree with the first",
+    ),
+    entry(
+        "P.id where test.Ref {of = P}; test.Bar {id = P.id}",
+        Supported("1; 2"),
+        "a field read through a reference **narrows** the level that reads it — the \
+         fetch is an outer level, so its register splices into the seek below it",
     ),
     entry(
         "Y where Y = test.Foo _; test.Name Y.value",

@@ -407,6 +407,7 @@ pub fn dependencies(
         bindings: vec![],
         compares: vec![],
         hoisted: vec![],
+        fetched: vec![],
     };
 
     Some(flattener.collect()?.deps)
@@ -452,6 +453,7 @@ fn flatten_reporting(
         bindings: vec![],
         compares: vec![],
         hoisted: vec![],
+        fetched: vec![],
     };
 
     let collected = flattener.collect()?;
@@ -499,6 +501,15 @@ struct Flattener<'a> {
     /// hoist invents the name the user did not write and the rest of the pass sees an
     /// ordinary row bind.
     hoisted: Vec<(NodeId, Symbol)>,
+    /// A **reference already followed** → the register the fact it names is in.
+    ///
+    /// Keyed by the reference's *place* rather than by the expression that named
+    /// it, because that is what decides whether two reads are the same fetch:
+    /// `X.file.name` and `X.file.line` are two nodes and one point read, and a
+    /// second level for the second read would fetch the same row twice per row of
+    /// `X`. A register holds one row and a path is fixed, so the pair names one
+    /// reference for the whole plan.
+    fetched: Vec<(Address, FieldPath, Address)>,
 }
 
 impl Flattener<'_> {
@@ -1044,6 +1055,91 @@ impl Flattener<'_> {
             .map(|(_, row)| *row)
     }
 
+    // ---- following a reference ----------------------------------------------
+
+    /// Hoist a **fetch level** for every reference `node` reads *through*.
+    ///
+    /// A reference is an id, and a field of the fact it names is bytes in *that*
+    /// fact's key — so `X.file.path` is two rows and one register cannot hold
+    /// both. The second row becomes a level of its own, exactly as a nested fact
+    /// pattern does: `hoist_node` invents the name a query did not write for a
+    /// generator, and this invents the register for a fact the query named only by
+    /// reference.
+    ///
+    /// Called **before** the reading statement's own address is taken, which is
+    /// what keeps two properties true at once: a register is still its level's
+    /// position in the body, and the fetch is an *outer* level — so a seek may
+    /// splice it, a residual may compare against it, and the reference it reads
+    /// cannot move while it is open.
+    fn fetch_within(&mut self, node: NodeId, body: &mut Vec<Level>) {
+        match self.ast.store().kind(node) {
+            ExprKind::Record(fields) => {
+                for (_, value) in fields.clone().iter() {
+                    self.fetch_within(*value, body);
+                }
+            }
+
+            ExprKind::Access(_, base) | ExprKind::Select(_, base) => {
+                // Innermost first: `X.via.of.name` reads through `X.via` to reach
+                // `of`, and through *that* to reach `name`, so each hop has to be a
+                // register before the next one can be read out of it.
+                let base = *base;
+                self.fetch_within(base, body);
+
+                // Only a fact-typed *field* is a reference to follow. A row is
+                // already a register, a constant is not a fact, and a reference in
+                // a fact's value is the case `dereference` still defers.
+                let Some(Slot::Field {
+                    address,
+                    path,
+                    ty: PredicateTy::Fact(predicate),
+                }) = self.resolve(base)
+                else {
+                    return;
+                };
+
+                self.fetch_level(address, path, predicate, body);
+            }
+
+            _ => {}
+        }
+    }
+
+    /// The register holding the fact `address`'s `path` points at, adding the
+    /// level that fetches it the first time that reference is read through.
+    fn fetch_level(
+        &mut self,
+        address: Address,
+        path: FieldPath,
+        predicate: PredicateId,
+        body: &mut Vec<Level>,
+    ) -> Address {
+        if let Some(register) = self.fetched_register(address, &path) {
+            return register;
+        }
+
+        let register = Address::new(body.len());
+
+        body.push(Level::fetch(
+            address,
+            path.clone(),
+            predicate,
+            Box::new([register]),
+            Box::new([]),
+        ));
+
+        self.fetched.push((address, path, register));
+        register
+    }
+
+    /// The register a reference has **already** been followed into, if any.
+    fn fetched_register(&self, address: Address, path: &FieldPath) -> Option<Address> {
+        self.fetched
+            .iter()
+            .find(|(reference, at, _)| *reference == address && at == path)
+            .map(|(_, _, register)| *register)
+    }
+
     /// One statement as a generator, or a report that it is not one.
     fn generator(&mut self, node: NodeId, row: Option<Symbol>) -> Option<Gen> {
         let span = self.ast.store().span(node);
@@ -1219,23 +1315,6 @@ impl Flattener<'_> {
         }
     }
 
-    /// Reading *through* a reference — the half of cross-fact navigation that is
-    /// still deferred.
-    ///
-    /// A reference may be captured, projected and matched, because all three are
-    /// operations on the id itself. Reaching the fact it names — its key fields or
-    /// its value — is a second lookup the `Plan` IR has no access kind for.
-    fn report_through_reference(&mut self, node: NodeId, what: &str) {
-        self.report(
-            node,
-            Code::NyiFactField,
-            format!(
-                "reading {what} through a fact reference is not implemented yet; it needs \
-                 cross-fact navigation"
-            ),
-        );
-    }
-
     /// Record the read of a hoisted generator's row.
     fn read_hoisted(&mut self, node: NodeId, occurrences: &mut Occurrences) {
         if let Some(row) = self.hoisted_row(node) {
@@ -1377,6 +1456,13 @@ impl Flattener<'_> {
         for &stmt in order {
             match stmts.get(stmt)? {
                 Stmt::Scan(generator) => {
+                    // A key reading *through* a reference needs the fact it names
+                    // in a register of its own, which is a level — and an outer
+                    // one, so that this level's seek may splice it.
+                    for alt in generator.alternatives.clone().iter() {
+                        self.fetch_within(alt.key, &mut body);
+                    }
+
                     let address = Address::new(body.len());
                     let mut sources = Vec::with_capacity(generator.alternatives.len());
                     // Where this level's own bindings start, which is what a later
@@ -1448,12 +1534,22 @@ impl Flattener<'_> {
                 Stmt::Alias(alias) => {
                     let (pattern, value) = (alias.pattern, alias.value);
 
+                    // Both sides: `Y = X.file.path` reads through a reference on
+                    // the right, and a compare — `X.file.path = Z.path` — reads
+                    // through one on the left.
+                    self.fetch_within(value, &mut body);
+                    self.fetch_within(pattern, &mut body);
+
                     if let Some(slot) = self.resolve(value) {
                         self.bind_pattern(pattern, slot);
                     }
                 }
             }
         }
+
+        // The head reads after every statement has bound, so its own fetches are
+        // the innermost levels — one row each, so the row count is unchanged.
+        self.fetch_within(*self.ast.query().head(), &mut body);
 
         self.apply_compares(&mut body);
 
@@ -1532,7 +1628,7 @@ impl Flattener<'_> {
             // Every alternative gets it: a variable a disjunction binds is in the
             // same place in each, so one residual is right for all of them.
             for source in level.sources.iter_mut() {
-                let Source::Seek { residuals, .. } = source;
+                let residuals = source.residuals_mut();
                 let mut extended = residuals.to_vec();
 
                 extended.push(Residual {
@@ -2218,20 +2314,15 @@ impl Flattener<'_> {
             ExprKind::Fact(..) => self.hoisted_slot(node),
 
             ExprKind::Access(FieldRef::Value, base) => {
-                // Only a *row* has a value side that is one point read away. A
-                // captured reference denotes a row too, but reaching its value means
-                // finding the fact first — the deferred half.
-                match self.resolve(*base)? {
+                // A row, or a reference followed into one: both are a register
+                // holding the fact whose value side this is, which is what makes
+                // the value one point read away from here.
+                let base = self.resolve(*base)?;
+
+                match self.dereference(node, base)? {
                     Slot::Row { address, predicate } => {
                         let ty = self.schema.get(predicate?)?.value()?.ty.clone();
                         Some(Slot::Value { address, ty })
-                    }
-                    Slot::Field {
-                        ty: PredicateTy::Fact(_),
-                        ..
-                    } => {
-                        self.report_through_reference(node, "the value");
-                        None
                     }
                     // Typecheck rejects `.value` on anything else: a field's type has
                     // no value side, and a value's is not a fact.
@@ -2242,10 +2333,72 @@ impl Flattener<'_> {
             ExprKind::Access(FieldRef::Key(name), base) => {
                 let (name, base) = (*name, *base);
                 let slot = self.resolve(base)?;
+                let slot = self.dereference(node, slot)?;
                 self.field_slot(node, &slot, name)
             }
 
             _ => None,
+        }
+    }
+
+    /// A **reference, as the row it names** — the substitution that reading
+    /// through one comes down to.
+    ///
+    /// Every other slot passes through unchanged, so this sits between resolving a
+    /// base and reading a field or a value out of it, and both readers get the
+    /// same answer: the fetched row is an ordinary register, and everything
+    /// downstream is the ordinary walk.
+    ///
+    /// It reads the fetch rather than making one, because a level has to exist
+    /// *before* the statement that reads it — see
+    /// [`fetch_within`](Self::fetch_within).
+    fn dereference(&mut self, node: NodeId, slot: Slot) -> Option<Slot> {
+        match &slot {
+            Slot::Field {
+                address,
+                path,
+                ty: PredicateTy::Fact(predicate),
+            } => match self.fetched_register(*address, path) {
+                Some(address) => Some(Slot::Row {
+                    address,
+                    predicate: Some(*predicate),
+                }),
+
+                // Every statement's reads are walked by `fetch_within` before it
+                // is emitted, so this is a read in a position that walk does not
+                // reach rather than a construct that cannot work. Reported, not
+                // declined: `flatten_ordered` promises that a refusal has a
+                // reason, and a quiet `None` here would be a query with no plan
+                // and no message.
+                None => {
+                    self.report(
+                        node,
+                        Code::NyiFactField,
+                        "reading through a reference in this position is not implemented \
+                         yet; name the reference in a statement of its own first",
+                    );
+                    None
+                }
+            },
+
+            // **A reference held in a fact's value.** A fetch reads the id out of
+            // a register's *key* bytes, and a value is in the other column family
+            // — reaching it would mean a fetch whose reference is itself a fetch,
+            // one that no level's register holds.
+            Slot::Value {
+                ty: PredicateTy::Fact(_),
+                ..
+            } => {
+                self.report(
+                    node,
+                    Code::NyiFactField,
+                    "reading through a reference held in a fact's value is not implemented \
+                     yet; a fetch follows a reference in a key",
+                );
+                None
+            }
+
+            _ => Some(slot),
         }
     }
 
@@ -2291,11 +2444,13 @@ impl Flattener<'_> {
                         ty: field_ty,
                     })
                 }
-                // Reading a field *of* a referenced fact is a second lookup.
-                PredicateTy::Fact(_) => {
-                    self.report_through_reference(node, "a field");
-                    None
-                }
+                // A reference reaches here only if it was not dereferenced on the
+                // way in, which every path through `resolve` does — so this is the
+                // same "a read in a position `fetch_within` does not reach" case,
+                // reported the same way rather than declined.
+                PredicateTy::Fact(_) => self
+                    .dereference(node, slot.clone())
+                    .and_then(|slot| self.field_slot(node, &slot, name)),
                 _ => None,
             },
 
@@ -2560,35 +2715,43 @@ mod tests {
                 .sources
                 .iter()
                 .map(|source| {
-                    let Source::Seek { access, residuals } = source;
-
                     let name = schema
-                        .get(access.predicate_id)
+                        .get(source.predicate_id())
                         .and_then(|p| p.name())
                         .unwrap_or("?")
                         .to_owned();
 
-                    let seek = match &access.seek_key {
-                        SeekKey::Prefix(bytes) if bytes.is_empty() => "scan".to_owned(),
-                        SeekKey::Prefix(_) => "seek[k]".to_owned(),
-                        SeekKey::Composite(parts) => format!(
-                            "seek[{}]",
-                            parts
-                                .iter()
-                                .map(|part| match part {
-                                    SeekKeyPart::Bytes(_) => "k".to_owned(),
-                                    SeekKeyPart::RegisterField { address, path } => {
-                                        format!("{address}.{path}")
-                                    }
-                                    // `r0#` — the row's identity, not any field of it.
-                                    SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
-                                })
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                        ),
+                    let seek = match source {
+                        Source::Seek { access, .. } => match &access.seek_key {
+                            SeekKey::Prefix(bytes) if bytes.is_empty() => "scan".to_owned(),
+                            SeekKey::Prefix(_) => "seek[k]".to_owned(),
+                            SeekKey::Composite(parts) => format!(
+                                "seek[{}]",
+                                parts
+                                    .iter()
+                                    .map(|part| match part {
+                                        SeekKeyPart::Bytes(_) => "k".to_owned(),
+                                        SeekKeyPart::RegisterField { address, path } => {
+                                            format!("{address}.{path}")
+                                        }
+                                        // `r0#` — the row's identity, not any field of it.
+                                        SeekKeyPart::RegisterFactId(address) =>
+                                            format!("{address}#"),
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            ),
+                        },
+                        // The reference followed, named against the register it is
+                        // read out of — `fetch[r0.1]` is "the fact field 1 of r0
+                        // points at".
+                        Source::Fetch {
+                            reference, path, ..
+                        } => format!("fetch[{reference}.{path}]"),
                     };
 
-                    let residuals = residuals
+                    let residuals = source
+                        .residuals()
                         .iter()
                         .map(|Residual { path, op }| match op {
                             ResidualOp::EqConst(_) => format!("{path} == k"),
@@ -2787,6 +2950,7 @@ mod tests {
             .sole_source()
             .expect("one source")
             .seek_key()
+            .expect("a seek")
         {
             SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), i64_field(1).as_slice()),
             other => panic!("expected a constant prefix, got {other:?}"),
@@ -2805,6 +2969,7 @@ mod tests {
             .sole_source()
             .expect("one source")
             .seek_key()
+            .expect("a seek")
         {
             SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), i64_field(-42).as_slice()),
             other => panic!("expected a constant prefix, got {other:?}"),
@@ -2858,6 +3023,7 @@ mod tests {
             .sole_source()
             .expect("one source")
             .seek_key()
+            .expect("a seek")
         {
             SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
             other => panic!("expected a prefix seek, got {other:?}"),
@@ -3441,13 +3607,14 @@ mod tests {
         );
     }
 
-    /// An alias through a **reference** draws the reference deferral rather than
-    /// the bind one: naming it changes nothing about the second lookup it needs.
+    /// An alias through a **reference** names the fetched row's field, exactly as
+    /// the read written in place does: naming a place changes nothing about where
+    /// it is.
     #[test]
-    fn an_alias_through_a_reference_is_the_reference_deferral() {
+    fn an_alias_through_a_reference_names_the_fetched_field() {
         assert_eq!(
-            compile("Y where test.Ref {of = P}; Y = P.name").codes(),
-            ["nyi/fact-field"],
+            shape("Y where test.Ref {of = P}; Y = P.name"),
+            shape("P.name where test.Ref {of = P}"),
         );
     }
 
@@ -3795,6 +3962,7 @@ mod tests {
             .sole_source()
             .expect("one source")
             .seek_key()
+            .expect("a seek")
         {
             SeekKey::Prefix(bytes) => assert!(!bytes.is_empty(), "a constant prefix"),
             SeekKey::Composite(parts) => assert!(
@@ -3804,21 +3972,117 @@ mod tests {
         }
     }
 
-    /// A reference may be **captured, projected and matched**; what stays deferred
-    /// is reading *through* one, on either side of the fact it names.
+    /// **Reading through a reference is a level of its own** — the fact the id
+    /// names, fetched into a register, and read from there like any other row.
     ///
-    /// **The trap this closes:** a register holds its own row's key bytes, so
+    /// Both sides of that fact: a key field is bytes in the fetched row, and the
+    /// value is one point read further, off the same register.
+    ///
+    /// **The trap the split guards:** a register holds its own row's key bytes, so
     /// splicing those where a fact id belongs would compare a key against an id and
-    /// quietly match nothing. The splice is off `Register::fact_id` for exactly that
-    /// reason.
+    /// quietly match nothing. *Following* a reference splices `Register::fact_id`
+    /// for exactly that reason; *reading through* one is this fetch, and the two
+    /// are still different plans.
     #[test]
-    fn reading_through_a_reference_is_not_implemented_yet() {
-        for source in [
-            "X.name where test.Ref {of = X}",
-            "X.value where test.Ref {of = X}",
-        ] {
-            assert_eq!(compile(source).codes(), ["nyi/fact-field"], "{source:?}");
-        }
+    fn reading_through_a_reference_fetches_the_fact_it_names() {
+        assert_eq!(
+            shape("X.name where test.Ref {of = X}"),
+            lines(&[
+                "r0 <- test.Ref scan",
+                "r1 <- test.Foo fetch[r0.0]",
+                "head r1.1:str",
+            ]),
+        );
+
+        assert_eq!(
+            shape("X.value where test.Ref {of = X}"),
+            lines(&[
+                "r0 <- test.Ref scan",
+                "r1 <- test.Foo fetch[r0.0]",
+                "head r1.value:str",
+            ]),
+        );
+    }
+
+    /// A reference that is not the leading key field is followed just the same:
+    /// the fetch names the field it reads, not a position in the seek.
+    #[test]
+    fn a_fetch_reads_the_reference_field_wherever_it_sits() {
+        assert_eq!(
+            shape("Y where test.Link {at = 11, of = P}; Y = P.name"),
+            lines(&[
+                "r0 <- test.Link seek[k]",
+                "r1 <- test.Foo fetch[r0.1]",
+                "head r1.1:str",
+            ]),
+        );
+    }
+
+    /// **A chain of references is a chain of fetches**, each reading the register
+    /// the one before it bound.
+    #[test]
+    fn a_reference_to_a_reference_is_two_fetches() {
+        assert_eq!(
+            shape("N where test.Deep {via = R}; N = R.of.name"),
+            lines(&[
+                "r0 <- test.Deep scan",
+                "r1 <- test.Ref fetch[r0.0]",
+                "r2 <- test.Foo fetch[r1.0]",
+                "head r2.1:str",
+            ]),
+        );
+    }
+
+    /// **Two reads of one reference are one fetch.** A point read per read would
+    /// fetch the same row twice for every row of the level above it, and the
+    /// second copy would be a register that can never disagree with the first.
+    #[test]
+    fn two_reads_of_one_reference_share_a_fetch() {
+        assert_eq!(
+            shape("{a = X.id, b = X.name} where test.Ref {of = X}"),
+            lines(&[
+                "r0 <- test.Ref scan",
+                "r1 <- test.Foo fetch[r0.0]",
+                "head {a = r1.0:int, b = r1.1:str}",
+            ]),
+        );
+    }
+
+    /// A field read through a reference **narrows the level that reads it**, like
+    /// any other bound value: the fetch is an outer level, so its register is
+    /// spliceable into the seek below it.
+    ///
+    /// This is what the hoist ordering is for. Were the fetch emitted after the
+    /// level that reads it, the splice would name a register bound *inside* itself
+    /// — which the executor's field-offset cache is entitled to assume cannot
+    /// happen.
+    #[test]
+    fn a_field_read_through_a_reference_seeks() {
+        assert_eq!(
+            shape("P.id where test.Ref {of = P}; test.Bar {id = P.id}"),
+            lines(&[
+                "r0 <- test.Ref scan",
+                "r1 <- test.Foo fetch[r0.0]",
+                "r2 <- test.Bar seek[r1.0]",
+                "head r1.0:int",
+            ]),
+        );
+    }
+
+    /// The **nested spelling is still a join**, not a fetch: a fact pattern
+    /// written inside another is a generator, and matching one against a reference
+    /// compares ids without reading anything. Only a *read* through a reference
+    /// costs a lookup.
+    #[test]
+    fn a_nested_pattern_is_a_join_rather_than_a_fetch() {
+        assert_eq!(
+            shape("Y where test.Ref {of = test.Foo {id = 1, name = Y}}"),
+            lines(&[
+                "r0 <- test.Foo seek[k]",
+                "r1 <- test.Ref seek[r0#]",
+                "head r0.1:str",
+            ]),
+        );
     }
 
     /// A value may be projected but not matched: it lives in `entities`, which
@@ -4709,6 +4973,9 @@ pub mod proptest {
         Value(usize),
         /// `R.f{k}` → a field read *through* a bound row.
         RowField(usize, usize),
+        /// `R.f{k}.f{j}` → a field of the fact `R`'s reference field names: a
+        /// `Source::Fetch`, and the only head item that costs a second lookup.
+        Deref(usize, usize, usize),
     }
 
     /// A generated query, the store it runs against, and what it means.
@@ -4813,6 +5080,9 @@ pub mod proptest {
                         HeadItem::Row(row) => format!("R{row}"),
                         HeadItem::Value(row) => format!("R{row}.value"),
                         HeadItem::RowField(row, field) => format!("R{row}.f{field}"),
+                        HeadItem::Deref(row, field, target) => {
+                            format!("R{row}.f{field}.f{target}")
+                        }
                     };
                     format!("h{h} = {item}")
                 })
@@ -5027,6 +5297,19 @@ pub mod proptest {
                 HeadItem::RowField(r, field) => {
                     let (predicate, index) = row(*r);
                     self.facts[predicate][index].key[*field].to_value()
+                }
+
+                // Two facts: the row's reference field says which fact of
+                // `REFERENCED` to read, and `target` says which of *its* fields.
+                HeadItem::Deref(r, field, target) => {
+                    let (predicate, index) = row(*r);
+
+                    let GenVal::Ref(sequence) = &self.facts[predicate][index].key[*field] else {
+                        panic!("a deref head item names a reference field");
+                    };
+
+                    let referenced = &self.facts[REFERENCED.0 as usize];
+                    referenced[*sequence as usize - 1].key[*target].to_value()
                 }
             }
         }
@@ -5491,11 +5774,25 @@ pub mod proptest {
             let (row, stmt) = rows[draw.which as usize % rows.len()];
             let spec = &schema[resolved[stmt].predicate];
 
-            let item = match draw.kind % 3 {
+            let item = match draw.kind % 4 {
                 0 => HeadItem::Row(row),
                 // Only where the predicate has a value to read.
                 1 if spec.value.is_some() => HeadItem::Value(row),
                 1 => HeadItem::Row(row),
+
+                // A read **through** the reference every other predicate's key
+                // ends with — the only head item that costs a `Source::Fetch`,
+                // and so the only way this generator reaches one. Drawn rather
+                // than left to chance for the reason the reference field itself
+                // is not drawn: it needs a row bound over a referring predicate,
+                // which two coincidences already have to line up for.
+                2 if PredicateId(resolved[stmt].predicate as u32) != REFERENCED => HeadItem::Deref(
+                    row,
+                    // Where `resolve` puts it: last in the key.
+                    spec.fields.len() - 1,
+                    draw.field as usize % schema[REFERENCED.0 as usize].fields.len(),
+                ),
+
                 _ => HeadItem::RowField(row, draw.field as usize % spec.fields.len()),
             };
 
@@ -5581,7 +5878,7 @@ pub mod proptest {
     }
 
     fn arb_head() -> impl Strategy<Value = HeadDraw> {
-        (0u8..3, 0u8..PICKS, 0u8..PICKS).prop_map(|(kind, which, field)| HeadDraw {
+        (0u8..4, 0u8..PICKS, 0u8..PICKS).prop_map(|(kind, which, field)| HeadDraw {
             kind,
             which,
             field,
@@ -5791,6 +6088,7 @@ mod battery {
         fact_id_splice: bool,
         fact_id_residual: bool,
         reference_capture: bool,
+        fetch_source: bool,
     }
 
     impl Shapes {
@@ -5815,6 +6113,7 @@ mod battery {
                     self.reference_capture,
                     "a captured reference (`Project::RegisterField` of a `Fact` type)",
                 ),
+                (self.fetch_source, "a `Source::Fetch`"),
             ] {
                 if !present {
                     out.push(what);
@@ -5837,24 +6136,33 @@ mod battery {
                 // Every alternative counts: a shape reached by the second source
                 // of a disjunction is as reached as one in the first, and the
                 // census is what says the battery saw it at all.
-                for Source::Seek { access, residuals } in level.sources.iter() {
-                    match &access.seek_key {
-                        SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
-                        SeekKey::Composite(parts) => {
-                            self.multi_part_seek |= parts.len() > 1;
+                for source in level.sources.iter() {
+                    match source {
+                        Source::Seek { access, .. } => match &access.seek_key {
+                            SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
+                            SeekKey::Composite(parts) => {
+                                self.multi_part_seek |= parts.len() > 1;
 
-                            for part in parts.iter() {
-                                match part {
-                                    SeekKeyPart::Bytes(_) => self.constant_in_composite = true,
-                                    SeekKeyPart::RegisterField { path, .. } => {
-                                        self.nested_path |= !path.is_flat();
+                                for part in parts.iter() {
+                                    match part {
+                                        SeekKeyPart::Bytes(_) => self.constant_in_composite = true,
+                                        SeekKeyPart::RegisterField { path, .. } => {
+                                            self.nested_path |= !path.is_flat();
+                                        }
+                                        SeekKeyPart::RegisterFactId(_) => {
+                                            self.fact_id_splice = true;
+                                        }
                                     }
-                                    SeekKeyPart::RegisterFactId(_) => self.fact_id_splice = true,
                                 }
                             }
+                        },
+                        Source::Fetch { path, .. } => {
+                            self.fetch_source = true;
+                            self.nested_path |= !path.is_flat();
                         }
                     }
 
+                    let residuals = source.residuals();
                     self.several_residuals |= residuals.len() > 1;
 
                     for Residual { path, op } in residuals.iter() {

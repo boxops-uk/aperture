@@ -103,9 +103,7 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
             out.push_str(" never");
         }
 
-        for (alternative, Source::Seek { access, residuals }) in
-            generator.sources.iter().enumerate()
-        {
+        for (alternative, source) in generator.sources.iter().enumerate() {
             // Alternatives after the first are stacked under the level, so a
             // single-source level — every level focus compiles today — reads
             // exactly as it did before there was more than one.
@@ -113,33 +111,46 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
                 let _ = write!(out, "\n     |");
             }
 
-            let predicate = schema.get(access.predicate_id);
+            let predicate = schema.get(source.predicate_id());
             let name = predicate.as_ref().and_then(|p| p.name()).unwrap_or("?");
             let key_ty = predicate.as_ref().map(|p| p.key().ty);
             let field = |path: &FieldPath| field_name(key_ty, path, schema);
 
             let _ = write!(out, " {name}");
 
-            match &access.seek_key {
-                SeekKey::Prefix(bytes) if bytes.is_empty() => out.push_str(" scan"),
-                SeekKey::Prefix(_) => out.push_str(" seek[<const>]"),
-                SeekKey::Composite(parts) => {
-                    let parts: Vec<String> = parts
-                        .iter()
-                        .map(|part| match part {
-                            SeekKeyPart::Bytes(_) => "<const>".to_owned(),
-                            SeekKeyPart::RegisterField { address, path } => {
-                                register_field(address, path)
-                            }
-                            SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
-                        })
-                        .collect();
+            match source {
+                Source::Seek { access, .. } => match &access.seek_key {
+                    SeekKey::Prefix(bytes) if bytes.is_empty() => out.push_str(" scan"),
+                    SeekKey::Prefix(_) => out.push_str(" seek[<const>]"),
+                    SeekKey::Composite(parts) => {
+                        let parts: Vec<String> = parts
+                            .iter()
+                            .map(|part| match part {
+                                SeekKeyPart::Bytes(_) => "<const>".to_owned(),
+                                SeekKeyPart::RegisterField { address, path } => {
+                                    register_field(address, path)
+                                }
+                                SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
+                            })
+                            .collect();
 
-                    let _ = write!(out, " seek[{}]", parts.join(" "));
+                        let _ = write!(out, " seek[{}]", parts.join(" "));
+                    }
+                },
+
+                // Named for the reference it follows rather than for a range,
+                // because that is the whole of what this level does: one row, the
+                // one that field points at. `fetch[r0.of]` reads against the
+                // *outer* register's key — the same rule a spliced seek part
+                // follows, and the same trap if it were named against this one.
+                Source::Fetch {
+                    reference, path, ..
+                } => {
+                    let _ = write!(out, " fetch[{}]", register_field(reference, path));
                 }
             }
 
-            for Residual { path, op } in residuals.iter() {
+            for Residual { path, op } in source.residuals().iter() {
                 let at = field(path);
 
                 let _ = match op {

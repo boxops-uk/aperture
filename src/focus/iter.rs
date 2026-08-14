@@ -7,12 +7,13 @@ use tokio_util::sync::CancellationToken;
 use crate::focus::{
     error::{ApertureError, StoreCodecError, StoreError},
     plan::{
-        Computed, FactId, FactStore, FieldPath, Plan, Project, Residual, ResidualOp, SeekKey,
-        SeekKeyPart, Source, Step,
+        Access, Computed, FactId, FactStore, FieldPath, Plan, Project, Residual, ResidualOp,
+        SeekKey, SeekKeyPart, Source, Step,
     },
-    schema::{LocalInterner, PREDICATE_ID_SIZE},
+    schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId},
     tuple::{
-        MARK_ESCAPE, MARK_RECORD, MARK_TERM, Value, decode_typed, fact_ref_bytes, skip, strinc,
+        MARK_ESCAPE, MARK_RECORD, MARK_TERM, TupleDecoder, Value, decode_typed, fact_ref_bytes,
+        skip, strinc,
     },
 };
 
@@ -423,8 +424,36 @@ impl<'a> Deadline<'a> {
     }
 }
 
+/// The rows an open [`Source`] has left to hand out.
+///
+/// One iterator for both source kinds, so that [`StackFrame::next`] — the loop that
+/// counts rows against the deadline and checks residuals — is written once. The
+/// alternative was a second `next`, which would have meant two places where a row
+/// becomes machine state and two chances for one of them to skip the length check
+/// there.
+///
+/// [`Fetched`](Rows::Fetched) is a **relation of at most one row**, not a special
+/// case of a scan: it is taken at open, so the point read happens once per opening
+/// of the level rather than once per `next` call, and draining it is the same
+/// `None` a scan gives at its end.
+enum Rows<S: FactStore> {
+    Scan(S::Scan),
+    Fetched(Option<(ByteView, FactId)>),
+}
+
+impl<S: FactStore> Iterator for Rows<S> {
+    type Item = Result<(ByteView, FactId), ApertureError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Rows::Scan(scan) => scan.next(),
+            Rows::Fetched(row) => row.take().map(Ok),
+        }
+    }
+}
+
 struct StackFrame<S: FactStore> {
-    scan: Option<S::Scan>,
+    rows: Option<Rows<S>>,
     /// Which of the level's [`Source`]s is being drained.
     ///
     /// Alternatives are concatenated, so this only ever moves forward while the
@@ -447,7 +476,7 @@ struct StackFrame<S: FactStore> {
 impl<S: FactStore> StackFrame<S> {
     fn closed(nvars: usize) -> Self {
         Self {
-            scan: None,
+            rows: None,
             source: 0,
             current: None,
             field_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
@@ -461,7 +490,7 @@ impl<S: FactStore> StackFrame<S> {
     /// produce all of its alternatives again rather than resuming where the last
     /// pass through it happened to stop.
     fn close(&mut self) {
-        self.scan = None;
+        self.rows = None;
         self.source = 0;
         self.current = None;
     }
@@ -481,35 +510,101 @@ impl<S: FactStore> StackFrame<S> {
         // out-of-range slice.
         self.field_offsets.iter_mut().for_each(|fo| fo.clear());
 
-        let prefix = self.build_prefix(state, source)?;
-        let hi = strinc(&prefix);
-        let lo = resume_at.unwrap_or(&prefix);
+        self.rows = Some(match source {
+            Source::Seek { access, .. } => {
+                let prefix = self.build_prefix(state, access)?;
+                let hi = strinc(&prefix);
+                let lo = resume_at.unwrap_or(&prefix);
 
-        // A resume position must lie inside the range of the source it is being
-        // replayed into. It does for any cursor this executor built; it need not
-        // for one rebuilt from the wire, and the two ways it can be wrong are a
-        // panic and a wrong answer — `lo > hi` panics inside `BTreeMap`, and a
-        // `lo` below the prefix silently re-scans rows the level already emitted.
-        // Checked here because this is the one place a saved position becomes a
-        // scan bound, so it covers every `FactStore` at once.
-        if resume_at
-            .is_some_and(|at| at < prefix.as_slice() || hi.as_deref().is_some_and(|hi| at >= hi))
-        {
-            return Err(ApertureError::BadResumeKey);
-        }
+                // A resume position must lie inside the range of the source it is
+                // being replayed into. It does for any cursor this executor built;
+                // it need not for one rebuilt from the wire, and the two ways it
+                // can be wrong are a panic and a wrong answer — `lo > hi` panics
+                // inside `BTreeMap`, and a `lo` below the prefix silently re-scans
+                // rows the level already emitted. Checked here because this is the
+                // one place a saved position becomes a scan bound, so it covers
+                // every `FactStore` at once.
+                if resume_at.is_some_and(|at| {
+                    at < prefix.as_slice() || hi.as_deref().is_some_and(|hi| at >= hi)
+                }) {
+                    return Err(ApertureError::BadResumeKey);
+                }
 
-        self.scan = Some(store.scan(lo, hi.as_deref())?);
+                Rows::Scan(store.scan(lo, hi.as_deref())?)
+            }
+
+            // A point read takes no resume position: the row is whichever one the
+            // reference names, so replaying the outer registers is what puts this
+            // level back where it was. `resume` still checks the fact id it gets
+            // against the saved one, which is what catches a cursor replayed
+            // against a store where the reference now names something else.
+            Source::Fetch {
+                reference,
+                path,
+                predicate_id,
+                ..
+            } => Rows::Fetched(self.follow(store, state, *reference, path, *predicate_id)?),
+        });
+
         self.current = None;
 
         Ok(())
     }
 
+    /// Read the reference at `path` of the row in `reference`, and fetch the fact
+    /// it names.
+    ///
+    /// The register it yields is `predicate_id ++ key`, byte for byte the row a
+    /// scan of that fact would have produced — which is what lets everything
+    /// downstream (residuals, splices, projection, the cursor) treat a fetched row
+    /// as an ordinary one. `entities` stores the key beside the value, so the
+    /// concatenation is the one allocation here, once per opening of the level and
+    /// on the same footing as [`build_prefix`](Self::build_prefix)'s.
+    fn follow(
+        &mut self,
+        store: &S,
+        state: &MachineState,
+        reference: Address,
+        path: &FieldPath,
+        predicate_id: PredicateId,
+    ) -> Result<Option<(ByteView, FactId)>, ApertureError> {
+        let key = state.fact(reference)?.key();
+        let span = get_field_span(&mut self.field_offsets, &key, reference, path)?;
+
+        let fact_id = TupleDecoder::new(&key[span])
+            .take_fact_id()
+            .map_err(ApertureError::Decode)?;
+
+        // The declared referent decides how this row's bytes are read; see
+        // [`Source::Fetch`].
+        if fact_id.predicate() != predicate_id {
+            return Err(ApertureError::ReferenceCrossesPredicate {
+                expected: predicate_id,
+                found: fact_id.predicate(),
+            });
+        }
+
+        // A reference naming no fact is a fault in the data, not a query that
+        // answers nothing: `keys` and `entities` are written together
+        // ([I12](../../docs/invariants.md#i12)) and an id is never reused
+        // ([I11](../../docs/invariants.md#i11)), so there is no legitimate way to
+        // arrive here. Dropping the row instead would answer short and say nothing.
+        let entity = store
+            .point(fact_id)?
+            .ok_or(ApertureError::DanglingFactId(fact_id))?;
+
+        let mut bytes = Vec::with_capacity(PREDICATE_ID_SIZE + entity.key.len());
+        bytes.extend_from_slice(&predicate_id.0.to_be_bytes());
+        bytes.extend_from_slice(&entity.key);
+
+        Ok(Some((ByteView::from(bytes), fact_id)))
+    }
+
     fn build_prefix(
         &mut self,
         state: &MachineState,
-        source: &Source,
+        access: &Access,
     ) -> Result<Vec<u8>, ApertureError> {
-        let Source::Seek { access, .. } = source;
         let mut prefix = access.predicate_id.0.to_be_bytes().to_vec();
 
         match &access.seek_key {
@@ -551,9 +646,9 @@ impl<S: FactStore> StackFrame<S> {
         source: &Source,
         deadline: &mut Deadline<'_>,
     ) -> Result<Option<Register>, ApertureError> {
-        let scan = self.scan.as_mut().ok_or(ApertureError::AdvanceAfterClose)?;
+        let rows = self.rows.as_mut().ok_or(ApertureError::AdvanceAfterClose)?;
 
-        for row in scan {
+        for row in rows {
             deadline.tick()?;
 
             let (key_bytes, fact_id) = row?;
@@ -992,7 +1087,7 @@ impl<S: FactStore> Executor<S> {
                         continue;
                     };
 
-                    if frame.scan.is_none() {
+                    if frame.rows.is_none() {
                         frame.open(&self.store, source, &self.state, None)?;
                     }
 
@@ -1013,7 +1108,7 @@ impl<S: FactStore> Executor<S> {
                         // opens the one after it, or backs out above if there is
                         // none. Backtracking lives in one place for both.
                         None => {
-                            frame.scan = None;
+                            frame.rows = None;
                             frame.source += 1;
                         }
                     }
@@ -2663,6 +2758,364 @@ mod tests {
             0,
             "a fact-id splice must not read `entities`",
         );
+    }
+
+    // ---- reading through a reference ---------------------------------------
+    //
+    // The other half of cross-fact navigation, and the half that costs a lookup:
+    // *following* a reference compares ids already in a register, while *reading
+    // through* one needs the referenced fact's key bytes, which live only in
+    // `entities`. `Source::Fetch` is that read, as a relation of at most one row.
+
+    /// Two people, and one `refs` fact pointing at each — the store every fetch
+    /// test below is about.
+    ///
+    /// `refs` rows are keyed *by the reference itself*, so they scan in id order:
+    /// `person#1`'s row first.
+    fn people_and_refs(person: PredicateId, refs: PredicateId) -> MemStore {
+        let mut store = MemStore::new();
+
+        for (sequence, (id, name)) in [(10i64, "ann"), (20, "bob")].into_iter().enumerate() {
+            let sequence = sequence as u64 + 1;
+            store.insert(
+                person,
+                compose(&[&i64_field(id), &str_field(name)]),
+                sequence,
+            );
+            store.insert(
+                refs,
+                fact_ref_field(FactId::new(person, sequence).unwrap()),
+                sequence,
+            );
+        }
+
+        store
+    }
+
+    /// Scan `refs`, then follow each row's reference to the fact it names.
+    fn scan_then_fetch(person: PredicateId, refs: PredicateId, head: Project) -> Plan {
+        Plan {
+            nvars: 2,
+            body: Step::levels([
+                scan_all(refs, 0),
+                Level::fetch(
+                    Address::new(0),
+                    FieldPath::field(0),
+                    person,
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
+            ]),
+            head,
+        }
+    }
+
+    /// **A fetch binds the fact its reference names**, whose fields are then read
+    /// like any other row's.
+    #[test]
+    fn a_fetch_binds_the_fact_its_reference_names() {
+        let (person, refs) = (PredicateId(0), PredicateId(1));
+
+        let plan = scan_then_fetch(
+            person,
+            refs,
+            Project::RegisterField {
+                address: Address::new(1),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        );
+
+        assert_eq!(
+            run(people_and_refs(person, refs), plan),
+            vec![Value::Int(10), Value::Int(20)],
+        );
+    }
+
+    /// **A fetched row is the row a scan would have produced** — `predicate_id ++
+    /// key`, byte for byte.
+    ///
+    /// Asserted through a *third* level that splices a field of the fetched
+    /// register into its seek, because that is what depends on the bytes being
+    /// exactly right: `entities` stores the key without its predicate tag, so a
+    /// fetch that forgot to put the tag back would have `Register::key` slice four
+    /// bytes off the front of the real key and splice rubbish — matching nothing,
+    /// silently. Reading a field of the fetched row alone would not catch it; the
+    /// name would just decode from the wrong offset.
+    #[test]
+    fn a_fetched_row_is_the_row_a_scan_would_have_produced() {
+        let (person, refs, name) = (PredicateId(0), PredicateId(1), PredicateId(2));
+
+        let mut store = people_and_refs(person, refs);
+        store.insert(name, str_field("ann"), 1);
+        store.insert(name, str_field("bob"), 2);
+
+        let plan = Plan {
+            nvars: 3,
+            body: Step::levels([
+                scan_all(refs, 0),
+                Level::fetch(
+                    Address::new(0),
+                    FieldPath::field(0),
+                    person,
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
+                Level::seek(
+                    Access {
+                        predicate_id: name,
+                        // The fetched person's `name` field, spliced.
+                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
+                            address: Address::new(1),
+                            path: FieldPath::field(1),
+                        }])),
+                    },
+                    Box::new([Address::new(2)]),
+                    Box::new([]),
+                ),
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(2),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Str,
+            },
+        };
+
+        assert_eq!(
+            run(store, plan),
+            vec![Value::Str("ann".into()), Value::Str("bob".into())],
+        );
+    }
+
+    /// A residual on a fetch filters the fetched row, so the level answers with
+    /// one row or none.
+    ///
+    /// Not decoration: `apply_compares` puts `X = Y` on whichever level binds
+    /// later, and that can be the fetch — so a source that ignored its residuals
+    /// would drop the comparison and answer with rows the query excluded.
+    #[test]
+    fn a_residual_on_a_fetch_filters_the_fetched_row() {
+        let (person, refs) = (PredicateId(0), PredicateId(1));
+
+        let keeps_bob = Level::fetch(
+            Address::new(0),
+            FieldPath::field(0),
+            person,
+            Box::new([Address::new(1)]),
+            Box::new([Residual {
+                path: FieldPath::field(1),
+                op: ResidualOp::EqConst(str_field("bob").into_boxed_slice()),
+            }]),
+        );
+
+        let plan = Plan {
+            nvars: 2,
+            body: Step::levels([scan_all(refs, 0), keeps_bob]),
+            head: Project::RegisterField {
+                address: Address::new(1),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        assert_eq!(
+            run(people_and_refs(person, refs), plan),
+            vec![Value::Int(20)]
+        );
+    }
+
+    /// **A fetch reads `entities` once per row the level above it produces** —
+    /// not once per row that level *examines*.
+    ///
+    /// The distinction is [I6](../../../docs/invariants.md#i6)'s. A point read per
+    /// examined row is what I6 forbids, and is what a value pattern would cost; a
+    /// fetch is a level of its own, so it is opened only when an outer row has
+    /// already survived every residual on it. Here two of the three `refs` rows
+    /// are rejected by the outer level, and exactly one fetch happens.
+    #[test]
+    fn a_fetch_reads_entities_once_per_row_it_is_opened_for() {
+        let (person, refs) = (PredicateId(0), PredicateId(1));
+
+        let mut store = people_and_refs(person, refs);
+        store.insert(
+            refs,
+            fact_ref_field(FactId::new(person, 1).unwrap()),
+            3, // a third `refs` row, pointing back at person#1
+        );
+
+        let only_the_second = Level::seek(
+            Access {
+                predicate_id: refs,
+                seek_key: SeekKey::Prefix(Box::new([])),
+            },
+            Box::new([Address::new(0)]),
+            Box::new([Residual {
+                path: FieldPath::field(0),
+                op: ResidualOp::EqConst(
+                    fact_ref_field(FactId::new(person, 2).unwrap()).into_boxed_slice(),
+                ),
+            }]),
+        );
+
+        let plan = Plan {
+            nvars: 2,
+            body: Step::levels([
+                only_the_second,
+                Level::fetch(
+                    Address::new(0),
+                    FieldPath::field(0),
+                    person,
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(1),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let (spy, point_calls) = PointSpy::new(store);
+
+        assert_eq!(
+            collect_rows(spy, plan, &interner_with(&[])).unwrap(),
+            vec![Value::Int(20)],
+        );
+        assert_eq!(
+            point_calls.load(Ordering::Relaxed),
+            1,
+            "one fetch per row the outer level produced, not per row it examined",
+        );
+    }
+
+    /// A reference naming no fact is **reported**, not skipped.
+    ///
+    /// Both column families are written together ([I12]) and an id is never
+    /// reused ([I11]), so there is no legitimate way to reach one — and answering
+    /// short would report a query as complete while silently dropping the rows a
+    /// corrupt store could not answer.
+    ///
+    /// [I11]: ../../../docs/invariants.md#i11
+    /// [I12]: ../../../docs/invariants.md#i12
+    #[test]
+    fn a_reference_naming_no_fact_is_reported() {
+        let (person, refs) = (PredicateId(0), PredicateId(1));
+
+        let mut store = MemStore::new();
+        store.insert(person, compose(&[&i64_field(10), &str_field("ann")]), 1);
+        store.insert(refs, fact_ref_field(FactId::new(person, 7).unwrap()), 1);
+
+        let plan = scan_then_fetch(person, refs, Project::FactRef(Address::new(1)));
+
+        assert!(matches!(
+            collect_rows(store, plan, &interner_with(&[])),
+            Err(ApertureError::DanglingFactId(_)),
+        ));
+    }
+
+    /// A reference naming a **different predicate** than the plan declares is
+    /// refused rather than followed.
+    ///
+    /// The fetched row would be read against the declared key layout — every
+    /// residual path and every projection off it was compiled from that — so
+    /// following it decodes another predicate's bytes at those offsets and answers
+    /// with whatever is there.
+    #[test]
+    fn a_reference_naming_another_predicate_is_refused() {
+        let (person, refs, other) = (PredicateId(0), PredicateId(1), PredicateId(2));
+
+        let mut store = MemStore::new();
+        store.insert(other, i64_field(99), 1);
+        store.insert(refs, fact_ref_field(FactId::new(other, 1).unwrap()), 1);
+
+        let plan = scan_then_fetch(person, refs, Project::FactRef(Address::new(1)));
+
+        assert!(matches!(
+            collect_rows(store, plan, &interner_with(&[])),
+            Err(ApertureError::ReferenceCrossesPredicate { .. }),
+        ));
+    }
+
+    /// **[I4](../../docs/invariants.md#i4) across a fetch.** A fetch level saves an
+    /// ordinary cursor entry and is re-read on resume, which is sound because the
+    /// row it produces is a function of the registers outside it — replaying those
+    /// puts it back exactly where it was.
+    #[test]
+    fn resume_across_a_fetch_level_equals_an_uninterrupted_run() {
+        let (person, refs) = (PredicateId(0), PredicateId(1));
+
+        let mk = || {
+            (
+                people_and_refs(person, refs),
+                scan_then_fetch(
+                    person,
+                    refs,
+                    Project::RegisterField {
+                        address: Address::new(1),
+                        path: FieldPath::field(0),
+                        ty: PredicateTy::Int,
+                    },
+                ),
+            )
+        };
+
+        let interner = interner_with(&[]);
+        let (uninterrupted, _) = run_with_suspends(mk, &interner, &BTreeSet::new()).unwrap();
+
+        assert_eq!(uninterrupted, vec![Value::Int(10), Value::Int(20)]);
+
+        for cut in 1..=uninterrupted.len() {
+            let (resumed, suspends) =
+                run_with_suspends(mk, &interner, &BTreeSet::from([cut])).unwrap();
+
+            assert!(suspends > 0, "cut at {cut} did not suspend");
+            assert_eq!(resumed, uninterrupted, "cut after row {cut}");
+        }
+    }
+
+    /// A cursor replayed where the reference now names **another fact** is
+    /// refused.
+    ///
+    /// A fetch takes no resume position — the id decides the row — so what catches
+    /// this is the fact-id check every level's replay makes. Without it a resume
+    /// against a store the cursor was not built from would carry on from a row it
+    /// never stopped on.
+    #[test]
+    fn a_fetch_resumed_where_the_reference_moved_is_refused() {
+        let (person, refs) = (PredicateId(0), PredicateId(1));
+
+        let head = || Project::RegisterField {
+            address: Address::new(1),
+            path: FieldPath::field(0),
+            ty: PredicateTy::Int,
+        };
+
+        let cursor = suspend_after_first_row(
+            people_and_refs(person, refs),
+            scan_then_fetch(person, refs, head()),
+        );
+
+        // The same `refs` keys, pointing the other way about.
+        let mut moved = MemStore::new();
+        for (sequence, (id, name)) in [(10i64, "ann"), (20, "bob")].into_iter().enumerate() {
+            let sequence = sequence as u64 + 1;
+            moved.insert(
+                person,
+                compose(&[&i64_field(id), &str_field(name)]),
+                sequence,
+            );
+            moved.insert(
+                refs,
+                fact_ref_field(FactId::new(person, 3 - sequence).unwrap()),
+                sequence,
+            );
+        }
+
+        assert!(matches!(
+            Executor::resume(moved, scan_then_fetch(person, refs, head()), cursor),
+            Err(ApertureError::BadResumeKey),
+        ));
     }
 
     // A three-level join (friends-of-friends): Person(a) → Knows(a, b) →

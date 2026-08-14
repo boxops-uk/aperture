@@ -258,6 +258,33 @@ pub enum Source {
         access: Access,
         residuals: Box<[Residual]>,
     },
+    /// **The fact a reference names** — one row, reached by id rather than by
+    /// scanning for it.
+    ///
+    /// `reference` is a register bound at an outer level and `path` a fact-typed
+    /// field of its key, so the id is already in hand: this is the second lookup
+    /// that [`SeekKeyPart::RegisterFactId`] deliberately avoids, and the reason it
+    /// could avoid it is that *following* a reference compares ids while *reading
+    /// through* one needs the other fact's key bytes, which live only in
+    /// `entities`.
+    ///
+    /// A source rather than a step, because a point read is a relation of at most
+    /// one row and the machine's job over it is a scan's exactly: open, drain, move
+    /// on. That is what keeps `enumerate` unchanged
+    /// ([the query-surface note](../../../docs/query-surface.md)).
+    ///
+    /// `predicate_id` is the field's **declared** referent, and is checked against
+    /// the id actually stored. It is not redundant with [`FactId::predicate`]: every
+    /// `path` in this source's residuals — and every projection off the register it
+    /// binds — was compiled against the declared key layout, so a reference that
+    /// names another predicate would decode a different type's bytes at that offset
+    /// and answer, silently, with whatever was there.
+    Fetch {
+        reference: Address,
+        path: FieldPath,
+        predicate_id: PredicateId,
+        residuals: Box<[Residual]>,
+    },
 }
 
 impl Source {
@@ -265,15 +292,24 @@ impl Source {
     #[must_use]
     pub fn residuals(&self) -> &[Residual] {
         match self {
-            Source::Seek { residuals, .. } => residuals,
+            Source::Seek { residuals, .. } | Source::Fetch { residuals, .. } => residuals,
         }
     }
 
-    /// How this source's scan is narrowed.
-    #[must_use]
-    pub fn seek_key(&self) -> &SeekKey {
+    /// The residuals, to add one to.
+    pub fn residuals_mut(&mut self) -> &mut Box<[Residual]> {
         match self {
-            Source::Seek { access, .. } => &access.seek_key,
+            Source::Seek { residuals, .. } | Source::Fetch { residuals, .. } => residuals,
+        }
+    }
+
+    /// How this source's scan is narrowed — `None` for a source that does not
+    /// scan.
+    #[must_use]
+    pub fn seek_key(&self) -> Option<&SeekKey> {
+        match self {
+            Source::Seek { access, .. } => Some(&access.seek_key),
+            Source::Fetch { .. } => None,
         }
     }
 
@@ -282,6 +318,7 @@ impl Source {
     pub fn predicate_id(&self) -> PredicateId {
         match self {
             Source::Seek { access, .. } => access.predicate_id,
+            Source::Fetch { predicate_id, .. } => *predicate_id,
         }
     }
 }
@@ -319,6 +356,28 @@ impl Level {
     pub fn seek(access: Access, binds: Box<[Address]>, residuals: Box<[Residual]>) -> Self {
         Self {
             sources: Box::new([Source::Seek { access, residuals }]),
+            binds,
+        }
+    }
+
+    /// A level with a single [`Source::Fetch`] — the fact a reference names,
+    /// bound to a register of its own so that everything downstream reads it as
+    /// an ordinary row.
+    #[must_use]
+    pub fn fetch(
+        reference: Address,
+        path: FieldPath,
+        predicate_id: PredicateId,
+        binds: Box<[Address]>,
+        residuals: Box<[Residual]>,
+    ) -> Self {
+        Self {
+            sources: Box::new([Source::Fetch {
+                reference,
+                path,
+                predicate_id,
+                residuals,
+            }]),
             binds,
         }
     }
