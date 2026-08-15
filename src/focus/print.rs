@@ -20,9 +20,9 @@
 use std::fmt::Write as _;
 
 use crate::focus::{
-    iter::Address,
     plan::{
-        FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        Address, FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source,
+        Step, Test,
     },
     schema::{LocalInterner, PredicateRef, PredicateTy, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},

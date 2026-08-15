@@ -674,11 +674,11 @@ mod tests {
             DropProbe, FrozenStore, assert_scan_stays_in_predicate, assert_short_bound_is_rejected,
             collect_rows, i64_field, interner_with,
         },
-        iter::{Address, CANCELLATION_STRIDE, Executor, Iteratee, Stream},
+        iter::{CANCELLATION_STRIDE, Executor, Iteratee, Stream},
         mem_store::MemStore,
         plan::{
-            Access, FieldPath, Level, MAX_FACT_SEQUENCE, Plan, Project, Residual, ResidualOp,
-            SeekKey, SeekKeyPart, Step,
+            Access, Address, FieldPath, Level, MAX_FACT_SEQUENCE, Plan, Project, Residual,
+            ResidualOp, SeekKey, SeekKeyPart, Step,
         },
         schema::PredicateTy,
         tuple::strinc,
@@ -1369,10 +1369,7 @@ mod tests {
             .expect("the corrupt row must surface");
 
         assert!(
-            matches!(
-                fault,
-                StoreError::FactIdSequence { sequence: 0, .. }
-            ),
+            matches!(fault, StoreError::FactIdSequence { sequence: 0, .. }),
             "got {fault:?}"
         );
     }

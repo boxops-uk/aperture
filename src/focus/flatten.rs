@@ -68,10 +68,9 @@
 
 use crate::focus::{
     diag::{Code, Diagnostics},
-    iter::Address,
     plan::{
-        Access, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
-        Source, Step, Test,
+        Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
+        SeekKeyPart, Source, Step, Test,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
     schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},

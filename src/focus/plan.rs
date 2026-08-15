@@ -5,10 +5,39 @@ use serde::{Serialize, Serializer};
 
 use crate::focus::{
     error::StoreError,
-    iter::Address,
     schema::{PredicateId, PredicateTy, Symbol},
     tuple::Value,
 };
+
+/// Which register a plan reads or binds — an index into the frame stack, named
+/// here rather than in the executor because it is part of what a plan *says*.
+///
+/// The executor is what gives it a meaning at run time, but every producer of a
+/// plan writes one, so a plan that could not name a register would not be a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Address(pub(crate) usize);
+
+impl Address {
+    pub fn new(i: usize) -> Self {
+        Self(i)
+    }
+
+    /// Which register this is, as an index into the plan's levels — a plan binds one
+    /// register per level, so this also says which generator bound it.
+    #[must_use]
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
+
+impl fmt::Display for Address {
+    /// A register index, written `r0`, `r1`, … — not a machine address. It used
+    /// to render as a 16-digit hex value, so `Address(0)` reached a diagnostic as
+    /// `0x0000000000000000`, which reads as a pointer.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "r{}", self.0)
+    }
+}
 
 /// Bits of a [`FactId`] holding the predicate tag — the high three bytes.
 ///
@@ -1181,12 +1210,11 @@ pub mod proptest {
     use ::proptest::prelude::*;
 
     use super::{
-        Access, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart,
-        Source, Step,
+        Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
+        SeekKeyPart, Source, Step,
     };
     use crate::focus::{
         fixtures::{compose, i64_field, interner_with, str_field},
-        iter::Address,
         mem_store::MemStore,
         schema::{LocalInterner, PredicateId, PredicateTy},
         tuple::Value,

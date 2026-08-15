@@ -2,8 +2,7 @@ use thiserror::Error;
 
 use crate::focus::{
     format::FormatVersion,
-    iter::Address,
-    plan::{FactId, PlanFingerprint},
+    plan::{Address, FactId, PlanFingerprint},
     schema::{PredicateId, Symbol},
 };
 

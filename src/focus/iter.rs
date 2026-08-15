@@ -1,4 +1,4 @@
-use std::{fmt, ops::Range};
+use std::ops::Range;
 
 use byteview::ByteView;
 use tinyvec::ArrayVec;
@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 use crate::focus::{
     error::{ApertureError, StoreCodecError, StoreError},
     plan::{
-        Access, Computed, FactId, FactStore, FieldPath, Plan, PlanFingerprint, Project, Residual,
-        ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        Access, Address, Computed, FactId, FactStore, FieldPath, Plan, PlanFingerprint, Project,
+        Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId},
     tuple::{
@@ -16,31 +16,6 @@ use crate::focus::{
         skip, strinc,
     },
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Address(pub(crate) usize);
-
-impl Address {
-    pub fn new(i: usize) -> Self {
-        Self(i)
-    }
-
-    /// Which register this is, as an index into the plan's levels — a plan binds one
-    /// register per level, so this also says which generator bound it.
-    #[must_use]
-    pub fn index(self) -> usize {
-        self.0
-    }
-}
-
-impl fmt::Display for Address {
-    /// A register index, written `r0`, `r1`, … — not a machine address. It used
-    /// to render as a 16-digit hex value, so `Address(0)` reached a diagnostic as
-    /// `0x0000000000000000`, which reads as a pointer.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "r{}", self.0)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Register {
