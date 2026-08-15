@@ -75,10 +75,10 @@ to at all is
 multiplicity decision above, not this one. focus has string prefix matching and nothing else.
 
 **Order comparisons are not "deferred with a seam", and this file said they were.** There is no
-pending `ResidualOp` arm — all four are live (`src/focus/plan.rs`) — and there is no lexer token
-for `<`, `>` or `+` (`src/focus/lexer.rs`), so `X < 3` is a **parse error**, not a diagnosed
+pending `ResidualOp` arm — all four are live (`crates/aperture-engine/src/plan.rs`) — and there is no lexer token
+for `<`, `>` or `+` (`crates/aperture-engine/src/lexer.rs`), so `X < 3` is a **parse error**, not a diagnosed
 deferral. That is the one deliberate exception to *permissive grammar, narrow later*
-([conventions](conventions.md)) and to `focus::corpus`'s claim to parse the full intended surface,
+([conventions](conventions.md)) and to `aperture_engine::corpus`'s claim to parse the full intended surface,
 and it is recorded here because "deferred with a seam" hid it.
 
 Arithmetic, string functions and conditionals are in neither place: not built, not deferred,
@@ -198,7 +198,7 @@ all along; the implementation was the thing that disagreed.
 It disagreed because the counter was a local inside a single `StackFrame::next` call, so it
 reset on every call and the poll was only reachable while a residual was rejecting rows: **a
 plan whose rows all matched never polled the token**, and ran to completion regardless of
-cancellation. The count now belongs to the run (`CancellationPoll`, `src/focus/iter.rs`), and
+cancellation. The count now belongs to the run (`CancellationPoll`, `crates/aperture-engine/src/iter.rs`), and
 `exec::a_matching_scan_observes_cancellation` is the guard — a scan with no residual, cancelled
 mid-run, must stop. The bounded overrun a stride buys (a run shorter than the stride can finish
 despite a cancelled token) is the intended trade and is documented on the constant.
@@ -230,7 +230,7 @@ unification. Unification means *two things compared at runtime*; each of these h
 already determined, so the answer is where in the plan it comes from:
 
 - `test.Ref {of = P}; P = test.Foo {id = 1}` is one variable named twice by statements written
-  in the order that reads before it binds. It needs **reordering**, and `focus::reorder` does it
+  in the order that reads before it binds. It needs **reordering**, and `aperture_engine::reorder` does it
   (the runnable frontier, greedily).
 - `test.Foo {id = N}; N = 1` says what `N` *is*. It needs **substitution**, and the constant
   fold already did it — in the other order. The fold is collected from the whole body before any
@@ -289,7 +289,7 @@ unification ever lands after disjunction (Phase 6b).
 
 **Decision: `FactRef` has its own fixed-width marker.** This is **implemented** in the
 codec — `MARK_FACT_REF = 0x51` (a fixed-width band right above the positive-integer band),
-with `put_fact_id` on the encoder and a matching decode path (`src/focus/tuple.rs`). So a
+with `put_fact_id` on the encoder and a matching decode path (`crates/aperture-encoding/src/tuple.rs`). So a
 value's bytes are self-describing without the schema, and the byte-level `Int`/`Fact`
 distinction is enforced. The earlier "share the integer encoding for byte-uniform join
 splices" rationale was found overstated (splices work with a distinct marker too). See
@@ -297,7 +297,7 @@ splices" rationale was found overstated (splices work with a distinct marker too
 
 The engine-side effect (the [Phase 7 gate](../PLAN.md) "resolve `FactRef` before ingesting
 fact-typed fields") is satisfied by the marker existing, and `CLAUDE.md` no longer lists it as
-open. A fact-typed field is written end to end by the shared fixture (`focus::fixture`), and as
+open. A fact-typed field is written end to end by the shared fixture (`aperture_store::fixture`), and as
 of Phase 5 it is also **queried** end to end: `test.Ref {of = test.Foo {id = 1}}` follows the
 reference by splicing the id the marker distinguishes, which is the use the distinct marker was
 doubted to support.

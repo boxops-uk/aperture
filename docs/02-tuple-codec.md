@@ -7,7 +7,7 @@ model stands on, and it has three properties that must all hold at once: encodin
 **order-preserving**, **self-delimiting**, and (once data exists) **frozen**. This chapter
 explains each, why it matters, and the marker table that implements them.
 
-Code: `src/focus/tuple.rs`. Tests there are the project's densest — the codec is the most
+Code: `crates/aperture-encoding/src/tuple.rs`. Tests there are the project's densest — the codec is the most
 property-tested subsystem, for the reasons below.
 
 > **Naming.** This is the **tuple codec** (FoundationDB-*inspired*, not FDB-compatible —
@@ -45,7 +45,7 @@ limited key sizes, and now documents a prefix iterator as returning facts "in no
 order". *Evidence:* [the Glean comparison](glean-comparison.md).
 
 So I1 is **a divergence of this design's own, and the divergent half of it is currently
-unspent**: `ResidualOp` (`src/focus/plan.rs`) has no ordering arm, and `<` and `>` are not
+unspent**: `ResidualOp` (`crates/aperture-engine/src/plan.rs`) has no ordering arm, and `<` and `>` are not
 lexer tokens, so an order comparison does not even lex. The bet is kept because it costs
 almost nothing to hold and cannot be retrofitted — the marker table freezes the moment data
 exists ([I3](invariants.md#i3)), and the [format stamp](03-storage-model.md#the-format-stamp-i15)
@@ -142,7 +142,7 @@ gets the same ordering argument *locally*, with no dependence on what follows.
 The rest of the string encoding is genuine convergence, arrived at twice: escape NUL,
 terminate, sort by `memcmp` — and build a prefix seek by encoding the prefix and **dropping the
 terminator**, which is what makes `"al"..` a byte range rather than a filter
-(`src/focus/flatten.rs`; Glean emits the same trick).
+(`crates/aperture-engine/src/flatten.rs`; Glean emits the same trick).
 
 ### Bounded nesting
 

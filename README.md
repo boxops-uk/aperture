@@ -12,7 +12,7 @@ sealed, and thereafter only read. That single decision is what makes the rest of
 design tractable — snapshots are trivial, resume tokens can be plain bytes, and parallel
 ingestion is "fearless."
 
-> **Status.** Being taken from prototype to production. In `src/focus/`: the engine spine
+> **Status.** Being taken from prototype to production. In `crates/aperture-engine/`: the engine spine
 > (codec, executor, resume, projection) and the fjall store are built and guarded, and the
 > **front end reaches the `Plan`** — focus text parses, lowers, typechecks and flattens, with
 > every construct deferred to a later phase drawing a diagnostic that names it. A query is now
@@ -49,7 +49,7 @@ about one subsystem.
 3. [**The storage model**](docs/03-storage-model.md) — the two column families, one
    keyspace per predicate, `FactId` allocation, the atomic two-CF write, the **format
    stamp** that says which encoding wrote a DB, and how a fact is **written by hand** (the
-   three silent traps in `put_fact` that `focus::fact` exists to close). *(I11–I12, I15.)*
+   three silent traps in `put_fact` that `aperture_store::fact` exists to close). *(I11–I12, I15.)*
 4. [**The executor (the VM)**](docs/04-executor.md) — the plan IR, the register file, and
    the `enumerate` nested-loop driver. Why it's a defunctionalised state machine. *(I5–I7,
    I9.)*
@@ -112,7 +112,7 @@ cargo fmt
   the invariants in brief, conventions. *(Will be slimmed to point into this book.)*
 - [`PLAN.md`](PLAN.md) — the living phase tree: the build sequence and current state.
 
-Module map: `src/focus/` is the live engine and language — all new work lands there.
+Module map: `crates/aperture-engine/` is the live engine and language — all new work lands there.
 `src/main.rs` is the `aperture` focus shell, which compiles and runs what you type against a
 real store — seeded with a real index of the Python corpus in [`example/`](example/README.md).
-`src/focus.rs` is a commented-out graveyard. See [Concepts](docs/01-concepts.md) for detail.
+`crates/aperture-engine/src/lib.rs` is a commented-out graveyard. See [Concepts](docs/01-concepts.md) for detail.

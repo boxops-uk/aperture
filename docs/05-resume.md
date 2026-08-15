@@ -10,7 +10,7 @@ resume token that is **only bytes** achieves that, and why it's safe.
 
 It builds directly on [the executor](04-executor.md) — in particular
 [I7](invariants.md#i7), the defunctionalised state machine, which is what makes any of this
-possible. Code: `src/focus/iter.rs`.
+possible. Code: `crates/aperture-engine/src/iter.rs`.
 
 ---
 
@@ -29,7 +29,7 @@ possible. Code: `src/focus/iter.rs`.
 > snapshot; **drop the executor at suspend** to release it. A held `Iter`/`Slice` keeps LSM
 > blocks (and a whole superseded generation) alive.
 >
-> *Guard:* `store::snapshot_released_at_suspend` — a drop probe over the store handle and
+> *Guard:* `i8_snapshot::snapshot_released_at_suspend` — a drop probe over the store handle and
 > every scan it opened, plus fjall's own open-snapshot count, assert nothing survives a
 > suspend, a completed run, a cancellation, or an error unwind. **Untestable on `MemStore`**
 > (its scan pins nothing) ⇒ needs the fjall store (why fjall is pulled forward to Phase 1 in
@@ -156,7 +156,7 @@ their head fields are *called* fingerprint the same. Neither positions a scan.
 checks are real, but there is no encoder and **no checksum**. Glean's continuation carries a
 version plus an FNV-1 checksum over the blob and the return type
 (`glean/db/Glean/Query/UserQuery.hs:1258-1283`); the checksum is the half that cannot be
-written before the blob exists, and the transport-codec sketch kept in `src/focus.rs` is where
+written before the blob exists, and the transport-codec sketch kept in `crates/aperture-engine/src/lib.rs` is where
 it goes. The two versions are on **separate counters** on purpose: this one says what is in
 flight, the [format stamp](03-storage-model.md#the-format-stamp-i15) says what is on disk, and
 a cursor is checked against the build reading it rather than against a database.
@@ -355,7 +355,7 @@ below the prefix silently re-scans rows the level already emitted.
 | # | Statement | Guard test |
 |---|-----------|------------|
 | [I4](invariants.md#i4) | Resume reproduces an uninterrupted run exactly. | `exec::resume_equals_uninterrupted` (tier-3, every cut point) |
-| [I8](invariants.md#i8) | Immutable snapshot per query; released at suspend. | `store::snapshot_released_at_suspend` (needs fjall) |
+| [I8](invariants.md#i8) | Immutable snapshot per query; released at suspend. | `i8_snapshot::snapshot_released_at_suspend` (needs fjall) |
 
 ---
 

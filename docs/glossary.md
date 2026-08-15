@@ -35,7 +35,7 @@ stripped form of a schema; the thing a fingerprint is computed over. [ch6](06-ty
 **Complete** — the sealed, immutable lifecycle state; every open-for-write is then refused
 ([ops-I2](invariants.md#ops-i2)). Opposite: **Writable**. [Operations](aperture-cli-design.md).
 
-**corpus** — `focus::corpus`, the focus language surface as *data*: each snippet classified
+**corpus** — `aperture_engine::corpus`, the focus language surface as *data*: each snippet classified
 `Supported` / `Diagnosed(code)` / `ParseError`, and the acceptance gate for permissive-early.
 [testing](testing.md).
 
@@ -107,7 +107,7 @@ every use, rather than giving it a register and a plan step. A folded bind reach
 the literal written in place would, and takes no space in the machine.
 [ch7](07-compilation.md#folding-a-constant-bind).
 
-**focus** — Aperture's query and schema *language* (and the `src/focus/` module implementing
+**focus** — Aperture's query and schema *language* (and the `crates/aperture-engine/` module implementing
 the engine + language). [ch1](01-concepts.md).
 
 **Generator** — one loop level in a plan: `{ access, binds, residuals }`. [ch4](04-executor.md).

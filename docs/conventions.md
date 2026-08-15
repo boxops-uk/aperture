@@ -36,7 +36,7 @@ are wrong.
   it truly impossible, with a comment saying why. (`BadResumeKey`, `BadRecord`, and the
   codec's canonicalisation rejections are examples of this done right.)
 - **A front-end phase reports by pushing, never by returning.** Diagnostics go into the
-  compilation's `Diagnostics` sink (`focus::diag`); a phase returns its artifact and nothing
+  compilation's `Diagnostics` sink (`aperture_engine::diag`); a phase returns its artifact and nothing
   else. A returned `Vec<Diagnostic>` is one a caller can quietly drop, which turns "every
   diagnostic reaches the user" into a convention each call site has to keep
   ([chapter 7](07-compilation.md#the-compilation-driver)). Report with a `Code`, not a
@@ -84,7 +84,7 @@ Each breaks a specific invariant — the reference is the point.
 - **Hand-encoding a fact's key to reach `put_fact`.** Three of its preconditions fail
   *silently* — a record key is flat, the field order is the schema's, and only the schema
   says whether there is a value side — so the fact is written and then never found. Write a
-  `focus::fact::Fact` and use `FjallDb::put`, which resolves the fields by name
+  `aperture_store::fact::Fact` and use `FjallDb::put`, which resolves the fields by name
   ([chapter 3](03-storage-model.md#writing-a-fact-by-hand)). In particular `encode_typed` is
   *not* the key encoder: it keeps a record's wrapper, which is right for a value and wrong
   for a key.

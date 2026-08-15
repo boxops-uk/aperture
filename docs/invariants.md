@@ -15,10 +15,12 @@ coverage ledger. A phase is done only when the invariants it touches are un-igno
 green. See [testing](testing.md).
 
 > **Reading a guard name.** The prefix is the *subsystem* as this book names it, not a Rust
-> path: `codec::` is `src/focus/tuple.rs`, `exec::` is `src/focus/iter.rs`, `store::` is
-> `src/focus/store.rs`, `schema::` is `src/focus/schema.rs`. The part after `::` is the test
+> path: `codec::` is `crates/aperture-encoding/src/tuple.rs`, `exec::` is
+> `crates/aperture-engine/src/iter.rs`, `store::` is `crates/aperture-store/src/store.rs`, and
+> `schema::` is `crates/aperture-schema/src/schema.rs`. The part after `::` is the test
 > function — every one of them is greppable, and the real module path is
-> `focus::<file>::tests::<name>`.
+> `<file>::tests::<name>` within its crate. One guard is an integration test and names its
+> file instead: `i8_snapshot::` is `crates/aperture-store/tests/i8_snapshot.rs`.
 
 ---
 
@@ -33,7 +35,7 @@ green. See [testing](testing.md).
 | [I5](#i5) | Register holds the whole row; fields decode lazily. | `exec::bind_is_refcount_not_decode` | [ch4](04-executor.md) | ✅ green |
 | [I6](#i6) | Values never enter the scan hot loop. | `exec::no_value_fetch_in_scan` | [ch3](03-storage-model.md)/[ch4](04-executor.md) | ✅ green |
 | [I7](#i7) | The executor is a defunctionalised state machine. | structural + resume battery | [ch4](04-executor.md) | ✅ green — resume battery in place |
-| [I8](#i8) | Immutable snapshot per query; released at suspend. | `store::snapshot_released_at_suspend` | [ch5](05-resume.md) | ✅ green |
+| [I8](#i8) | Immutable snapshot per query; released at suspend. | `i8_snapshot::snapshot_released_at_suspend` | [ch5](05-resume.md) | ✅ green |
 | [I9](#i9) | Hot path is allocation-free per row. | `exec::scan_is_alloc_free_per_row` | [ch4](04-executor.md) | ✅ green |
 | [I10](#i10) | Union discriminants are stable and append-only. | `schema::discriminants_append_only` | [ch6](06-types-and-schema.md) | Phase 8 (with unions) |
 | [I11](#i11) | `FactId` is stable, unique, never reused within a DB. | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | [ch3](03-storage-model.md) | ✅ green |
@@ -169,7 +171,10 @@ discipline:** `Executor::enumerate` takes `self` by value, so every exit path �
 suspend, cancel, error unwind — drops the frame stack and the store handle, and no shape of
 caller can park a live iterator across a suspend. *Why & how:*
 [chapter 5](05-resume.md#the-two-invariants-at-stake). *Guard:*
-`store::snapshot_released_at_suspend` — all four stops, against two independent witnesses: a
+`i8_snapshot::snapshot_released_at_suspend` — an **integration** test of `aperture-store`
+(`crates/aperture-store/tests/`), because it is the one store guard that has to run a query and
+a unit test reaching back through the engine would compile a second copy of the store
+([testing](testing.md)). All four stops, against two independent witnesses: a
 drop probe over the store handle and every scan it opened, and fjall's own open-snapshot
 count (`FjallDb::open_snapshots`), with a mid-run positive control so it cannot pass
 vacuously. **Untestable on `MemStore`**, whose scan pins nothing; needs fjall.
@@ -258,7 +263,7 @@ Canonical schema + fingerprint embedded at `create`, immutable for the DB's life
 (pending schema). The second one's specification is **predicate order free, field order
 significant**: two source orderings of the same predicates — spread across files differently,
 declared in a different sequence — must share a fingerprint, and permuting the *fields* of a
-predicate must **change** it. Field order is encoding order (`focus::fact` resolves a fact's named
+predicate must **change** it. Field order is encoding order (`aperture_store::fact` resolves a fact's named
 fields into declared order before any bytes exist) and it decides the seek prefix, so a field
 permutation is a semantic change; a guard that certified it as identity would certify two DBs with
 one fingerprint and incompatible bytes. Glean agrees: field order sits inside its `fingerprintDef`,

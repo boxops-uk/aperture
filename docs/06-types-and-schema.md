@@ -5,7 +5,7 @@
 Every fact is typed, and the types come from a **schema**. This chapter covers the type
 model, how names are interned, unions and their frozen discriminants, and **schema
 identity** — the canonical form and fingerprint that make a DB self-describing and let
-compatibility be a set-containment check. Code: `src/focus/schema.rs`.
+compatibility be a set-containment check. Code: `crates/aperture-schema/src/schema.rs`.
 
 The one-way-door invariants here ([I10](invariants.md#i10), [I13](invariants.md#i13)) join
 the [codec's I3](02-tuple-codec.md): together they freeze the on-disk type world the moment
@@ -189,7 +189,7 @@ the schema set.
 **One difference constrains the canonical form.** Glean's per-predicate hash is a **Merkle**
 hash: a reference inside a type is a `PredicateId` that *carries* the referent's hash, so
 changing a predicate changes the fingerprint of everything transitively referencing it. Aperture's
-`PredicateId` is a **position** in the schema, not a hash (`src/focus/schema.rs`) — so the
+`PredicateId` is a **position** in the schema, not a hash (`crates/aperture-schema/src/schema.rs`) — so the
 canonical form must not spell a `Fact`-typed field as its id: a position would make the
 fingerprint depend on declaration order, the very thing it exists to be independent of, and a
 bare name would not propagate the referent's change. Spell it as the referent's

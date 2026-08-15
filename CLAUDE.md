@@ -1,8 +1,8 @@
 # Aperture — working contract
 
 **Aperture** (the product: *Aperture DB*) is an embedded, immutable **fact database**;
-**focus** is its typed, Datalog-flavoured query and schema language (the `src/focus/`
-module). This file is the **working contract** loaded every session — how to work here, the
+**focus** is its typed, Datalog-flavoured query and schema language (the `aperture-engine`
+crate). This file is the **working contract** loaded every session — how to work here, the
 invariants by number, and where to read the rest. It is deliberately tight.
 
 **The design is a documented book — read it, don't reinvent it.** Start at
@@ -17,20 +17,39 @@ invariants by number, and where to read the rest. It is deliberately tight.
 - Where we diverge from Glean, and what we have not decided: [`docs/glean-comparison.md`](docs/glean-comparison.md)
 - The build sequence: [`PLAN.md`](PLAN.md)
 
-**Module map.** `src/focus/` is the live engine + language — all new work lands here.
-`src/main.rs` is the `aperture` shell: it compiles and runs what you type against a real store
-seeded with a **code index** (files → modules → declarations → references), written through the
-fact API; `:plan` shows the plan. The index is a real one — `example/` holds a small Python
-corpus, the `ast`-based indexer that reads it and the JSON it emits, which the shell compiles
-in and writes as facts at startup ([`example/README.md`](example/README.md)). Regenerate with
-`python3 example/index.py`. Keep logic out of it — the plan renderer it needed lives in
-`focus::print`. **`focus::fact` is how a fact is written by hand**: a well-typed value whose
-key fields are named, resolved against the schema (`FjallDb::put`), because `put_fact` takes
-bytes and three of its preconditions fail silently — see
-[chapter 3](docs/03-storage-model.md#writing-a-fact-by-hand). `focus::fixture` is the fixture
-database the corpus and the batteries share.
-`src/focus.rs` is the module list plus a commented-out graveyard (~20 live lines; only the
-transport-codec sketch is worth keeping). See [chapter 1](docs/01-concepts.md).
+**Module map — a workspace, bottom to top.** Each crate depends only on the ones above it in
+this list, and the compiler is what enforces that now; there is no edge pointing back.
+
+| Crate | Holds |
+|---|---|
+| `aperture-schema` | the type model (`schema`) and the physical row id (`id`) — depends on nothing |
+| `aperture-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
+| `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, and the errors the storage layer raises |
+| `aperture-engine` | **focus** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here |
+| root `aperture` | the shell (`src/main.rs`); becomes `aperture-cli` when it grows a command tree |
+
+`src/main.rs` compiles and runs what you type against a real store seeded with a **code index**
+(files → modules → declarations → references), written through the fact API; `:plan` shows the
+plan. The index is a real one — `example/` holds a small Python corpus, the `ast`-based indexer
+that reads it and the JSON it emits, which the shell compiles in and writes as facts at startup
+([`example/README.md`](example/README.md)). Regenerate with `python3 example/index.py`. Keep
+logic out of it — the plan renderer it needed lives in `aperture_engine::print`.
+**`aperture_store::fact` is how a fact is written by hand**: a well-typed value whose key
+fields are named, resolved against the schema (`FjallDb::put`), because `put_fact` takes bytes
+and three of its preconditions fail silently — see
+[chapter 3](docs/03-storage-model.md#writing-a-fact-by-hand). `aperture_store::fixture` is the
+fixture database the corpus and the batteries share.
+`aperture-engine/src/lib.rs` is the module list plus a commented-out graveyard (~20 live lines;
+only the transport-codec sketch is worth keeping). See [chapter 1](docs/01-concepts.md).
+
+**Test support spans two crates, and the split is load-bearing.** `aperture_store::fixtures`
+holds everything store-shaped — the probes, the model stores, the scan-contract assertions,
+the value helpers — because a probe has to be *the same* `FactStore` as the store it wraps;
+`aperture_engine::fixtures` holds the plan runners and re-exports the rest, so a battery still
+has one place to import from. A test in a lower crate that needs to run a query belongs in that
+crate's `tests/` directory, not its `src/`: a unit test reaching back through the engine
+compiles a second copy of its own crate, and the two `FactStore`s are then different types
+(`aperture-store/tests/i8_snapshot.rs` is the one such guard).
 
 ---
 
@@ -61,13 +80,19 @@ transport-codec sketch is worth keeping). See [chapter 1](docs/01-concepts.md).
 cargo build
 cargo test                          # the green suite
 cargo test -- --ignored --list      # the invariant coverage ledger (guards not yet live)
-cargo clippy --all-targets -- -D warnings
-cargo fmt
+cargo clippy --all-targets --workspace -- -D warnings
+cargo fmt --all
 ```
 
-`fjall` is the storage backend; the `FactStore` trait (`focus::plan`) is the seam, with an
-in-memory `MemStore` (`focus::mem_store`) **for tests only**. The focus grammar is a
-`lelwel` grammar (`src/focus/grammar.llw`, compiled by `build.rs`).
+`default-members` is the whole workspace, so the first two mean *everything* without
+`--workspace`. That is deliberate: the coverage ledger silently narrowing to one package as
+crates are extracted would be a ledger that stops counting.
+
+`fjall` is the storage backend; the `FactStore` trait (`aperture_store::fact_store`) is the
+seam — its own module, so neither implementation can be mistaken for the definition — with an
+in-memory `MemStore` (`aperture_store::mem_store`) **for tests only**. The focus grammar is a
+`lelwel` grammar (`crates/aperture-engine/src/grammar.llw`, compiled by that crate's
+`build.rs`).
 
 ---
 

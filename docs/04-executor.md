@@ -7,7 +7,7 @@ row at a time. This chapter covers the plan IR it consumes, the register file th
 bound rows, the `enumerate` driver, and the four invariants that make the hot path fast and
 the machine suspendable. Suspend/resume itself is [chapter 5](05-resume.md).
 
-Code: `src/focus/plan.rs` (types) and `src/focus/iter.rs` (the machine).
+Code: `crates/aperture-engine/src/plan.rs` (types) and `crates/aperture-engine/src/iter.rs` (the machine).
 
 ---
 

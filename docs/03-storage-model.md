@@ -7,8 +7,8 @@ for each of them, how a `FactId` is allocated (and why it is a snowflake), and w
 halves of a fact are always written together. It builds directly on the
 [order-preserving codec](02-tuple-codec.md).
 
-Backend: **fjall**, an LSM key–value store. The `FactStore` trait (`src/focus/plan.rs`) is
-the seam; an in-memory `MemStore` (`src/focus/mem_store.rs`) implements it for tests
+Backend: **fjall**, an LSM key–value store. The `FactStore` trait (`crates/aperture-engine/src/plan.rs`) is
+the seam; an in-memory `MemStore` (`crates/aperture-store/src/mem_store.rs`) implements it for tests
 *only*.
 
 ---
@@ -196,14 +196,14 @@ cross-keyspace and consistent, making [I8](invariants.md#i8) identical under eit
 **The seam is narrow enough to reverse.** The executor reaches the store only through
 `FactStore::scan(lo, hi)`, whose bounds already carry the 4-byte predicate prefix, so
 "one tree per predicate" versus "one tree, prefix-partitioned" is a change inside
-`src/focus/store.rs` and nowhere else. The `FactId` layout below is the part that is *not*
+`crates/aperture-store/src/store.rs` and nowhere else. The `FactId` layout below is the part that is *not*
 reversible once data exists.
 
 ### The scan contract
 
 Because that seam is the only way in, what `scan` promises is a contract on the **trait**, not
 on any one store — and both halves of it are asserted directly against every implementation
-(`focus::fixtures`), never inferred from two stores agreeing, since two stores that leak
+(`aperture_engine::fixtures`), never inferred from two stores agreeing, since two stores that leak
 identically would satisfy a differential and both still be wrong.
 
 - **A scan never leaves the predicate its lower bound names**
@@ -403,12 +403,12 @@ hand a person. Four of its preconditions are invisible at the call site, and eac
 That last one is the one the [snowflake](#factid-allocation-i11) makes cheap to close: the id
 carries its own predicate in its tag, so checking it is a compare rather than a lookup, and the
 typed codec is the only boundary holding both the declared type and the id. It is checked there
-and in `focus::fact`, before any bytes exist. Sequence 0 is refused in the same places, for the
+and in `aperture_store::fact`, before any bytes exist. Sequence 0 is refused in the same places, for the
 same reason it is reserved — zeroed or truncated bytes should be *detectably* not a fact
 ([I11](invariants.md#i11)).
 
 So `FjallDb::put(&schema, &fact)` takes a **well-typed value** instead: a type implementing
-`focus::fact::Fact` names its predicate and gives its key fields *by name*, and the write
+`aperture_store::fact::Fact` names its predicate and gives its key fields *by name*, and the write
 resolves those against the schema — reordering into declared order and reporting an unknown
 field, a missing one, a wrong shape or a stray value side before any bytes exist. A fact whose
 fields are listed in whatever order reads well still writes a findable fact, which is the whole

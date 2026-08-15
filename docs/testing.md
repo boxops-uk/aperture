@@ -74,9 +74,11 @@ fails eight of the printer's tests.
 
 ### Trait contracts are asserted per implementation, not differentially
 
-Where a trait has more than one implementation, its contract lives in `focus::fixtures` as an
-assertion each store is put through directly — `assert_scan_stays_in_predicate` and
-`assert_short_bound_is_rejected` ([chapter 3](03-storage-model.md#the-scan-contract)). A
+Where a trait has more than one implementation, its contract lives in `aperture_store::fixtures`
+as an assertion each store is put through directly — `assert_scan_stays_in_predicate` and
+`assert_short_bound_is_rejected` ([chapter 3](03-storage-model.md#the-scan-contract)) — beside
+the trait rather than with the engine's helpers, because a probe or a model store has to be the
+*same* `FactStore` as the one under test. A
 differential between two stores is not a substitute: two implementations that break the
 contract the same way agree with each other perfectly. Both of these exist because that
 happened — a leak `MemStore` and `FrozenStore` shared, which the differential could never see.
@@ -103,8 +105,17 @@ happened — a leak `MemStore` and `FrozenStore` shared, which the differential 
 - **Inject known edge cases explicitly** (`prop_oneof![Just(i64::MIN), …, any::<i64>()]`):
   `i64::MIN`, empty string, embedded-null string, empty record, max-nesting,
   single-alternative union. Don't rely on random draws to hit them.
-- **Shared fixtures are machinery too.** The in-memory `MemStore` (`focus::mem_store`) and
-  schema/fixture builders live in support modules tests import — never redefined inline.
+- **Shared fixtures are machinery too.** The in-memory `MemStore` (`aperture_store::mem_store`)
+  and schema/fixture builders live in support modules tests import — never redefined inline.
+  They are split across two crates by *shape*: store-shaped helpers (probes, model stores,
+  the scan contract, value encoders) in `aperture_store::fixtures`, plan runners in
+  `aperture_engine::fixtures`, which re-exports the first so a battery has one import.
+- **A lower crate's test that has to run a query goes in `tests/`, not `src/`.** A unit test
+  reaching back through the engine compiles a *second copy* of its own crate, so the
+  `FactStore` under test is a different type from the one the engine links and a probe cannot
+  probe its own subject. From an integration test there is one of each. The I8 guard is the
+  only test this applies to today (`crates/aperture-store/tests/i8_snapshot.rs`), and it is
+  the reason that file exists.
 - **Comment the property, not the history.** A test comment states the invariant it pins ("a
   residual on a key field filters on the field value"), not the bug that motivated it.
 
@@ -176,7 +187,7 @@ tests only the error path.
   ([I11](invariants.md#i11)/[I12](invariants.md#i12)/[ops-I4](invariants.md#ops-i4)).
 - **Schema:** fingerprint order-independence (tier 2) + incompatible-schema rejection at
   ingest ([I13](invariants.md#i13)).
-- **Front end:** the **target-feature corpus** (`focus::corpus`) — the language surface as
+- **Front end:** the **target-feature corpus** (`aperture_engine::corpus`) — the language surface as
   *data*, each snippet classified `Supported(rows)` / `Diagnosed(code)` / `ParseError`, with
   three gates over it: every entry parses as classified, every entry draws exactly the
   diagnostic codes it claims, and **every supported entry runs against a real `FjallDb` and
@@ -192,11 +203,11 @@ tests only the error path.
   The rows live *in the classification* rather than beside it, so a construct cannot be marked
   supported without saying what it answers. That distinction is the whole of what Phase 5 added
   here: `Supported` had meant "produces a plan", and a plan that seeks the wrong prefix or
-  projects the wrong path is still a plan. The database is `focus::fixture`, shared with the
+  projects the wrong path is still a plan. The database is `aperture_store::fixture`, shared with the
   shell — which is what makes `every_shell_example_is_a_supported_entry` possible, and what
   caught a shell advertising two queries the compiler had no plan for.
 - **Front end, tier 1:** **`parse ∘ print == id` on trees** — generate a tree
-  (`syntax::proptest`), print it as focus source (`focus::print`), parse and lower the text, and
+  (`syntax::proptest`), print it as focus source (`aperture_engine::print`), parse and lower the text, and
   the tree must come back structurally identical. This is what stops the corpus being the *whole*
   specification of the surface: the corpus says which syntax is acceptable, the round-trip says
   the front end is faithful across all of it. Only that direction is claimed — `print ∘ parse` is

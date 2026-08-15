@@ -136,16 +136,16 @@ These are the cross-cutting rules; individual commands reference them by number.
   carries a derived-fact visibility hole Glean's own docs say "isn't implemented yet". The whole
   apparatus costs about **7%** of DB size. Aperture declines both halves, but only the second is
   a hard divergence — the full cost breakdown is in [the ledger](glean-comparison.md).
-  **The seam actually kept is `FactStore::{scan, point}`** (`src/focus/plan.rs`) — the direct
+  **The seam actually kept is `FactStore::{scan, point}`** (`crates/aperture-engine/src/plan.rs`) — the direct
   analogue of Glean's `Lookup`, and exactly where Glean puts `Stacked` and `Sliced`. It is *not*
   "don't hardcode predicate + key as the whole address in planner layers", because
-  `Access { predicate_id, seek_key }` (`src/focus/plan.rs`) **is** that address, with no
-  section/layer dimension, and `Cursor` (`src/focus/iter.rs`) carries no layer tag: those two are
+  `Access { predicate_id, seek_key }` (`crates/aperture-engine/src/plan.rs`) **is** that address, with no
+  section/layer dimension, and `Cursor` (`crates/aperture-engine/src/iter.rs`) carries no layer tag: those two are
   what a stack would have to change, which is the honest statement of the seam. The good news is
   real. Per-predicate keyspaces make a stacked scan a **two-way merge** — strictly better than
   Glean's arrangement, whose sectioned seek filters the base's whole prefix range and discards.
   Carving the snowflake's per-predicate sequence space is easy, and `recover_high_water`
-  (`src/focus/store.rs`) already derives each per-predicate boundary from the data rather than
+  (`crates/aperture-store/src/store.rs`) already derives each per-predicate boundary from the data rather than
   from a counter. And two *frozen* snapshots make [I8](invariants.md#i8) **easier** than Glean's,
   whose upper layer can still be written. **The wall is invalidation:** per-fact visibility would
   have to move inside the scan iterator — below the register, off the id in the `keys` row, which
@@ -616,7 +616,10 @@ Interactive psql-like REPL.
 
 ## 10. Project structure
 
-Cargo workspace; the existing query engine slots in as a library crate. The seam decided
+Cargo workspace. **The bottom four crates exist** — `aperture-schema`, `-encoding`, `-store`,
+`-engine` — extracted ahead of Phase 7, since ingestion is the first thing that needs a real
+store/encoding boundary ([`PLAN.md`](../PLAN.md) cross-cutting note). The rest are unbuilt, and
+the root package is still the shell. The seam decided
 during the embedded-mode discussion is structural: **the executor consumes
 `(storage handle, sealed snapshot)` and never assumes a connection** — that single cut yields
 embedded offline ingest/derivation (P0-required by the CI merge path) and embedded read-only

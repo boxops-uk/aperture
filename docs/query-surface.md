@@ -24,7 +24,7 @@
 The question it answers is not "can each of these be built" — each can — but **what shape does
 the executor end up in if they all are**. The executor was 989 lines of implementation when this
 was written and is 1,157 after two of the stages below
-([`iter.rs`](../src/focus/iter.rs)); `enumerate` is still one loop with two arms. The failure mode to
+([`iter.rs`](../crates/aperture-engine/src/iter.rs)); `enumerate` is still one loop with two arms. The failure mode to
 avoid is the one where each feature adds an arm to that loop, an arm to the `Cursor`, and an
 [I4](invariants.md#i4) obligation of its own — six features later the machine is unreviewable
 and the resume proof is a case analysis nobody can hold in their head.

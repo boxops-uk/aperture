@@ -26,7 +26,7 @@ different thing; don't conflate them.
 
 ## Current state, honestly
 
-The engine spine exists in `src/focus/`:
+The engine spine exists in `crates/aperture-engine/`:
 
 - **Codec** (`tuple.rs`) — heavily property-tested: order-preservation, round-trip, and
   skip are covered, and the golden marker table now pins the on-disk values
@@ -40,11 +40,11 @@ The engine spine exists in `src/focus/`:
   [I4](docs/invariants.md#i4)–[I9](docs/invariants.md#i9) green. `enumerate` consumes the
   executor, so releasing the snapshot at every stop is structural
   ([I8](docs/invariants.md#i8)).
-- **Front end** — `lex → parse → lower → typecheck` is live in `src/focus/` (Phase 2 done):
+- **Front end** — `lex → parse → lower → typecheck` is live in `crates/aperture-engine/` (Phase 2 done):
   the full intended surface parses, lowers to the `SyntaxTree` store, and typechecks, with
   every construct deferred to a later phase drawing one specific diagnostic naming it. Three
-  acceptance artifacts: `focus::corpus` (the audit table as data, with a parse gate and a
-  diagnostic-code gate over it), **`parse ∘ print == id` on generated trees** (`focus::print`
+  acceptance artifacts: `aperture_engine::corpus` (the audit table as data, with a parse gate and a
+  diagnostic-code gate over it), **`parse ∘ print == id` on generated trees** (`aperture_engine::print`
   renders a tree back to focus source, so the corpus is worked examples rather than the whole
   specification), and **a node's span is where the printer emitted it** — the half spans are
   checkable at all, since a tree comparison is blind to them.
@@ -63,13 +63,13 @@ The engine spine exists in `src/focus/`:
   ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). Phase 5 added **following
   a fact reference** (a fact-id splice and compare) and **hoisting a nested generator**, which
   retired the last of `src/lens/`.
-- **The compilation driver** (`focus::compile`, Phase 3 done) — one `Compilation` carrying
+- **The compilation driver** (`aperture_engine::compile`, Phase 3 done) — one `Compilation` carrying
   the source, schema, interner, diagnostics sink and the trees the phases produce. A phase
   reports by pushing into the sink and cannot return diagnostics; codes are a `Code` enum
   rather than strings; rendering sorts into source order while the sink keeps arrival order.
 - **A focus shell** (`src/main.rs`, Phase 5 done) — reads a query, highlights it from the
   compiler's own lexer, **compiles it through the driver and runs it** against a real `FjallDb`
-  seeded from `focus::fixture`; `:plan` shows the plan without running it and `:facts` scans a
+  seeded from `aperture_store::fixture`; `:plan` shows the plan without running it and `:facts` scans a
   predicate. Its database is the corpus's, so anything the corpus classifies `Supported` is
   typeable at the prompt and returns the rows recorded there.
 - **Store** (`store.rs`) — the fjall store is complete and guarded (Phase 1 done): a pair of
@@ -79,10 +79,10 @@ The engine spine exists in `src/focus/`:
   oracle. [I8](docs/invariants.md#i8), [I11](docs/invariants.md#i11),
   [I12](docs/invariants.md#i12) green — the I12 crash case aborts a child process mid-write,
   and the I8 guard cross-checks a drop probe against fjall's own open-snapshot count.
-- **One fixture database** (`focus::fixture`) — the schema, the facts and the example queries
+- **One fixture database** (`aperture_store::fixture`) — the schema, the facts and the example queries
   the corpus, the batteries and the shell all share, deliberately not test-gated. Before it
   there were two databases and a corpus entry was not something a person could run.
-- **Writing a fact by hand** (`focus::fact`) — `FjallDb::put(&schema, &fact)` takes a
+- **Writing a fact by hand** (`aperture_store::fact`) — `FjallDb::put(&schema, &fact)` takes a
   **well-typed value** whose key fields are *named* and resolved against the schema, because
   `put_fact` takes bytes and three of its preconditions fail **silently**: a stored key is
   flat, field order is the schema's declaration order, and only the schema says whether a
@@ -184,7 +184,7 @@ themselves in the [registry](docs/invariants.md).
 - *upholds:* [I1](docs/invariants.md#i1), [I2](docs/invariants.md#i2).
 
 **Tasks (each ends green):**
-- **0a. Shared test machinery.** Promote `focus::mem_store` (started) + a schema/fixture
+- **0a. Shared test machinery.** Promote `aperture_store::mem_store` (started) + a schema/fixture
   builder into support modules tests import. Add the **NFR guard machinery**: an
   `allocation-counter` dev-dependency (I9), a `FactStore` spy that fails on unexpected `point()`
   (I6), a decode-counter probe (I5). ([testing](docs/testing.md#nfr-guards-are-mechanical-not-eyeballed).)
@@ -233,7 +233,7 @@ the soundest place is immediately after the harness that consumes it. This `put_
 single-fact seeding primitive — the bulk pipeline (Phase 7) builds on the same primitives.
 
 **Invariants in scope:**
-- *makes green:* [I8](docs/invariants.md#i8) (`store::snapshot_released_at_suspend`, drop-probe),
+- *makes green:* [I8](docs/invariants.md#i8) (`i8_snapshot::snapshot_released_at_suspend`, drop-probe),
   [I11](docs/invariants.md#i11) (`store::factid_unique_monotonic`),
   [I12](docs/invariants.md#i12) (`store::no_half_present_facts`), and
   [I4](docs/invariants.md#i4) **re-run against fjall**.
@@ -271,7 +271,7 @@ single-fact seeding primitive — the bulk pipeline (Phase 7) builds on the same
 
 ## Phase 2 — focus grammar: permissive-early, catch-in-compilation
 
-**Goal.** Bring the focus grammar in `src/focus/` up to the full intended feature surface,
+**Goal.** Bring the focus grammar in `crates/aperture-engine/` up to the full intended feature surface,
 deferring "not-yet-implemented" to later phases via clear diagnostics — so no grammar
 reshape is needed as features land.
 
@@ -315,7 +315,7 @@ discriminants at schema-load). No engine invariant made green here.
 
 **Tasks:**
 - **2a.** ✅ Audit the `focus` grammar/lexer vs the target feature list. The table is
-  **executable** — `focus::corpus` holds it as data (37 entries, since grown), each classified
+  **executable** — `aperture_engine::corpus` holds it as data (37 entries, since grown), each classified
   `Supported` / `Diagnosed(code)` / `ParseError`, so it cannot drift from what the compiler
   does. Running it before touching the grammar gave the audit empirically: 6 entries did not
   parse, and they were exactly the six constructs 2c adds.
@@ -323,13 +323,13 @@ discriminants at schema-load). No engine invariant made green here.
   keywords) and the literal decoders added — `parse_nat`, `signed_literal`, `unescape_str`,
   each reporting by code. **Prerequisite discovered:** nothing in the grammar was testable,
   because `focus` had no parse entry point and no CST façade; those landed first
-  (`focus::cst`, `focus::parse`).
+  (`aperture_engine::cst`, `aperture_engine::parse`).
 - **2c.** ✅ Grammar: parens (group + subquery), `never`, union select, flat disjunction,
   statement negation. Resolutions above.
-- **2d.** ✅ Façade → `SyntaxTree` store lowering (`focus::lower`), with sorted-slice record
+- **2d.** ✅ Façade → `SyntaxTree` store lowering (`aperture_engine::lower`), with sorted-slice record
   fields and a duplicate-field rejection. The boxed ergonomic AST (representation 3) is **not**
   built — nothing needs it yet — so `lens/query.rs` survives.
-- **2e.** ✅ Typecheck (`focus::ty`, re-implemented from `lens/ty.rs`) against `PredicateTy`,
+- **2e.** ✅ Typecheck (`aperture_engine::ty`, re-implemented from `lens/ty.rs`) against `PredicateTy`,
   emitting one specific diagnostic per deferred construct. No `Ty::Never`: `never` reports as
   not-yet-implemented, so a type for it would be speculative.
 
@@ -374,14 +374,14 @@ parse), and a side table of *resolved* types. What was left is the sink, the con
 rendering.
 
 **Tasks:**
-- **3a.** ✅ `focus::diag` — the sink and the code taxonomy. `Code` is an enum (20 variants,
+- **3a.** ✅ `aperture_engine::diag` — the sink and the code taxonomy. `Code` is an enum (20 variants,
   `as_str` rendering exactly the strings Phase 2 used, `kind` deriving the prefix); the
   `Diagnostic` alias moves out of `parser.rs`, which is generated-parser glue; `Diagnostics`
   reports with either span type and filters `has_errors` by severity.
 - **3b.** ✅ Phases take the sink and cannot return diagnostics — `parse → Option<Cst>`,
   `lower → Ast`, `check → Typed`. *Done:* the corpus gates pass **unchanged**, which is what
   proves the signature change altered no behaviour.
-- **3c.** ✅ `focus::compile::Compilation` — source, schema, interner, sink, tree and side
+- **3c.** ✅ `aperture_engine::compile::Compilation` — source, schema, interner, sink, tree and side
   tables in one context; `check()` sequences the phases; rendering lives here. The CST is
   deliberately not stored (it borrows the source; storing it buys a self-referential struct).
 - **3d.** ✅ `plan()` as the Phase 4 seam: type-checks, then reported `nyi/flatten`
@@ -536,10 +536,10 @@ Phase 9; don't build in state a wire shell can't reproduce.
   projected `Value`s with references resolved to the facts they name; `:plan` shows the plan
   without running it. The loop, line editing, highlighting and codespan rendering already
   existed from Phase 2.
-- **5b.** ✅ **One fixture database** (`focus::fixture`): the schema, the facts and the example
+- **5b.** ✅ **One fixture database** (`aperture_store::fixture`): the schema, the facts and the example
   queries the corpus, the batteries and the shell share. Not test-gated, because the shell is
   not a test.
-- **5c.** ✅ Rendering a `Plan` for a person, in `focus::print` beside the two renderings of a
+- **5c.** ✅ Rendering a `Plan` for a person, in `aperture_engine::print` beside the two renderings of a
   tree it already owned — fields named from the schema, since `of = r0#` is the answer to "did
   it follow the reference?" and `1 = r0#` is not.
 - **5d.** ✅ Both halves of ["reaching a fact through a
@@ -830,7 +830,7 @@ reproducibility). The storage-vs-transport codec split is
 [chapter 3](docs/03-storage-model.md#storage-codec-vs-transport-codec). **Read those; don't
 restate them.**
 
-**What already exists, and what this phase must *not* do to it.** `focus::fact` +
+**What already exists, and what this phase must *not* do to it.** `aperture_store::fact` +
 `FjallDb::put` are the **single-fact** seam ([chapter
 3](docs/03-storage-model.md#writing-a-fact-by-hand)): a well-typed value, key fields resolved
 against the schema by name. It materialises a `Value` per fact, which is right for a deriver
@@ -1095,14 +1095,23 @@ Phase 1) now exercised through portals.
 
 The design's target layout ([operations §10](docs/aperture-cli-design.md)) is a Cargo
 **workspace** (`aperture-schema` / `-encoding` / `-store` / `-engine` / `-ingest` / `-wire` /
-`-client` / `-server` / `-cli`). Today it's a single `aperture` crate with the `focus`
-module. The load-bearing seam is **already honored** — the executor consumes a
-`(store handle, snapshot)` and assumes no connection — so the split is a *mechanical*
-extraction, not a redesign. Do it incrementally as the operational layer needs the
-boundaries: `-store`/`-encoding`/`-engine` fall out naturally at Phase 7 (ingestion needs a
-clean store/encoding boundary), `-wire`/`-client`/`-server`/`-cli` at Phase 9. Each extraction
-step's "green test" is: everything still compiles and all invariant batteries pass. Don't do
-a big-bang restructure ahead of need.
+`-client` / `-server` / `-cli`).
+
+**The first four are done**, ahead of Phase 7 and on purpose: ingestion is the first thing that
+needs a real store/encoding boundary, and extracting it afterwards would mean moving ingestion
+too. `-ingest` starts as a new crate with a clean edge; `-wire`/`-client`/`-server`/`-cli` are
+Phase 9's, and the root package stays the shell until it grows a command tree. Each extraction's
+"green test" was: everything compiles, clippy is clean, and all 420 tests pass — held at every
+step.
+
+**It was billed as mechanical and two-thirds of it was, but the third that was not is the part
+worth reading.** Two edges pointed the wrong way and had to be *designed* out before any file
+moved: the umbrella error was returned by the codec and the store themselves, and `plan.rs`
+held both the query plan and the storage seam. And the split found a coupling no module
+boundary can show you — four store tests reached into the engine, which across a crate edge
+compiles a **second copy** of the store, making the `FactStore` under test a different type
+from the one the engine links. Three did not need the engine at all; the fourth is now an
+integration test, and the rule is written down in [testing](docs/testing.md).
 
 ---
 

@@ -9,7 +9,7 @@ only at the `Plan`. Covered here: the three tree representations and why each ex
 distinction, and **derived facts** — the one place a feature is allowed to change the core
 machine.
 
-> **Status.** The whole pipeline is live in `src/focus/`: `lex → parse → lower → typecheck`
+> **Status.** The whole pipeline is live in `crates/aperture-engine/`: `lex → parse → lower → typecheck`
 > ([`PLAN.md`](../PLAN.md) Phase 2), the compilation driver (Phase 3), and **flatten →
 > reorder** (`flatten.rs`, `reorder.rs`, Phase 4) — so `Compilation::plan` produces a `Plan`
 > the executor runs. Two of the three tree representations exist: the boxed ergonomic AST
@@ -52,7 +52,7 @@ fields are sorted `[(Symbol, T)]` slices everywhere, never `HashMap` ([chapter
 
 ### The typed tree prints back to source
 
-`focus::print` renders the `SyntaxTree` store as focus text, and it is the inverse of
+`aperture_engine::print` renders the `SyntaxTree` store as focus text, and it is the inverse of
 `parse → lower`: **`parse ∘ print` is the identity on trees.** That is not a convenience — it is
 what lets the front end be *property-tested* rather than only checked against hand-written
 snippets. Generate a tree, print it, parse it, compare; the corpus then says which syntax is
@@ -101,7 +101,7 @@ lex → parse → typecheck → flatten → reorder → Plan
 
 ### lex / parse — permissive early
 
-The grammar is a **`lelwel` grammar** (`src/focus/grammar.llw`, compiled by `build.rs`;
+The grammar is a **`lelwel` grammar** (`crates/aperture-engine/src/grammar.llw`, compiled by `build.rs`;
 `parser.rs` is the generated-parser glue). The governing principle is **permissive grammar,
 narrow later**:
 
@@ -216,7 +216,7 @@ Two consequences worth stating, because both look like details and are not:
   not that field's, so a constant record containing one is not a constant at all
   (`Const::Prefix` inside a record is refused, and the field falls back to residuals).
 
-**Reading the decision back.** `focus::print::plan` — what `:plan` shows — renders a seek as
+**Reading the decision back.** `aperture_engine::print::plan` — what `:plan` shows — renders a seek as
 the key it seeks, one entry per key field in the same declared order the table above is walked
 in, so which row of that table each field took is visible without reasoning about it:
 
@@ -584,7 +584,7 @@ restriction), `reject/not-a-generator` (a statement that matches nothing), and
 ## The compilation driver
 
 The phases don't thread their own state; they run through one **compilation context**
-(`focus::compile::Compilation`) that carries the shared plumbing:
+(`aperture_engine::compile::Compilation`) that carries the shared plumbing:
 
 - **One diagnostics sink** for the whole pipeline (parse/typecheck/flatten), accumulating
   errors and **continuing** rather than failing fast (permissive-grammar-narrow-later needs

@@ -14,7 +14,7 @@ own — it's the map, not the territory. Terms in **bold** have full entries in 
 Aperture is an **embedded, immutable fact database**. Two names to keep straight:
 
 - **Aperture DB** — the database/product.
-- **focus** — its query and schema *language* (and the `src/focus/` module that implements
+- **focus** — its query and schema *language* (and the `aperture-engine` crate that implements
   the engine and the language). When you read "a focus query," it's a query written in
   focus and run by Aperture.
 
@@ -161,36 +161,53 @@ The two are the two halves of one fact and are always written **together, atomic
 
 ## Where the code lives
 
-Knowing which module is real saves hours:
+The code is a **Cargo workspace**, and the order of the crates is the architecture: each
+depends only on those before it, and nothing depends on anything after it. That is not a
+convention any more — the compiler refuses the other direction.
 
-- **`src/focus/`** — **the live engine and language.** All new work lands here:
-  - the codec (`tuple.rs`) and the error taxonomy (`error.rs`);
-  - the plan IR and the `FactStore` trait (`plan.rs`), the fjall store behind it
-    (`store.rs`), and the in-memory test store (`mem_store.rs`);
-  - the executor and resume (`iter.rs`);
-  - the schema and interners (`schema.rs`);
-  - the front end, all the way to a plan — `grammar.llw`, `lexer.rs`, `parser.rs`, `cst.rs`,
-    `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs`, `flatten.rs`, `reorder.rs`, driven by
-    `compile.rs` — plus `print.rs`, which renders a tree back to focus source and is what
-    makes the front end round-trippable ([chapter 7](07-compilation.md));
+- **`crates/aperture-schema/`** — the bottom, depending on nothing: the type model and
+  interners (`schema.rs`), and the physical row id (`id.rs`) with the two rules that make one
+  valid. The id lives here rather than with the plan or the store because all three layers
+  above name one.
+- **`crates/aperture-encoding/`** — the order-preserving storage tuple codec (`tuple.rs`) and
+  the faults a decode can raise (`error.rs`). Every variant of that error is "these bytes are
+  not what the marker says", which only the crate holding the bytes can say.
+- **`crates/aperture-store/`** — what a fact is on disk:
+  - the `FactStore` seam (`fact_store.rs`) — its own module, so neither implementation can be
+    mistaken for the definition — with the fjall store behind it (`store.rs`) and the
+    in-memory test store (`mem_store.rs`);
+  - the format stamp (`format.rs`) and the storage error taxonomy (`error.rs`);
   - `fact.rs` — **how a fact is written by hand**: a well-typed Rust value naming its
     predicate and its key fields, resolved against the schema so that the three silent
     preconditions of `put_fact` (a flat key, declared field order, whether there is a value
     side at all) are checked rather than assumed
-    ([chapter 3](03-storage-model.md#writing-a-fact-by-hand)).
+    ([chapter 3](03-storage-model.md#writing-a-fact-by-hand));
   - `fixture.rs` — the fixture database the corpus and the test batteries share: one schema
     and one set of facts, so a plan shape asserted in one place and an answer asserted in the
-    other are about the same rows.
-  - test support: `fixtures.rs` (shared store contracts and hand-built plans) and `corpus.rs`
-    (the language surface as data — the acceptance gate for the grammar, which now runs each
-    supported entry against a real store and compares its rows).
-- **`src/main.rs`** — the `aperture` binary: an interactive **focus shell** that lexes,
+    other are about the same rows;
+  - `fixtures.rs` — the store-shaped half of the test toolbox: the probes, the model stores
+    and the scan-contract assertions. Here rather than with the engine's, because a probe has
+    to be the *same* `FactStore` as the store it wraps.
+- **`crates/aperture-engine/`** — **focus and the machine.** All new query work lands here:
+  - the plan IR (`plan.rs`) — which, since the split, names nothing physical at all: only
+    registers, field paths, schema types and values;
+  - the executor and resume (`iter.rs`) and the engine's error taxonomy (`error.rs`);
+  - the front end, all the way to a plan — `grammar.llw`, `lexer.rs`, `parser.rs`, `cst.rs`,
+    `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs`, `flatten.rs`, `reorder.rs`, driven by
+    `compile.rs` — plus `print.rs`, which renders a tree back to focus source and is what
+    makes the front end round-trippable ([chapter 7](07-compilation.md));
+  - test support: `fixtures.rs` (the plan runners, re-exporting the store-shaped half) and
+    `corpus.rs` (the language surface as data — the acceptance gate for the grammar, which
+    runs each supported entry against a real store and compares its rows).
+- **`src/main.rs`** — the root package, and now only the binary: an interactive **focus shell** that lexes,
   parses, lowers, typechecks, **compiles and runs** what you type against a real store seeded
   with a **code index** — files, modules, declarations, references, imports — which is the
   canonical shape for a fact database and the one that makes reference joins worth watching.
   `:plan` shows the plan without running it. Useful for seeing the whole system behave; not a
-  place to put logic — the plan renderer it needed went into `print.rs`, and its facts are
-  written through `fact.rs`.
+  place to put logic — the plan renderer it needed went into the engine's `print.rs`, and its
+  facts are written through the store's `fact.rs`. The target layout calls this
+  `aperture-cli` ([operations §10](aperture-cli-design.md)); it keeps its place until it grows
+  a command tree.
 - **`example/`** — what that index is an index *of*: a small Python corpus, a real
   `ast`-based indexer over it, and the JSON the shell compiles in and writes as facts at
   startup. Its sixth predicate is the interesting one — `src.SearchByName` is the declaration
@@ -198,9 +215,9 @@ Knowing which module is real saves hours:
   therefore only filter that scan, not narrow it. Derived data written by hand, which is what a
   deriver does until [Phase 8b](../PLAN.md) can declare one. See
   [`example/README.md`](../example/README.md).
-- **`src/focus.rs`** — the module list, and then a **graveyard of commented-out prototype
-  code** (~20 live lines out of ~1,250). Kept only for the transport-codec sketch. Don't add
-  code here.
+- **`crates/aperture-engine/src/lib.rs`** — the module list, and then a **graveyard of
+  commented-out prototype code** (~20 live lines out of ~1,250). Kept only for the
+  transport-codec sketch. Don't add code here.
 
 ---
 
