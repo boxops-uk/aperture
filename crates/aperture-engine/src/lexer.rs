@@ -50,6 +50,12 @@ pub enum Token {
     Dot,
     #[token("=")]
     Eq,
+    /// `!=` — a **denial**, the negative of a constraint. Its own token rather
+    /// than `Bang` followed by `Eq`, because `!` is a statement prefix and the two
+    /// readings of `!X = "a"..` are different statements: logos takes the longer
+    /// match, so `!=` is never seen as a negation of something starting with `=`.
+    #[token("!=")]
+    BangEq,
     #[token(";")]
     Semi,
     #[token(",")]

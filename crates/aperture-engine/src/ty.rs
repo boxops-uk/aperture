@@ -160,6 +160,7 @@ impl Checker<'_> {
                 self.generator(ast, *id);
             }
             QueryStmt::Bind(lhs, rhs) => self.bind(ast, *lhs, *rhs),
+            QueryStmt::Deny(lhs, rhs) => self.deny(ast, *lhs, *rhs),
         }
     }
 
@@ -299,6 +300,78 @@ impl Checker<'_> {
                     lhs,
                     Code::NyiBindUnification,
                     "matching two patterns against each other",
+                );
+                self.infer(ast, lhs);
+                self.infer(ast, rhs);
+            }
+        }
+    }
+
+    /// `lhs != rhs`.
+    ///
+    /// The left side has to be a **variable**, and that is a narrower gate than
+    /// [`bind`](Self::bind)'s on purpose rather than by omission. A bind's left
+    /// side may be a wildcard or a record because both *destructure* — they give
+    /// names to pieces of the right side. A denial names nothing, so there is
+    /// nothing for either to do: `_ != "a"` has no place to check, and
+    /// `{a = X} != {a = 1}` asks whether two records differ, which is comparing
+    /// whole values rather than pieces and is the unification the bind side defers
+    /// too.
+    ///
+    /// An access chain — `X.name != "a".."` — is deferred for the same reason and
+    /// with the same workaround the positive side has: `Y = X.name; Y != "a".."`
+    /// is an alias plus a denial, and lands the residual on exactly the level
+    /// `X.name` lives in.
+    ///
+    /// The types still have to agree, and that is the whole of what is checked
+    /// here. Whether the right side is something the machine can *deny* — a
+    /// constant or a string prefix, and not a generator — is flatten's question,
+    /// exactly as which of its four meanings a bind has is.
+    fn deny(&mut self, ast: &Ast, lhs: NodeId, rhs: NodeId) {
+        match ast.store().kind(lhs) {
+            ExprKind::Var(symbol) => {
+                let symbol = *symbol;
+                // Introduced here if it is fresh, exactly as `bind` does: whether
+                // anything actually *binds* it is decided by the order, so it is
+                // flatten that answers it — with `reject/unbound-variable`, the
+                // same fault a constraint on an unbound variable draws.
+                let var = match self.lookup(symbol) {
+                    Some(var) => var,
+                    None => {
+                        let var = self.fresh_var_id();
+                        self.env.push((symbol, var));
+                        var
+                    }
+                };
+                self.annotate(lhs, Ty::Var(var));
+
+                let ty = self.infer(ast, rhs);
+                if let Err(err) = self.unify(&Ty::Var(var), &ty) {
+                    self.report(ast, rhs, err);
+                }
+            }
+
+            ExprKind::Wildcard | ExprKind::Lit(_) | ExprKind::Prefix(_) => {
+                self.reject(
+                    ast,
+                    lhs,
+                    Code::RejectBindLhs,
+                    "nothing here can be denied; put the variable on the left",
+                );
+                self.infer(ast, rhs);
+            }
+
+            // Lowering already reported whatever produced the error node.
+            ExprKind::Error => {
+                self.infer(ast, rhs);
+            }
+
+            _ => {
+                self.nyi(
+                    ast,
+                    lhs,
+                    Code::NyiBindUnification,
+                    "denying anything but a variable",
                 );
                 self.infer(ast, lhs);
                 self.infer(ast, rhs);
@@ -1127,6 +1200,58 @@ mod tests {
         assert_eq!(
             all_codes("X where test.Foo {id = X}; !test.Bar {nope = X}"),
             ["reject/unknown-field"]
+        );
+    }
+
+    /// **A denial is typechecked for its two sides' types and its left side's
+    /// shape**, and nothing else — the same division of labour a bind gets.
+    ///
+    /// The types matter here for a reason particular to this statement: a denial
+    /// lowers to a byte compare against a constant encoded *against the field's
+    /// type*, so two sides that did not agree would encode one value and compare it
+    /// against another type's bytes, which matches nothing and looks like a query
+    /// that simply found no rows.
+    ///
+    /// The left side's gate is narrower than a bind's, and deliberately: `_` and a
+    /// record both destructure, and a denial destructures nothing.
+    #[test]
+    fn a_denial_is_typechecked_for_its_types_and_its_left_side() {
+        for source in [
+            "X where test.Name X; X != \"a\"..",
+            "X where test.Name X; X != \"abc\"",
+            "X where test.Count X; X != 7",
+            "X where test.Foo {id = X}; X != 1",
+        ] {
+            assert_eq!(all_codes(source), [] as [&str; 0], "for {source:?}");
+        }
+
+        assert_eq!(
+            all_codes("X where test.Count X; X != \"a\".."),
+            ["reject/type-mismatch"],
+            "a denied pattern has to fit the variable's type"
+        );
+
+        assert_eq!(
+            all_codes("X where test.Name X; X != 1"),
+            ["reject/type-mismatch"]
+        );
+
+        // A wildcard and a literal are both left sides a bind accepts and a denial
+        // cannot: neither names a place for the compare to happen at.
+        assert_eq!(
+            all_codes("X where test.Name X; _ != \"a\".."),
+            ["reject/bind-lhs"]
+        );
+        assert_eq!(
+            all_codes("X where test.Name X; \"a\" != \"a\".."),
+            ["reject/bind-lhs"]
+        );
+
+        // A record left side is the unification the bind side defers too — one
+        // fault, not one per leaf.
+        assert_eq!(
+            all_codes("X where test.Nested {outer = X}; {inner = X} != 1"),
+            ["nyi/bind-unification"]
         );
     }
 

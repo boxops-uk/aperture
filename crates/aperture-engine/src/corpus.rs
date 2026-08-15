@@ -34,6 +34,19 @@
 //! | `1__0`, `1_`, `007`, overflow | lexed silently | lexed permissively, rejected in lowering by code |
 //! | string escapes | lexed, never decoded | decoded in lowering |
 //!
+//! # What the grammar has grown since
+//!
+//! One token: **`!=`**, a *denial*
+//! ([chapter 7](../../../docs/07-compilation.md#denying-a-value)). The audit above was written
+//! to make later phases add *meaning* to constructs that already parse, and this is the one
+//! thing since that did not already parse — worth recording rather than folding into the table,
+//! because the table is what Phase 2 found and this is a later addition to it.
+//!
+//! It is not a case the audit missed so much as one it could not have placed: `!` was listed as
+//! negation and `!=` reads like its infix relative, but they are different questions — "no such
+//! row exists" against "this row's field does not look like that" — and only the second is a
+//! residual. Nothing else about the grammar moved.
+//!
 //! # The database these entries run against
 //!
 //! The shared [`fixture`](aperture_store::fixture) — its schema, its facts, and the
@@ -383,6 +396,129 @@ pub const CORPUS: &[Entry] = &[
         "both sides known at compile time, and they disagree — so the query is the \
          **empty relation**, which is a level with no source to open. Answering it \
          as \"no constraint\" would mean `true` where it means no rows",
+    ),
+    // ---- denials: the negative of a constraint ----
+    entry(
+        "X where test.Name X; X != \"a\"..",
+        Supported("bob"),
+        "a **denial** — the negative of the constraint above it, and the answer's \
+         complement. Never a seek however it is written: \"does not start with \
+         `a`\" is the key order either side of one range, and a seek walks one, so \
+         this reads the predicate and drops the rows that match",
+    ),
+    entry(
+        "X where X != \"a\"..; test.Name X",
+        Supported("bob"),
+        "the same, written **before** the statement binding `X` — collected from the \
+         whole body exactly as a constraint is, since where the value lives has \
+         nothing to do with where the statement was typed",
+    ),
+    entry(
+        "X where test.Name X; X != \"abc\"",
+        Supported("ann; anna; bob"),
+        "denying a **whole value** rather than a prefix: the residual compares the \
+         field's bytes against the encoded constant instead of testing a prefix of \
+         them. There is no positive form of this — `X = \"abc\"` folds and *binds* \
+         `X`, which is why only the denial needs a residual",
+    ),
+    entry(
+        "X where test.Count X; X != 7",
+        Supported("-9223372036854775808; -42; 1000"),
+        "a denial is not a string feature: the constant is encoded against the \
+         field's own type, so an `int` key denies an `int`",
+    ),
+    entry(
+        "X where test.Name X; X != \"a\"..; X != \"b\"..",
+        Supported(""),
+        "**every denial holds**, as every constraint does: the two together leave \
+         nothing, and each is a residual of its own on the one level",
+    ),
+    entry(
+        "X where test.Name X; X = \"a\"..; X != \"an\"..",
+        Supported("abc"),
+        "the two polarities on one variable, which is the pair worth reading in a \
+         `:plan`: the constraint narrows the level's seek to a range and the denial \
+         filters the rows inside it",
+    ),
+    entry(
+        "Y where X = test.Foo _; Y = X.name; Y != \"a\"..",
+        Supported("bob"),
+        "denying a variable an **alias** binds — a residual on the level holding the \
+         row the alias names, the same place the constraint form lands",
+    ),
+    entry(
+        "X where X = (Y where test.Name Y; Y != \"a\"..)",
+        Supported("bob"),
+        "a denial **inside a subquery**, which inlines like the scan beside it — \
+         where a negation cannot, because a negation is a group that opens sources \
+         of its own and a denial opens nothing",
+    ),
+    entry(
+        "X where X = \"abc\"; X != \"a\"..",
+        Supported(""),
+        "both sides known at compile time and the denial is **met**, so the query is \
+         the empty relation — the constant arm of the constraint case, decided the \
+         other way round",
+    ),
+    entry(
+        "X where X = \"abc\"; X != \"z\"..",
+        Supported("abc"),
+        "the same pair the other way: a denial the constant escapes is a tautology, \
+         and emits nothing at all rather than a level that always passes",
+    ),
+    entry(
+        "X where test.Foo {id = X}; !test.Bar {id = X}; X != 1",
+        Supported("3"),
+        "a denial beside a **negation**, which are different statements and stay \
+         so: `!` says no such row exists and takes a `Step::Test`, `!=` says this \
+         row's field does not look like that and takes a residual",
+    ),
+    entry(
+        "X where X != \"a\"..",
+        Diagnosed(Code::RejectUnboundVariable),
+        "a denial **binds nothing**, so a variable only it names is bound by nothing \
+         at all — the same fault a constraint alone draws, said the same way",
+    ),
+    entry(
+        "X where test.Count X; X != \"a\"..",
+        Diagnosed(Code::RejectTypeMismatch),
+        "the denied pattern has to fit the variable's type; a string prefix is not a \
+         pattern for an `int`",
+    ),
+    entry(
+        "P where P = test.Foo _; P != test.Foo _",
+        Diagnosed(Code::NyiBindUnification),
+        "a **generator** on the right of `!=`, and one whose type agrees so that the \
+         shape is what turns it away. Denying the rows a predicate produces is a \
+         negated bind — a negated group, which is `!`'s problem — where a denial \
+         compares against bytes known at compile time",
+    ),
+    entry(
+        "X where test.Foo {id = X}; test.Bar {id = Y}; X != Y",
+        Diagnosed(Code::NyiBindUnification),
+        "another **variable** on the right, at the same type: the negative of a `var \
+         = var` residual, and the plan has no counterpart to `EqRegisterField` to \
+         lower it to",
+    ),
+    entry(
+        "X where test.Foo {id = X}; _ != 1",
+        Diagnosed(Code::RejectBindLhs),
+        "a wildcard on the left denies nothing — there is no place to check. A bind \
+         accepts one because it *destructures*, and a denial names nothing",
+    ),
+    entry(
+        "X where X = test.Foo _; X.name != \"a\"..",
+        Diagnosed(Code::NyiBindUnification),
+        "an access chain on the left is **pattern-pushing**, deferred exactly as it \
+         is for a bind — and with the same one-line answer: `Y = X.name; Y != \
+         \"a\"..` is an alias plus a denial, and lands the residual on the level \
+         `X.name` lives in",
+    ),
+    entry(
+        "X where X = test.Foo _; X.value != \"one\"",
+        Diagnosed(Code::NyiBindUnification),
+        "the same deferral through `.value`, which never reaches the value-side \
+         question: an access chain is turned away by its shape first",
     ),
     entry(
         "X where test.Foo {id = X} = test.Bar {id = X}",

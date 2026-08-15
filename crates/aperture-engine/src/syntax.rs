@@ -126,6 +126,17 @@ pub enum QueryStmt<T> {
     /// `!pattern`. Negation is a statement, not a pattern — it is reordered
     /// relative to the statements that bind its non-locals.
     Negation(T),
+    /// `pattern != pattern` — a **denial**: the value on the left must *not* match
+    /// the pattern on the right.
+    ///
+    /// The negative of the constraint [`Bind`](Self::Bind) can mean, and a separate
+    /// statement rather than a flag on it because the two are not symmetric where
+    /// it matters. A constraint is *sargeable* — `X = "a".."` narrows the level
+    /// capturing `X` to a range — and a denial can never be: "does not start with
+    /// `a`" is two ranges, so it filters rows a scan has already produced. Keeping
+    /// them apart in the tree is what keeps that difference from having to be
+    /// rediscovered in flatten.
+    Deny(T, T),
 }
 
 pub struct Query<T> {
@@ -318,6 +329,7 @@ impl Recursive for QueryStmt<NodeId> {
             QueryStmt::Bind(lhs, rhs) => QueryStmt::Bind(f(*lhs), f(*rhs)),
             QueryStmt::Implicit(node_id) => QueryStmt::Implicit(f(*node_id)),
             QueryStmt::Negation(node_id) => QueryStmt::Negation(f(*node_id)),
+            QueryStmt::Deny(lhs, rhs) => QueryStmt::Deny(f(*lhs), f(*rhs)),
         }
     }
 }
@@ -407,6 +419,7 @@ pub mod proptest {
         Implicit(PatternSpec),
         Bind(PatternSpec, PatternSpec),
         Negation(PatternSpec),
+        Deny(PatternSpec, PatternSpec),
     }
 
     #[derive(Debug, Clone)]
@@ -455,7 +468,8 @@ pub mod proptest {
         prop_oneof![
             pattern.clone().prop_map(StmtSpec::Implicit),
             (pattern.clone(), pattern.clone()).prop_map(|(l, r)| StmtSpec::Bind(l, r)),
-            pattern.prop_map(StmtSpec::Negation),
+            pattern.clone().prop_map(StmtSpec::Negation),
+            (pattern.clone(), pattern).prop_map(|(l, r)| StmtSpec::Deny(l, r)),
         ]
     }
 
@@ -542,6 +556,11 @@ pub mod proptest {
                         QueryStmt::Bind(lhs, rhs)
                     }
                     StmtSpec::Negation(p) => QueryStmt::Negation(self.pattern(p)),
+                    StmtSpec::Deny(l, r) => {
+                        let lhs = self.pattern(l);
+                        let rhs = self.pattern(r);
+                        QueryStmt::Deny(lhs, rhs)
+                    }
                 })
                 .collect();
             let head = self.pattern(&spec.head);

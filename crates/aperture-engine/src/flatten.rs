@@ -190,7 +190,16 @@ struct Alias {
     span: NodeSpan,
 }
 
-/// A **pattern the value at a place has to match** — `X = "a"..`.
+/// A **pattern the value at a place has to match** — `X = "a".."` — or, for a
+/// denial, one it has to *not* match: `X != "a".."`.
+///
+/// One statement for both polarities, because everything this type carries is the
+/// same for either: a denial reads exactly one variable and claims nothing, which
+/// is the whole of what the order has to know. The polarity lives in which side
+/// collection the pattern was recorded in —
+/// [`constraints`](Flattener::constraints) or [`denials`](Flattener::denials) —
+/// because that *is* the difference: a capture reads the first and can narrow
+/// itself by it, and nothing can narrow itself by the second.
 ///
 /// The third thing a bind's right side can be, beside a generator and a value. A
 /// string prefix denotes a *range*, so there is nothing for `X` to be bound to and
@@ -516,6 +525,7 @@ pub fn dependencies(
         fetched: vec![],
         constraints: vec![],
         constrained: vec![],
+        denials: vec![],
     };
 
     Some(flattener.collect()?.deps)
@@ -564,6 +574,7 @@ fn flatten_reporting(
         fetched: vec![],
         constraints: vec![],
         constrained: vec![],
+        denials: vec![],
     };
 
     let collected = flattener.collect()?;
@@ -630,6 +641,16 @@ struct Flattener<'a> {
     /// The variables whose constraints a **capture** has already applied, so the
     /// pass over what is left does not apply them twice.
     constrained: Vec<Symbol>,
+    /// Variable → a **pattern its value must not match**, from `X != "a".."`.
+    ///
+    /// Collected from the whole body like [`constraints`](Self::constraints), and
+    /// for the same reason — where the statement is written says nothing about
+    /// where the value lives. Held **apart** from them rather than as a polarity
+    /// flag beside them because only one of the two collections is ever offered to
+    /// a seek: a capture narrows itself by every constraint on the variable it
+    /// binds, and a denial has nothing to offer it, so the collection a capture
+    /// reads should not contain any.
+    denials: Vec<(Symbol, NodeId)>,
 }
 
 impl Flattener<'_> {
@@ -672,6 +693,7 @@ impl Flattener<'_> {
                             QueryStmt::Implicit(node) => QueryStmt::Implicit(*node),
                             QueryStmt::Bind(lhs, rhs) => QueryStmt::Bind(*lhs, *rhs),
                             QueryStmt::Negation(node) => QueryStmt::Negation(*node),
+                            QueryStmt::Deny(lhs, rhs) => QueryStmt::Deny(*lhs, *rhs),
                         })
                         .collect();
 
@@ -774,6 +796,8 @@ impl Flattener<'_> {
                         stmts.push(Stmt::Negate(generator));
                     }
                 }
+
+                QueryStmt::Deny(lhs, rhs) => self.deny(*lhs, *rhs, &mut stmts),
             }
         }
 
@@ -1200,8 +1224,65 @@ impl Flattener<'_> {
                         "negation inside a subquery is not implemented yet",
                     );
                 }
+
+                // **A denial inlines unchanged**, where a negation cannot. What
+                // makes the negation hard here is that it is a *group* — it opens
+                // sources of its own, so lifting it out of a subquery asks where
+                // those sources run. A denial opens nothing: it names a variable
+                // and a pattern, and where the value lives is answered after the
+                // whole body is collected either way. So the subquery's denial is
+                // the outer query's, exactly as its scans are.
+                QueryStmt::Deny(lhs, rhs) => self.deny(*lhs, *rhs, stmts),
             }
         }
+    }
+
+    /// Record `lhs != rhs` — a **denial** — and the statement that reads it.
+    ///
+    /// Shared by [`collect`](Self::collect) and [`inline`](Self::inline) so that a
+    /// denial written inside a subquery is the same statement as one written
+    /// outside it.
+    ///
+    /// The left side is a variable: typecheck is the gate, and flatten does not run
+    /// over a query it rejected, so there is no other shape to handle here.
+    ///
+    /// The **right** side is this function's gate, and it is narrow: a constant, or
+    /// a string prefix. What a residual can do is compare the row's bytes against
+    /// bytes known at compile time, so those are exactly the right sides that have
+    /// any. The two shapes turned away are worth telling apart, and the message
+    /// does: a *generator* on the right (`X != test.Foo _`) is asking for a negated
+    /// bind, which is a negated group and so `!`'s problem rather than this one;
+    /// another *variable* (`X != Y`) is the negative of a [`Compare`], which the
+    /// plan has no residual for — `EqRegisterField` has no counterpart.
+    ///
+    /// A variable is turned away **whatever it turns out to be**, including one some
+    /// other statement folds to a constant. Seeing through the fold would mean
+    /// looking it up, and a lookup here decides in *source* order — the fold is
+    /// recorded as the body is walked, so `Z = 1; X != Z` and `X != Z; Z = 1` would
+    /// compile differently for one query. That is the decision `reorder` took away
+    /// from typecheck, and it does not get to come back in as a gate.
+    fn deny(&mut self, lhs: NodeId, rhs: NodeId, stmts: &mut Vec<Stmt>) {
+        if !matches!(self.ast.store().kind(rhs), ExprKind::Prefix(_)) && !self.is_foldable(rhs) {
+            self.report(
+                rhs,
+                Code::NyiBindUnification,
+                "only a constant or a string prefix can be denied; `!` is what negates \
+                 a generator",
+            );
+            return;
+        }
+
+        if let ExprKind::Var(symbol) = self.ast.store().kind(lhs) {
+            self.denials.push((*symbol, rhs));
+        }
+
+        // The very same statement a constraint is. All `reorder` needs of either is
+        // that it reads one variable and claims nothing — the polarity changes what
+        // gets applied, not when it can run.
+        stmts.push(Stmt::Constrain(Constraint {
+            var: lhs,
+            span: self.ast.store().span(rhs),
+        }));
     }
 
     /// Whether a subquery binds a name that only becomes an outer name **later**.
@@ -1957,6 +2038,7 @@ impl Flattener<'_> {
 
         self.apply_compares(&mut body);
         self.apply_constraints(&mut body);
+        self.apply_denials(&mut body);
 
         let head = self.project(*self.ast.query().head());
 
@@ -2746,6 +2828,154 @@ impl Flattener<'_> {
         }
     }
 
+    /// Turn each recorded **denial** into a residual on the level that binds the
+    /// variable — `X != "a".."`.
+    ///
+    /// The mirror of [`apply_constraints`](Self::apply_constraints), and it has no
+    /// counterpart to that one's `constrained` skip because there is nothing for it
+    /// to skip: a capture narrows itself by the constraints on the variable it
+    /// binds, and a denial is never one of them. "Does not start with `a`" is the
+    /// key order either side of the range `"a".."` denotes — two ranges, and a seek
+    /// walks one — so a denial reads the rows and drops them however it is written,
+    /// and applying it here is not a fallback but the only place it goes.
+    ///
+    /// That is the asymmetry worth keeping in view when reading a `:plan`:
+    /// `test.Name X; X = "a".."` seeks, and `test.Name X; X != "a".."` scans the
+    /// predicate. The cost is negation's, not this design's.
+    fn apply_denials(&mut self, body: &mut Body) {
+        for (symbol, pattern) in std::mem::take(&mut self.denials) {
+            match self.lookup(symbol) {
+                Some(Slot::Field { address, path, ty }) => {
+                    let Some(constant) = self.constant(pattern, &ty) else {
+                        self.report(
+                            pattern,
+                            Code::RejectTypeMismatch,
+                            "this is not a pattern for that variable's type",
+                        );
+                        continue;
+                    };
+
+                    let op = match constant {
+                        Const::Prefix(bytes) => ResidualOp::NotPrefix(bytes.into()),
+                        Const::Bytes(bytes) => ResidualOp::NotEqConst(bytes.into()),
+                    };
+
+                    let Some(level) = body.level_mut(address) else {
+                        continue;
+                    };
+
+                    // Every alternative gets it, exactly as a constraint does: a
+                    // variable a disjunction binds is in the same place in each
+                    // branch, and a row surviving one branch's denial while another
+                    // would have dropped it is the bug that reading would be.
+                    for source in level.sources.iter_mut() {
+                        let residuals = source.residuals_mut();
+                        let mut extended = residuals.to_vec();
+
+                        extended.push(Residual {
+                            path: path.clone(),
+                            op: op.clone(),
+                        });
+
+                        *residuals = extended.into();
+                    }
+                }
+
+                // **A constant against a pattern**, both known now: `X = "abc"; X !=
+                // "a".."`. Decided here rather than per row, and the two outcomes are
+                // the constraint arm's swapped — a denial the constant *meets* is the
+                // empty relation, and one it escapes is a tautology that emits
+                // nothing.
+                //
+                // The type comes from the denied pattern because typecheck has
+                // already unified the two sides, so the pattern's own shape is the
+                // shape of both. The constraint arm can assume `Str` outright; this
+                // one cannot, since a denial's right side may be any constant.
+                Some(Slot::Const(folded)) => {
+                    let Some(ty) = self.scalar_ty(pattern) else {
+                        self.report(
+                            pattern,
+                            Code::NyiBindUnification,
+                            "denying a record against a folded constant is not implemented \
+                             yet; it compares two whole values",
+                        );
+                        continue;
+                    };
+
+                    let (Some(Const::Bytes(value)), Some(denied)) =
+                        (self.constant(folded, &ty), self.constant(pattern, &ty))
+                    else {
+                        self.report(
+                            pattern,
+                            Code::RejectTypeMismatch,
+                            "this is not a pattern for that variable's type",
+                        );
+                        continue;
+                    };
+
+                    let met = match denied {
+                        Const::Prefix(prefix) => value.starts_with(&prefix),
+                        Const::Bytes(bytes) => value == bytes,
+                    };
+
+                    if met {
+                        body.push_level(Level {
+                            sources: Box::new([]),
+                            binds: Box::new([body.next_address()]),
+                        });
+                    }
+                }
+
+                // A fact's value: the bytes are in `entities`, and [I6] keeps
+                // `entities` out of the scan loop. The same deferral the positive
+                // form draws, for the same reason — polarity is not what makes it
+                // unreachable.
+                //
+                // [I6]: ../../../docs/invariants.md#i6
+                Some(Slot::Value { .. }) => self.report(
+                    pattern,
+                    Code::NyiValueMatch,
+                    "matching on a fact's value is not implemented yet; a value is fetched \
+                     per row, and residuals run inside the scan",
+                ),
+
+                Some(_) => self.report(
+                    pattern,
+                    Code::NyiBindUnification,
+                    "denying this against a pattern is not implemented yet",
+                ),
+
+                // Nothing binds it. The safety check only sees reads, and this
+                // statement's one read is of a variable no generator offers.
+                None => {
+                    let at = self.ast.store().span(pattern);
+                    self.unbound(symbol, at);
+                }
+            }
+        }
+    }
+
+    /// The schema type a **scalar** denied pattern denotes, for encoding it where
+    /// there is no field to take the type from.
+    ///
+    /// Its input is a right side [`deny`](Self::deny) has already gated, so the
+    /// shapes it can see are a string prefix and a constant — nothing resolves a
+    /// variable here, and deliberately: a gate that looked one up would answer
+    /// differently depending on whether the fold was written above or below, which
+    /// is the source-order decision this phase exists to have taken away from
+    /// typecheck.
+    ///
+    /// A **record** returns `None`, and the caller defers rather than guessing: a
+    /// record's encoding follows the *schema's* field order, not the pattern's, so
+    /// it cannot be derived from the pattern alone the way a scalar's can.
+    fn scalar_ty(&self, node: NodeId) -> Option<PredicateTy> {
+        match self.ast.store().kind(node) {
+            ExprKind::Lit(Literal::Int(_)) => Some(PredicateTy::Int),
+            ExprKind::Lit(Literal::Str(_)) | ExprKind::Prefix(_) => Some(PredicateTy::Str),
+            _ => None,
+        }
+    }
+
     /// Whether `node` is a pattern a bind can **fold** — one whose value is known
     /// without running anything.
     ///
@@ -3337,6 +3567,8 @@ mod tests {
                         .map(|Residual { path, op }| match op {
                             ResidualOp::EqConst(_) => format!("{path} == k"),
                             ResidualOp::Prefix(_) => format!("{path} ^= k"),
+                            ResidualOp::NotEqConst(_) => format!("{path} != k"),
+                            ResidualOp::NotPrefix(_) => format!("{path} !^= k"),
                             ResidualOp::EqRegisterField { address, path: at } => {
                                 format!("{path} == {address}.{at}")
                             }
@@ -3693,6 +3925,153 @@ mod tests {
         );
 
         assert_eq!(rows("X where test.Foo {name = X}; X = \"a\"..").len(), 2);
+    }
+
+    // ---- a pattern a bound variable must *not* match ------------------------
+
+    /// **A denial never narrows a seek**, and this is the assertion that says so
+    /// where every other property would pass either way.
+    ///
+    /// Written in exactly the position the constraint above narrows from — the
+    /// capture of a scalar-keyed predicate, where `X = "a".."` produces
+    /// `seek[k]` — so the two shapes differ in nothing but the polarity of the
+    /// statement. `X != "a".."` is `scan` plus a residual, because "does not start
+    /// with `a`" is the key order either side of one range and a seek walks one.
+    ///
+    /// The failure this guards against is the plausible optimisation: noticing that
+    /// a denied prefix has a complement in the key order and seeking *one* side of
+    /// it, which silently drops every row on the other.
+    #[test]
+    fn a_denied_capture_scans_the_predicate_it_binds() {
+        assert_eq!(
+            shape("X where test.Name X; X != \"a\".."),
+            lines(&["r0 <- test.Name scan where 0 !^= k", "head r0.0:str"])
+        );
+
+        // The constraint, for contrast, at the same field of the same predicate.
+        assert_eq!(
+            shape("X where test.Name X; X = \"a\".."),
+            lines(&["r0 <- test.Name seek[k]", "head r0.0:str"])
+        );
+
+        assert_eq!(rows("X where test.Name X; X != \"a\"..").len(), 1);
+    }
+
+    /// A denial of a **whole value** is the other residual, and it has no positive
+    /// twin: `X = "abc"` folds and binds `X`, so only the denial needs a compare.
+    #[test]
+    fn a_denied_value_is_an_equality_residual() {
+        assert_eq!(
+            shape("X where test.Name X; X != \"abc\""),
+            lines(&["r0 <- test.Name scan where 0 != k", "head r0.0:str"])
+        );
+
+        assert_eq!(rows("X where test.Name X; X != \"abc\"").len(), 3);
+    }
+
+    /// **Where a denial is written does not matter**, which is what makes it a
+    /// statement collected from the whole body rather than one applied in place.
+    ///
+    /// Asserted as one *plan*, not one set of rows: the same rows would come back
+    /// from a plan that had dropped the denial entirely and happened to match
+    /// nothing else.
+    #[test]
+    fn a_denial_lands_wherever_it_is_written() {
+        let expected = shape("X where test.Name X; X != \"a\"..");
+        assert_eq!(shape("X where X != \"a\"..; test.Name X"), expected);
+    }
+
+    /// **Both polarities on one variable**, which is the pair that shows they are
+    /// applied by different passes and both land: the constraint narrows the level's
+    /// seek and the denial filters the rows inside it.
+    #[test]
+    fn a_constraint_and_a_denial_on_one_variable_both_hold() {
+        assert_eq!(
+            shape("X where test.Name X; X = \"a\"..; X != \"an\".."),
+            lines(&["r0 <- test.Name seek[k] where 0 !^= k", "head r0.0:str"])
+        );
+
+        assert_eq!(
+            rows("X where test.Name X; X = \"a\"..; X != \"an\".."),
+            strs(&["abc"])
+        );
+    }
+
+    /// Every denial holds, as every constraint does — one residual apiece on the
+    /// one level, rather than the last one written winning.
+    #[test]
+    fn two_denials_on_one_variable_both_hold() {
+        assert_eq!(
+            shape("X where test.Name X; X != \"a\"..; X != \"b\".."),
+            lines(&[
+                "r0 <- test.Name scan where 0 !^= k and 0 !^= k",
+                "head r0.0:str",
+            ])
+        );
+
+        assert!(rows("X where test.Name X; X != \"a\"..; X != \"b\"..").is_empty());
+    }
+
+    /// The arm no capture reaches: a variable an **alias** names has no seek left to
+    /// think about, so the denial is a residual on the level holding the row.
+    #[test]
+    fn a_denial_on_an_alias_filters_the_row_it_names() {
+        assert_eq!(
+            rows("Y where X = test.Foo _; Y = X.name; Y != \"a\".."),
+            strs(&["bob"])
+        );
+    }
+
+    /// Both sides known at compile time, decided at compile time — and in **both**
+    /// directions, which is the pair that says the arm is not just the constraint's
+    /// with a sign flipped onto the wrong branch.
+    #[test]
+    fn a_denial_a_constant_meets_empties_the_query_and_one_it_escapes_folds_away() {
+        assert!(rows("X where X = \"abc\"; X != \"a\"..").is_empty());
+
+        // A denial the constant escapes is a tautology: no level, no residual, and
+        // the plan is the one the bare fold produces.
+        assert_eq!(
+            shape("X where X = \"abc\"; X != \"z\".."),
+            shape("X where X = \"abc\"")
+        );
+        assert_eq!(rows("X where X = \"abc\"; X != \"z\".."), strs(&["abc"]));
+    }
+
+    /// **A denied variable is turned away in either order**, which is the whole
+    /// reason the right side's gate is a shape test and not a lookup.
+    ///
+    /// `Z = 1; X != Z` looks like it should mean `X != 1`, and a gate that resolved
+    /// `Z` would make it so — but only when the fold is written *above*, since that
+    /// is when the lookup finds it. Two spellings of one query compiling differently
+    /// is the source-order decision this phase exists to have taken away from
+    /// typecheck, so both are deferred and the deferral is the same.
+    #[test]
+    fn a_denied_variable_is_deferred_whichever_order_it_is_written_in() {
+        for source in [
+            "X where test.Foo {id = X}; Z = 1; X != Z",
+            "X where test.Foo {id = X}; X != Z; Z = 1",
+        ] {
+            assert_eq!(
+                compile(source).codes(),
+                ["nyi/bind-unification"],
+                "for {source:?}"
+            );
+        }
+    }
+
+    /// A denial **binds nothing**, so a variable only it names is bound by nothing —
+    /// the fault a constraint alone draws, and the same one.
+    #[test]
+    fn a_denial_binds_nothing() {
+        assert_eq!(
+            compile("X where X != \"a\"..").codes(),
+            ["reject/unbound-variable"]
+        );
+        assert_eq!(
+            compile("Y where test.Name Y; X != \"a\"..").codes(),
+            ["reject/unbound-variable"]
+        );
     }
 
     // ---- negation (Phase 6b) ------------------------------------------------
@@ -5817,11 +6196,73 @@ pub mod proptest {
     /// case exists.
     const PREFIXES: [&str; 3] = ["", "a", "b"];
 
-    /// Prefixes to draw for a **constraint** — `V0 = "a"..`. `"b"` is left to the
-    /// key-field prefix above on purpose: it matches one string of the three, and a
-    /// filter that severe applied to a quarter of the population thins the rows
-    /// every other property in this file runs over (the census is what says so).
-    const CONSTRAINT_PREFIXES: [&str; 2] = ["", "a"];
+    /// What a drawn constraint statement says about its variable.
+    ///
+    /// Three cases and not four, because the fourth is a different statement: a
+    /// positive match on a whole value — `V0 = "a"` — is a *constant fold*, which
+    /// binds the variable rather than constraining it, and drawing one here would
+    /// draw a query whose meaning this model does not describe.
+    ///
+    /// One type carries what the source says and what the model checks, so the two
+    /// cannot drift: a rendering that meant something else than [`holds`] would be a
+    /// generator agreeing with the compiler about the wrong query.
+    ///
+    /// [`holds`]: Match::holds
+    #[derive(Debug, Clone, Copy)]
+    enum Match {
+        /// `V{v} = "p".."` — sargeable: the level capturing `v` narrows to a range.
+        Prefix(&'static str),
+        /// `V{v} != "p".."` — a filter, and never anything else.
+        NotPrefix(&'static str),
+        /// `V{v} != "p"` — a filter comparing whole values.
+        NotEqual(&'static str),
+    }
+
+    impl Match {
+        fn source(self, var: usize) -> String {
+            match self {
+                Match::Prefix(text) => format!("V{var} = {text:?}.."),
+                Match::NotPrefix(text) => format!("V{var} != {text:?}.."),
+                Match::NotEqual(text) => format!("V{var} != {text:?}"),
+            }
+        }
+
+        /// Whether the variable's value satisfies this statement.
+        fn holds(self, value: &str) -> bool {
+            match self {
+                Match::Prefix(text) => value.starts_with(text),
+                Match::NotPrefix(text) => !value.starts_with(text),
+                Match::NotEqual(text) => value != text,
+            }
+        }
+    }
+
+    /// Every constraint statement the generator may draw, as one flat table.
+    ///
+    /// Flat rather than a table per kind so that the draw is a single index and the
+    /// options are evenly weighted however many of each there are — the alternative,
+    /// a digit for the kind and a digit for the text, silently over-weights whichever
+    /// kind has the fewest.
+    ///
+    /// The texts are chosen against the three strings the domain holds — `"a"`,
+    /// `"ab"`, `"b"` ([`plan::proptest`](crate::plan::proptest)) — for how *hard*
+    /// each filters, because these run on a quarter of the population and the rows
+    /// they leave are what every other property here measures:
+    ///
+    /// - `= "".."` and `= "a".."` keep all three and two of three. `= "b".."` is
+    ///   left to the key-field prefix table: it keeps one of three, and a filter
+    ///   that severe applied this often thins the whole battery.
+    /// - `!= "a".."` keeps one of three, and is the *only* denied prefix drawn:
+    ///   `""` prefixes every string, so denying it would keep no row at all.
+    /// - `!= "a"` and `!= "b"` each remove exactly one string, which is the mildest
+    ///   filter the domain allows.
+    const MATCHES: [Match; 5] = [
+        Match::Prefix(""),
+        Match::Prefix("a"),
+        Match::NotPrefix("a"),
+        Match::NotEqual("a"),
+        Match::NotEqual("b"),
+    ];
 
     /// A generated key field's type: a scalar, a record of scalars, or a **reference**
     /// to a fact of [`REFERENCED`].
@@ -6040,14 +6481,14 @@ pub mod proptest {
         /// `facts[p]` — predicate `p`'s facts, deduplicated and sorted by key.
         facts: Vec<Vec<Fact>>,
         stmts: Vec<StmtSpec>,
-        /// `V{var} = "prefix"..` — a **constraint** on a variable some statement
-        /// captures. At most one, because it is a statement like any other and the
-        /// order properties run every permutation of the body.
+        /// `V{var} = "prefix".."`, or its denials — a **constraint** on a variable
+        /// some statement captures. At most one, because it is a statement like any
+        /// other and the order properties run every permutation of the body.
         ///
-        /// Drawn only over variables the query already captures, since a constraint
-        /// binds nothing: constraining one nothing binds is
+        /// Drawn only over variables the query already captures, since neither
+        /// polarity binds anything: constraining or denying one nothing binds is
         /// `reject/unbound-variable`, not a query this generator may draw.
-        constraints: Vec<(usize, &'static str)>,
+        constraints: Vec<(usize, Match)>,
         /// `!gen.P{p} {f{k} = V{v}}` — a **negation**, over a variable the query
         /// captures. At most one, for the reason there is at most one constraint.
         ///
@@ -6201,8 +6642,8 @@ pub mod proptest {
             match self.which(stmt) {
                 Which::Gen(spec) => self.pattern_source(spec),
                 Which::Constrain(index) => {
-                    let (var, prefix) = self.constraints[index];
-                    format!("V{var} = {prefix:?}..")
+                    let (var, matcher) = self.constraints[index];
+                    matcher.source(var)
                 }
                 // `!` prefixes the statement, so it sits outside the bind — which a
                 // negation never has anyway, there being no row to name.
@@ -6556,16 +6997,16 @@ pub mod proptest {
             }
         }
 
-        /// Whether every constraint holds of this row.
+        /// Whether every constraint — of either polarity — holds of this row.
         fn constrained(&self, env: &Env) -> bool {
-            self.constraints.iter().all(|(var, prefix)| {
+            self.constraints.iter().all(|(var, matcher)| {
                 match env.vars[*var]
                     .as_ref()
                     .expect("a constrained variable is captured")
                 {
-                    FieldVal::Str(text) => text.starts_with(prefix),
-                    // Only `Str` positions are drawn a prefix.
-                    FieldVal::Int(_) => unreachable!("a prefix constrains a string"),
+                    FieldVal::Str(text) => matcher.holds(text),
+                    // Only `Str` positions are drawn a constraint.
+                    FieldVal::Int(_) => unreachable!("a string pattern constrains a string"),
                 }
             })
         }
@@ -7126,27 +7567,26 @@ pub mod proptest {
             });
         }
 
-        // A **constraint**, over a variable the query captures and whose type a
-        // prefix is a pattern for. Drawn from `used_vars` rather than from the whole
-        // pool because a constraint binds nothing: one on a variable no key mentions
-        // is `reject/unbound-variable`, not a query this generator may draw.
+        // A **constraint** or a **denial**, over a variable the query captures and
+        // whose type a string pattern fits. Drawn from `used_vars` rather than from
+        // the whole pool because neither binds anything: one on a variable no key
+        // mentions is `reject/unbound-variable`, not a query this generator may draw.
         //
         // At most one. It is a statement like any other, so every extra one
         // multiplies the permutations the order properties re-run each case over.
         // Whether and which are separate digits of the draw: half the queries that
-        // *can* carry one do, and those spread evenly over the prefixes. A
-        // constraint is a filter, so the rate is a trade against the row count the
-        // whole battery runs on — the census measures both ends of it.
-        let constraints: Vec<(usize, &'static str)> = used_vars
+        // *can* carry one do, and those spread evenly over [`MATCHES`] — both
+        // polarities together, since a denial is a statement of the same kind and
+        // the order properties have to run over it too. Every one is a filter, so
+        // the rate is a trade against the row count the whole battery runs on — the
+        // census measures both ends of it.
+        let constraints: Vec<(usize, Match)> = used_vars
             .iter()
             .filter(|v| var_tys[**v] == FieldTy::Str)
             .find_map(|v| {
-                constraint.is_multiple_of(2).then(|| {
-                    (
-                        *v,
-                        CONSTRAINT_PREFIXES[constraint as usize / 2 % CONSTRAINT_PREFIXES.len()],
-                    )
-                })
+                constraint
+                    .is_multiple_of(2)
+                    .then(|| (*v, MATCHES[constraint as usize / 2 % MATCHES.len()]))
             })
             .into_iter()
             .collect();
@@ -7460,7 +7900,7 @@ pub mod proptest {
             // statement and *which* one, so a constraint lands on half the queries
             // that can carry one and a negation on a quarter.
             (
-                0u8..(2 * CONSTRAINT_PREFIXES.len() as u8),
+                0u8..(2 * MATCHES.len() as u8),
                 0u8..(4 * PICKS),
                 0u8..(2 * PICKS),
             )
@@ -7872,6 +8312,8 @@ mod battery {
         multi_part_seek: bool,
         constant_in_composite: bool,
         prefix_residual: bool,
+        not_prefix_residual: bool,
+        not_eq_const_residual: bool,
         nested_path: bool,
         several_residuals: bool,
         value_projection: bool,
@@ -7900,6 +8342,8 @@ mod battery {
                     "a constant inside a composite seek",
                 ),
                 (self.prefix_residual, "a `ResidualOp::Prefix`"),
+                (self.not_prefix_residual, "a `ResidualOp::NotPrefix`"),
+                (self.not_eq_const_residual, "a `ResidualOp::NotEqConst`"),
                 (self.nested_path, "a nested field path"),
                 (self.several_residuals, "more than one residual on a level"),
                 (self.value_projection, "a `Project::Value`"),
@@ -8026,6 +8470,8 @@ mod battery {
                         self.nested_path |= !path.is_flat();
                         match op {
                             ResidualOp::Prefix(_) => self.prefix_residual = true,
+                            ResidualOp::NotPrefix(_) => self.not_prefix_residual = true,
+                            ResidualOp::NotEqConst(_) => self.not_eq_const_residual = true,
                             ResidualOp::EqRegisterField { path, .. } => {
                                 self.nested_path |= !path.is_flat();
                             }

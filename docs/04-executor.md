@@ -177,13 +177,25 @@ A `Residual` is `{ field_idx, op }`, checked against a key field:
 
 - `EqConst(bytes)` — the field equals a constant.
 - `Prefix(bytes)` — the field starts with a prefix.
+- `NotEqConst(bytes)` / `NotPrefix(bytes)` — the negatives of those two, from a **denial**
+  (`X != "abc"`, `X != "a".."` — [chapter 7](07-compilation.md#denying-a-value)). Residuals and
+  nothing else, where their positive twins are the residual *form* of something a seek can also
+  do: a prefix is one contiguous run of the key order, and its negation is the two runs either
+  side, which no single seek expresses.
 - `EqRegisterField { address, field_idx }` — the field equals a field of an
   already-bound register (a cross-loop equality that couldn't be expressed as a seek).
 
 Residuals are evaluated against the **key** (`keys` CF) only — never the value. This is
 [I6](invariants.md#i6). New comparison operators (`<`, `<=`, …) will arrive as new
 `ResidualOp` arms without touching the machine (see [open decisions](open-decisions.md) and
-[scope](../PLAN.md)).
+[scope](../PLAN.md)) — the denial pair is the first to have arrived that way, and it needed
+one arm apiece in `check_residuals` and one tag apiece in the plan fingerprint.
+
+**Each new arm needs its own fingerprint tag**, and the denial pair is why that is worth saying
+here rather than only in [chapter 5](05-resume.md): a plan that requires a value and one that
+denies it differ in a single tag and answer complementary rows, so a walk that hashed the bytes
+without the tag would let a cursor from either resume into the other and hand back the wrong
+half of the predicate.
 
 ### Projection (the head)
 

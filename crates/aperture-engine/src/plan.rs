@@ -146,6 +146,16 @@ pub struct Access {
 pub enum ResidualOp {
     EqConst(Box<[u8]>),
     Prefix(Box<[u8]>),
+    /// The negatives of the two above — `X != "abc"`, `X != "a".."`.
+    ///
+    /// Residuals and nothing else, where their positive twins are the residual
+    /// *form* of something a seek could also do. A prefix denotes one contiguous
+    /// range of the key order, so `X = "a".."` narrows a seek; its negation is the
+    /// two ranges either side of that one, which no single seek expresses. So a
+    /// denial always reads the rows and drops them, and there is no sargeable
+    /// variant of these to look for later.
+    NotEqConst(Box<[u8]>),
+    NotPrefix(Box<[u8]>),
     EqRegisterField {
         address: Address,
         path: FieldPath,
@@ -721,6 +731,21 @@ impl Fingerprint {
                     self.byte(3);
                     self.address(*address);
                 }
+                // Distinct tags from their positive twins, and that is
+                // load-bearing rather than tidy: a cursor is accepted on a plan
+                // fingerprint, so two plans differing only in the polarity of a
+                // residual would otherwise accept each other's and resume against
+                // the wrong filter ([chapter 5]).
+                //
+                // [chapter 5]: ../../../docs/05-resume.md
+                ResidualOp::NotEqConst(bytes) => {
+                    self.byte(4);
+                    self.bytes(bytes);
+                }
+                ResidualOp::NotPrefix(bytes) => {
+                    self.byte(5);
+                    self.bytes(bytes);
+                }
             }
         }
     }
@@ -925,6 +950,46 @@ mod tests {
                     *l.sources[0].residuals_mut() = Box::new([Residual {
                         path: FieldPath::field(1),
                         op: ResidualOp::EqConst(i64_field(7).into_boxed_slice()),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            // The four ops over a constant, all at the same field and over the same
+            // bytes, so that nothing but the **op** tells them apart. This is the
+            // pair the denial had to be checked on: a plan that requires a value and
+            // one that denies it differ in one tag and answer complementary rows, so
+            // a walk that hashed the bytes and not the tag would let a cursor from
+            // either resume into the other and hand back the wrong half of the
+            // predicate.
+            (
+                "the same constant denied rather than required",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::NotEqConst(i64_field(7).into_boxed_slice()),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "the same constant as a prefix",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::Prefix(i64_field(7).into_boxed_slice()),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "the same prefix denied",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::NotPrefix(i64_field(7).into_boxed_slice()),
                     }]);
                     body[0] = Step::Level(l);
                 }),

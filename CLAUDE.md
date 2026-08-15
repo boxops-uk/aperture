@@ -256,3 +256,14 @@ decoded data.
   is the same range seek `test.Name "a"..` is. Applying it afterwards as a residual would answer
   the same rows and read the whole predicate to find them — do not "simplify" it into
   `apply_compares`.
+- **A denial is `!=`, and it is never a seek.** `X != "a".."` is a fifth statement
+  (`QueryStmt::Deny`, its own token) and the negative of the constraint alone
+  ([chapter 7](docs/07-compilation.md#denying-a-value)). Where it goes is the constraint's story
+  unchanged — collected from the whole body, keyed by variable, a pure read that binds nothing —
+  but a prefix is *one* run of the key order and its negation is the two runs either side, so it
+  filters however it is written. Do not look for a sargeable form: the two polarities are held in
+  separate collections precisely so a capture cannot be handed one to narrow itself by. `!` and
+  `!=` stay different syntax for different questions — `!` says no such row exists and takes a
+  `Step::Test`; `!=` says this row's field does not look like that and takes a residual
+  (`NotEqConst`/`NotPrefix`). A new `ResidualOp` needs a **distinct fingerprint tag** or two
+  plans differing only in polarity accept each other's resume cursors.

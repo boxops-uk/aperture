@@ -179,6 +179,20 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
                             prefix(interner, ty, bytes).unwrap_or_else(|| opaque(bytes))
                         )
                     }
+                    ResidualOp::NotEqConst(bytes) => {
+                        write!(
+                            out,
+                            "\n       where {at} != {}",
+                            constant(schema, interner, ty, bytes)
+                        )
+                    }
+                    ResidualOp::NotPrefix(bytes) => {
+                        write!(
+                            out,
+                            "\n       where {at} does not start with {}",
+                            prefix(interner, ty, bytes).unwrap_or_else(|| opaque(bytes))
+                        )
+                    }
                     ResidualOp::EqRegisterField { address, path } => {
                         write!(
                             out,
@@ -686,6 +700,11 @@ impl Printer<'_> {
                 out.push("!");
                 self.pattern(out, *id, Prec::Disjunction);
             }
+            QueryStmt::Deny(lhs, rhs) => {
+                self.pattern(out, *lhs, Prec::Disjunction);
+                out.push(" != ");
+                self.pattern(out, *rhs, Prec::Disjunction);
+            }
         }
     }
 
@@ -832,6 +851,13 @@ impl Printer<'_> {
                 QueryStmt::Negation(id) => {
                     out.push_str("(not ");
                     self.canonical_pattern(out, *id);
+                    out.push(')');
+                }
+                QueryStmt::Deny(lhs, rhs) => {
+                    out.push_str("(deny ");
+                    self.canonical_pattern(out, *lhs);
+                    out.push(' ');
+                    self.canonical_pattern(out, *rhs);
                     out.push(')');
                 }
             }
@@ -1680,7 +1706,8 @@ mod tests {
                 | (QueryStmt::Negation(id), QueryStmt::Negation(reid)) => {
                     spans_agree(printed, (ast, *id), (reast, *reid))?;
                 }
-                (QueryStmt::Bind(lhs, rhs), QueryStmt::Bind(relhs, rerhs)) => {
+                (QueryStmt::Bind(lhs, rhs), QueryStmt::Bind(relhs, rerhs))
+                | (QueryStmt::Deny(lhs, rhs), QueryStmt::Deny(relhs, rerhs)) => {
                     spans_agree(printed, (ast, *lhs), (reast, *relhs))?;
                     spans_agree(printed, (ast, *rhs), (reast, *rerhs))?;
                 }
@@ -1739,6 +1766,7 @@ mod generator {
             ("disjunction", " | "),
             ("subquery", " where "),
             ("negation", "!"),
+            ("denial", " != "),
             ("record", "{"),
             ("empty record", "{}"),
             ("field access", "."),

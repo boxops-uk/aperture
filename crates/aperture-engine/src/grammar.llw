@@ -6,7 +6,7 @@ token Wildcard='_';
 token Nat='<nat>';
 token String='<string>';
 token DotDot='..';
-token Dot='.' Eq='=' Semi=';' Comma=',' Minus='-' LBrace='{' RBrace='}'
+token Dot='.' Eq='=' BangEq='!=' Semi=';' Comma=',' Minus='-' LBrace='{' RBrace='}'
       LPar='(' RPar=')' Pipe='|' Question='?' Bang='!';
 
 skip Whitespace;
@@ -18,9 +18,13 @@ query: pattern 'where' stmt_list;
 
 stmt_list: stmt (';' [stmt])*;
 
+// `!` prefixes a statement and negates a *generator*; `!=` is an infix operator and
+// denies a *value*. They are different questions — "no such row exists" against
+// "this row's field does not look like that" — so they are different syntax rather
+// than one form flatten disambiguates.
 stmt:
   '!' pattern @negation_stmt
-| pattern ('=' pattern @bind_stmt | @implicit_bind_stmt)
+| pattern ('=' pattern @bind_stmt | '!=' pattern @deny_stmt | @implicit_bind_stmt)
 ;
 
 // Disjunction is the loosest level and stays flat: a list of branches, never a

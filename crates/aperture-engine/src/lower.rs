@@ -156,7 +156,11 @@ impl Lowering<'_> {
             ),
 
             // `pattern ('=' pattern)`
-            Rule::BindStmt => Out::Stmt(self.bind_stmt(children, &span)),
+            Rule::BindStmt => Out::Stmt(self.bind_stmt(children, &span, QueryStmt::Bind)),
+
+            // `pattern ('!=' pattern)` — the same two sides, and the same repair
+            // for half of one; only what the statement *means* differs.
+            Rule::DenyStmt => Out::Stmt(self.bind_stmt(children, &span, QueryStmt::Deny)),
 
             // `Rule::Stmt` and `Rule::Primary` never appear in a well-formed tree —
             // every alternative of those rules renames its node — but a parse that
@@ -322,16 +326,26 @@ impl Lowering<'_> {
         Query::new(head, body.into())
     }
 
-    /// `pattern ('=' pattern)`, with either side possibly missing.
-    fn bind_stmt(&mut self, children: Box<[(CstNode<'_>, Out)]>, span: &Span) -> QueryStmt<NodeId> {
+    /// `pattern ('=' pattern)` or `pattern ('!=' pattern)`, with either side
+    /// possibly missing.
+    ///
+    /// `build` is which two-sided statement to make — the operator is the only
+    /// thing that differs, and a second copy of the missing-side repair would be a
+    /// second place for it to drift.
+    fn bind_stmt(
+        &mut self,
+        children: Box<[(CstNode<'_>, Out)]>,
+        span: &Span,
+        build: fn(NodeId, NodeId) -> QueryStmt<NodeId>,
+    ) -> QueryStmt<NodeId> {
         let mut ids = patterns(children).into_iter();
 
         match (ids.next(), ids.next()) {
-            (Some(lhs), Some(rhs)) => QueryStmt::Bind(lhs, rhs),
+            (Some(lhs), Some(rhs)) => build(lhs, rhs),
             // Half a bind: the parse already reported the missing side.
             (Some(only), _) => {
                 let hole = self.hole(span);
-                QueryStmt::Bind(only, hole)
+                build(only, hole)
             }
             (None, _) => {
                 let hole = self.hole(span);
@@ -638,7 +652,7 @@ mod tests {
         let (ast, diags, interner) = lower_source(source);
         assert!(codes(&diags).is_empty(), "{source:?}: {:?}", codes(&diags));
         let id = match &ast.query().body()[0] {
-            QueryStmt::Bind(_, rhs) => *rhs,
+            QueryStmt::Bind(_, rhs) | QueryStmt::Deny(_, rhs) => *rhs,
             QueryStmt::Implicit(id) | QueryStmt::Negation(id) => *id,
         };
         shape(&ast, &interner, id)

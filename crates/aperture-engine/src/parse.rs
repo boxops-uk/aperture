@@ -502,6 +502,33 @@ mod tests {
         assert_eq!(count(&root, "subquery_primary"), 1);
     }
 
+    /// **`!=` is one operator, not `!` before `=`.** The two readings are different
+    /// statements — a negated generator against a denied value — and the lexer's
+    /// longest match is the whole of what picks between them, so this is where that
+    /// gets checked rather than left to the parse happening to work.
+    ///
+    /// `!X = "a".."` is the reading that must *not* be taken: it would be a negation
+    /// of `X` followed by a bind, which the grammar has no statement for at all.
+    #[test]
+    fn a_denial_is_one_infix_operator() {
+        let denial = parse_clean("X where test.Name X; X != \"a\"..");
+        let root = denial.root().expect("a tree");
+        assert_eq!(count(&root, "deny_stmt"), 1);
+        assert_eq!(
+            count(&root, "negation_stmt"),
+            0,
+            "`!=` must not be read as a negation"
+        );
+
+        // And it is genuinely the adjacency that makes it: `! =` is two tokens and
+        // no statement, which is what says the operator is lexed rather than
+        // assembled by the parser out of the two it is spelled with.
+        assert!(
+            parsed("X where test.Name X; X ! = \"a\"..").has_errors(),
+            "`! =` is not `!=`"
+        );
+    }
+
     /// A *wide* record is not a deep one. Its fields are siblings, so however many
     /// of them apply a fact pattern the nesting is two levels — and a
     /// machine-generated query with hundreds of them must be accepted.

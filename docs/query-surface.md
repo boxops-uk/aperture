@@ -61,6 +61,7 @@ lopsided:
 | subquery, existential | 0 or 1 | no | none |
 | subquery, generating | — | inlined at flatten | none |
 | `X = Y`, both bound | 0 or 1 | no | none |
+| `X != "a"..` (denial) — **built** | 0 or 1 | no | none |
 | comparisons (`<`, `>`) | 0 or 1 | no | none |
 | union select (`.alt?`) | 0 or 1, plus a bind | no | none |
 | `Source::Fetch` (through a reference) — **built** | exactly 1, deterministic | no | none¹ |
@@ -130,6 +131,14 @@ sub-plan needs no second `nvars`, no second interner and no second projection pa
 the one bit that distinguishes arriving from above from arriving from below
 (`derived_produced`). A `Test` step costs `enumerate` one arm shaped exactly like the arm it
 already has.
+
+**A filter over one row is a `ResidualOp`, not a `Test::Compare`.** The sketch above puts `X = Y`
+both bound and the comparisons in `Test::Compare`, and neither landed there: `X = Y` was built as
+an `EqRegisterField` residual, and the **denial** — the first of the comparison family to be
+built — as `NotEqConst`/`NotPrefix`. A `Test` opens sources and asks whether any row exists; a
+filter on a field of the row already in hand opens nothing, so it belongs to the source it
+filters. Read `Test::Compare` as the shape reserved for a comparison that has no field to hang
+off, and build `<`/`>` as residuals unless one turns up.
 
 > **The architectural rule to adopt, because it is checkable.** A new construct may add a
 > `Source`, a `Test`, a `ResidualOp` or a `Computed` arm. **It may not add a `Step`.** Those four

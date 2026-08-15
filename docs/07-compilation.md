@@ -395,6 +395,11 @@ wildcard, or a record whose every leaf is one of those — makes the two types a
 
 Only the first takes a register, and none of the four is a `Step`.
 
+`!=` is a **fifth** statement rather than a fifth row of that table — a *denial*, the negative of
+the constraint on the last row and of nothing else on it
+([below](#denying-a-value)). It is separate syntax because the two are not symmetric where it
+counts: a constraint can narrow a seek and a denial never can.
+
 **Typecheck used to decide this, in source order**, by asking whether the left side had already
 been mentioned *above*. That is the one order the query might not have used, and it is the
 decision `reorder` took over: `F = G` compiled or drew `nyi/bind-unification` depending on
@@ -439,6 +444,53 @@ Being a read is also the one thing it costs: it imposes an ordering edge that bu
 time, since the level that captures the variable applies it wherever that level runs. `reorder`
 can always satisfy it — a constraint captures nothing, so it can go last — and in exchange the
 unbound case has an owner.
+
+<a id="denying-a-value"></a>
+### Denying a value — a constraint that can never be a seek
+
+`X != "a".."` is a **denial**: its own statement (`QueryStmt::Deny`, spelled with its own token),
+and the negative of the constraint above. Everything about *where* it goes is the constraint's
+story unchanged — collected from the whole body before an order is chosen, keyed by variable,
+applied by whichever statement the variable turns out to live in, and a pure read that binds
+nothing. What differs is the one thing worth a section: **a denial is never sargeable.**
+
+A prefix denotes one contiguous run of the key order, which is why `X = "a".."` narrows a level's
+seek to a range. Its negation is the two runs either side of that one, and a seek walks one — so
+`test.Name X; X != "a".."` reads the predicate and drops the rows that match, however it is
+written and whichever order `reorder` picks. There is no placement that makes it cheaper, and no
+sargeable form to look for later. The cost belongs to negation, not to this design; the pair to
+read side by side in a `:plan` is
+
+```text
+r0 <- test.Name seek[k]                       X = "a"..
+r0 <- test.Name scan where 0 !^= k            X != "a"..
+```
+
+That asymmetry is why the two polarities are collected in **separate** lists rather than one list
+with a flag. A capture narrows itself by every constraint on the variable it binds; a denial has
+nothing to offer it, so the collection a capture reads must not contain any. Keeping them apart
+is what makes that structural instead of a filter someone could forget.
+
+Two smaller consequences follow from denial being the negative of a *constraint* rather than of a
+bind:
+
+- **A denied whole value has no positive twin.** `X = "abc"` is a constant fold — it *binds* `X`
+  — so only the denial needs a compare, and `ResidualOp::NotEqConst` is a residual with no
+  sargeable counterpart to be the fallback for. `NotPrefix` is the same one step further out.
+- **The compile-time arm decides the other way.** With the left side folded to a constant, both
+  sides are known: a denial the constant **meets** is the empty relation, and one it escapes is a
+  tautology that emits nothing. Exactly the constraint's two outcomes, swapped.
+
+The right side is narrower than a bind's, and the two shapes turned away are turned away for
+different reasons. A **generator** — `X != test.Foo _` — is asking for a negated bind, which is a
+negated group and so `!`'s problem rather than this one. Another **variable** — `X != Y` — is the
+negative of the `var = var` residual above, and the plan has no counterpart to
+`EqRegisterField` to lower it to. Both draw `nyi/bind-unification`.
+
+`!` and `!=` are deliberately different syntax for different questions, and the fixture query
+holding both says why: `test.Foo {id = X}; !test.Bar {id = X}; X != 1` asks that no `test.Bar`
+row exist *and* that this row's own field not be `1`. The first opens a source and takes a
+`Step::Test`; the second opens nothing and takes a residual.
 
 <a id="what-flatten-defers-and-why"></a>
 ### Negation — a filter, and an ordering rule that needs no mechanism

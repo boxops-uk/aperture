@@ -737,6 +737,16 @@ impl<S: FactStore> StackFrame<S> {
             let ok = match &residual.op {
                 ResidualOp::EqConst(const_bytes) => field == const_bytes.as_ref(),
                 ResidualOp::Prefix(prefix_bytes) => field.starts_with(prefix_bytes.as_ref()),
+                // Each the exact negation of the arm above it: a denial is decided
+                // on the same bytes, from the same borrowed span of the register's
+                // key, so it allocates nothing per row ([I9]) and reads no value
+                // ([I6]) — the same as the positive form, which is the whole reason
+                // it is a residual rather than a shape of its own.
+                //
+                // [I6]: ../../docs/invariants.md#i6
+                // [I9]: ../../docs/invariants.md#i9
+                ResidualOp::NotEqConst(const_bytes) => field != const_bytes.as_ref(),
+                ResidualOp::NotPrefix(prefix_bytes) => !field.starts_with(prefix_bytes.as_ref()),
                 ResidualOp::EqRegisterField {
                     address: var_address,
                     path,
@@ -2831,6 +2841,73 @@ mod tests {
             vec![
                 Value::Str("alpha".to_string()),
                 Value::Str("altair".to_string()),
+            ]
+        );
+    }
+
+    // The negatives of the two residuals above, over the same rows: each keeps
+    // exactly the rows its positive twin drops, which is the whole of what a
+    // denial means and the only thing the executor has to get right about one.
+    //
+    // Run as one test over one store because the claim is *complementary* — two
+    // tests asserting three rows each would both pass against an executor that
+    // answered every row and filtered nothing.
+    #[test]
+    fn a_denied_residual_keeps_what_its_positive_twin_drops() {
+        let p = PredicateId(0);
+
+        let store = || {
+            let mut store = MemStore::new();
+            store.insert(p, str_field("alpha"), 1);
+            store.insert(p, str_field("altair"), 2);
+            store.insert(p, str_field("beta"), 3);
+            store
+        };
+
+        let plan = |op| Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
+                    path: FieldPath::field(0),
+                    op,
+                }]),
+            )]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Str,
+            },
+        };
+
+        // Encoded "al" without its terminator — the same bytes
+        // `residual_prefix_on_string_field` seeks with, so the two are exact
+        // complements rather than merely different questions.
+        let mut prefix = str_field("al");
+        prefix.pop();
+
+        assert_eq!(
+            run(
+                store(),
+                plan(ResidualOp::NotPrefix(prefix.into_boxed_slice()))
+            ),
+            vec![Value::Str("beta".to_string())]
+        );
+
+        assert_eq!(
+            run(
+                store(),
+                plan(ResidualOp::NotEqConst(
+                    str_field("alpha").into_boxed_slice()
+                ))
+            ),
+            vec![
+                Value::Str("altair".to_string()),
+                Value::Str("beta".to_string()),
             ]
         );
     }
