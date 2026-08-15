@@ -8,7 +8,7 @@
 //! This is also where the permissive grammar is narrowed. Every construct the
 //! grammar accepts but the engine cannot yet run draws **one specific diagnostic
 //! naming it**, rather than a parse error or a confusing type error — that promise
-//! is what [`corpus`](crate::focus::corpus) exists to check. Two kinds of narrowing
+//! is what [`corpus`](crate::corpus) exists to check. Two kinds of narrowing
 //! happen here:
 //!
 //! - **`nyi/…`** — deferred features: disjunction, negation, subqueries, union
@@ -26,7 +26,7 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use crate::focus::{
+use crate::{
     diag::{Code, Diagnostics},
     lower::VALUE_FIELD,
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, Ty, TyVarId},
@@ -904,7 +904,7 @@ fn field_of(ty: &Ty, name: Symbol) -> Option<Ty> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{corpus, cst::CstNode, lower::lower, parse::parse};
+    use crate::{corpus, cst::CstNode, lower::lower, parse::parse};
     use aperture_schema::schema::{Predicate, PredicateId};
     use lasso::Rodeo;
     use std::sync::Arc;
@@ -1135,7 +1135,7 @@ mod tests {
     ///
     /// `test.Ref {of = P}; P = test.Foo …` is the same query as those two statements
     /// the other way round, and compiles to the same plan —
-    /// [`reorder`](crate::focus::reorder::reorder) picks the order that binds before
+    /// [`reorder`](crate::reorder::reorder) picks the order that binds before
     /// it reads. So `P` is one variable with one type whichever statement mentions
     /// it first, and *which* statement binds it is not typecheck's call to make.
     ///

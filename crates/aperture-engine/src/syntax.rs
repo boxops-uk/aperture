@@ -5,10 +5,10 @@ use aperture_schema::schema::{PredicateId, Symbol};
 /// A byte range in the query's source text, as stored on a node.
 ///
 /// `u32` rather than the parser's `usize`, to keep a node compact:
-/// [`parse`](crate::focus::parse::parse) refuses a source longer than `u32::MAX`,
+/// [`parse`](crate::parse::parse) refuses a source longer than `u32::MAX`,
 /// which is what makes the narrowing lossless.
 ///
-/// **Named apart from [`parser::Span`](crate::focus::parser::Span) deliberately.**
+/// **Named apart from [`parser::Span`](crate::parser::Span) deliberately.**
 /// Both are byte ranges into the same text and differ only in width, so one name
 /// for both meant either could be passed where the other was meant with nothing
 /// but an `as u32` to tell them apart — inside a function handling both, which
@@ -366,7 +366,7 @@ mod tests {
 ///
 /// Every spec must be **buildable into a tree lowering could have produced**, since
 /// that is what the round-trip property compares against
-/// ([`print`](crate::focus::print)). Three constraints follow, and each is enforced
+/// ([`print`](crate::print)). Three constraints follow, and each is enforced
 /// by the generator rather than patched up when building:
 ///
 /// - **field names exclude `value`**, which is the surface for a fact's value side —

@@ -8,7 +8,7 @@
 
 use codespan_reporting::diagnostic::Label;
 
-use crate::focus::{
+use crate::{
     diag::{Diagnostic, Diagnostics},
     lexer::{Token, tokenize},
     parser::{Cst, Lexed, Parser},
@@ -33,7 +33,7 @@ const MAX_NEST_DEPTH: usize = 256;
 /// The longest source [`parse`] accepts.
 ///
 /// Spans in the typed store are `u32` to keep nodes compact
-/// ([`syntax::NodeSpan`](crate::focus::syntax::NodeSpan)), and lowering narrows the
+/// ([`syntax::NodeSpan`](crate::syntax::NodeSpan)), and lowering narrows the
 /// parser's `usize` spans to fit. Refusing an unaddressable source here is what
 /// makes that narrowing lossless — otherwise every span past the 4 GiB mark would
 /// silently wrap and point at the wrong bytes, which is the one thing a span may
@@ -155,7 +155,7 @@ fn nesting_overflow(tokens: &[Token]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::cst::{CstKind, CstNode};
+    use crate::cst::{CstKind, CstNode};
     use proptest::prelude::*;
 
     /// A parse and the diagnostics it drew, for tests that want both.

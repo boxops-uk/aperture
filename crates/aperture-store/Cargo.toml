@@ -25,7 +25,7 @@ thiserror = { workspace = true }
 # reaching back through the engine would probe a `FactStore` that is a different
 # type from the one under test.
 allocation-counter = "0.8.1"
-aperture = { path = "../..", features = ["proptest"] }
+aperture-engine = { path = "../aperture-engine", features = ["proptest"] }
 proptest = "1.11.0"
 tempfile = "3"
 tokio-util = "0.7.18"

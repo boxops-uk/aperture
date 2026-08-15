@@ -41,13 +41,13 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "aperture-encoding",
+ "aperture-engine",
  "aperture-schema",
  "aperture-store",
  "byteview",
  "codespan-reporting",
  "fjall",
  "lasso",
- "lelwel",
  "logos",
  "memchr",
  "proptest",
@@ -73,6 +73,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "aperture-engine"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "aperture-encoding",
+ "aperture-schema",
+ "aperture-store",
+ "byteview",
+ "codespan-reporting",
+ "lasso",
+ "lelwel",
+ "logos",
+ "proptest",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tinyvec",
+ "tokio-util",
+]
+
+[[package]]
 name = "aperture-schema"
 version = "0.1.0"
 dependencies = [
@@ -86,8 +107,8 @@ name = "aperture-store"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "aperture",
  "aperture-encoding",
+ "aperture-engine",
  "aperture-schema",
  "byteview",
  "fjall",

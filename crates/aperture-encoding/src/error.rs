@@ -15,7 +15,7 @@ pub enum StoreCodecError {
     UnexpectedEof,
 
     /// A [`Symbol`] the interner cannot resolve, hit while turning stored bytes
-    /// into a [`Value`](crate::focus::tuple::Value).
+    /// into a [`Value`](crate::tuple::Value).
     ///
     /// A codec fault rather than an engine one: symbols are interned per query
     /// and a stored record's field names are read back through that interner, so

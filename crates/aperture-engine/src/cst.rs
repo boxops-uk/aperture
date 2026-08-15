@@ -14,7 +14,7 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use crate::focus::{
+use crate::{
     lexer::Token,
     parser::{Cst, Node, NodeRef, Rule, Span},
 };

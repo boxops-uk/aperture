@@ -14,7 +14,7 @@
 //! Phases report by pushing into it and cannot return diagnostics, which is the
 //! point — a `Vec` handed back is a `Vec` a caller can drop on the floor, and
 //! "every diagnostic reaches the user" then rests on each call site remembering.
-//! The same move as [`Executor::enumerate`](crate::focus::iter::Executor) taking
+//! The same move as [`Executor::enumerate`](crate::iter::Executor) taking
 //! `self` to make [I8](../../docs/invariants.md#i8) structural.
 
 use std::ops::Range;

@@ -441,7 +441,7 @@ pub fn strinc(prefix: &[u8]) -> Option<Vec<u8>> {
 ///
 /// It checks arity but *not* field names, because a tuple has none — so a caller
 /// holding a record whose fields might be in any order owes it a pass through
-/// [`fact::encode`](crate::focus::fact::encode), which resolves names against the
+/// `aperture_store::fact::encode`, which resolves names against the
 /// schema and hands back a value already in this order.
 ///
 /// [chapter 3]: ../../../docs/03-storage-model.md#a-stored-key-is-flat
@@ -2118,7 +2118,7 @@ pub(crate) mod tests {
 
     /// Sequence 0 is reserved so that zeroed or corrupt bytes are *detectably*
     /// not a fact ([I11]) — and a property nothing checks is only an intention.
-    /// [`decode_fact_id`](crate::focus::store) already enforces it for a stored
+    /// `aperture_store::store::decode_fact_id` already enforces it for a stored
     /// `keys` row; this is the same rule at the other decoder, the one that reads
     /// a reference embedded **in a key**.
     ///

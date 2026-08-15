@@ -120,7 +120,7 @@ impl<'src> Compilation<'src> {
     /// consequences of a fault the user already has.
     ///
     /// `None` means no plan, always with a reason in the sink
-    /// ([`flatten`](crate::focus::flatten)).
+    /// ([`flatten`](crate::flatten)).
     ///
     /// **Produced once.** Flatten reports into the shared sink, so a second run
     /// would report every fault it found a second time; a caller wanting the plan
@@ -243,7 +243,7 @@ impl<'src> Compilation<'src> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{corpus, print::canonical};
+    use crate::{corpus, print::canonical};
     use proptest::prelude::*;
 
     #[test]

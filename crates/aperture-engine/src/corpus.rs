@@ -43,7 +43,7 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use crate::focus::diag::Code;
+use crate::diag::Code;
 use Expectation::{Diagnosed, ParseError, Supported};
 use aperture_schema::schema::Schema;
 use aperture_store::fixture;
@@ -653,7 +653,7 @@ pub const CORPUS: &[Entry] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{diag::Diagnostics, parse::parse};
+    use crate::{diag::Diagnostics, parse::parse};
 
     /// The phase's headline gate: every construct on the target surface parses,
     /// and only the entries that are genuinely not focus draw a parse error. An
@@ -765,7 +765,7 @@ mod tests {
     /// knows about: a code nobody expected has to be able to fail this gate, which is
     /// the whole point of comparing sets.
     fn compile(source: &str) -> (Vec<String>, bool) {
-        use crate::focus::compile::Compilation;
+        use crate::compile::Compilation;
 
         let schema = schema();
         let mut compilation = Compilation::new(source, &schema);
@@ -802,7 +802,7 @@ mod tests {
     /// reference is written as the fact it names rather than as a snowflake integer.
     #[test]
     fn every_supported_entry_returns_its_rows() {
-        use crate::focus::compile::Compilation;
+        use crate::compile::Compilation;
         use aperture_schema::id::FactId;
         use aperture_store::{fixture, store::FjallDb};
 
@@ -874,11 +874,11 @@ mod tests {
     /// Run a plan to completion and render its rows.
     fn run(
         db: &aperture_store::store::FjallDb,
-        plan: crate::focus::plan::Plan,
+        plan: crate::plan::Plan,
         interner: &aperture_schema::schema::LocalInterner,
         schema: &Schema,
-    ) -> Result<String, crate::focus::error::ApertureError> {
-        use crate::focus::iter::{Executor, Iteratee, Stream};
+    ) -> Result<String, crate::error::ApertureError> {
+        use crate::iter::{Executor, Iteratee, Stream};
         use tokio_util::sync::CancellationToken;
 
         let executor = Executor::new(db.reader(), plan);

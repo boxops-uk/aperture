@@ -1,7 +1,7 @@
 //! The **fixture database** the tests share: the schema queries are written against
 //! and the facts they run against.
 //!
-//! Shared, and that is the point. The [`corpus`](crate::focus::corpus) says what the
+//! Shared, and that is the point. The engine's `corpus` says what the
 //! compiler must do with a snippet *and what it answers*, and the flatten batteries
 //! assert plan shapes over the same rows — so a shape asserted in one place and an
 //! answer asserted in the other are about one database rather than two that have

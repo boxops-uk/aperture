@@ -18,7 +18,7 @@
 //!    "a"..`, a pattern the value wherever `X` lives has to match.
 //! 2. **Safety.** Every variable a seek, residual or the head *reads* must be
 //!    **captured** by some generator's key pattern. That is the whole of what
-//!    correctness needs — see [`reorder`](crate::focus::reorder) for why it is not
+//!    correctness needs — see [`reorder`](crate::reorder) for why it is not
 //!    an ordering problem — and a query with an uncaptured variable is rejected
 //!    (`reject/unbound-variable`), not answered.
 //! 3. **Reorder**, over the dependency graph collect built: any order that binds
@@ -60,13 +60,13 @@
 //! same-row residual the executor has no operator for (`nyi/repeated-variable`).
 //!
 //! Each of those is a corpus entry, so the promise is checked rather than
-//! described ([`corpus`](crate::focus::corpus)).
+//! described ([`corpus`](crate::corpus)).
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 //! [chapter 3]: ../../../docs/03-storage-model.md
 //! [I6]: ../../../docs/invariants.md#i6
 
-use crate::focus::{
+use crate::{
     diag::{Code, Diagnostics},
     plan::{
         Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
@@ -461,7 +461,7 @@ impl SeekBuilder {
 /// are the first thing that will need the table itself, since a computed value has
 /// no declared type to look up.
 ///
-/// [`Compilation::plan`]: crate::focus::compile::Compilation::plan
+/// [`Compilation::plan`]: crate::compile::Compilation::plan
 pub fn flatten(
     ast: &Ast,
     schema: &Schema,
@@ -476,7 +476,7 @@ pub fn flatten(
 /// Test-only, and the seam the reorderability property runs through: the claim
 /// that ordering is a performance choice is only worth anything if the *same
 /// query* can be run in every order and give the same rows. It is also what a real
-/// [`reorder`](crate::focus::reorder::reorder) will hand back, so it is not a
+/// [`reorder`](crate::reorder::reorder) will hand back, so it is not a
 /// second code path — [`flatten`] is this function with the identity.
 ///
 /// `order` must be a permutation of `0..statements`; an order that reads a
@@ -493,7 +493,7 @@ pub fn flatten_in_order(
 }
 
 /// The statements' dependency graph, without building a plan — what
-/// [`reorder`](crate::focus::reorder::reorder) is handed.
+/// [`reorder`](crate::reorder::reorder) is handed.
 ///
 /// Test-only today. It is the natural shape for a `:plan`-style introspection
 /// command to show, and Phase 6 needs it for the topological ordering derived binds
@@ -1800,7 +1800,7 @@ impl Flattener<'_> {
     /// A **register is a level's**, not a statement's, so the address is counted off
     /// the levels emitted rather than the position in the order: an alias is a
     /// statement that binds without iterating, exactly as
-    /// [`Plan::levels`](crate::focus::plan::Plan::levels) counts them for a plan that
+    /// [`Plan::levels`](crate::plan::Plan::levels) counts them for a plan that
     /// derives.
     fn emit(&mut self, stmts: &[Stmt], order: &[usize]) -> Option<Plan> {
         let mark = self.diagnostics.len();
@@ -3151,7 +3151,7 @@ fn field_of(ty: &PredicateTy, name: Symbol) -> Option<(usize, PredicateTy)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{
+    use crate::{
         compile::Compilation,
         corpus,
         cst::CstNode,
@@ -4082,7 +4082,7 @@ mod tests {
     /// The same read, written the other way round: `of = P` reads `P` in the
     /// statement that comes first, and the statement that comes second is the only
     /// one that can capture it. The dependency graph says so — one order works and
-    /// the source is not it — and [`reorder`](crate::focus::reorder::reorder) is what
+    /// the source is not it — and [`reorder`](crate::reorder::reorder) is what
     /// makes the query legal rather than refused.
     ///
     /// Asserted as *plan equality* against the other spelling rather than against a
@@ -4123,7 +4123,7 @@ mod tests {
     /// Two statements claiming the same row say *these two facts are the same
     /// fact*, which is unification proper and has no engine — unlike binding a row
     /// out of source order, which is only an ordering question and which
-    /// [`reorder`](crate::focus::reorder::reorder) now answers.
+    /// [`reorder`](crate::reorder::reorder) now answers.
     ///
     /// Typecheck used to catch this incidentally, by refusing *any* bind whose left
     /// side was already bound. That refusal is now narrowed to the shapes that
@@ -5624,7 +5624,7 @@ mod tests {
     ///
     /// The purity invariant's own guard is
     /// `iter::a_derive_is_recomputed_across_every_cut_point`, which drives a real
-    /// [`Step::Derive`](crate::focus::plan::Step) from a hand-built plan — nothing
+    /// [`Step::Derive`](crate::plan::Step) from a hand-built plan — nothing
     /// in the language lowers one, so nothing here can reach it.
     /// A query whose **every** binding folded has no levels, so it cannot be
     /// suspended past — and reports `Done` when asked to suspend rather than
@@ -5716,7 +5716,7 @@ mod tests {
 }
 /// Schema-first `(query, store)` generator — the front end's tier-3 case.
 ///
-/// The executor's generator ([`plan::proptest`](crate::focus::plan::proptest))
+/// The executor's generator ([`plan::proptest`](crate::plan::proptest))
 /// draws a *plan* directly, which tests the machine but not the compiler. This one
 /// draws a **query, in focus text**, together with a store it runs against and an
 /// **independent model** of what it means — so the property is "compiling and
@@ -5765,7 +5765,7 @@ pub mod proptest {
     use ::proptest::prelude::*;
     use lasso::Rodeo;
 
-    use crate::focus::plan::proptest::{FieldTy, FieldVal};
+    use crate::plan::proptest::{FieldTy, FieldVal};
     use aperture_encoding::tuple::{MARK_RECORD, MARK_TERM, Value, fact_ref_bytes};
     use aperture_schema::{
         id::FactId,
@@ -5813,7 +5813,7 @@ pub mod proptest {
 
     /// Prefixes to draw for a string-prefix pattern. `""` matches every string and
     /// `"a"` matches `"a"` and `"ab"` but not `"b"` — the domain
-    /// ([`plan::proptest`](crate::focus::plan::proptest)) is chosen so that middle
+    /// ([`plan::proptest`](crate::plan::proptest)) is chosen so that middle
     /// case exists.
     const PREFIXES: [&str; 3] = ["", "a", "b"];
 
@@ -7492,7 +7492,7 @@ mod battery {
         flatten, flatten_in_order,
         proptest::{QueryAndStore, arb_query_and_store},
     };
-    use crate::focus::{
+    use crate::{
         cst::CstNode,
         diag::Diagnostics,
         fixtures::{collect_rows, run_with_suspends},

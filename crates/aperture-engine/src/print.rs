@@ -19,7 +19,7 @@
 
 use std::fmt::Write as _;
 
-use crate::focus::{
+use crate::{
     plan::{
         Address, FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source,
         Step, Test,
@@ -956,7 +956,7 @@ pub fn escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{
+    use crate::{
         compile::Compilation,
         corpus,
         cst::CstNode,
@@ -1693,7 +1693,7 @@ mod tests {
 
 #[cfg(test)]
 mod generator {
-    use crate::focus::{corpus, print::print, syntax::proptest::arb_query_spec};
+    use crate::{corpus, print::print, syntax::proptest::arb_query_spec};
     use proptest::{
         strategy::{Strategy, ValueTree},
         test_runner::TestRunner,

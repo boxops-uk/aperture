@@ -252,7 +252,7 @@ impl Source {
 /// They are one node rather than three because the machine's job is identical in
 /// all three: open a source, drain it, move to the next, and back up when there is
 /// no next. Counting is the only thing that differs, which is why `never` needs no
-/// arm of its own and no case in [`enumerate`](crate::focus::iter::Executor::enumerate).
+/// arm of its own and no case in [`enumerate`](crate::iter::Executor::enumerate).
 ///
 /// `binds` is the level's, not a source's: every alternative binds the same
 /// variables, which is what makes a register mean one thing whichever branch
@@ -374,7 +374,7 @@ pub enum Project {
 /// generator positions and recompute the rest
 /// ([chapter 7](../../docs/07-compilation.md#derived-facts)).
 ///
-/// [`Cursor`]: crate::focus::iter::Cursor
+/// [`Cursor`]: crate::iter::Cursor
 #[derive(Debug, Clone)]
 pub enum Computed {
     Lit(Value),
@@ -384,7 +384,7 @@ pub enum Computed {
 /// *derived bind*.
 ///
 /// It is **not a loop level**: it produces exactly one value, `enumerate` does not
-/// iterate it, and the [`Cursor`](crate::focus::iter::Cursor) does not store it.
+/// iterate it, and the [`Cursor`](crate::iter::Cursor) does not store it.
 #[derive(Debug, Clone)]
 pub struct DerivedBind {
     pub bind: Address,
@@ -396,7 +396,7 @@ pub struct DerivedBind {
 ///
 /// One arm wide on purpose, exactly as [`Computed`] is. What the type is for is the
 /// shape of the seam — a test is a *predicate on the bindings*, so it takes no
-/// register, contributes nothing to a [`Cursor`](crate::focus::iter::Cursor), and is
+/// register, contributes nothing to a [`Cursor`](crate::iter::Cursor), and is
 /// re-decided on restore rather than replayed. The positive form (`Exists`, for a
 /// subquery whose bindings must not escape) is the additive arm when something needs
 /// one; inventing it now would be a guess about a construct that does not exist yet.
@@ -462,7 +462,7 @@ impl Plan {
     /// How many of this plan's steps are **loop levels**.
     ///
     /// Distinct from `body.len()`, which counts steps, and the distinction is
-    /// load-bearing: a [`Cursor`](crate::focus::iter::Cursor) holds one row per
+    /// load-bearing: a [`Cursor`](crate::iter::Cursor) holds one row per
     /// *level*, and resume replays it against the levels in order. `body.len()`
     /// used to mean both, so every site that wants one or the other now has to
     /// name which.
@@ -797,7 +797,7 @@ impl Fingerprint {
 #[cfg(test)]
 mod tests {
     use super::{proptest::arb_plan_and_store, *};
-    use crate::focus::fixtures::i64_field;
+    use crate::fixtures::i64_field;
     use ::proptest::prelude::*;
     use aperture_schema::schema::PredicateId;
 
@@ -1041,7 +1041,7 @@ mod tests {
         /// symbol the plan carries, and nothing about the query has changed.
         #[test]
         fn a_fingerprint_does_not_depend_on_the_interner(spec in arb_plan_and_store()) {
-            use crate::focus::fixtures::interner_with;
+            use crate::fixtures::interner_with;
 
             let names = ["r0", "r1", "r2"];
             let padded: Vec<&str> = ["pad_a", "pad_b"].into_iter().chain(names).collect();
@@ -1077,7 +1077,7 @@ pub mod proptest {
         Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
         SeekKeyPart, Source, Step,
     };
-    use crate::focus::fixtures::{compose, i64_field, interner_with, str_field};
+    use crate::fixtures::{compose, i64_field, interner_with, str_field};
     use aperture_encoding::tuple::Value;
     use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy};
     use aperture_store::mem_store::MemStore;
@@ -1136,7 +1136,7 @@ pub mod proptest {
 
     /// One key field's value, drawn from the tiny domain above.
     ///
-    /// Public because [`flatten::proptest`](crate::focus::flatten::proptest)
+    /// Public because [`flatten::proptest`](crate::flatten::proptest)
     /// generates `(query, store)` pairs over the same vocabulary: the same field
     /// types, the same value domain and the same encoding, so a query generator and
     /// a plan generator cannot drift apart in what they consider a fact.

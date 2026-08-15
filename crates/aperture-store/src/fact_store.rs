@@ -1,7 +1,7 @@
 //! The **storage seam**: what the engine is allowed to ask of a store.
 //!
 //! Its own module rather than a section of [`store`](crate::store), which
-//! is the fjall implementation, or of [`plan`](crate::focus::plan), where it used
+//! is the fjall implementation, or of the engine's `plan`, where it used
 //! to live. A plan is a description; a store is a thing that answers. Keeping the
 //! trait where either implementation could be mistaken for the definition is what
 //! makes a seam quietly grow the shape of one side of it.

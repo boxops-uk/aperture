@@ -29,7 +29,7 @@
 //!   and buys byte-identical rows across this store and
 //!   `MemStore` (`src/focus/mem_store.rs`) — which is what lets the
 //!   resume battery ([I4](../../docs/invariants.md#i4)) transfer to fjall
-//!   unchanged, since a [`Cursor`](aperture::focus::iter::Cursor) is bytes-only and
+//!   unchanged, since the engine's `Cursor` is bytes-only and
 //!   re-seeks by exactly these bytes.
 //!
 //! `FjallDb` is the long-lived handle and owns the id allocator

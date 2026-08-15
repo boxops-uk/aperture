@@ -17,7 +17,7 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use crate::focus::{
+use crate::{
     cst::{CstKind, CstNode},
     diag::{Code, Diagnostics},
     lexer::{self, LiteralError, Token},
@@ -571,7 +571,7 @@ fn token_text<'s>(children: &[(CstNode<'s>, Out)], token: Token) -> Option<&'s s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{corpus, parse::parse, syntax::source_range};
+    use crate::{corpus, parse::parse, syntax::source_range};
     use aperture_schema::schema::SchemaInterner;
     use lasso::Rodeo;
     use proptest::prelude::*;

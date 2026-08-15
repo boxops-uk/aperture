@@ -5,7 +5,7 @@ use aperture_store::error::StoreError;
 
 use aperture_schema::schema::PredicateId;
 
-use crate::focus::plan::{Address, PlanFingerprint};
+use crate::plan::{Address, PlanFingerprint};
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -30,7 +30,7 @@ pub enum ApertureError {
     AdvanceAfterClose,
 
     /// A resume cursor naming more levels than the plan has. A
-    /// [`Cursor`](crate::focus::iter::Cursor) is bytes-only and rebuilt from the
+    /// [`Cursor`](crate::iter::Cursor) is bytes-only and rebuilt from the
     /// wire, so a cursor that does not match the plan it is resumed against is
     /// untrusted input, not an impossibility.
     #[error("resume cursor names {cursor} level(s) but the plan has {plan}")]
@@ -77,7 +77,7 @@ pub enum ApertureError {
     NotARecord { step: usize },
 
     /// A plan naming a nested field the record does not have: its terminator came
-    /// first. A [`FieldPath`](crate::focus::plan::FieldPath) is checked against the
+    /// first. A [`FieldPath`](crate::plan::FieldPath) is checked against the
     /// schema when the plan is built, so this is a malformed plan, not a query
     /// answering nothing.
     #[error("a plan reads nested field {step} of a record with fewer fields than that")]

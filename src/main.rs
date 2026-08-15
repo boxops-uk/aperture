@@ -50,7 +50,8 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use aperture::focus::{
+use aperture_encoding::tuple::{Value, decode_key};
+use aperture_engine::{
     compile::Compilation,
     error::ApertureError,
     iter::{Executor, Iteratee, Stream},
@@ -59,7 +60,6 @@ use aperture::focus::{
     print,
     syntax::Ty,
 };
-use aperture_encoding::tuple::{Value, decode_key};
 use aperture_schema::{
     id::FactId,
     schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner, Symbol},

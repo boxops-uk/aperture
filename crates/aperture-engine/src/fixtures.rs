@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::focus::{
+use crate::{
     error::ApertureError,
     iter::{Cursor, Executor, Iteratee, Stream},
     plan::Plan,

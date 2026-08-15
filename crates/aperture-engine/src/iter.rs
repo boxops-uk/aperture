@@ -4,7 +4,7 @@ use byteview::ByteView;
 use tinyvec::ArrayVec;
 use tokio_util::sync::CancellationToken;
 
-use crate::focus::{
+use crate::{
     error::ApertureError,
     plan::{
         Access, Address, Computed, FieldPath, Plan, PlanFingerprint, Project, Residual, ResidualOp,
@@ -300,7 +300,7 @@ impl FieldOffsets {
 /// any nested steps are walked inside it.
 ///
 /// Only the top level is cached — the **depth-1 fast path**
-/// ([`FieldPath`](crate::focus::plan::FieldPath)). A nested step re-derives its
+/// ([`FieldPath`](crate::plan::FieldPath)). A nested step re-derives its
 /// offsets on every read, which is the trade a cache per record would have to
 /// earn; flat keys are what the hot loop sees.
 fn field_span(
@@ -1308,7 +1308,7 @@ fn compute(value: &Computed) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{
+    use crate::{
         fixtures::{
             FrozenStore, PointSpy, collect_rows, compose, count_rows, fact_ref_field, i64_field,
             interner_with, run_with_suspends, str_field,
@@ -1432,7 +1432,7 @@ mod tests {
     // A stored key is its top-level fields back to back, so those are reached by
     // the cache alone. A *record-typed* field keeps its own `MARK_RECORD … TERM`
     // wrapper ([chapter 2]), and a plan reaches inside it with a
-    // [`FieldPath`](crate::focus::plan::FieldPath). These pin that walk, including
+    // [`FieldPath`](crate::plan::FieldPath). These pin that walk, including
     // both ways it can be asked for something the row does not have — which are
     // plan faults, and so must be errors rather than bytes that happen to sit
     // there (conventions: errors, not panics, on data paths).

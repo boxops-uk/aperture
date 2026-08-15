@@ -10,7 +10,7 @@
 
 use std::sync::atomic::Ordering;
 
-use aperture::focus::{
+use aperture_engine::{
     error::ApertureError,
     fixtures::{DropProbe, collect_rows, i64_field, interner_with},
     iter::{CANCELLATION_STRIDE, Executor, Iteratee, Stream},

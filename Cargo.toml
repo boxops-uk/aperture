@@ -29,10 +29,11 @@ edition = "2024"
 # `dep:proptest` is what keeps the strategies' own dependency out of an ordinary
 # build: the modules that need the crate are exactly the ones this feature (or
 # `cfg(test)`, which the dev-dependency covers) turns on.
-proptest = ["dep:proptest", "aperture-encoding/proptest", "aperture-store/proptest"]
+proptest = ["dep:proptest", "aperture-engine/proptest"]
 
 [dependencies]
 aperture-encoding = { path = "crates/aperture-encoding" }
+aperture-engine = { path = "crates/aperture-engine" }
 aperture-schema = { path = "crates/aperture-schema" }
 aperture-store = { path = "crates/aperture-store" }
 byteview = { workspace = true }
@@ -86,5 +87,3 @@ proptest = "1.11.0"
 # Scratch directories for the fjall store batteries (PLAN 1a+).
 tempfile = "3.24.0"
 
-[build-dependencies]
-lelwel = "0.10"
