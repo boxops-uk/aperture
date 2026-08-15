@@ -24,7 +24,7 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 |---|---|
 | `aperture-schema` | the type model (`schema`) and the physical row id (`id`) — depends on nothing |
 | `aperture-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
-| `aperture-wire` | the **transport** codec — `varint`, the schema-driven `value`/fact encoding, `WireError`. A sibling of `aperture-encoding`, not a layer on it: it depends on `aperture-schema` alone and shares no bytes with the storage codec |
+| `aperture-wire` | the **transport** codec and its framing — `varint`, the schema-driven `value`/fact encoding, `crc`, `block` (a run of one predicate's facts behind a sync marker), `frame` (`[kind][stream][length]`). A sibling of `aperture-encoding`, not a layer on it: it depends on `aperture-schema` alone and shares no bytes with the storage codec |
 | `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, and the errors the storage layer raises |
 | `aperture-engine` | **focus** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here |
 | root `aperture` | the shell (`src/main.rs`); becomes `aperture-cli` when it grows a command tree |

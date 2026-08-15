@@ -65,4 +65,33 @@ pub enum WireError {
     /// A predicate id the schema does not declare.
     #[error("no predicate {0} in this schema")]
     UnknownPredicate(u32),
+
+    // ---- framing ----------------------------------------------------------
+    /// A block was expected here and its sync marker is not present.
+    #[error("no sync marker at this offset")]
+    NoSyncMarker,
+
+    /// The marker was there and the header behind it is not a block's.
+    ///
+    /// The cheap half of validating a resynchronisation candidate: four bytes,
+    /// before a checksum is computed over anything.
+    #[error("not a block header")]
+    BadMagic,
+
+    /// A block's checksum disagrees with its bytes — a torn write, a flipped bit,
+    /// or a file cut mid-block.
+    #[error("checksum mismatch: header declares {declared:#010x}, bytes give {computed:#010x}")]
+    ChecksumMismatch { declared: u32, computed: u32 },
+
+    /// A count or a length past what a block or frame may carry.
+    ///
+    /// Bounded because both size a read, and in a naive reader an allocation, from
+    /// a number a peer chose. The storage codec never has to think about this; its
+    /// bytes come from our own disk.
+    #[error("{what}: {declared} exceeds the maximum of {max}")]
+    BlockTooLarge {
+        what: &'static str,
+        declared: u64,
+        max: u64,
+    },
 }

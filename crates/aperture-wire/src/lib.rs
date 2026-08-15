@@ -37,29 +37,42 @@
 //!              └ union branch    └ len + raw bytes      └ zigzag varint
 //! ```
 //!
-//! # The three modules
+//! # The modules, bottom to top
 //!
 //! - [`varint`] — LEB128 over zigzag, the primitive everything else is built from,
 //!   and where "not order-preserving" turns into bytes saved.
 //! - [`value`] — the schema-driven value and fact encoding, and the **one** tag on
 //!   the wire: a reference is a union of *an id* and *the target fact itself*
 //!   ([settled]).
-//! - [`error`] — decode faults, kept apart from the storage codec's on purpose: a
-//!   wire fault means a peer sent something wrong, which is an ordinary event, not a
-//!   database to doubt.
+//! - [`crc`] — CRC-32, the standard one, for a block's integrity check.
+//! - [`block`] — a run of facts of one predicate, behind a sync marker and a
+//!   checksummed header. **The same bytes on a socket and on disk**: a `CopyData`
+//!   frame's payload is a block, and a fact file is blocks back to back, which is
+//!   what makes "one fact encoding, not two" checkable rather than aspirational.
+//! - [`frame`] — `[kind][stream][length]`, the connection's multiplexing unit.
+//!
+//! The layering is worth reading as a claim about *where a length comes from*.
+//! [`value`] has no lengths at all — the schema says where every field ends.
+//! [`block`] has one, because a splitter must skip a block it will not parse.
+//! [`frame`] has one, because a socket reader must know how many bytes to await.
+//! Each is the least that layer can do its job with.
 //!
 //! # What is deliberately not here yet
 //!
-//! **Framing.** Blocks, sync markers, CRC32 and the `[type][stream_id][len]` frame
-//! header are the layer above ([operations §6 and §8]); this crate encodes one fact
-//! and one value, and knows nothing about where they sit. Keeping the split means the
-//! same fact encoding serves the wire and the fact file, which is what makes "one
-//! encoding, not two" checkable rather than aspirational.
+//! **The file envelope.** A fact file's header (magic, format version, producing
+//! schema fingerprint) and its optional footer of block offsets are
+//! [operations §8](../../docs/aperture-cli-design.md)'s and belong to Phase 7b with
+//! the rest of the file pipeline. Blocks are here because they are shared with the
+//! wire; the envelope is not shared with anything.
+//!
+//! **The protocol.** [`frame`] delimits messages and does not interpret them: which
+//! kinds exist, what a handshake says, and how a stream is opened and closed are the
+//! layer above. See [`FrameKind`] for why that is a decision and not a gap.
 //!
 //! **The outbound direction.** A query row is shaped by the query's *head*, not by a
 //! predicate, so it needs a row descriptor sent once per stream — PostgreSQL's
 //! `RowDescription` before its `DataRow`s, which is the model §6 already borrows. The
-//! value encoding below is the same one; only where the type comes from differs.
+//! value encoding is the same one; only where the type comes from differs.
 //!
 //! [I1]: ../../docs/invariants.md#i1
 //! [I2]: ../../docs/invariants.md#i2
@@ -68,9 +81,14 @@
 //! [settled]: ../../docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
 //! [operations §6 and §8]: ../../docs/aperture-cli-design.md#6-wire-protocol--the-write-stream
 
+pub mod block;
+pub mod crc;
 pub mod error;
+pub mod frame;
 pub mod value;
 pub mod varint;
 
+pub use block::{BlockHeader, decode_block, encode_block, find_sync};
 pub use error::WireError;
+pub use frame::{FrameHeader, FrameKind, StreamId, decode_frame, encode_frame};
 pub use value::{WireFact, WireRef, WireValue, decode_fact, encode_fact, from_bytes, to_bytes};

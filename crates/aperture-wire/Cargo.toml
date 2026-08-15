@@ -14,6 +14,8 @@ proptest = ["dep:proptest"]
 # is the point rather than an omission.
 aperture-schema = { path = "../aperture-schema" }
 lasso = { workspace = true }
+# The block splitter's marker scan — operations §8's "SIMD memchr-style scan".
+memchr = { workspace = true }
 proptest = { version = "1.11.0", optional = true }
 thiserror = { workspace = true }
 

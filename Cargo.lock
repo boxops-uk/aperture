@@ -126,6 +126,7 @@ dependencies = [
  "aperture-encoding",
  "aperture-schema",
  "lasso",
+ "memchr",
  "proptest",
  "thiserror",
 ]

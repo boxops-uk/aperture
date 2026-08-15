@@ -542,7 +542,13 @@ format inherits its fact encoding rather than defining a second one.
 ### The frame layer
 
 - PG-inspired, **not** PG-compatible. Startup/handshake PG-shaped (version, DB name, session
-  mode per ops-I6); thereafter framed: `[type:u8][stream_id:u32][len:u32][payload]`.
+  mode per ops-I6); thereafter framed: `[kind:u8][stream:u32][length:u32][payload]` — **built**
+  (`aperture-wire::frame`), 9 bytes. `kind` is a byte with named constants rather than a closed
+  enum, deliberately: a framing layer delimits messages and does not interpret them, so an
+  unrecognised kind is handed up intact rather than failing the decode — which is also what
+  lets a peer at a newer protocol version be told "I do not know that message" instead of
+  "your bytes are malformed". `length` is bounded before it is trusted, because it sizes a read
+  from a number a peer chose.
 - Streams are the multiplexing unit: a query is a stream; a write is a stream carrying
   CopyData-framed fact blocks. Short queries complete while long ones run on the same
   connection (the head-of-line-blocking fix that motivated leaving PG's strictly-serial model).
@@ -675,18 +681,46 @@ storage and its references are `FactId`s already.
   artifact needs. A block is *not* sortable in isolation, though — a key holding a nested
   reference has no bytes until interning has run — and that is the §5 scheduling question, not a
   format one.
-- **Block = `[sync marker][block header: magic, predicate id, n, length, CRC32][n facts]`.**
+- **Block — built** (`aperture-wire::block`), 30 bytes of framing:
+
+  ```text
+  [sync: FF × 10][magic "APBK"][predicate u32][count u32][length u32][crc32 u32][payload]
+  ```
+
   RLE of the predicate ID: indexers writing in visitation order emit small blocks (bursts);
   the post-merge writer emits huge ones; blocks coalesce monotonically through k-merges until
-  fully ordered. Same format on-wire (a CopyData frame carries a block) and on disk.
-- **Sync markers:** a *reserved, structurally-illegal* byte sequence (unused type-tag run the
-  encoder never emits) — minimizes false candidates — but every hit is only a *candidate*:
-  values carry arbitrary bytes (blobs/source text), so a marker can occur inside one. The
-  validated block header (magic + length + CRC) after the marker is the load-bearing safety;
-  SIMD `memchr`-style scan finds candidates, header validation rejects coincidences in a few
-  instructions. (Avro's random-marker + decode-validate pattern, with a reserved sequence.)
-- Splitting for parallel ingest: seek anywhere → scan to next validated sync → hand blocks to
-  workers. No reliance on per-predicate contiguity in the input.
+  fully ordered. Same bytes on-wire (a CopyData frame's payload *is* a block) and on disk, and
+  that is a test rather than an intention (`tests/one_encoding.rs`). Header fields are
+  fixed-width where the payload is varints, because a splitter must read `length` before it can
+  trust anything else; little-endian, because nothing here is ordered — big-endian in the
+  storage codec is an I1 requirement this file does not inherit. The CRC covers the header's
+  own fields as well as the payload, so a corrupted `length` is caught rather than used to skip
+  to the wrong place.
+- **Sync markers — amended, and the amendment is in our favour.** This section specified a
+  *reserved, structurally-illegal* sequence ("unused type-tag run the encoder never emits") and
+  then conceded that every hit is only a *candidate*, since "values carry arbitrary bytes
+  (blobs/source text), so a marker can occur inside one". **Both halves were wrong for the codec
+  that got built, in opposite directions**, and the result is stronger than either:
+
+  - There are no type tags to reserve a run of — the value encoding is schema-driven and emits
+    none (§6).
+  - But the marker genuinely *cannot* occur in a payload, by the encoding rather than by luck.
+    Ten `0xFF` bytes are unreachable: a string is length-prefixed UTF-8 and **UTF-8 never uses
+    `0xF8`–`0xFF` at all**; a varint's continuation bytes are `0x80`–`0xFF` but its final byte
+    is below `0x80`, so a run ends where the varint does and the longest one possible is
+    `u64::MAX` at nine; and runs cannot join across values for the same reason. The header
+    cannot contribute one either — `count` and `length` are capped to keep a zero top byte, so
+    only the checksum is free to be all-ones, and four is not ten.
+
+  **A marker therefore appears exactly once per block, at its start**, and for a well-formed
+  file a scan finds boundaries and nothing else. Validation (magic, then CRC) remains
+  load-bearing — for the fault it is actually for: a torn write, a flipped bit, a file cut
+  mid-block. Not for disambiguating data that looked like a header. SIMD `memchr`-style scan
+  finds the marker's first byte at memory bandwidth and confirms the run behind it. (This is
+  Avro's marker-and-validate pattern with the collision case designed out rather than accepted.)
+- Splitting for parallel ingest: seek anywhere → scan to next sync → hand blocks to
+  workers. No reliance on per-predicate contiguity in the input. Checked from *every* offset of
+  a multi-block file, not a sampled few.
 - **This is a real advantage over Glean, and it is the splittability, not the encoding.** A Glean
   binary `Batch` is one opaque sequential blob: `firstId`, `count`, and `facts` where "facts may
   only refer to facts which occur before them in this sequence" with ids assumed sequential from
