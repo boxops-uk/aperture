@@ -15,7 +15,6 @@ pub mod print;
 pub mod reorder;
 pub mod store;
 pub mod syntax;
-pub mod tuple;
 pub mod ty;
 
 // The generated-parser glue and its `logos` lexer. Public because the façade

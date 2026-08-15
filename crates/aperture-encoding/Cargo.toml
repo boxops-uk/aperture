@@ -1,0 +1,20 @@
+[package]
+name = "aperture-encoding"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Mirrors the root package's feature: exposes the `arb_*` strategies to
+# consumers outside this crate's own `cfg(test)`.
+proptest = ["dep:proptest"]
+
+[dependencies]
+aperture-schema = { path = "../aperture-schema" }
+lasso = { workspace = true }
+memchr = { workspace = true }
+proptest = { version = "1.11.0", optional = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.11.0"

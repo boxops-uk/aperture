@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
-use crate::focus::error::StoreCodecError;
+use crate::error::StoreCodecError;
 use aperture_schema::{
     id::FactId,
     schema::{LocalInterner, PredicateId, PredicateTy, Symbol},

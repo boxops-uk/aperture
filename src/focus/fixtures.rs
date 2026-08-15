@@ -22,8 +22,8 @@ use crate::focus::{
     iter::{Cursor, Executor, Iteratee, Stream},
     plan::Plan,
     store::predicate_of,
-    tuple::{TupleEncoder, Value, put_i64, put_str, strinc},
 };
+use aperture_encoding::tuple::{TupleEncoder, Value, put_i64, put_str, strinc};
 use aperture_schema::{
     id::FactId,
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId, SchemaInterner},

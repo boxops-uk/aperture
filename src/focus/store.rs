@@ -685,8 +685,8 @@ mod tests {
             Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
             SeekKeyPart, Step,
         },
-        tuple::strinc,
     };
+    use aperture_encoding::tuple::strinc;
     use aperture_schema::schema::PredicateTy;
 
     /// One fact as drawn: predicate, key bytes, value bytes.
@@ -1426,8 +1426,8 @@ mod tests {
         use crate::focus::{
             fact::{Fact as _, ToValue, record},
             fixture,
-            tuple::Value,
         };
+        use aperture_encoding::tuple::Value;
 
         struct Foo(&'static str);
         impl crate::focus::fact::Fact for Foo {

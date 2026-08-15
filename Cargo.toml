@@ -9,6 +9,7 @@ default-members = [".", "crates/*"]
 # fjall pin in particular is load-bearing (see below).
 [workspace.dependencies]
 byteview = "0.10.1"
+memchr = "2.8.2"
 lasso = "0.7.3"
 serde = { version = "1.0.150", features = ["derive"] }
 thiserror = "2.0.18"
@@ -27,9 +28,10 @@ edition = "2024"
 # `dep:proptest` is what keeps the strategies' own dependency out of an ordinary
 # build: the modules that need the crate are exactly the ones this feature (or
 # `cfg(test)`, which the dev-dependency covers) turns on.
-proptest = ["dep:proptest"]
+proptest = ["dep:proptest", "aperture-encoding/proptest"]
 
 [dependencies]
+aperture-encoding = { path = "crates/aperture-encoding" }
 aperture-schema = { path = "crates/aperture-schema" }
 byteview = { workspace = true }
 codespan-reporting = "0.13.1"
@@ -47,7 +49,7 @@ codespan-reporting = "0.13.1"
 fjall = "=3.1.8"
 lasso = { workspace = true }
 logos = "0.16.1"
-memchr = "2.8.2"
+memchr = { workspace = true }
 # Optional, and reached only through the `proptest` feature above — never linked
 # into an ordinary build. `cargo test` gets it from `[dev-dependencies]`.
 proptest = { version = "1.11.0", optional = true }
@@ -63,6 +65,11 @@ tinyvec = { version = "1.11.0", features = ["alloc"] }
 tokio-util = "0.7.18"
 
 [dev-dependencies]
+# The codec's `arb_*` strategies and the I5 decode probe live behind that crate's
+# `proptest` feature. `cfg(test)` in this package does not reach into a
+# dependency, so the feature is what the batteries here compile against — the
+# cross-crate form of the rule the feature comment above describes.
+aperture-encoding = { path = "crates/aperture-encoding", features = ["proptest"] }
 # Allocation-counting global allocator for the I9 hot-path guard
 # (`exec::scan_is_alloc_free_per_row`). Its counters are thread-local, so it
 # survives the parallel test harness; it installs its own `#[global_allocator]`

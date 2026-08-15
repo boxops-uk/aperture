@@ -40,6 +40,7 @@ name = "aperture"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "aperture-encoding",
  "aperture-schema",
  "byteview",
  "codespan-reporting",
@@ -56,6 +57,18 @@ dependencies = [
  "thiserror",
  "tinyvec",
  "tokio-util",
+]
+
+[[package]]
+name = "aperture-encoding"
+version = "0.1.0"
+dependencies = [
+ "aperture-schema",
+ "lasso",
+ "memchr",
+ "proptest",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]

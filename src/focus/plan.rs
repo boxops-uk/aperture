@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::focus::tuple::Value;
+use aperture_encoding::tuple::Value;
 use aperture_schema::schema::{PredicateId, PredicateTy, Symbol};
 
 /// Which register a plan reads or binds — an index into the frame stack, named
@@ -1080,8 +1080,8 @@ pub mod proptest {
     use crate::focus::{
         fixtures::{compose, i64_field, interner_with, str_field},
         mem_store::MemStore,
-        tuple::Value,
     };
+    use aperture_encoding::tuple::Value;
     use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy};
 
     /// Bounds are deliberately tight: the resume battery re-runs a plan once per

@@ -899,8 +899,8 @@ mod tests {
     /// A row as the corpus writes it: bare scalars, `{a = …}` for a record, and
     /// `test.Foo#1` for a reference — the predicate it belongs to and its sequence
     /// within it, which is also its position in the fixture.
-    fn render(value: &crate::focus::tuple::Value, schema: &Schema) -> String {
-        use crate::focus::tuple::Value;
+    fn render(value: &aperture_encoding::tuple::Value, schema: &Schema) -> String {
+        use aperture_encoding::tuple::Value;
 
         match value {
             Value::Int(n) => n.to_string(),

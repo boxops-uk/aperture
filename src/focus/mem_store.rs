@@ -12,8 +12,8 @@ use crate::focus::{
     error::StoreError,
     fact_store::{Entity, FactStore},
     store::predicate_of,
-    tuple::strinc,
 };
+use aperture_encoding::tuple::strinc;
 use aperture_schema::{id::FactId, schema::PredicateId};
 
 #[derive(Default)]

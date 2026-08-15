@@ -61,8 +61,8 @@ use aperture::focus::{
     print,
     store::{FjallDb, FjallStore},
     syntax::Ty,
-    tuple::{Value, decode_key},
 };
+use aperture_encoding::tuple::{Value, decode_key};
 use aperture_schema::{
     id::FactId,
     schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner, Symbol},

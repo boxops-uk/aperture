@@ -1,7 +1,7 @@
 //! Writing a fact as a **well-typed Rust value** — the seam a hand-written deriver
 //! emits through.
 //!
-//! [`TupleEncode`](crate::focus::tuple::TupleEncode) already lets a type encode itself
+//! [`TupleEncode`](aperture_encoding::tuple::TupleEncode) already lets a type encode itself
 //! as a tuple, and that is the right primitive for the *codec*. It is the wrong one
 //! for someone writing facts, for two reasons that both end in silently wrong bytes:
 //!
@@ -13,11 +13,11 @@
 //!   sorted by name ([chapter 6]), which a Rust struct has no reason to. So a
 //!   `struct Decl { module, name, line }` encoded field by field produces a key the
 //!   read path decodes as `(line, module, name)`: no error, just a fact nobody can
-//!   find. The positional encoder in [`tuple`](crate::focus::tuple) cannot catch that,
+//!   find. The positional encoder in [`tuple`](aperture_encoding::tuple) cannot catch that,
 //!   because a tuple has no field names to check.
 //! - **A key is flat and a value is not.** `encode_typed` is the obvious function to
 //!   reach for and is wrong for a key, which is its own silent-mismatch trap; see
-//!   [`encode_key`](crate::focus::tuple::encode_key).
+//!   [`encode_key`](aperture_encoding::tuple::encode_key).
 //!
 //! So a [`Fact`] names its fields and this module resolves them **against the
 //! schema**: a name the predicate does not declare, a field left out, a value of the
@@ -59,10 +59,8 @@
 //! [chapter 6]: ../../../docs/06-types-and-schema.md
 //! [I11]: ../../../docs/invariants.md#i11
 
-use crate::focus::{
-    error::FactError,
-    tuple::{Value, encode_key, encode_typed},
-};
+use crate::focus::error::FactError;
+use aperture_encoding::tuple::{Value, encode_key, encode_typed};
 use aperture_schema::{
     id::FactId,
     schema::{PredicateId, PredicateTy, Schema, SchemaInterner},
@@ -178,7 +176,7 @@ pub fn encode<F: Fact>(
 ///
 /// The reordering is the point. Returning a canonical `Value` rather than encoding
 /// here keeps one encoder: what comes back is what
-/// [`encode_typed`](crate::focus::tuple::encode_typed) already writes positionally,
+/// [`encode_typed`](aperture_encoding::tuple::encode_typed) already writes positionally,
 /// so the name resolution cannot drift from the bytes.
 fn checked(
     interner: &SchemaInterner,
@@ -287,7 +285,8 @@ fn shape(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{fixture, tuple::decode_key};
+    use crate::focus::fixture;
+    use aperture_encoding::tuple::decode_key;
 
     /// `test.Foo : { id : int, name : string } -> string` — a record key whose
     /// fields sort `id`, `name`, and a value side.
@@ -579,7 +578,7 @@ mod tests {
     /// simply never meets them.
     #[test]
     fn a_key_is_flat_and_a_wrapped_one_would_never_match() {
-        use crate::focus::tuple::{MARK_RECORD, encode_typed};
+        use aperture_encoding::tuple::{MARK_RECORD, encode_typed};
 
         let schema = fixture::schema();
         let ty = schema
@@ -618,7 +617,7 @@ mod tests {
         let (predicate, key, _) = encoded(&Ref(target)).expect("a well-formed fact");
 
         assert_eq!(predicate, PredicateId(9));
-        assert_eq!(key, crate::focus::tuple::fact_ref_bytes(target));
+        assert_eq!(key, aperture_encoding::tuple::fact_ref_bytes(target));
     }
 
     /// ...and it has to be the id of a fact of the **declared** predicate.

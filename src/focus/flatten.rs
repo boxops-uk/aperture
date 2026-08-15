@@ -74,8 +74,8 @@ use crate::focus::{
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, QueryStmt},
-    tuple::{MARK_RECORD, MARK_TERM, Value, put_i64, put_str},
 };
+use aperture_encoding::tuple::{MARK_RECORD, MARK_TERM, Value, put_i64, put_str};
 use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
 
 /// Where a pattern's value lives when the plan runs.
@@ -3161,9 +3161,9 @@ mod tests {
         mem_store::MemStore,
         parse::parse,
         plan::{Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Test},
-        tuple::Value,
         ty,
     };
+    use aperture_encoding::tuple::Value;
     use aperture_schema::id::FactId;
 
     // ---- driving the front end ---------------------------------------------
@@ -5769,8 +5769,8 @@ pub mod proptest {
     use crate::focus::{
         mem_store::MemStore,
         plan::proptest::{FieldTy, FieldVal},
-        tuple::{MARK_RECORD, MARK_TERM, Value, fact_ref_bytes},
     };
+    use aperture_encoding::tuple::{MARK_RECORD, MARK_TERM, Value, fact_ref_bytes};
     use aperture_schema::{
         id::FactId,
         schema::{Predicate, PredicateId, PredicateTy, Schema},
@@ -7506,10 +7506,10 @@ mod battery {
             proptest::{arb_interruption_schedule, cut_points},
         },
         store::FjallDb,
-        tuple::Value,
         ty,
     };
     use ::proptest::prelude::*;
+    use aperture_encoding::tuple::Value;
     use aperture_schema::{
         id::FactId,
         schema::{LocalInterner, PredicateTy, Schema},

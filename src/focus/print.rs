@@ -25,8 +25,8 @@ use crate::focus::{
         Step, Test,
     },
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},
-    tuple::{MARK_TERM, TupleDecoder, Value, decode_typed, decode_typed_at},
 };
+use aperture_encoding::tuple::{MARK_TERM, TupleDecoder, Value, decode_typed, decode_typed_at};
 use aperture_schema::schema::{LocalInterner, PredicateRef, PredicateTy, Schema, Symbol};
 
 /// How loosely a pattern binds, from the grammar:
@@ -965,9 +965,9 @@ mod tests {
         parse::parse,
         plan::{Access, Level as PlanLevel},
         syntax::{proptest::arb_query_spec, source_range},
-        tuple::fact_ref_bytes,
     };
     use ::proptest::prelude::*;
+    use aperture_encoding::tuple::fact_ref_bytes;
     use aperture_schema::{id::FactId, schema::PredicateId};
 
     /// **A register's field is named against that register's predicate.**
