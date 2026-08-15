@@ -35,6 +35,7 @@ proptest = ["dep:proptest", "aperture-engine/proptest"]
 aperture-encoding = { path = "crates/aperture-encoding" }
 aperture-engine = { path = "crates/aperture-engine" }
 aperture-schema = { path = "crates/aperture-schema" }
+aperture-server = { path = "crates/aperture-server" }
 aperture-store = { path = "crates/aperture-store" }
 byteview = { workspace = true }
 codespan-reporting = "0.13.1"

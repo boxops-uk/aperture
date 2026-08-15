@@ -1,0 +1,20 @@
+[package]
+name = "aperture-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The read path (engine), the write path (ingest), the store they meet over, and
+# the codec both directions speak.
+aperture-encoding = { path = "../aperture-encoding" }
+aperture-engine = { path = "../aperture-engine" }
+aperture-ingest = { path = "../aperture-ingest" }
+aperture-schema = { path = "../aperture-schema" }
+aperture-store = { path = "../aperture-store" }
+aperture-wire = { path = "../aperture-wire" }
+thiserror = { workspace = true }
+tokio-util = "0.7.18"
+
+[dev-dependencies]
+lasso = { workspace = true }
+tempfile = "3.24.0"

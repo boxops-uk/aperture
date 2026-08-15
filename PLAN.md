@@ -901,17 +901,24 @@ pipeline, which is where *where interning happens* gets answered — a per-chunk
 stratum boundary in the merge. *Done per task:* ingest-then-query returns the ingested facts.
 
 **Acceptance — 7a:**
-- [ ] Facts are writable over a socket and queried back on the same connection.
+- [x] Facts are writable over a socket and queried back on the same connection. Twice over: a Rust client (`aperture-server/tests/over_a_socket.rs`) and a **C# one** (`clients/dotnet`), the second because a client in this repository can agree with the server by accident.
 - [x] Transport encoder/decoder round-trip property green (tier-1), nested references included.
 - [x] A nested reference interns to the same `FactId` a second occurrence of that target resolves to — one row, however many parents name it.
-- [x] A nested fact disagreeing with a stored one under the same key is rejected by name (`ops-I5`). *Surviving streams is the socket's half of that, and waits for it.*
+- [x] A nested fact disagreeing with a stored one under the same key is rejected by name (`ops-I5`), and the connection's other streams survive.
 - [x] Interning is bottom-up and total on any well-typed nested value: no order in which a parent is written before the child its key holds. **Narrowed by the property that proved it:** total up to *self-consistency*. A fact naming one target twice with two different value sides is well-typed and contradictory, and is refused as an ordinary conflict — the criterion as written was too strong. The census proves both outcomes are reached, so the weakened property is not vacuous.
 
-**Built so far:** the transport codec and its framing (`aperture-wire` — `varint`, `value`,
-`crc`, `block`, `frame`) and the write funnel (`aperture-ingest` — `FactSink`, `intern_fact`,
-`intern_block`) against a real `FjallDb`. What is left of 7a is the socket: the PG-shaped
-handshake, the per-DB single writer task, and a query stream, so that ingest-then-query closes on
-one connection.
+**7a is done.** The transport codec and its framing (`aperture-wire` — `varint`, `value`, `crc`,
+`block`, `desc`, `frame`), the write funnel (`aperture-ingest` — `FactSink`, `intern_fact`,
+`intern_block`), the protocol and socket (`aperture-server`), a binary to run it
+(`src/bin/aperture-serve.rs`), and a C# client that proves the protocol is implementable from
+outside (`clients/dotnet`).
+
+**What 7a deliberately left, each named as deferred in [operations §5](docs/aperture-cli-design.md)
+rather than discovered later:** fair interleaving between streams (frames carry a stream id and
+the server honours it, but a long query still delays a short one behind it), chunked incremental
+results (the executor already suspends; the loop that resumes it between chunks is missing),
+in-band cancellation, per-stream flow control, and TCP (`ops-I10` is default-closed — the opt-in
+flag is not wired). None is on 7b's path.
 
 **Acceptance — 7b:**
 - [ ] Facts are writable from files in parallel, and queried back.

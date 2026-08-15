@@ -43,6 +43,7 @@ dependencies = [
  "aperture-encoding",
  "aperture-engine",
  "aperture-schema",
+ "aperture-server",
  "aperture-store",
  "byteview",
  "codespan-reporting",
@@ -114,6 +115,22 @@ dependencies = [
  "lasso",
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "aperture-server"
+version = "0.1.0"
+dependencies = [
+ "aperture-encoding",
+ "aperture-engine",
+ "aperture-ingest",
+ "aperture-schema",
+ "aperture-store",
+ "aperture-wire",
+ "lasso",
+ "tempfile",
+ "thiserror",
+ "tokio-util",
 ]
 
 [[package]]

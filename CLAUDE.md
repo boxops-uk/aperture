@@ -28,7 +28,15 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 | `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, and the errors the storage layer raises |
 | `aperture-ingest` | the **write funnel** (`ops-I5`): `FactSink` (the write seam, as `FactStore` is the read seam), and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up. Sits above `store` and `wire` because it is the crossing between them, and neither should know the other |
 | `aperture-engine` | **focus** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here |
-| root `aperture` | the shell (`src/main.rs`); becomes `aperture-cli` when it grows a command tree |
+| `aperture-server` | the wire **protocol** over a Unix socket: the message vocabulary (`protocol`), one connection's life (`session`), rows out without a fourth encoder (`rows`), the listener (`server`) |
+| root `aperture` | the shell (`src/main.rs`) and `src/bin/aperture-serve.rs`; becomes `aperture-cli` when it grows a command tree |
+
+**A non-Rust client is part of the test surface.** `clients/dotnet` is a C#
+implementation of the wire protocol plus a console producer that writes a nested code
+index into a real database and queries it back — `./clients/dotnet/run-demo.sh`. It
+exists to answer what the Rust tests cannot: whether the protocol is implementable from
+outside, by something that shares no constants, no enums and no unwritten assumptions.
+It has already earned that twice.
 
 `src/main.rs` compiles and runs what you type against a real store seeded with a **code index**
 (files → modules → declarations → references), written through the fact API; `:plan` shows the

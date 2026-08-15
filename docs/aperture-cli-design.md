@@ -539,6 +539,10 @@ Interactive psql-like REPL.
 **This is the primary ingestion API.** Phase 7 builds it before the file pipeline, and §8's file
 format inherits its fact encoding rather than defining a second one.
 
+**Built** — `aperture-server`, over a Unix socket, with `src/bin/aperture-serve.rs` to run it and
+a C# client under `clients/dotnet` that speaks it from outside the repository. What is *not* built
+is listed at the end of this section rather than implied by its absence.
+
 ### The frame layer
 
 - PG-inspired, **not** PG-compatible. Startup/handshake PG-shaped (version, DB name, session
@@ -664,6 +668,24 @@ cleanly and which then conflicted *has* written the target. That is close to har
 reason is worth stating: the target was legitimately named and legitimately defined, facts are
 immutable, and interning is idempotent, so retrying the whole message after fixing the conflict
 dedups against it. What a transaction would prevent here is a wasted row, not a wrong answer.
+
+### What is built, and what §5 still owes
+
+| | |
+|---|---|
+| **built** | the frame layer; the handshake, including the schema-fingerprint check; write streams (open → blocks → done → counts); query streams (descriptor → rows → complete); stream-level failure that leaves the connection usable |
+| **deferred, named in §5** | fair interleaving between streams; chunked incremental results; in-band cancellation; per-stream flow control; TCP (`ops-I10` default-closed) |
+
+The two worth being precise about, because their absence is easy to mistake for their presence:
+
+- **Streams are real but not concurrent.** Frames carry a stream id, the server honours it, and two
+  streams coexist on a connection — but each frame is processed to completion as it arrives, so a
+  long query does delay a short one behind it. §5's per-connection writer task with round-robin over
+  per-stream queues is what fixes that, and it is a scheduler on top of this loop rather than a
+  different loop.
+- **A query's rows are collected, then sent.** The executor already suspends — `enumerate` returns
+  `Suspended` — so what is missing is the loop that resumes it between chunks, not the machinery
+  under it.
 
 ### What this direction does *not* share with the read direction
 

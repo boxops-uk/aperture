@@ -49,6 +49,9 @@
 //!   checksummed header. **The same bytes on a socket and on disk**: a `CopyData`
 //!   frame's payload is a block, and a fact file is blocks back to back, which is
 //!   what makes "one fact encoding, not two" checkable rather than aspirational.
+//! - [`desc`] — a **row descriptor**: the outbound direction's type source, since a
+//!   query row is shaped by the head rather than by a predicate. Sent once per
+//!   stream; rows then use the same value codec a fact's key does.
 //! - [`frame`] — `[kind][stream][length]`, the connection's multiplexing unit.
 //!
 //! The layering is worth reading as a claim about *where a length comes from*.
@@ -69,10 +72,10 @@
 //! kinds exist, what a handshake says, and how a stream is opened and closed are the
 //! layer above. See [`FrameKind`] for why that is a decision and not a gap.
 //!
-//! **The outbound direction.** A query row is shaped by the query's *head*, not by a
-//! predicate, so it needs a row descriptor sent once per stream — PostgreSQL's
-//! `RowDescription` before its `DataRow`s, which is the model §6 already borrows. The
-//! value encoding is the same one; only where the type comes from differs.
+//! **The protocol's message vocabulary.** [`frame`] delimits; `aperture-server`'s
+//! `protocol` module is what says a startup frame carries a database name. Kept apart
+//! so a client can be written against the codec without adopting a server's idea of a
+//! session.
 //!
 //! [I1]: ../../docs/invariants.md#i1
 //! [I2]: ../../docs/invariants.md#i2
@@ -83,12 +86,14 @@
 
 pub mod block;
 pub mod crc;
+pub mod desc;
 pub mod error;
 pub mod frame;
 pub mod value;
 pub mod varint;
 
 pub use block::{BlockHeader, decode_block, encode_block, find_sync};
+pub use desc::{Desc, decode_desc, encode_desc};
 pub use error::WireError;
 pub use frame::{FrameHeader, FrameKind, StreamId, decode_frame, encode_frame};
 pub use value::{WireFact, WireRef, WireValue, decode_fact, encode_fact, from_bytes, to_bytes};
