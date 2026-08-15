@@ -265,6 +265,16 @@ fn workloads(options: &Options) -> Vec<Workload> {
     let one_file = format!("symbol_{:07}", options.files / 2);
 
     vec![
+        // **The baseline: a query that touches no data at all.** A constant bind folds,
+        // so this compiles to a plan with no steps and means exactly one row — no
+        // scan, no seek, no store read. Whatever it costs is what *every* query pays
+        // before it does anything: parse, typecheck, flatten, reorder, the hop to the
+        // blocking pool, and a round trip. Subtract it from the rest and what is left
+        // is the work.
+        Workload {
+            name: "no data (baseline)",
+            focus: "X where X = 42".to_owned(),
+        },
         Workload {
             name: "scan files",
             focus: "F where src.File F".to_owned(),
