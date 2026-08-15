@@ -1,0 +1,42 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Aperture.Client\Aperture.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Buildalyzer runs the design-time build out of process, so a project's real
+         compilation inputs — its source list, its references, its preprocessor symbols —
+         come from MSBuild itself rather than from a guess about how it is laid out.
+         Buildalyzer.Workspaces turns each result into a Roslyn project. -->
+    <PackageReference Include="Buildalyzer" Version="9.0.0" />
+    <PackageReference Include="Buildalyzer.Workspaces" Version="9.0.0" />
+    <!-- Roslyn, newer than the 4.10 Buildalyzer.Workspaces asks for, so that a
+         repository written in a recent C# parses as itself. The Visual Basic half is
+         here only to keep the set coherent: Buildalyzer.Workspaces depends on it, and
+         NuGet is right to refuse a Roslyn whose halves are different versions. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.14.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces" Version="4.14.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- The versions above are this project's, stated here. MSBuild walks *up* from a
+         project for a `Directory.Packages.props`, so a checkout that happens to sit
+         inside some other workspace would otherwise be told what Roslyn to use by a
+         file that has never heard of it. -->
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+    <!-- A large index holds every compilation's symbols while it walks them; the server
+         collector is what keeps that from dominating the run. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <!-- MSBuild's own assemblies come from the SDK at run time, and NuGet's advisory
+         about a transitive package Buildalyzer pins is not actionable here. -->
+    <NoWarn>$(NoWarn);NU1903</NoWarn>
+  </PropertyGroup>
+
+</Project>
