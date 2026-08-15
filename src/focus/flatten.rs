@@ -73,10 +73,10 @@ use crate::focus::{
         SeekKeyPart, Source, Step, Test,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
-    schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, QueryStmt},
     tuple::{MARK_RECORD, MARK_TERM, Value, put_i64, put_str},
 };
+use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
 
 /// Where a pattern's value lives when the plan runs.
 ///
@@ -3157,7 +3157,6 @@ mod tests {
         cst::CstNode,
         fixture,
         fixtures::{collect_rows, i64_field, run_with_suspends, str_field},
-        id::FactId,
         lower::lower,
         mem_store::MemStore,
         parse::parse,
@@ -3165,6 +3164,7 @@ mod tests {
         tuple::Value,
         ty,
     };
+    use aperture_schema::id::FactId;
 
     // ---- driving the front end ---------------------------------------------
 
@@ -5285,8 +5285,8 @@ mod tests {
     /// corpus entry: the corpus can only say what the fixture can express.
     #[test]
     fn matching_a_whole_key_against_a_record_field_is_not_implemented_yet() {
-        use crate::focus::schema::Predicate;
         use ::lasso::Rodeo;
+        use aperture_schema::schema::Predicate;
         use std::sync::Arc;
 
         let mut names = Rodeo::new();
@@ -5328,8 +5328,8 @@ mod tests {
     /// caught it.
     #[test]
     fn reading_through_a_reference_in_a_value_is_not_implemented_yet() {
-        use crate::focus::schema::Predicate;
         use ::lasso::Rodeo;
+        use aperture_schema::schema::Predicate;
         use std::sync::Arc;
 
         let mut names = Rodeo::new();
@@ -5767,11 +5767,13 @@ pub mod proptest {
     use lasso::Rodeo;
 
     use crate::focus::{
-        id::FactId,
         mem_store::MemStore,
         plan::proptest::{FieldTy, FieldVal},
-        schema::{Predicate, PredicateId, PredicateTy, Schema},
         tuple::{MARK_RECORD, MARK_TERM, Value, fact_ref_bytes},
+    };
+    use aperture_schema::{
+        id::FactId,
+        schema::{Predicate, PredicateId, PredicateTy, Schema},
     };
 
     /// Bounds are tight for the same reason the executor's are: the reorderability
@@ -7497,19 +7499,21 @@ mod battery {
         cst::CstNode,
         diag::Diagnostics,
         fixtures::{collect_rows, run_with_suspends},
-        id::FactId,
         lower::lower,
         parse::parse,
         plan::{
             Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
             proptest::{arb_interruption_schedule, cut_points},
         },
-        schema::{LocalInterner, PredicateTy, Schema},
         store::FjallDb,
         tuple::Value,
         ty,
     };
     use ::proptest::prelude::*;
+    use aperture_schema::{
+        id::FactId,
+        schema::{LocalInterner, PredicateTy, Schema},
+    };
     use std::collections::BTreeSet;
     use tempfile::TempDir;
 

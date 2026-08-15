@@ -1,9 +1,7 @@
 use std::fmt;
 
-use crate::focus::{
-    schema::{PredicateId, PredicateTy, Symbol},
-    tuple::Value,
-};
+use crate::focus::tuple::Value;
+use aperture_schema::schema::{PredicateId, PredicateTy, Symbol};
 
 /// Which register a plan reads or binds — an index into the frame stack, named
 /// here rather than in the executor because it is part of what a plan *says*.
@@ -799,8 +797,9 @@ impl Fingerprint {
 #[cfg(test)]
 mod tests {
     use super::{proptest::arb_plan_and_store, *};
-    use crate::focus::{fixtures::i64_field, schema::PredicateId};
+    use crate::focus::fixtures::i64_field;
     use ::proptest::prelude::*;
+    use aperture_schema::schema::PredicateId;
 
     /// A base plan touching most of what a fingerprint has to see: a seek whose
     /// prefix splices a register field, a residual, a second alternative, a fetch
@@ -1081,9 +1080,9 @@ pub mod proptest {
     use crate::focus::{
         fixtures::{compose, i64_field, interner_with, str_field},
         mem_store::MemStore,
-        schema::{LocalInterner, PredicateId, PredicateTy},
         tuple::Value,
     };
+    use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy};
 
     /// Bounds are deliberately tight: the resume battery re-runs a plan once per
     /// cut point, so the work per case is quadratic in the row count.

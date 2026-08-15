@@ -68,7 +68,7 @@ impl FormatVersion {
     /// Both start at 1 rather than 0 so that a zeroed block — the shape a
     /// truncated file or an uninitialised buffer takes — is not a valid version,
     /// the same reason sequence 0 is reserved in a
-    /// [`FactId`](crate::focus::id::FactId).
+    /// [`FactId`](aperture_schema::id::FactId).
     pub const CURRENT: Self = Self {
         codec: 1,
         storage: 1,

@@ -52,10 +52,10 @@ use std::sync::Arc;
 
 use lasso::Rodeo;
 
-use crate::focus::{
+use crate::focus::tuple::{MARK_RECORD, MARK_TERM, fact_ref_bytes, put_i64, put_str};
+use aperture_schema::{
     id::FactId,
     schema::{Predicate, PredicateId, PredicateTy, Schema},
-    tuple::{MARK_RECORD, MARK_TERM, fact_ref_bytes, put_i64, put_str},
 };
 
 /// Predicate ids **are** positions in the schema, and a `Fact` field names one — so

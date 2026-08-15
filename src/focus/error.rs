@@ -2,8 +2,10 @@ use thiserror::Error;
 
 use crate::focus::{
     format::FormatVersion,
-    id::{FactId, FactIdError},
     plan::{Address, PlanFingerprint},
+};
+use aperture_schema::{
+    id::{FactId, FactIdError},
     schema::{PredicateId, Symbol},
 };
 

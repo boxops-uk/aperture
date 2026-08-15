@@ -53,6 +53,8 @@ use crate::focus::{
     fact::{self, Fact},
     fact_store::{Entity, FactStore},
     format::{FORMAT_KEY, FormatVersion, META_KEYSPACE},
+};
+use aperture_schema::{
     id::{FactId, FactIdError, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
     schema::{PREDICATE_ID_SIZE, PredicateId, Schema},
 };
@@ -683,9 +685,9 @@ mod tests {
             Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
             SeekKeyPart, Step,
         },
-        schema::PredicateTy,
         tuple::strinc,
     };
+    use aperture_schema::schema::PredicateTy;
 
     /// One fact as drawn: predicate, key bytes, value bytes.
     type FactDraw = (u32, Vec<u8>, Vec<u8>);

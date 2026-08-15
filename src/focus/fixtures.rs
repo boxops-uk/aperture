@@ -19,12 +19,14 @@ use tokio_util::sync::CancellationToken;
 use crate::focus::{
     error::{ApertureError, StoreError},
     fact_store::{Entity, FactStore},
-    id::FactId,
     iter::{Cursor, Executor, Iteratee, Stream},
     plan::Plan,
-    schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId, SchemaInterner},
     store::predicate_of,
     tuple::{TupleEncoder, Value, put_i64, put_str, strinc},
+};
+use aperture_schema::{
+    id::FactId,
+    schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId, SchemaInterner},
 };
 
 /// Encode a single i64 key field.

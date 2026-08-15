@@ -3,8 +3,8 @@ use std::cmp::Ordering;
 
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
-use crate::focus::{
-    error::StoreCodecError,
+use crate::focus::error::StoreCodecError;
+use aperture_schema::{
     id::FactId,
     schema::{LocalInterner, PredicateId, PredicateTy, Symbol},
 };
@@ -1179,11 +1179,11 @@ impl Serialize for Value {
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use super::*;
-    use crate::focus::{
+    use ::proptest::prelude::*;
+    use aperture_schema::{
         id::{MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
         schema::{PredicateId, PredicateTy, SchemaInterner},
     };
-    use ::proptest::prelude::*;
     use lasso::Rodeo;
     use std::{cmp::Ordering, sync::Arc};
 
@@ -2046,7 +2046,7 @@ pub(crate) mod tests {
     // band instead of after positive integers (breaking I1).
     #[test]
     fn fact_field_uses_fact_ref_marker_and_round_trips() {
-        use crate::focus::schema::{PredicateId, SchemaInterner};
+        use aperture_schema::schema::{PredicateId, SchemaInterner};
         use lasso::Rodeo;
 
         let ty = PredicateTy::Fact(PredicateId(0));
@@ -2081,7 +2081,7 @@ pub(crate) mod tests {
     /// never at all, for a query that only reads the field back.
     #[test]
     fn a_typed_fact_ref_must_name_the_declared_predicate() {
-        use crate::focus::schema::{PredicateId, SchemaInterner};
+        use aperture_schema::schema::{PredicateId, SchemaInterner};
         use lasso::Rodeo;
 
         let ty = PredicateTy::Fact(PredicateId(0));
@@ -2125,7 +2125,7 @@ pub(crate) mod tests {
     /// [I11]: ../../../docs/invariants.md#i11
     #[test]
     fn a_fact_ref_of_the_reserved_sequence_is_rejected() {
-        use crate::focus::schema::{PredicateId, SchemaInterner};
+        use aperture_schema::schema::{PredicateId, SchemaInterner};
         use lasso::Rodeo;
 
         let ty = PredicateTy::Fact(PredicateId(0));
@@ -2169,7 +2169,7 @@ pub(crate) mod tests {
     /// property of.
     #[test]
     fn a_stored_key_is_its_fields_with_no_wrapper_of_its_own() {
-        use crate::focus::schema::SchemaInterner;
+        use aperture_schema::schema::SchemaInterner;
         use lasso::Rodeo;
         use std::sync::Arc;
 

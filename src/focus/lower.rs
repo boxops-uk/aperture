@@ -22,11 +22,11 @@ use crate::focus::{
     diag::{Code, Diagnostics},
     lexer::{self, LiteralError, Token},
     parser::{Rule, Span},
-    schema::{LocalInterner, Schema, Symbol},
     syntax::{
         Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, SyntaxTree, narrow_offset,
     },
 };
+use aperture_schema::schema::{LocalInterner, Schema, Symbol};
 
 /// The field name that reads a fact's value side rather than a key field.
 pub const VALUE_FIELD: &str = "value";
@@ -571,7 +571,8 @@ fn token_text<'s>(children: &[(CstNode<'s>, Out)], token: Token) -> Option<&'s s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{corpus, parse::parse, schema::SchemaInterner, syntax::source_range};
+    use crate::focus::{corpus, parse::parse, syntax::source_range};
+    use aperture_schema::schema::SchemaInterner;
     use lasso::Rodeo;
     use proptest::prelude::*;
 

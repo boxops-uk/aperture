@@ -43,8 +43,9 @@
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use crate::focus::{diag::Code, fixture, schema::Schema};
+use crate::focus::{diag::Code, fixture};
 use Expectation::{Diagnosed, ParseError, Supported};
+use aperture_schema::schema::Schema;
 
 /// The schema the corpus is written against — the shared
 /// [`fixture`](crate::focus::fixture), which the shell serves too.
@@ -800,7 +801,8 @@ mod tests {
     /// reference is written as the fact it names rather than as a snowflake integer.
     #[test]
     fn every_supported_entry_returns_its_rows() {
-        use crate::focus::{compile::Compilation, fixture, id::FactId, store::FjallDb};
+        use crate::focus::{compile::Compilation, fixture, store::FjallDb};
+        use aperture_schema::id::FactId;
 
         let dir = tempfile::tempdir().expect("a scratch directory");
         let db = FjallDb::open(dir.path()).expect("open");
@@ -871,7 +873,7 @@ mod tests {
     fn run(
         db: &crate::focus::store::FjallDb,
         plan: crate::focus::plan::Plan,
-        interner: &crate::focus::schema::LocalInterner,
+        interner: &aperture_schema::schema::LocalInterner,
         schema: &Schema,
     ) -> Result<String, crate::focus::error::ApertureError> {
         use crate::focus::iter::{Executor, Iteratee, Stream};

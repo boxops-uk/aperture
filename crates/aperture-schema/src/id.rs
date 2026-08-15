@@ -1,19 +1,19 @@
 //! A fact's physical row id, and the two rules that make one valid.
 //!
-//! Its own module because of where it sits: the [codec](crate::focus::tuple)
-//! encodes a reference to a fact, the [store](crate::focus::store) allocates and
-//! routes by one, and the [plan](crate::focus::plan) carries one — so the type is
+//! Its own module because of where it sits: the codec
+//! encodes a reference to a fact, the store allocates and
+//! routes by one, and the plan carries one — so the type is
 //! below all three. Keeping it here is what lets each of them depend on the id
 //! without depending on each other.
 
 use serde::{Serialize, Serializer};
 use thiserror::Error;
 
-use crate::focus::schema::PredicateId;
+use crate::schema::PredicateId;
 
 /// An id that cannot exist: the two rules [`FactId::new`] enforces.
 ///
-/// Separate from [`StoreError`](crate::focus::error::StoreError) — which wraps
+/// Separate from `StoreError` — which wraps
 /// it — because minting an id is not a storage operation. A plan builder or a
 /// test composes one without a store anywhere in reach, and the fault it can hit
 /// is the same one.

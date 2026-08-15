@@ -7,16 +7,18 @@ use tokio_util::sync::CancellationToken;
 use crate::focus::{
     error::{ApertureError, StoreCodecError, StoreError},
     fact_store::FactStore,
-    id::FactId,
     plan::{
         Access, Address, Computed, FieldPath, Plan, PlanFingerprint, Project, Residual, ResidualOp,
         SeekKey, SeekKeyPart, Source, Step, Test,
     },
-    schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId},
     tuple::{
         MARK_ESCAPE, MARK_RECORD, MARK_TERM, TupleDecoder, Value, decode_typed, fact_ref_bytes,
         skip, strinc,
     },
+};
+use aperture_schema::{
+    id::FactId,
+    schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1314,11 +1316,11 @@ mod tests {
             SeekKeyPart,
             proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
-        schema::{PredicateId, PredicateTy},
         store::FjallDb,
         tuple::{MARK_NULL, Value, decode_probe},
     };
     use ::proptest::prelude::*;
+    use aperture_schema::schema::{PredicateId, PredicateTy};
     use std::{collections::BTreeSet, sync::atomic::Ordering};
     use tempfile::TempDir;
 

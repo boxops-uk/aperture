@@ -61,9 +61,11 @@
 
 use crate::focus::{
     error::FactError,
+    tuple::{Value, encode_key, encode_typed},
+};
+use aperture_schema::{
     id::FactId,
     schema::{PredicateId, PredicateTy, Schema, SchemaInterner},
-    tuple::{Value, encode_key, encode_typed},
 };
 
 /// A Rust value that can be written as a fact.
@@ -347,7 +349,7 @@ mod tests {
         let schema = fixture::schema();
         let (_, key, _) = encoded(&foo()).expect("a well-formed fact");
 
-        let interner = crate::focus::schema::LocalInterner::new(schema.interner().clone());
+        let interner = aperture_schema::schema::LocalInterner::new(schema.interner().clone());
         let ty = schema
             .get(PredicateId(0))
             .expect("test.Foo")
@@ -535,7 +537,7 @@ mod tests {
     /// would lead and the ordering would go the other way.
     #[test]
     fn the_encoding_order_is_the_declared_order() {
-        use crate::focus::schema::Predicate;
+        use aperture_schema::schema::Predicate;
         use lasso::Rodeo;
         use std::sync::Arc;
 

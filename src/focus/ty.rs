@@ -29,9 +29,9 @@
 use crate::focus::{
     diag::{Code, Diagnostics},
     lower::VALUE_FIELD,
-    schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, Ty, TyVarId},
 };
+use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
 
 /// The types a query's nodes were given.
 pub struct Typed {
@@ -904,13 +904,8 @@ fn field_of(ty: &Ty, name: Symbol) -> Option<Ty> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::{
-        corpus,
-        cst::CstNode,
-        lower::lower,
-        parse::parse,
-        schema::{Predicate, PredicateId},
-    };
+    use crate::focus::{corpus, cst::CstNode, lower::lower, parse::parse};
+    use aperture_schema::schema::{Predicate, PredicateId};
     use lasso::Rodeo;
     use std::sync::Arc;
 

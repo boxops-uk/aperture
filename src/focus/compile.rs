@@ -35,10 +35,10 @@ use super::{
     lower::lower,
     parse::parse,
     plan::Plan,
-    schema::{LocalInterner, Schema},
     syntax::{Ast, Ty},
     ty::{self, Typed},
 };
+use aperture_schema::schema::{LocalInterner, Schema};
 
 /// One query, compiled.
 ///

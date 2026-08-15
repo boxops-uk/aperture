@@ -1,6 +1,6 @@
 use std::{ops::Range, sync::Arc};
 
-use crate::focus::schema::{PredicateId, Symbol};
+use aperture_schema::schema::{PredicateId, Symbol};
 
 /// A byte range in the query's source text, as stored on a node.
 ///
@@ -66,7 +66,7 @@ impl NodeId {
 
 /// A query-level type.
 ///
-/// Distinct from the schema's [`PredicateTy`](crate::focus::schema::PredicateTy),
+/// Distinct from the schema's [`PredicateTy`](aperture_schema::schema::PredicateTy),
 /// which has no type variables: a query is inferred, a schema is declared.
 /// `Ty::Error` is a poison that unifies with anything, so one mistake reports once
 /// instead of cascading.
@@ -379,8 +379,8 @@ mod tests {
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use super::*;
-    use crate::focus::schema::{LocalInterner, Schema};
     use ::proptest::prelude::*;
+    use aperture_schema::schema::{LocalInterner, Schema};
 
     #[derive(Debug, Clone)]
     pub enum PatternSpec {

@@ -40,6 +40,7 @@ name = "aperture"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "aperture-schema",
  "byteview",
  "codespan-reporting",
  "fjall",
@@ -55,6 +56,15 @@ dependencies = [
  "thiserror",
  "tinyvec",
  "tokio-util",
+]
+
+[[package]]
+name = "aperture-schema"
+version = "0.1.0"
+dependencies = [
+ "lasso",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]

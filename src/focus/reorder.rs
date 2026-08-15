@@ -57,7 +57,7 @@
 //! [derived binds]: ../../../docs/07-compilation.md#derived-facts
 //! [Phase 6b]: ../../../PLAN.md
 
-use crate::focus::schema::Symbol;
+use aperture_schema::schema::Symbol;
 
 /// Whether a statement has a **written position** to preserve.
 ///
@@ -331,8 +331,8 @@ pub fn preserves_written_order(deps: &Deps, order: &[usize]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::schema::{LocalInterner, SchemaInterner};
     use ::proptest::prelude::*;
+    use aperture_schema::schema::{LocalInterner, SchemaInterner};
     use lasso::Rodeo;
 
     /// An interner-free way to name variables in these tests.

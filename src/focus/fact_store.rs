@@ -16,7 +16,8 @@
 
 use byteview::ByteView;
 
-use crate::focus::{error::StoreError, id::FactId};
+use crate::focus::error::StoreError;
+use aperture_schema::id::FactId;
 
 #[derive(Debug)]
 pub struct Entity {
@@ -28,7 +29,7 @@ pub trait FactStore {
     type Scan: Iterator<Item = Result<(ByteView, FactId), StoreError>>;
 
     /// Open a scan of `lo..hi`, bounded to the predicate named by `lo`'s first
-    /// [`PREDICATE_ID_SIZE`](crate::focus::schema::PREDICATE_ID_SIZE) bytes.
+    /// [`PREDICATE_ID_SIZE`](aperture_schema::schema::PREDICATE_ID_SIZE) bytes.
     ///
     /// Fallible, because opening genuinely can fail: a `lo` too short to name a
     /// predicate names nothing, and that is a fault in the *call*, not in a row.

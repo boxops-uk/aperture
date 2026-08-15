@@ -11,11 +11,10 @@ use byteview::ByteView;
 use crate::focus::{
     error::StoreError,
     fact_store::{Entity, FactStore},
-    id::FactId,
-    schema::PredicateId,
     store::predicate_of,
     tuple::strinc,
 };
+use aperture_schema::{id::FactId, schema::PredicateId};
 
 #[derive(Default)]
 pub struct MemStore {

@@ -1,0 +1,9 @@
+[package]
+name = "aperture-schema"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lasso = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

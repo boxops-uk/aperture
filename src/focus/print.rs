@@ -24,10 +24,10 @@ use crate::focus::{
         Address, FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source,
         Step, Test,
     },
-    schema::{LocalInterner, PredicateRef, PredicateTy, Schema, Symbol},
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},
     tuple::{MARK_TERM, TupleDecoder, Value, decode_typed, decode_typed_at},
 };
+use aperture_schema::schema::{LocalInterner, PredicateRef, PredicateTy, Schema, Symbol};
 
 /// How loosely a pattern binds, from the grammar:
 ///
@@ -961,15 +961,14 @@ mod tests {
         corpus,
         cst::CstNode,
         diag::Diagnostics,
-        id::FactId,
         lower::lower,
         parse::parse,
         plan::{Access, Level as PlanLevel},
-        schema::PredicateId,
         syntax::{proptest::arb_query_spec, source_range},
         tuple::fact_ref_bytes,
     };
     use ::proptest::prelude::*;
+    use aperture_schema::{id::FactId, schema::PredicateId};
 
     /// **A register's field is named against that register's predicate.**
     ///
