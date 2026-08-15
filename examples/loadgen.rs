@@ -328,6 +328,7 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
             rows_out.push(vec![
                 workload.name.to_owned(),
                 "—".to_owned(),
+                "—".to_owned(),
                 "did not compile".to_owned(),
                 String::new(),
                 String::new(),
@@ -341,6 +342,11 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
         rows_out.push(vec![
             workload.name.to_owned(),
             thousands(result.rows),
+            match result.examined {
+                Some((examined, true)) => format!("{} (full)", thousands(examined)),
+                Some((examined, false)) => thousands(examined),
+                None => "—".to_owned(),
+            },
             duration(result.percentile(50)),
             duration(result.percentile(95)),
             duration(result.percentile(99)),
@@ -354,7 +360,7 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
         "{}",
         table(
             &[
-                "workload", "rows", "p50", "p95", "p99", "max", "query/s", "row/s"
+                "workload", "rows", "examined", "p50", "p95", "p99", "max", "query/s", "row/s",
             ],
             &rows_out
         )
@@ -363,6 +369,8 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
 
 struct Measured {
     rows: u64,
+    /// Rows examined, and whether any step read a predicate whole.
+    examined: Option<(u64, bool)>,
     runs: usize,
     wall: Duration,
     latencies: Vec<Duration>,
@@ -396,6 +404,24 @@ fn run_workload(options: &Options, schema: &Arc<Schema>, workload: &Workload) ->
     };
 
     let rows = probe.drain(&mut result).expect("its rows").len() as u64;
+
+    // Asked once, not per run: what a workload *examines* is a property of the plan
+    // and the data, not of how often it is run — and it is the number that says
+    // whether a throughput figure is measuring the query you thought you wrote.
+    let examined = probe
+        .query_profiled(&workload.focus)
+        .and_then(|mut profiled| {
+            probe.drain(&mut profiled)?;
+            Ok(profiled.profile().map(|profile| {
+                (
+                    profile.examined(),
+                    profile.steps.iter().any(|step| step.full_scan),
+                )
+            }))
+        })
+        .ok()
+        .flatten();
+
     drop(probe);
 
     let per_connection = options.runs.div_ceil(options.connections);
@@ -437,6 +463,7 @@ fn run_workload(options: &Options, schema: &Arc<Schema>, workload: &Workload) ->
 
     Some(Measured {
         rows,
+        examined,
         runs: latencies.len(),
         wall,
         latencies,

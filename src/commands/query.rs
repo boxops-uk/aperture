@@ -22,6 +22,8 @@ pub struct Summary {
     pub elapsed: std::time::Duration,
     /// Whether `--limit` stopped it short of the end.
     pub truncated: bool,
+    /// What the server said it examined, when asked.
+    pub profile: Option<aperture_client::QueryProfile>,
 }
 
 /// # Errors
@@ -35,6 +37,7 @@ pub fn run(
     query: &str,
     format: RowFormat,
     limit: Option<u64>,
+    profile: bool,
 ) -> Result<Summary, CliError> {
     // **Read-only, and asserting nothing.** A reader has no claim to make about the
     // schema: the database's is the one that matters, it is frozen at create
@@ -44,7 +47,11 @@ pub fn run(
     let mut connection = connect(socket, name, Mode::ReadOnly)?;
 
     let started = Instant::now();
-    let mut result = connection.query(query)?;
+    let mut result = if profile {
+        connection.query_profiled(query)?
+    } else {
+        connection.query(query)?
+    };
 
     let stdout = std::io::stdout();
     let mut sink = Sink::new(stdout.lock(), format, result.desc())?;
@@ -73,7 +80,44 @@ pub fn run(
         rows,
         elapsed: started.elapsed(),
         truncated,
+        // Absent after a `--limit`, and that is honest rather than a gap: the server
+        // reports what it examined when the query *ends*, and a cancelled one ended
+        // early — a tally taken then would describe a different query than the one
+        // asked.
+        profile: result.profile().cloned(),
     })
+}
+
+/// The profile, as a person reads it.
+///
+/// `(full scan)` is the line worth having: it is the one that names something to go
+/// and fix, and Glean prints it for the same reason.
+#[must_use]
+pub fn render_profile(profile: &aperture_client::QueryProfile, rows: u64) -> String {
+    let steps: Vec<Vec<String>> = profile
+        .steps
+        .iter()
+        .map(|step| {
+            vec![
+                step.label.clone(),
+                step.examined.to_string(),
+                if step.full_scan { "full scan" } else { "" }.to_owned(),
+            ]
+        })
+        .collect();
+
+    let examined = profile.examined();
+    let mut out = crate::output::table(&["step", "examined", ""], &steps);
+
+    // The ratio is the whole point of the table: a query that read a hundred thousand
+    // rows to answer with three has a plan problem, and no per-step number says that
+    // as plainly as the two totals side by side.
+    let _ = std::fmt::Write::write_fmt(
+        &mut out,
+        format_args!("{examined} examined, {rows} produced\n"),
+    );
+
+    out
 }
 
 /// Connect, turning "nothing is listening" into the error §2 asks for.

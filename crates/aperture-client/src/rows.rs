@@ -14,7 +14,7 @@
 //! ([I8](../../../docs/invariants.md#i8)).
 
 use aperture_schema::schema::{LocalInterner, PredicateTy, Schema};
-use aperture_wire::{Desc, StreamId, WireValue, value::decode_value};
+use aperture_wire::{Desc, QueryProfile, StreamId, WireValue, value::decode_value};
 
 use crate::error::ClientError;
 
@@ -39,6 +39,10 @@ pub struct Rows {
     _interner: LocalInterner,
     seen: u64,
     state: State,
+    /// `Some` once the server has reported what the query examined — which it does
+    /// only when the query was issued with [`Connection::query_profiled`], and only
+    /// once, just before the result ends.
+    profile: Option<QueryProfile>,
 }
 
 impl Rows {
@@ -55,7 +59,22 @@ impl Rows {
             _interner: interner,
             seen: 0,
             state: State::Streaming,
+            profile: None,
         }
+    }
+
+    /// What the query examined, once it has ended.
+    ///
+    /// `None` for a query that did not ask, and for one still running — the frame
+    /// arrives just before the result ends, because the count is not final until the
+    /// last chunk has run.
+    #[must_use]
+    pub fn profile(&self) -> Option<&QueryProfile> {
+        self.profile.as_ref()
+    }
+
+    pub(crate) fn set_profile(&mut self, profile: QueryProfile) {
+        self.profile = Some(profile);
     }
 
     /// The shape every row has: the query's **head** type, named.

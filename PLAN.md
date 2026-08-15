@@ -1349,6 +1349,13 @@ two-results-open test and nothing else.
   a truncation footer that names the knob.
 - **`\profile`** — facts searched per predicate with a full-scan flag: the *outcome* to `:plan`'s
   *intent*. The executor already counts rows examined for cancellation; this surfaces it.
+  **Built ahead of the shell**, because it is the instrument performance work needs and the shell
+  is not: `Executor::enumerate_profiled` hands back the counter the cancellation stride was already
+  keeping, per step, and the server pairs it with the plan's names and a full-scan flag. Reached
+  today through `aperture query --profile`; `\profile` is the same thing with a prompt in front of
+  it. The counter is per **step of the plan's body**, not per predicate, because that is what the
+  machine counts and what a disjunction, a fetch and a negation each need a slot of; the server is
+  where positions become names, since a client holds a query's text and never its plan.
 - `aperture.db.List` as a **virtual predicate** through the normal query machinery — no bespoke
   control message for enumeration.
 - **TCP opt-in**: `--listen-tcp host:port`, default-closed (`ops-I10`), operator responsible for

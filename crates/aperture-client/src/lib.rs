@@ -78,4 +78,6 @@ pub use rows::Rows;
 // The vocabulary a caller needs, so a consumer imports one crate rather than two for
 // the ordinary cases. Anything further — the block codec, the frame layer — is
 // `aperture-wire` directly, which is where it belongs.
-pub use aperture_wire::{Desc, ErrorCode, Mode, WireFact, WireRef, WireValue};
+pub use aperture_wire::{
+    Desc, ErrorCode, Mode, ProfileStep, QueryProfile, WireFact, WireRef, WireValue,
+};

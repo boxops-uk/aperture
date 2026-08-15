@@ -144,8 +144,16 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             format,
             limit,
             timing,
+            profile,
         } => {
-            let summary = commands::query::run(socket, name, query, *format, *limit)?;
+            let summary = commands::query::run(socket, name, query, *format, *limit, *profile)?;
+
+            if let Some(measured) = &summary.profile {
+                eprint!(
+                    "{}",
+                    commands::query::render_profile(measured, summary.rows)
+                );
+            }
 
             if summary.truncated {
                 eprintln!(

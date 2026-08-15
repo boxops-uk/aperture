@@ -401,20 +401,75 @@ pub const CANCELLATION_STRIDE: usize = 4096;
 struct Deadline<'a> {
     token: &'a CancellationToken,
     since_poll: usize,
+    /// Where the tally goes. See [`Profile`].
+    profile: &'a mut Profile,
 }
 
-impl<'a> Deadline<'a> {
-    fn new(token: &'a CancellationToken) -> Self {
-        Self {
-            token,
-            since_poll: 0,
+/// **What a run examined**, step by step.
+///
+/// The counter the cancellation stride was already keeping, kept per step and handed
+/// back instead of thrown away. It is the *outcome* to a plan's *intent*: a plan says
+/// which field narrowed the scan and which one only filters, and this says how many
+/// rows that came to — which is the pair a person needs to tell "the index is doing
+/// its job" from "it read everything and dropped most of it".
+///
+/// **Rows examined, not rows produced**, for the same reason the stride counts that
+/// way: a residual that rejects a million rows does a million rows of work and
+/// produces none, and a counter that only saw output would call that free.
+///
+/// One entry per step of the plan's body, so a `Derive` or a `Test` has a slot too —
+/// a test's is the rows its probe pulled, which is at most one per row of the level
+/// above and is worth being able to see.
+///
+/// # What it does not count
+///
+/// The rows a **resume** re-reads to rebuild its registers: one per level per
+/// resumption, replayed rather than examined afresh. Counting them would make a
+/// chunked read report more work than the same query run straight through, which is
+/// the opposite of what a profile is for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Profile {
+    /// Rows pulled from a scan at each step of the plan's body — matched or skipped.
+    pub examined: Vec<u64>,
+}
+
+impl Profile {
+    /// A profile sized for `plan`, with every step at zero.
+    #[must_use]
+    pub fn for_plan(plan: &Plan) -> Profile {
+        Profile {
+            examined: vec![0; plan.body.len()],
         }
     }
 
-    /// Count one examined row, polling the token on the stride.
+    /// Rows examined across every step.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.examined.iter().sum()
+    }
+}
+
+impl<'a> Deadline<'a> {
+    fn new(token: &'a CancellationToken, profile: &'a mut Profile) -> Self {
+        Self {
+            token,
+            since_poll: 0,
+            profile,
+        }
+    }
+
+    /// Count one examined row against `depth`, polling the token on the stride.
+    ///
+    /// The bounds check is what makes an unsized profile a silent no-op rather than a
+    /// panic — which is what the resume replay wants, and what keeps this safe for a
+    /// caller that did not ask for a profile at all.
     #[inline]
-    fn tick(&mut self) -> Result<(), ApertureError> {
+    fn tick(&mut self, depth: usize) -> Result<(), ApertureError> {
         self.since_poll += 1;
+
+        if let Some(examined) = self.profile.examined.get_mut(depth) {
+            *examined += 1;
+        }
 
         if self.since_poll >= CANCELLATION_STRIDE {
             self.since_poll = 0;
@@ -651,11 +706,12 @@ impl<S: FactStore> StackFrame<S> {
         state: &MachineState,
         source: &Source,
         deadline: &mut Deadline<'_>,
+        depth: usize,
     ) -> Result<Option<Register>, ApertureError> {
         let rows = self.rows.as_mut().ok_or(ApertureError::AdvanceAfterClose)?;
 
         for row in rows {
-            deadline.tick()?;
+            deadline.tick(depth)?;
 
             let (key_bytes, fact_id) = row?;
 
@@ -707,10 +763,11 @@ impl<S: FactStore> StackFrame<S> {
         state: &MachineState,
         sources: &[Source],
         deadline: &mut Deadline<'_>,
+        depth: usize,
     ) -> Result<bool, ApertureError> {
         for source in sources {
             self.open(store, source, state, None)?;
-            let witness = self.next(state, source, deadline)?;
+            let witness = self.next(state, source, deadline, depth)?;
             self.close();
 
             if witness.is_some() {
@@ -1059,7 +1116,12 @@ impl<S: FactStore> Executor<S> {
         // Replaying a cursor re-reads one row per level, so it cannot run long
         // enough to reach a poll; the token is here only to satisfy `next`.
         let cancel = CancellationToken::new();
-        let mut deadline = Deadline::new(&cancel);
+
+        // Unsized on purpose: `tick` finds no slot and counts nothing, so the rows a
+        // resume replays to rebuild its registers do not show up as work the query
+        // did. See [`Profile`].
+        let mut replay = Profile::default();
+        let mut deadline = Deadline::new(&cancel, &mut replay);
 
         // One forward walk over the steps, which is the design's sentence made
         // literal: **re-bind the fact-slots, recompute the value-slots**. A scan
@@ -1092,7 +1154,7 @@ impl<S: FactStore> Executor<S> {
                     frame.open(&ex.store, source, &ex.state, Some(&saved.row.bytes))?;
 
                     let row = frame
-                        .next(&ex.state, source, &mut deadline)?
+                        .next(&ex.state, source, &mut deadline, index)?
                         .ok_or(ApertureError::BadResumeKey)?;
 
                     if row.fact_id != saved.row.fact_id {
@@ -1147,14 +1209,35 @@ impl<S: FactStore> Executor<S> {
     /// fresh snapshot, which is exactly what the wire path does when a portal
     /// wakes up ([chapter 5](../../docs/05-resume.md)).
     pub fn enumerate<A>(
+        self,
+        init: A,
+        step: impl FnMut(A, Row<'_, S>) -> Result<Stream<A>, ApertureError>,
+        cancellation_token: &CancellationToken,
+    ) -> Result<Iteratee<A>, ApertureError> {
+        let mut profile = Profile::for_plan(&self.plan);
+        self.enumerate_profiled(init, step, cancellation_token, &mut profile)
+    }
+
+    /// [`enumerate`](Executor::enumerate), reporting what it examined.
+    ///
+    /// `profile` is **added into** rather than replaced, so a chunked read that
+    /// resumes many times passes the same one through and ends with the whole run's
+    /// tally. Sized by [`Profile::for_plan`]; an unsized one counts nothing, which is
+    /// how `enumerate`'s throwaway and the resume replay both stay free.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`enumerate`](Executor::enumerate) reports.
+    pub fn enumerate_profiled<A>(
         mut self,
         init: A,
         mut step: impl FnMut(A, Row<'_, S>) -> Result<Stream<A>, ApertureError>,
         cancellation_token: &CancellationToken,
+        profile: &mut Profile,
     ) -> Result<Iteratee<A>, ApertureError> {
         // One deadline for the whole run: the poll interval is a property of the
         // run, not of any single level's scan.
-        let mut deadline = Deadline::new(cancellation_token);
+        let mut deadline = Deadline::new(cancellation_token, profile);
         let mut acc = init;
 
         loop {
@@ -1233,7 +1316,7 @@ impl<S: FactStore> Executor<S> {
                         frame.open(&self.store, source, &self.state, None)?;
                     }
 
-                    match frame.next(&self.state, source, &mut deadline)? {
+                    match frame.next(&self.state, source, &mut deadline, self.depth)? {
                         Some(register) => {
                             for var_address in level.binds.iter() {
                                 self.state
@@ -1286,7 +1369,13 @@ impl<S: FactStore> Executor<S> {
                             return Ok(Iteratee::Done(acc));
                         }
                         self.depth -= 1;
-                    } else if frame.absent(&self.store, &self.state, sources, &mut deadline)? {
+                    } else if frame.absent(
+                        &self.store,
+                        &self.state,
+                        sources,
+                        &mut deadline,
+                        self.depth,
+                    )? {
                         frame.produced = true;
                         self.depth += 1;
                     } else if self.depth == 0 {
@@ -1683,6 +1772,216 @@ mod tests {
             "projecting {FIELDS} fields of one row took {skips} skips; walking the \
              row once costs {FIELDS}, and once per field costs {}",
             FIELDS * (FIELDS + 1) / 2
+        );
+    }
+
+    // ---- the profile -------------------------------------------------------
+    //
+    // The counter the cancellation stride was already keeping, reported instead of
+    // discarded. What makes it worth having is the *gap* between examined and
+    // produced, so that is what these pin.
+
+    /// **Examined counts rows a scan pulled, not rows it produced**, which is the
+    /// whole reason the number is worth reporting: a residual that rejects almost
+    /// everything is invisible in a row count and obvious here.
+    #[test]
+    fn a_profile_counts_what_was_read_not_what_was_returned() {
+        let p = PredicateId(0);
+        let mut store = MemStore::new();
+
+        for n in 0..100i64 {
+            store.insert(p, compose(&[&i64_field(n)]), n as u64 + 1);
+        }
+
+        // A full scan with a residual pinning one value: 100 rows read, 1 kept.
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
+                    path: FieldPath::field(0),
+                    op: ResidualOp::EqConst(i64_field(42).into()),
+                }]),
+            )]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let mut profile = Profile::for_plan(&plan);
+        let outcome = Executor::new(store, plan.clone())
+            .enumerate_profiled(
+                Vec::<Value>::new(),
+                |mut acc, mut row| {
+                    acc.push(row.to_value(&interner_with(&[]))?);
+                    Ok(Stream::Continue(acc))
+                },
+                &CancellationToken::new(),
+                &mut profile,
+            )
+            .expect("it runs");
+
+        let Iteratee::Done(rows) = outcome else {
+            panic!("expected a finished run");
+        };
+
+        assert_eq!(rows.len(), 1, "one row survives the residual");
+        assert_eq!(
+            profile.examined,
+            vec![100],
+            "and a hundred were read to find it"
+        );
+        assert_eq!(profile.total(), 100);
+    }
+
+    /// A seek that narrows reads what it narrowed to, and nothing else — the same
+    /// query shape as above, answered by the index instead of by a filter. The two
+    /// tests together are the comparison a person is actually making.
+    #[test]
+    fn a_profile_shows_a_seek_reading_only_its_range() {
+        let p = PredicateId(0);
+        let mut store = MemStore::new();
+
+        for n in 0..100i64 {
+            store.insert(p, compose(&[&i64_field(n)]), n as u64 + 1);
+        }
+
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Composite(Box::new([SeekKeyPart::Bytes(
+                        i64_field(42).into(),
+                    )])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([]),
+            )]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let mut profile = Profile::for_plan(&plan);
+        let outcome = Executor::new(store, plan.clone())
+            .enumerate_profiled(
+                Vec::<Value>::new(),
+                |mut acc, mut row| {
+                    acc.push(row.to_value(&interner_with(&[]))?);
+                    Ok(Stream::Continue(acc))
+                },
+                &CancellationToken::new(),
+                &mut profile,
+            )
+            .expect("it runs");
+
+        let Iteratee::Done(rows) = outcome else {
+            panic!("expected a finished run");
+        };
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            profile.examined,
+            vec![1],
+            "a seek that pins the key reads one row, not a hundred"
+        );
+    }
+
+    /// **A profile survives a suspend**, accumulating across resumptions rather than
+    /// restarting — which is what makes it usable at all, since every chunked read
+    /// over the wire is a sequence of resumes.
+    ///
+    /// The replayed rows are deliberately *not* counted, so a paged read reports the
+    /// same work as the same query run straight through. That equality is the check.
+    #[test]
+    fn a_profile_accumulates_across_resumes_without_counting_the_replay() {
+        let p = PredicateId(0);
+
+        // Rebuilt per run, as the resume battery does: a `MemStore` is moved into the
+        // executor, and a resume is a fresh executor over the same data.
+        let store = || {
+            let mut store = MemStore::new();
+            for n in 0..50i64 {
+                store.insert(p, compose(&[&i64_field(n)]), n as u64 + 1);
+            }
+            store
+        };
+
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([scan_all(p, 0)]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        // Straight through.
+        let mut whole = Profile::for_plan(&plan);
+        let outcome = Executor::new(store(), plan.clone())
+            .enumerate_profiled(
+                0usize,
+                |acc, _row| Ok(Stream::Continue(acc + 1)),
+                &CancellationToken::new(),
+                &mut whole,
+            )
+            .expect("it runs");
+        assert!(matches!(outcome, Iteratee::Done(50)));
+
+        // Now in pages of seven, through the bytes-only cursor.
+        let mut paged = Profile::for_plan(&plan);
+        let mut cursor: Option<Cursor> = None;
+        let mut rows = 0usize;
+
+        loop {
+            let executor = match cursor.take() {
+                Some(cursor) => {
+                    Executor::resume(store(), plan.clone(), cursor).expect("it resumes")
+                }
+                None => Executor::new(store(), plan.clone()),
+            };
+
+            let outcome = executor
+                .enumerate_profiled(
+                    0usize,
+                    |acc, _row| {
+                        Ok(if acc + 1 >= 7 {
+                            Stream::Suspend(acc + 1)
+                        } else {
+                            Stream::Continue(acc + 1)
+                        })
+                    },
+                    &CancellationToken::new(),
+                    &mut paged,
+                )
+                .expect("it runs");
+
+            match outcome {
+                Iteratee::Done(page) => {
+                    rows += page;
+                    break;
+                }
+                Iteratee::Suspended(page, next) => {
+                    rows += page;
+                    cursor = Some(next);
+                }
+            }
+        }
+
+        assert_eq!(rows, 50, "the pages are the whole result");
+        assert_eq!(
+            paged, whole,
+            "a paged read did the same work as an uninterrupted one"
         );
     }
 

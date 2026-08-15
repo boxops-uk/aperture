@@ -448,3 +448,88 @@ fn a_bookmark_belongs_to_its_connection() {
     // The bookmark still works where it belongs.
     assert_eq!(one.drain(&mut rows).expect("the rest").len(), 8);
 }
+
+/// **A profile is the outcome to a plan's intent.** What makes it worth carrying is
+/// the gap between examined and produced: a residual that rejects almost everything
+/// is invisible in a row count and obvious here.
+#[test]
+fn a_profile_reports_what_the_query_examined() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    seed(&mut connection, 500);
+
+    // A constant bind, which folds — so `src.File F` becomes an exact key seek.
+    let mut scan = connection
+        .query_profiled("F where src.File F; F = \"f00042.py\"")
+        .expect("it compiles");
+
+    let rows = connection.drain(&mut scan).expect("its rows");
+    let profile = scan.profile().expect("a profile arrived");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(profile.steps.len(), 1, "one level, one step");
+    assert_eq!(profile.steps[0].label, "src.File");
+
+    // A constant bind **folds**, so this is a seek rather than a scan with a filter —
+    // and the number is how you can tell without reading the plan.
+    assert_eq!(profile.examined(), 1, "the index answered it");
+    assert!(!profile.steps[0].full_scan);
+
+    // ...against a scan of the same predicate, which reads all five hundred.
+    let mut whole = connection
+        .query_profiled("F where src.File F")
+        .expect("it compiles");
+    let rows = connection.drain(&mut whole).expect("its rows");
+    let profile = whole.profile().expect("a profile arrived");
+
+    assert_eq!(rows.len(), 500);
+    assert_eq!(profile.examined(), 500);
+    assert!(profile.steps[0].full_scan, "it read the predicate whole");
+}
+
+/// A profile survives **chunking**: the result is long enough to cross the server's
+/// 256-row boundary several times, so the tally has to accumulate across real resumes
+/// rather than describing the last page.
+#[test]
+fn a_profile_accumulates_across_the_chunks_it_took() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    seed(&mut connection, 1000);
+
+    let mut rows = connection
+        .query_profiled("F where src.File F")
+        .expect("it compiles");
+
+    // Read in pages, so the server genuinely parks and resumes between them.
+    let mut seen = 0;
+    loop {
+        let page = connection.take(&mut rows, 37).expect("a page");
+        if page.is_empty() {
+            break;
+        }
+        seen += page.len();
+    }
+
+    assert_eq!(seen, 1000);
+    assert_eq!(
+        rows.profile().expect("a profile arrived").examined(),
+        1000,
+        "the whole run's work, not the last page's, and not the replay's"
+    );
+}
+
+/// A query that did not ask for a profile does not get one — which is what makes the
+/// frame additive, and is the property the .NET client depends on without knowing it.
+#[test]
+fn an_unprofiled_query_gets_no_profile_frame() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    seed(&mut connection, 10);
+
+    let mut rows = connection.query("F where src.File F").expect("it compiles");
+    assert_eq!(connection.drain(&mut rows).expect("its rows").len(), 10);
+    assert!(rows.profile().is_none());
+}

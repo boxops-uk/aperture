@@ -423,6 +423,11 @@ One-shot query.
   serializes to JSON/text/raw (`--format`). The server never produces JSON (decided in the
   original brief).
 - `--timeout`, and Ctrl-C maps to a per-stream Cancel frame (not connection teardown).
+  **Built:** `--format table|json|raw|count`, `--limit`, `--timing`, `--profile`. Three of the
+  four shapes stream; the aligned table buffers, because column widths are not known until the
+  last row, and `count` exists so a measurement of the *server* is not paying for the client's
+  rendering. `--limit` is not a `LIMIT` — the query is unchanged and the cancel is in band, so
+  what it bounds is what crosses the socket. `--timeout` and Ctrl-C are still to come.
 
 ### `aperture shell [<db>]`
 
@@ -449,6 +454,13 @@ Interactive psql-like REPL.
   `" (full scan)"` for predicates it scanned whole (`glean/shell/Glean/Shell.hs:1013-1024`). The
   executor already counts rows examined for cancellation, so the counter exists and is simply not
   surfaced.
+  **Built, and reachable before the shell is**: `aperture query --profile` prints the same table,
+  because the instrument is what performance work needs and a prompt is not. Two details differ
+  from the sentence above and are worth stating. It is per **step of the plan's body** rather than
+  per predicate — that is what the machine counts, and it is what gives a fetch, a disjunction and
+  a negation each a line of their own. And a profile arrives **once, just before the result ends**,
+  in its own frame on the stream: the tally is not final until the last chunk has run, and a
+  `--limit` that cancels early therefore reports none rather than reporting a different query's.
 - **`\d <prefix>` falls back to prefix matching** when a name doesn't resolve exactly, so
   `\d src.` dumps a namespace rather than failing (`glean/shell/Glean/Shell.hs:273-281`).
 

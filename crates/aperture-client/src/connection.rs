@@ -274,8 +274,25 @@ impl Connection {
     /// [`ClientError::Server`] with [`ErrorCode::BadQuery`](aperture_wire::ErrorCode)
     /// if it does not compile — carrying the compiler's own rendered diagnostics.
     pub fn query(&mut self, focus: &str) -> Result<Rows, ClientError> {
+        self.start_query(focus, kinds::QUERY)
+    }
+
+    /// Start a query **and ask what it examined**.
+    ///
+    /// The answer lands on [`Rows::profile`] once the result ends, because the tally
+    /// is not final until the last chunk has run. Everything else is
+    /// [`query`](Connection::query) — same rows, same paging, same cursor.
+    ///
+    /// # Errors
+    ///
+    /// As [`query`](Connection::query).
+    pub fn query_profiled(&mut self, focus: &str) -> Result<Rows, ClientError> {
+        self.start_query(focus, kinds::QUERY_PROFILE)
+    }
+
+    fn start_query(&mut self, focus: &str, kind: FrameKind) -> Result<Rows, ClientError> {
         let stream = self.claim_stream();
-        self.send(kinds::QUERY, stream, focus.as_bytes())?;
+        self.send(kind, stream, focus.as_bytes())?;
 
         let (kind, payload) = self.recv_on(stream)?;
         if kind != FrameKind::ROW_DESCRIPTION {
@@ -311,6 +328,13 @@ impl Connection {
         self.check_open(rows)?;
 
         let (kind, payload) = self.recv_on(rows.stream())?;
+
+        // Sent once, just before the result ends. Taken here rather than in a
+        // separate call so a caller that only pulls rows still ends up holding it.
+        if kind == kinds::PROFILE {
+            rows.set_profile(protocol::decode_profile(&payload)?);
+            return self.next_row(rows);
+        }
 
         if kind == kinds::COMPLETE {
             let (sent, _) = protocol::decode_complete(&payload)?;
@@ -400,6 +424,9 @@ impl Connection {
                 // Counted rather than merely dropped, so the tally at the end still
                 // means "everything the server said it sent reached here".
                 FrameKind::DATA_ROW => rows.skip(),
+                _ if kind == kinds::PROFILE => {
+                    rows.set_profile(protocol::decode_profile(&payload)?);
+                }
                 _ if kind == kinds::COMPLETE => {
                     let (sent, _) = protocol::decode_complete(&payload)?;
                     self.open.remove(&rows.stream().0);

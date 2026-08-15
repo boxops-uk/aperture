@@ -54,15 +54,15 @@ use tokio::{
 use aperture_encoding::tuple::Value;
 use aperture_engine::{
     compile::Compilation,
-    iter::{Cursor, Executor, Iteratee, Stream},
-    plan::Plan,
+    iter::{Cursor, Executor, Iteratee, Profile, Stream},
+    plan::{Plan, SeekKey, Source, Step, Test},
 };
 use aperture_ingest::{Ingested, intern_block};
-use aperture_schema::schema::{LocalInterner, PredicateTy, Schema};
+use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema};
 use aperture_store::{meta::Status, store::FjallDb};
 use aperture_wire::{
     FrameHeader, FrameKind, StreamId, encode_desc, encode_frame, frame,
-    protocol::{self, ErrorCode, Mode, Ready, Startup, kinds},
+    protocol::{self, ErrorCode, Mode, ProfileStep, QueryProfile, Ready, Startup, kinds},
     value::encode_value,
 };
 use tokio_util::sync::CancellationToken;
@@ -425,7 +425,8 @@ impl StreamTask {
             kinds::OPEN_WRITE => self.open_write().await,
             FrameKind::COPY_DATA => self.copy_data(payload).await,
             FrameKind::COPY_DONE => self.copy_done().await,
-            kinds::QUERY => self.query(payload).await,
+            kinds::QUERY => self.query(payload, false).await,
+            kinds::QUERY_PROFILE => self.query(payload, true).await,
             kinds::CONTROL => self.control(payload).await,
 
             other => Err(ServerError::Protocol(format!(
@@ -567,7 +568,7 @@ impl StreamTask {
     /// It is also the first thing in this project to *use* resume for what it is for
     /// rather than to test it: the cursor here is the same bytes-only token
     /// [chapter 5](../../../docs/05-resume.md) is about.
-    async fn query(&mut self, payload: &[u8]) -> Result<(), ServerError> {
+    async fn query(&mut self, payload: &[u8], profiled: bool) -> Result<(), ServerError> {
         let source = std::str::from_utf8(payload)
             .map_err(|_| ServerError::Protocol("a query that is not UTF-8".to_owned()))?
             .to_owned();
@@ -591,15 +592,27 @@ impl StreamTask {
         let mut cursor: Option<Cursor> = None;
         let mut sent: u64 = 0;
 
+        // **One profile for the whole run**, carried across every chunk. A chunk
+        // boundary is a real resume, so a profile made per chunk would report the
+        // last page's work and call it the query's.
+        let mut profile = Profile::for_plan(&prepared.plan);
+
         loop {
             let database = Arc::clone(&database);
             let plan = prepared.plan.clone();
             let shape = prepared.shape.clone();
             let token = self.cancel.clone();
             let resume = cursor.take();
+            let mut counted = std::mem::take(&mut profile);
 
-            let chunk =
-                blocking::run(move || run_chunk(&database, &plan, &shape, resume, &token)).await?;
+            let chunk = blocking::run(move || {
+                let chunk = run_chunk(&database, &plan, &shape, resume, &token, &mut counted)?;
+                Ok((chunk, counted))
+            })
+            .await?;
+
+            let (chunk, counted) = chunk;
+            profile = counted;
 
             for row in &chunk.rows {
                 self.outbound
@@ -617,6 +630,20 @@ impl StreamTask {
             }
         }
 
+        if profiled {
+            self.outbound
+                .send(
+                    kinds::PROFILE,
+                    self.stream,
+                    &protocol::encode_profile(&describe_profile(
+                        &prepared.plan,
+                        &database.schema,
+                        &profile,
+                    )),
+                )
+                .await?;
+        }
+
         self.outbound
             .send(
                 kinds::COMPLETE,
@@ -625,6 +652,96 @@ impl StreamTask {
             )
             .await
     }
+}
+
+/// Name every step of a plan, and pair each with what it read.
+///
+/// The engine counts by **position in the body** and knows nothing about names; the
+/// schema knows names and nothing about what ran. This is the one place the two meet,
+/// and it is on the server because the plan is the server's — a client holds a query's
+/// text and its row shape, never its plan.
+fn describe_profile(plan: &Plan, schema: &Schema, profile: &Profile) -> QueryProfile {
+    let steps = plan
+        .body
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            let (label, full_scan) = label_step(step, schema);
+
+            ProfileStep {
+                label,
+                examined: profile.examined.get(index).copied().unwrap_or(0),
+                full_scan,
+            }
+        })
+        .collect();
+
+    QueryProfile { steps }
+}
+
+fn label_step(step: &Step, schema: &Schema) -> (String, bool) {
+    match step {
+        Step::Level(level) => {
+            let mut names = vec![];
+            let mut full_scan = false;
+
+            for source in &level.sources {
+                match source {
+                    Source::Seek { access, .. } => {
+                        names.push(predicate_name(schema, access.predicate_id));
+
+                        // A seek that pins nothing reads the predicate whole. That is
+                        // the one line of a profile which names something to go and
+                        // fix, so it is worth being exact about: an empty prefix, or
+                        // a composite with no parts.
+                        full_scan |= match &access.seek_key {
+                            SeekKey::Prefix(bytes) => bytes.is_empty(),
+                            SeekKey::Composite(parts) => parts.is_empty(),
+                        };
+                    }
+
+                    // One point read per row of the level above — never a scan, so
+                    // never a full one however many rows it answers.
+                    Source::Fetch { predicate_id, .. } => {
+                        names.push(format!("fetch {}", predicate_name(schema, *predicate_id)));
+                    }
+                }
+            }
+
+            // A level with no sources at all is `never`: the empty relation, which
+            // reads nothing and says so rather than printing an empty name.
+            if names.is_empty() {
+                return ("never".to_owned(), false);
+            }
+
+            (names.join(" | "), full_scan)
+        }
+
+        // A derived bind is one value, not a relation: it takes a slot in the tally
+        // so the positions line up, and it will always read zero.
+        Step::Derive(_) => ("derive".to_owned(), false),
+
+        Step::Test(Test::Absent(sources)) => {
+            let names: Vec<String> = sources
+                .iter()
+                .map(|source| match source {
+                    Source::Seek { access, .. } => predicate_name(schema, access.predicate_id),
+                    Source::Fetch { predicate_id, .. } => predicate_name(schema, *predicate_id),
+                })
+                .collect();
+
+            // A probe stops at its first row, so it is never a full scan whatever its
+            // seek pinned — which is exactly the distinction the flag is for.
+            (format!("!{}", names.join(" | ")), false)
+        }
+    }
+}
+
+fn predicate_name(schema: &Schema, id: PredicateId) -> String {
+    schema
+        .get(id)
+        .and_then(|predicate| predicate.name())
+        .map_or_else(|| format!("predicate {}", id.0), ToOwned::to_owned)
 }
 
 /// Rows per chunk.
@@ -708,6 +825,7 @@ fn run_chunk(
     shape: &RowShape,
     resume: Option<Cursor>,
     cancel: &CancellationToken,
+    profile: &mut Profile,
 ) -> Result<Chunk, ServerError> {
     let store = database.db.reader();
 
@@ -724,7 +842,7 @@ fn run_chunk(
     // encoding happens below, where a `ServerError` is expressible. Mixing the two
     // would mean inventing an engine error variant for a wire fault.
     let outcome = executor
-        .enumerate(
+        .enumerate_profiled(
             Vec::new(),
             |mut acc: Vec<Value>, mut row| {
                 acc.push(row.to_value(&shape.interner)?);
@@ -736,6 +854,7 @@ fn run_chunk(
                 })
             },
             cancel,
+            profile,
         )
         .map_err(|error| ServerError::Execution(error.to_string()))?;
 

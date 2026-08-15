@@ -80,6 +80,18 @@ pub mod kinds {
     pub const OPEN_WRITE: FrameKind = FrameKind(b'W');
     /// Client → server: run a query on a new stream.
     pub const QUERY: FrameKind = FrameKind(b'Q');
+    /// Client → server: run a query, and report what it examined.
+    ///
+    /// A second kind rather than a flag in [`QUERY`]'s payload, because that payload
+    /// is the query text and nothing else — a leading flag byte would be a silent
+    /// change of meaning for every client already sending UTF-8. This way a client
+    /// that has never heard of profiling neither sends this nor receives a
+    /// [`PROFILE`] frame, which is what "additive" has to mean if the protocol
+    /// version is to stay where it is.
+    pub const QUERY_PROFILE: FrameKind = FrameKind(b'P');
+    /// Server → client: what the query examined, sent once, just before its
+    /// [`COMPLETE`].
+    pub const PROFILE: FrameKind = FrameKind(b'p');
     /// Server → client: the stream finished, with counts.
     pub const COMPLETE: FrameKind = FrameKind(b'C');
     /// Client → server: stop this stream.
@@ -510,6 +522,98 @@ pub fn decode_control_reply(bytes: &[u8]) -> Result<ControlReply, WireError> {
     Ok(reply)
 }
 
+/// One step of a plan, and what running it read.
+///
+/// The *outcome* to a plan's *intent*: a plan says which field narrowed the scan and
+/// which one only filters, and this says how many rows that came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileStep {
+    /// What the step is, in the schema's names — a predicate, a fetch through a
+    /// reference, a negation, a derived bind.
+    pub label: String,
+    /// Rows pulled from a scan here, **matched or skipped**.
+    pub examined: u64,
+    /// Whether this step read a predicate whole.
+    ///
+    /// Glean prints `" (full scan)"` for the same reason: it is the one line of a
+    /// profile that names a thing to go and fix.
+    pub full_scan: bool,
+}
+
+/// What a query examined, step by step.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueryProfile {
+    pub steps: Vec<ProfileStep>,
+}
+
+impl QueryProfile {
+    /// Rows examined across every step.
+    #[must_use]
+    pub fn examined(&self) -> u64 {
+        self.steps.iter().map(|step| step.examined).sum()
+    }
+}
+
+#[must_use]
+pub fn encode_profile(profile: &QueryProfile) -> Vec<u8> {
+    let mut out = vec![];
+    varint::put_u64(&mut out, profile.steps.len() as u64);
+
+    for step in &profile.steps {
+        put_str(&mut out, &step.label);
+        varint::put_u64(&mut out, step.examined);
+        out.push(u8::from(step.full_scan));
+    }
+
+    out
+}
+
+/// # Errors
+///
+/// [`WireError`] if the payload is malformed.
+pub fn decode_profile(bytes: &[u8]) -> Result<QueryProfile, WireError> {
+    let (count, mut at) = varint::get_u64(bytes)?;
+
+    // A declared count larger than the bytes could hold is a fault, not an allocation
+    // request: the same rule the descriptor follows, and for the same reason.
+    let count = usize::try_from(count)
+        .ok()
+        .filter(|count| *count <= bytes.len())
+        .ok_or(WireError::LengthOutOfRange {
+            declared: count,
+            available: bytes.len(),
+        })?;
+
+    let mut steps = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let (label, used) = get_str(&bytes[at..])?;
+        at += used;
+
+        let (examined, used) = varint::get_u64(&bytes[at..])?;
+        at += used;
+
+        let full_scan = bytes
+            .get(at)
+            .copied()
+            .ok_or(WireError::TypeMismatch("full scan flag"))?
+            != 0;
+        at += 1;
+
+        steps.push(ProfileStep {
+            label,
+            examined,
+            full_scan,
+        });
+    }
+
+    if at != bytes.len() {
+        return Err(WireError::TrailingBytes(bytes.len() - at));
+    }
+
+    Ok(QueryProfile { steps })
+}
+
 /// A **provisional** schema fingerprint.
 ///
 /// Chapter 6 specifies the real one — canonical form, per-predicate fingerprints,
@@ -685,6 +789,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_profile_round_trips() {
+        let profile = QueryProfile {
+            steps: vec![
+                ProfileStep {
+                    label: "src.Decl".to_owned(),
+                    examined: 100_000,
+                    full_scan: true,
+                },
+                ProfileStep {
+                    label: "fetch src.File".to_owned(),
+                    examined: 0,
+                    full_scan: false,
+                },
+            ],
+        };
+
+        let bytes = encode_profile(&profile);
+        assert_eq!(decode_profile(&bytes), Ok(profile.clone()));
+        assert_eq!(profile.examined(), 100_000);
+
+        for cut in 0..bytes.len() {
+            assert!(decode_profile(&bytes[..cut]).is_err(), "cut to {cut}");
+        }
+
+        assert_eq!(
+            decode_profile(&encode_profile(&QueryProfile::default())),
+            Ok(QueryProfile::default())
+        );
     }
 
     /// An op byte this build does not know is a refusal, not a guess. The

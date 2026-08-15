@@ -88,6 +88,13 @@ pub enum Command {
         /// Print rows and elapsed time to stderr, so it survives a pipe.
         #[arg(long)]
         timing: bool,
+
+        /// Report what the query **examined**, per step, to stderr.
+        ///
+        /// The outcome to a plan's intent: a plan says which field narrowed the scan,
+        /// and this says how many rows that came to.
+        #[arg(long)]
+        profile: bool,
     },
 
     /// An interactive REPL.
