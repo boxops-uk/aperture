@@ -77,11 +77,17 @@ impl Desc {
         })
     }
 
-    /// Back to a schema type, interning the field names.
+    /// Back to a schema type, for the value codec to drive on.
     ///
-    /// What a client does with a descriptor it received: rows are then decoded by the
-    /// ordinary value codec, so there is one decoder rather than a second one for
-    /// rows.
+    /// **The record field names in the result are placeholders**, and nothing may
+    /// resolve them. `PredicateTy::Record` holds a bare `Spur`, so the *tier* a name
+    /// came from — schema or per-query local — cannot be carried, and a local `Spur`
+    /// and a schema `Spur` of the same number are different names. Resolving one
+    /// afterwards does not fail; it silently answers with the wrong string.
+    ///
+    /// That costs nothing, because the encoding is **positional**: `encode_value`
+    /// zips a record's fields against its type's and never looks at a name. The names
+    /// live in the [`Desc`] itself, which is what a peer receives and reads.
     #[must_use]
     pub fn to_ty(&self, interner: &mut LocalInterner) -> PredicateTy {
         match self {

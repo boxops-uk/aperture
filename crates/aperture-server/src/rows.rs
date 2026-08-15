@@ -9,7 +9,7 @@
 //!    │  desc_of
 //!    ▼
 //!   Desc          names resolved, sent once     (wire)
-//!    │  to_ty
+//!    │  to_ty     interned back into the *compilation's* interner
 //!    ▼
 //!   PredicateTy   what the value codec drives on
 //!    │  to_wire   + the row's stored Value
@@ -17,13 +17,20 @@
 //!   WireValue  ──encode_value──▶  bytes
 //! ```
 //!
+//! **One interner runs the whole chain**, and it has to be the compilation's: a
+//! `Plan`'s projections hold symbols minted there, so a row decodes against it, and
+//! the row type is interned back into it so the match below is between names that came
+//! from one place. A second interner built from the same schema agrees about schema
+//! names and disagrees about every head field name.
+//!
 //! The temptation is to write a fourth encoder straight from `Desc` and a stored
 //! `Value`, which is about twenty-five lines and would be a second definition of the
 //! wire format. Going the long way round keeps one.
 
 use aperture_encoding::tuple::Value;
 use aperture_engine::syntax::Ty;
-use aperture_schema::schema::{LocalInterner, PredicateTy, Schema};
+use aperture_schema::schema::{LocalInterner, PredicateTy};
+
 use aperture_wire::{Desc, WireRef, WireValue};
 
 use crate::error::ServerError;
@@ -68,20 +75,30 @@ pub fn desc_of(ty: &Ty, interner: &LocalInterner) -> Result<Desc, ServerError> {
 
 /// A stored row value as a wire value, against the type the descriptor named.
 ///
-/// Record fields are matched **by name** rather than by position. Both sides come
-/// from the same head so the orders ought to agree, and relying on that would make a
-/// silent mis-projection out of a change to either — the row would encode fine and
-/// decode as the wrong fields.
+/// # Record fields are matched positionally, and by name would be *wrong*
+///
+/// The first version matched by name, on the reasoning that relying on order would
+/// make a silent mis-projection out of a change to either side. It could not work,
+/// and the reason is worth keeping: a `PredicateTy::Record` holds a bare `Spur`, so
+/// [`Desc::to_ty`](aperture_wire::Desc::to_ty) has to discard which **tier** of the
+/// two-tier interner a name came from. Resolving one afterwards is a guess, and a
+/// wrong guess does not fail — it resolves to a *different string*, because a local
+/// `Spur` and a schema `Spur` of the same number are different names.
+///
+/// A query head can also name fields the schema never declares (`{decl = …}`), so
+/// there is no schema symbol to hold in the first place.
+///
+/// Positional is not a weaker check here, it is the only correct one: both the
+/// descriptor and the row come from the *same* head type, walked in the same order.
+/// And the names are not lost — they are in the [`Desc`], which is what the client
+/// receives. Nothing downstream reads a record name from the `PredicateTy`, including
+/// `encode_value`, which zips fields positionally too.
 ///
 /// # Errors
 ///
 /// [`ServerError::Unprojectable`] if the row does not fit the type its own head
 /// produced, which is a bug rather than a bad query.
-pub fn to_wire(
-    ty: &PredicateTy,
-    value: &Value,
-    interner: &LocalInterner,
-) -> Result<WireValue, ServerError> {
+pub fn to_wire(ty: &PredicateTy, value: &Value) -> Result<WireValue, ServerError> {
     Ok(match (ty, value) {
         (PredicateTy::Int, Value::Int(n)) => WireValue::Int(*n),
         (PredicateTy::Str, Value::Str(s)) => WireValue::Str(s.clone()),
@@ -92,25 +109,16 @@ pub fn to_wire(
         (PredicateTy::Fact(_), Value::FactRef(id)) => WireValue::Ref(WireRef::Id(*id)),
 
         (PredicateTy::Record(field_tys), Value::Record(fields)) => {
+            if field_tys.len() != fields.len() {
+                return Err(ServerError::Unprojectable(
+                    "a row with a different number of fields than its head declared",
+                ));
+            }
+
             let mut out = Vec::with_capacity(field_tys.len());
 
-            for (name, field_ty) in field_tys.iter() {
-                let name = interner
-                    .try_resolve(aperture_schema::schema::Symbol::Local(*name))
-                    .or_else(|| {
-                        interner.try_resolve(aperture_schema::schema::Symbol::Schema(*name))
-                    })
-                    .ok_or(ServerError::Unprojectable("an unresolvable field name"))?;
-
-                let field = fields
-                    .iter()
-                    .find(|(field_name, _)| field_name == name)
-                    .map(|(_, value)| value)
-                    .ok_or(ServerError::Unprojectable(
-                        "a row missing a field its own head declared",
-                    ))?;
-
-                out.push(to_wire(field_ty, field, interner)?);
+            for ((_, field_ty), (_, field)) in field_tys.iter().zip(fields.iter()) {
+                out.push(to_wire(field_ty, field)?);
             }
 
             WireValue::Record(out.into())
@@ -122,23 +130,4 @@ pub fn to_wire(
             ));
         }
     })
-}
-
-/// The descriptor, and the type rows will be encoded against.
-///
-/// The interner comes back with it because [`Desc::to_ty`] interns the field names
-/// into it, and [`to_wire`] has to resolve the very same symbols.
-///
-/// # Errors
-///
-/// Whatever [`desc_of`] reports.
-pub fn row_shape(
-    schema: &Schema,
-    ty: &Ty,
-    interner: &LocalInterner,
-) -> Result<(Desc, PredicateTy, LocalInterner), ServerError> {
-    let desc = desc_of(ty, interner)?;
-    let mut fresh = LocalInterner::new(schema.interner().clone());
-    let ty = desc.to_ty(&mut fresh);
-    Ok((desc, ty, fresh))
 }

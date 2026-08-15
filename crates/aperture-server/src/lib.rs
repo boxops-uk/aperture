@@ -12,6 +12,7 @@
 //!   be written against the wire format without adopting a server's idea of a
 //!   session, which is what the .NET client under `clients/dotnet` does.
 //! - [`session`] — one connection, from handshake to close.
+//! - [`outbound`] — the fair writer: per-stream queues, round-robin, bounded.
 //! - [`rows`] — a query result on the wire, without a fourth encoder appearing.
 //! - [`server`] — the Unix socket listener, and the readiness file a test waits on.
 //!
@@ -38,6 +39,7 @@
 //!   permissions, or the gateway in front of opted-in TCP.
 
 pub mod error;
+pub mod outbound;
 pub mod protocol;
 pub mod rows;
 pub mod server;

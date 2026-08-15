@@ -312,6 +312,76 @@ fn a_record_head_describes_itself_and_its_rows_follow() {
     );
 }
 
+/// **A record head whose fields the schema does not declare, holding a reference.**
+///
+/// This is the case the Rust tests missed and the .NET demo caught: `{decl = …, file
+/// = …}` names fields no predicate has, so there is no schema symbol for them, and one
+/// of them is a *reference* rather than a scalar. Matching a row's fields to its type
+/// by name cannot work here — a `PredicateTy::Record` holds a bare `Spur` and cannot
+/// say which tier of the interner it came from — and the wrong guess resolves to a
+/// different string rather than failing.
+#[test]
+fn a_record_head_of_undeclared_names_holding_a_reference() {
+    let serving = start();
+    let mut client = Client::connect(&serving);
+    client.hello(0, Mode::ReadWrite);
+
+    let write = StreamId(1);
+    client.send(kinds::OPEN_WRITE, write, &[]);
+    client.recv();
+
+    let mut block = vec![];
+    encode_block(&mut block, &schema(), DECL, &[decl("a.py", 3, "f")]).expect("a block");
+    client.send(FrameKind::COPY_DATA, write, &block);
+    client.send(FrameKind::COPY_DONE, write, &[]);
+    client.recv();
+
+    // `what` and `where_` are not schema names; `where_.file` is a reference.
+    client.send(
+        kinds::QUERY,
+        StreamId(2),
+        b"{what = D.name, whose = D.file} where D = src.Decl _",
+    );
+
+    let (header, payload) = client.recv();
+    assert_eq!(
+        header.kind,
+        FrameKind::ROW_DESCRIPTION,
+        "{:?}",
+        protocol::decode_error(&payload)
+    );
+
+    let (desc, _) = decode_desc(&payload).expect("a descriptor");
+    let Desc::Record(fields) = &desc else {
+        panic!("expected a record descriptor, got {desc:?}");
+    };
+    assert_eq!(fields[0].0, "what");
+    assert_eq!(fields[1].0, "whose");
+    assert_eq!(fields[1].1, Desc::Fact(FILE), "a reference field");
+
+    let (header, payload) = client.recv();
+    assert_eq!(
+        header.kind,
+        FrameKind::DATA_ROW,
+        "{:?}",
+        protocol::decode_error(&payload)
+    );
+
+    let mut interner = aperture_schema::schema::LocalInterner::new(schema().interner().clone());
+    let ty = desc.to_ty(&mut interner);
+    let (row, _) = decode_value(&payload, &schema(), &ty).expect("a row decodes");
+
+    let WireValue::Record(values) = &row else {
+        panic!("expected a record row, got {row:?}");
+    };
+    assert_eq!(values[0], WireValue::Str("f".to_owned()));
+    assert!(
+        matches!(values[1], WireValue::Ref(WireRef::Id(_))),
+        "the reference field came back as an id: {:?}",
+        values[1]
+    );
+}
+
 /// **A wrong schema fingerprint is refused before any data flows** — the cheap early
 /// mismatch detection §6 is after, and the reason the handshake carries one.
 #[test]
@@ -456,4 +526,217 @@ fn a_conflict_has_its_own_code() {
     assert_eq!(header.kind, FrameKind::ERROR);
     let (code, _) = protocol::decode_error(&payload).expect("an error frame");
     assert_eq!(code, ErrorCode::Conflict);
+}
+
+// ---- what the runtime was for -----------------------------------------------
+
+/// Write `count` files, so a query over them takes long enough to interleave with.
+fn seed_files(client: &mut Client, count: usize) {
+    let facts: Vec<WireFact> = (0..count)
+        .map(|index| file(&format!("src/file{index:06}.py")))
+        .collect();
+
+    let write = StreamId(90);
+    client.send(kinds::OPEN_WRITE, write, &[]);
+    client.recv();
+
+    // Blocks rather than one giant one, since a block is capped and this is also the
+    // shape a real producer sends.
+    for chunk in facts.chunks(500) {
+        let mut block = vec![];
+        encode_block(&mut block, &schema(), FILE, chunk).expect("a block");
+        client.send(FrameKind::COPY_DATA, write, &block);
+    }
+
+    client.send(FrameKind::COPY_DONE, write, &[]);
+    let (header, _) = client.recv();
+    assert_eq!(header.kind, kinds::COMPLETE);
+}
+
+/// **A long query does not delay a short one on the same connection.**
+///
+/// This was false before the runtime landed — the server awaited each frame's work
+/// before reading the next, so a query scanning thousands of rows held the connection
+/// for its whole duration. It is the property §5 asks for and the reason the reader
+/// loop never does a stream's work.
+///
+/// Checked by *which stream completes first*, not by a clock: both queries are issued
+/// back to back with the long one first, and the short one's `COMPLETE` has to arrive
+/// while the long one is still sending rows.
+#[test]
+fn a_long_query_does_not_delay_a_short_one() {
+    let serving = start();
+    let mut client = Client::connect(&serving);
+    client.hello(0, Mode::ReadWrite);
+
+    seed_files(&mut client, 4_000);
+
+    let long = StreamId(1);
+    let short = StreamId(2);
+
+    // The long one first, so that a server processing frames in order would finish it
+    // before even reading the short one.
+    client.send(kinds::QUERY, long, b"F where src.File F");
+    client.send(
+        kinds::QUERY,
+        short,
+        b"F where F = src.File \"src/file000001.py\"",
+    );
+
+    let mut long_rows = 0;
+    let mut short_completed_after = None;
+
+    loop {
+        let (header, payload) = client.recv();
+
+        if header.kind == FrameKind::ERROR {
+            let (code, message) = protocol::decode_error(&payload).expect("an error frame");
+            panic!("stream {} failed: {code:?}: {message}", header.stream.0);
+        }
+
+        if header.kind == FrameKind::DATA_ROW && header.stream == long {
+            long_rows += 1;
+        }
+
+        if header.kind == kinds::COMPLETE {
+            if header.stream == short {
+                short_completed_after = Some(long_rows);
+            } else {
+                let (rows, _) = protocol::decode_complete(&payload).expect("counts");
+                assert_eq!(rows, 4_000, "the long query answered in full");
+                break;
+            }
+        }
+    }
+
+    // Measured at 0 — the short query completes before the long one emits a single
+    // row. The bound is loose against a loaded machine and still an order of
+    // magnitude inside "they did not interleave at all".
+    let interleaved = short_completed_after.expect("the short query completed");
+    assert!(
+        interleaved < 1_000,
+        "the short query waited for {interleaved} of the long query's 4000 rows — \
+         the streams did not interleave"
+    );
+}
+
+/// **Resume across chunks equals an uninterrupted run.**
+///
+/// A thousand rows is four chunks at [`CHUNK_ROWS`](aperture_server::session), so the
+/// executor is entered once and *resumed* three times — through the same bytes-only
+/// cursor [chapter 5](../../../docs/05-resume.md) is about. Until now that machinery
+/// was exercised only by its own batteries; this is the first thing that uses it for
+/// what it is for.
+///
+/// Checked as a **set**, not a count: a resume that dropped a row, repeated one, or
+/// restarted a level would still produce a thousand frames.
+#[test]
+fn a_chunked_result_is_the_same_rows_an_uninterrupted_one_would_give() {
+    let serving = start();
+    let mut client = Client::connect(&serving);
+    client.hello(0, Mode::ReadWrite);
+
+    seed_files(&mut client, 1_000);
+
+    client.send(kinds::QUERY, StreamId(1), b"F where src.File F");
+
+    let (header, payload) = client.recv();
+    assert_eq!(header.kind, FrameKind::ROW_DESCRIPTION);
+    let (desc, _) = decode_desc(&payload).expect("a descriptor");
+    assert_eq!(desc, Desc::Str);
+
+    let mut paths = std::collections::BTreeSet::new();
+    let mut frames = 0;
+
+    loop {
+        let (header, payload) = client.recv();
+
+        match header.kind {
+            FrameKind::DATA_ROW => {
+                frames += 1;
+                let (value, _) =
+                    decode_value(&payload, &schema(), &PredicateTy::Str).expect("a row decodes");
+                match value {
+                    WireValue::Str(path) => {
+                        paths.insert(path);
+                    }
+                    other => panic!("expected a string row, got {other:?}"),
+                }
+            }
+            kinds::COMPLETE => {
+                let (count, _) = protocol::decode_complete(&payload).expect("counts");
+                assert_eq!(count, 1_000);
+                break;
+            }
+            other => panic!("unexpected frame `{other}`"),
+        }
+    }
+
+    assert_eq!(frames, 1_000, "one frame per row");
+    assert_eq!(
+        paths.len(),
+        1_000,
+        "a thousand *distinct* paths — a resume that repeated or dropped a row would \
+         still have sent a thousand frames"
+    );
+    assert!(paths.contains("src/file000000.py"));
+    assert!(paths.contains("src/file000999.py"));
+}
+
+/// **Cancel stops a stream, not the connection.**
+///
+/// In band and on the stream it cancels, which is the whole reason frames carry a
+/// stream id: a second connection could not do this, because the first one's state is
+/// not there. The stream completes with what it had sent — a cancel is an early end
+/// rather than a failure, and a client that asked for one is not owed an error.
+#[test]
+fn cancelling_a_stream_ends_it_and_leaves_the_connection() {
+    let serving = start();
+    let mut client = Client::connect(&serving);
+    client.hello(0, Mode::ReadWrite);
+
+    seed_files(&mut client, 8_000);
+
+    client.send(kinds::QUERY, StreamId(1), b"F where src.File F");
+
+    // Read the descriptor and a few rows, then ask it to stop.
+    let (header, _) = client.recv();
+    assert_eq!(header.kind, FrameKind::ROW_DESCRIPTION);
+
+    for _ in 0..10 {
+        let (header, _) = client.recv();
+        assert_eq!(header.kind, FrameKind::DATA_ROW);
+    }
+
+    client.send(kinds::CANCEL, StreamId(1), &[]);
+
+    let mut rows = 10;
+    let cancelled_at = loop {
+        let (header, payload) = client.recv();
+
+        match header.kind {
+            FrameKind::DATA_ROW => rows += 1,
+            kinds::COMPLETE => {
+                let (count, _) = protocol::decode_complete(&payload).expect("counts");
+                break count;
+            }
+            other => panic!("unexpected frame `{other}`"),
+        }
+    };
+
+    assert_eq!(cancelled_at, rows, "the count is what was actually sent");
+    assert!(
+        cancelled_at < 8_000,
+        "the query ran to completion despite being cancelled"
+    );
+
+    // And the connection is unharmed: a different stream answers normally.
+    client.send(
+        kinds::QUERY,
+        StreamId(2),
+        b"F where F = src.File \"src/file000002.py\"",
+    );
+    let (header, _) = client.recv();
+    assert_eq!(header.kind, FrameKind::ROW_DESCRIPTION);
+    assert_eq!(header.stream, StreamId(2));
 }

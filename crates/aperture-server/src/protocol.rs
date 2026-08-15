@@ -60,6 +60,14 @@ pub mod kinds {
     pub const QUERY: FrameKind = FrameKind(b'Q');
     /// Server → client: the stream finished, with counts.
     pub const COMPLETE: FrameKind = FrameKind(b'C');
+    /// Client → server: stop this stream.
+    ///
+    /// **In band, on the stream it cancels** — not a connection teardown and not a
+    /// side channel. That is the whole reason frames carry a stream id: cancelling a
+    /// long query has to be possible without disturbing the other streams sharing the
+    /// socket, and a second connection could not do it because the first one's state
+    /// is not there.
+    pub const CANCEL: FrameKind = FrameKind(b'X');
 }
 
 /// Which way a session may go, declared at startup and resolved once against the

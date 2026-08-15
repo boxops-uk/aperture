@@ -1233,7 +1233,7 @@ query owns the thread that would have to do them. All nine socket tests pass unc
 a deliberately **synchronous** client: a client written against the wire format should need
 nothing of the server's runtime, and that is where it is checked.
 
-**9d-ii — what the runtime was for.**
+**9d-ii — what the runtime was for. ✅**
 - Per-connection reader task, and a **writer task doing round-robin over bounded per-stream
   queues** (§5). Without it one chatty stream starves the socket even when the executor has
   capacity — which is true of the server today, and said so in its module docs.
@@ -1248,9 +1248,25 @@ nothing of the server's runtime, and that is where it is checked.
   `create`/`finish`/`list`/`describe`/`drop` become control messages rather than requiring the
   server be stopped. Two front doors, one implementation.
 
-*Acceptance:* a long query and a short one on one connection, and the short one finishes first —
-which is false today; cancelling a long query stops it inside a chunk; [I8](docs/invariants.md#i8)
-still holds through portals; every existing battery green.
+*Acceptance:* **done for the concurrency half.** A long query and a short one on one connection:
+the short one completes after **0** of the long one's 4000 rows. A cancel stops a stream inside a
+chunk and leaves the connection answering on another. A thousand-row result crosses four chunks —
+three real resumes through the bytes-only cursor — and comes back as a thousand *distinct* rows,
+which a resume that dropped or repeated one would not.
+
+**Still to do in 9d:** lifecycle over the wire, so `create`/`finish`/`list`/`describe`/`drop`
+work against a running server rather than being refused by it.
+
+**One bug worth carrying forward, found by the .NET demo and not by the Rust tests.** Rows were
+matched to their type *by name*, and that cannot work: a `PredicateTy::Record` holds a bare
+`Spur`, so `Desc::to_ty` has to discard which **tier** of the two-tier interner a name came from,
+and a local `Spur` and a schema `Spur` of the same number are *different names* — so resolving one
+afterwards does not fail, it silently answers with the wrong string. It only surfaced once the
+compilation's own interner was reused (which is itself required, since a `Plan`'s projections hold
+symbols minted there). Matching is positional now, which is not a weaker check but the only
+correct one: descriptor and row come from the same head type walked in the same order, and
+`encode_value` zips positionally too. The names are not lost — they live in the `Desc` the client
+receives.
 
 ### 9e — `aperture-client`
 

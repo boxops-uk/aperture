@@ -168,6 +168,18 @@ impl<'src> Compilation<'src> {
         &self.interner
     }
 
+    /// Take the interner, consuming the compilation.
+    ///
+    /// What a caller that outlives the compilation needs: a `Plan`'s projections hold
+    /// `Symbol`s minted here, so anything decoding a row later has to resolve them
+    /// against **this** interner. A second one built from the same schema would agree
+    /// about schema names and disagree about every local one, which is a row whose
+    /// head fields cannot be named.
+    #[must_use]
+    pub fn into_interner(self) -> LocalInterner {
+        self.interner
+    }
+
     #[must_use]
     pub fn source(&self) -> &'src str {
         self.source
