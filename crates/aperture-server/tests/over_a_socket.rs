@@ -16,11 +16,11 @@ use std::{
 
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use aperture_server::{
-    Database, ErrorCode, Mode, Startup,
+    ErrorCode, Mode, Registry, Startup,
     protocol::{self, kinds},
     server::Listener,
 };
-use aperture_store::store::FjallDb;
+use aperture_store::catalog::Catalog;
 use aperture_wire::{
     Desc, FrameHeader, FrameKind, StreamId, WireFact, WireRef, WireValue, decode_desc,
     encode_block, encode_frame, frame, value::decode_value,
@@ -94,12 +94,19 @@ struct Serving {
 fn start() -> Serving {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("aperture.sock");
-    let store = dir.path().join("db");
 
-    let db = FjallDb::open(&store).expect("a database");
     let schema = schema();
     let fingerprint = protocol::provisional_fingerprint(&schema);
-    let database = Arc::new(Database::new("code", db, schema));
+
+    // Through the catalog rather than by opening a directory: the server owns a store
+    // root and serves what is under it, so a test that handed it a bare `FjallDb`
+    // would be testing a shape the server no longer has.
+    let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
+    catalog
+        .create("code", &schema, fingerprint)
+        .expect("a database");
+
+    let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");
 
     let listener = Listener::bind(&socket).expect("a socket");
 
@@ -107,7 +114,7 @@ fn start() -> Serving {
     // the client below deliberately is not — a client written against the wire format
     // should need nothing of the server's runtime, and this is where that is checked.
     thread::spawn(move || {
-        let _ = listener.run_blocking(vec![database]);
+        let _ = listener.run_blocking(Arc::new(registry));
     });
 
     // The listener is bound before `run` is called, so the socket is already

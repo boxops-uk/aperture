@@ -27,6 +27,25 @@ pub enum ServerError {
     #[error("no database named `{0}`")]
     UnknownDatabase(String),
 
+    /// A frame that needs a database, on a session bound to none.
+    #[error("this session names no database; name one at startup to query or write")]
+    NoDatabase,
+
+    /// A write asked of a Complete database (`ops-I2`).
+    ///
+    /// Distinct from [`ModeRefused`](ServerError::ModeRefused), which is a session
+    /// that never asked to write. This one asked, and the database is sealed.
+    #[error("`{0}` is complete: it takes no more writes")]
+    Sealed(String),
+
+    /// A database a session still holds, asked to be deleted.
+    ///
+    /// A refusal rather than a wait, and rather than pulling the store out from under
+    /// a running query. It is also the one error here worth *retrying*: the condition
+    /// ends when the session does.
+    #[error("`{0}` is in use by an open session and cannot be removed")]
+    InUse(String),
+
     #[error(
         "schema mismatch: the client expects {expected:#018x} and this database has {actual:#018x}"
     )]
@@ -53,20 +72,36 @@ impl ServerError {
     /// The code a client branches on.
     #[must_use]
     pub fn code(&self) -> ErrorCode {
+        use aperture_store::error::StoreError;
+
         match self {
             ServerError::Protocol(_) | ServerError::Wire(_) => ErrorCode::Protocol,
-            ServerError::UnknownDatabase(_) => ErrorCode::UnknownDatabase,
+            ServerError::UnknownDatabase(_) | ServerError::NoDatabase => ErrorCode::UnknownDatabase,
             ServerError::SchemaMismatch { .. } => ErrorCode::SchemaMismatch,
-            ServerError::ModeRefused => ErrorCode::ModeRefused,
+            ServerError::ModeRefused | ServerError::Sealed(_) => ErrorCode::ModeRefused,
+            ServerError::InUse(_) => ErrorCode::InUse,
             ServerError::BadQuery(_) => ErrorCode::BadQuery,
             ServerError::Ingest(ingest) => match ingest {
                 IngestError::Conflict { .. } => ErrorCode::Conflict,
                 _ => ErrorCode::BadFacts,
             },
-            ServerError::Io(_)
-            | ServerError::Store(_)
-            | ServerError::Unprojectable(_)
-            | ServerError::Execution(_) => ErrorCode::Internal,
+
+            // A lifecycle request the store declined is the client's answer, not the
+            // server's failure — `Internal` would tell a client to look at the logs
+            // for a message that is already in its hand.
+            ServerError::Store(store) => match store {
+                StoreError::NoSuchDatabase(_) => ErrorCode::UnknownDatabase,
+                StoreError::NotWritable { .. } => ErrorCode::ModeRefused,
+                StoreError::RootHeld { .. } => ErrorCode::InUse,
+                StoreError::DatabaseExists(_)
+                | StoreError::BadDatabaseName { .. }
+                | StoreError::EmptyDatabase(_) => ErrorCode::Refused,
+                _ => ErrorCode::Internal,
+            },
+
+            ServerError::Io(_) | ServerError::Unprojectable(_) | ServerError::Execution(_) => {
+                ErrorCode::Internal
+            }
         }
     }
 

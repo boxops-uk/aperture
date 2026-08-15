@@ -21,7 +21,29 @@
 //!     ◀──────── T row-description[desc] ────
 //!     ◀──────── D data-row[value] ──────────
 //!     ◀──────── C complete{rows} ───────────      or E error
+//!
+//!     ── L control{op, name}  (stream 3) ───▶
+//!     ◀──────── M control-reply[…] ─────────      or E error
 //! ```
+//!
+//! # The lifecycle is a stream like any other
+//!
+//! `create`, `finish` and `remove` are [control](Control) frames on an ordinary
+//! stream, which is what makes them work **against a running server** instead of
+//! requiring one to be stopped ([operations §5](../../../docs/aperture-cli-design.md)).
+//! Putting them on a stream rather than on stream 0 buys the whole of the existing
+//! machinery: they queue fairly behind other work, a failure answers on the stream that
+//! caused it, and a slow `create` does not stall the connection's reader.
+//!
+//! `list` and `describe` are **not** here, and their absence is `ops-I7` rather than a
+//! gap: enumeration reads sidecars and never opens fjall, so it already works while a
+//! server holds every database under the root. §5's remote branch answers them through
+//! the virtual predicate `aperture.db.List` — the normal query machinery, no bespoke
+//! message — which is Phase 9f's.
+//!
+//! All of it is **additive**, so [`VERSION`] does not move: a client that predates
+//! control frames never sends one and is never sent one. The .NET client under
+//! `clients/dotnet` is the check that this is true rather than hoped.
 //!
 //! # Every message is a frame, including the handshake
 //!
@@ -68,6 +90,10 @@ pub mod kinds {
     /// socket, and a second connection could not do it because the first one's state
     /// is not there.
     pub const CANCEL: FrameKind = FrameKind(b'X');
+    /// Client → server: a lifecycle request — create, finish, remove.
+    pub const CONTROL: FrameKind = FrameKind(b'L');
+    /// Server → client: what the lifecycle request came to.
+    pub const CONTROL_REPLY: FrameKind = FrameKind(b'M');
 }
 
 /// Which way a session may go, declared at startup and resolved once against the
@@ -136,6 +162,16 @@ pub enum ErrorCode {
     Conflict = 6,
     BadQuery = 7,
     Internal = 8,
+    /// A database something else is holding — a session has it open, so it cannot be
+    /// taken away underneath. The one code here worth *retrying*.
+    InUse = 9,
+    /// A well-formed request the server will not carry out: a name already taken, a
+    /// name that cannot be a directory, an empty database sealed without the flag.
+    ///
+    /// Distinct from [`Internal`](ErrorCode::Internal), and the distinction is the
+    /// whole point of having it: `Internal` says look at the server's logs, and this
+    /// says the answer is in the message you are holding.
+    Refused = 10,
 }
 
 impl ErrorCode {
@@ -150,9 +186,68 @@ impl ErrorCode {
             6 => ErrorCode::Conflict,
             7 => ErrorCode::BadQuery,
             8 => ErrorCode::Internal,
+            9 => ErrorCode::InUse,
+            10 => ErrorCode::Refused,
             _ => return None,
         })
     }
+}
+
+/// Which lifecycle operation a [`Control`] frame asks for.
+///
+/// The discriminants are a wire contract: **append only**, never renumber. A reply
+/// carries the same byte, so a client decodes an answer without having to remember
+/// what it asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ControlOp {
+    Create = 1,
+    Finish = 2,
+    Remove = 3,
+}
+
+impl ControlOp {
+    #[must_use]
+    pub fn from_byte(byte: u8) -> Option<ControlOp> {
+        Some(match byte {
+            1 => ControlOp::Create,
+            2 => ControlOp::Finish,
+            3 => ControlOp::Remove,
+            _ => return None,
+        })
+    }
+}
+
+/// A lifecycle request.
+///
+/// The database is named in the frame rather than taken from the session, because
+/// `create` names one that does not exist yet — which is also why a session may be
+/// bound to no database at all (see [`Startup::database`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Control {
+    pub op: ControlOp,
+    pub database: String,
+    /// `finish` only: seal a database holding no facts.
+    ///
+    /// A flag on the request rather than a separate op, because it changes what one
+    /// operation *permits* rather than what it does.
+    pub allow_zero_facts: bool,
+}
+
+/// What a lifecycle request came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlReply {
+    /// The provisional instance the new database was given.
+    Created {
+        instance: String,
+    },
+    Finished {
+        fingerprint: u64,
+        facts: u64,
+        bytes: u64,
+        already_complete: bool,
+    },
+    Removed,
 }
 
 // ---- encoding ---------------------------------------------------------------
@@ -296,6 +391,125 @@ pub fn decode_complete(bytes: &[u8]) -> Result<(u64, u64), WireError> {
     Ok((first, second))
 }
 
+#[must_use]
+pub fn encode_control(control: &Control) -> Vec<u8> {
+    let mut out = vec![control.op as u8];
+    put_str(&mut out, &control.database);
+    out.push(u8::from(control.allow_zero_facts));
+    out
+}
+
+/// # Errors
+///
+/// [`WireError`] if the payload is malformed or the op is not one this build knows.
+pub fn decode_control(bytes: &[u8]) -> Result<Control, WireError> {
+    let op = bytes
+        .first()
+        .copied()
+        .and_then(ControlOp::from_byte)
+        .ok_or(WireError::TypeMismatch("control op"))?;
+
+    let (database, used) = get_str(&bytes[1..])?;
+    let mut at = 1 + used;
+
+    let allow_zero_facts = bytes
+        .get(at)
+        .copied()
+        .ok_or(WireError::TypeMismatch("control flags"))?
+        != 0;
+    at += 1;
+
+    if at != bytes.len() {
+        return Err(WireError::TrailingBytes(bytes.len() - at));
+    }
+
+    Ok(Control {
+        op,
+        database,
+        allow_zero_facts,
+    })
+}
+
+#[must_use]
+pub fn encode_control_reply(reply: &ControlReply) -> Vec<u8> {
+    let mut out = vec![];
+
+    match reply {
+        ControlReply::Created { instance } => {
+            out.push(ControlOp::Create as u8);
+            put_str(&mut out, instance);
+        }
+        ControlReply::Finished {
+            fingerprint,
+            facts,
+            bytes,
+            already_complete,
+        } => {
+            out.push(ControlOp::Finish as u8);
+            varint::put_u64(&mut out, *fingerprint);
+            varint::put_u64(&mut out, *facts);
+            varint::put_u64(&mut out, *bytes);
+            out.push(u8::from(*already_complete));
+        }
+        ControlReply::Removed => out.push(ControlOp::Remove as u8),
+    }
+
+    out
+}
+
+/// # Errors
+///
+/// [`WireError`] if the payload is malformed or the op is not one this build knows.
+pub fn decode_control_reply(bytes: &[u8]) -> Result<ControlReply, WireError> {
+    let op = bytes
+        .first()
+        .copied()
+        .and_then(ControlOp::from_byte)
+        .ok_or(WireError::TypeMismatch("control op"))?;
+
+    let rest = &bytes[1..];
+
+    let (reply, at) = match op {
+        ControlOp::Create => {
+            let (instance, used) = get_str(rest)?;
+            (ControlReply::Created { instance }, used)
+        }
+
+        ControlOp::Finish => {
+            let (fingerprint, mut at) = varint::get_u64(rest)?;
+            let (facts, used) = varint::get_u64(&rest[at..])?;
+            at += used;
+            let (size, used) = varint::get_u64(&rest[at..])?;
+            at += used;
+
+            let already_complete = rest
+                .get(at)
+                .copied()
+                .ok_or(WireError::TypeMismatch("already complete"))?
+                != 0;
+            at += 1;
+
+            (
+                ControlReply::Finished {
+                    fingerprint,
+                    facts,
+                    bytes: size,
+                    already_complete,
+                },
+                at,
+            )
+        }
+
+        ControlOp::Remove => (ControlReply::Removed, 0),
+    };
+
+    if at != rest.len() {
+        return Err(WireError::TrailingBytes(rest.len() - at));
+    }
+
+    Ok(reply)
+}
+
 /// A **provisional** schema fingerprint.
 ///
 /// Chapter 6 specifies the real one — canonical form, per-predicate fingerprints,
@@ -414,6 +628,82 @@ mod tests {
         for cut in 0..bytes.len() {
             assert!(decode_startup(&bytes[..cut]).is_err(), "cut to {cut}");
         }
+    }
+
+    #[test]
+    fn the_control_messages_round_trip() {
+        for control in [
+            Control {
+                op: ControlOp::Create,
+                database: "code".to_owned(),
+                allow_zero_facts: false,
+            },
+            Control {
+                op: ControlOp::Finish,
+                database: "code".to_owned(),
+                allow_zero_facts: true,
+            },
+            Control {
+                op: ControlOp::Remove,
+                database: String::new(),
+                allow_zero_facts: false,
+            },
+        ] {
+            let bytes = encode_control(&control);
+            assert_eq!(decode_control(&bytes), Ok(control.clone()));
+
+            // A cut message is refused rather than defaulted — the same rule the
+            // handshake follows, and it matters more here: a `remove` decoded from a
+            // truncated frame would name the wrong database.
+            for cut in 0..bytes.len() {
+                assert!(
+                    decode_control(&bytes[..cut]).is_err(),
+                    "{control:?} @ {cut}"
+                );
+            }
+        }
+
+        for reply in [
+            ControlReply::Created {
+                instance: "01JABCDEF".to_owned(),
+            },
+            ControlReply::Finished {
+                fingerprint: u64::MAX,
+                facts: 7,
+                bytes: 4096,
+                already_complete: true,
+            },
+            ControlReply::Removed,
+        ] {
+            let bytes = encode_control_reply(&reply);
+            assert_eq!(decode_control_reply(&bytes), Ok(reply.clone()));
+
+            for cut in 0..bytes.len() {
+                assert!(
+                    decode_control_reply(&bytes[..cut]).is_err(),
+                    "{reply:?} @ {cut}"
+                );
+            }
+        }
+    }
+
+    /// An op byte this build does not know is a refusal, not a guess. The
+    /// discriminants are append-only, so a byte from the future means a peer that
+    /// knows an operation we do not — and doing *some other* lifecycle operation
+    /// instead is the worst possible answer.
+    #[test]
+    fn an_unknown_control_op_is_refused() {
+        assert_eq!(ControlOp::from_byte(0), None);
+        assert_eq!(ControlOp::from_byte(4), None);
+
+        let mut bytes = encode_control(&Control {
+            op: ControlOp::Remove,
+            database: "code".to_owned(),
+            allow_zero_facts: false,
+        });
+        bytes[0] = 4;
+
+        assert!(decode_control(&bytes).is_err());
     }
 
     /// Trailing bytes are a fault, not slack: a peer whose idea of the message is

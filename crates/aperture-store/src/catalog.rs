@@ -361,57 +361,53 @@ impl Catalog {
     ) -> Result<Finished, StoreError> {
         let entry = self.get(name)?;
 
-        match entry.status() {
-            Status::Complete => {
-                return Ok(Finished {
-                    fingerprint: entry.meta.content_fingerprint.unwrap_or(0),
-                    facts: entry.meta.facts.unwrap_or(0),
-                    bytes: entry.meta.bytes.unwrap_or(0),
-                    already_complete: true,
-                });
-            }
-            Status::Broken => {
-                return Err(StoreError::NotWritable {
-                    name: name.to_owned(),
-                    status: Status::Broken,
-                });
-            }
-            Status::Writable => {}
+        if let Some(already) = sealable(name, &entry)? {
+            return Ok(already);
         }
 
         let db = FjallDb::open(&entry.path)?;
+        let identity = seal(name, &entry, &db, schema, allow_zero_facts)?;
 
-        // Durable first. Everything after this reads what is already on the disk, so
-        // an identity computed here describes bytes that survive a power loss.
-        db.persist()?;
+        // Dropped before the sidecar write for the same reason the sync came first:
+        // nothing should be holding a *writable* handle when the database becomes
+        // immutable. The offline path can say that by closing the store; the server
+        // path says it by sealing inside the per-database writer lock, which is what
+        // [`finish_held`](Catalog::finish_held) is for.
+        drop(db);
 
-        let identity = identity::compute(&db, schema, entry.meta.schema_fingerprint)?;
+        record(&entry, identity)
+    }
 
-        // A silently-empty sealed artifact is the classic CI failure that looks like
-        // success, so it takes a flag to make one.
-        if identity.facts == 0 && !allow_zero_facts {
-            return Err(StoreError::EmptyDatabase(name.to_owned()));
+    /// Seal `name` when **this process already holds it open**.
+    ///
+    /// The server owns every database under its root (`ops-I1`), so the offline
+    /// [`finish`](Catalog::finish)'s first act — open the directory — is the one thing
+    /// it cannot do: that is a second handle on a store this process is already
+    /// holding. It passes the handle it has instead, and everything after the open is
+    /// the same code, in the same `ops-I3` order.
+    ///
+    /// The caller is responsible for the other half of `ops-I2`: no write may be in
+    /// flight, and none may start afterwards. `aperture-server` gets both from the
+    /// per-database writer lock, which it holds across this call and seals inside.
+    ///
+    /// # Errors
+    ///
+    /// Exactly [`finish`](Catalog::finish)'s.
+    pub fn finish_held(
+        &self,
+        name: &str,
+        db: &FjallDb,
+        schema: &Schema,
+        allow_zero_facts: bool,
+    ) -> Result<Finished, StoreError> {
+        let entry = self.get(name)?;
+
+        if let Some(already) = sealable(name, &entry)? {
+            return Ok(already);
         }
 
-        // Measured after the sync, so it counts what is actually there. Dropped before
-        // the sidecar write for the same reason the sync came first: nothing should be
-        // holding the database open when it becomes immutable.
-        drop(db);
-        let bytes = identity::directory_size(&entry.path);
-
-        let mut meta = entry.meta.clone();
-        meta.status = Status::Complete;
-        meta.content_fingerprint = Some(identity.fingerprint);
-        meta.facts = Some(identity.facts);
-        meta.bytes = Some(bytes);
-        meta.write(&entry.path)?;
-
-        Ok(Finished {
-            fingerprint: identity.fingerprint,
-            facts: identity.facts,
-            bytes,
-            already_complete: false,
-        })
+        let identity = seal(name, &entry, db, schema, allow_zero_facts)?;
+        record(&entry, identity)
     }
 
     /// Delete `name`.
@@ -459,6 +455,72 @@ impl Catalog {
             })
             .collect()
     }
+}
+
+/// The status gate both sealing paths share.
+///
+/// `Ok(None)` means go ahead; `Ok(Some(_))` is the already-Complete no-op.
+fn sealable(name: &str, entry: &Entry) -> Result<Option<Finished>, StoreError> {
+    match entry.status() {
+        Status::Complete => Ok(Some(Finished {
+            fingerprint: entry.meta.content_fingerprint.unwrap_or(0),
+            facts: entry.meta.facts.unwrap_or(0),
+            bytes: entry.meta.bytes.unwrap_or(0),
+            already_complete: true,
+        })),
+        Status::Broken => Err(StoreError::NotWritable {
+            name: name.to_owned(),
+            status: Status::Broken,
+        }),
+        Status::Writable => Ok(None),
+    }
+}
+
+/// Steps 1 and 2 of `ops-I3`: make it durable, then work out what it is.
+///
+/// Everything here reads the disk, so the caller may hand over a handle it already
+/// holds — which is the whole difference between the two public paths.
+fn seal(
+    name: &str,
+    entry: &Entry,
+    db: &FjallDb,
+    schema: &Schema,
+    allow_zero_facts: bool,
+) -> Result<identity::Identity, StoreError> {
+    // Durable first. Everything after this reads what is already on the disk, so an
+    // identity computed here describes bytes that survive a power loss.
+    db.persist()?;
+
+    let identity = identity::compute(db, schema, entry.meta.schema_fingerprint)?;
+
+    // A silently-empty sealed artifact is the classic CI failure that looks like
+    // success, so it takes a flag to make one.
+    if identity.facts == 0 && !allow_zero_facts {
+        return Err(StoreError::EmptyDatabase(name.to_owned()));
+    }
+
+    Ok(identity)
+}
+
+/// Step 3 of `ops-I3`: **one** atomic sidecar write, carrying the identity, the counts
+/// and the flip — and the last durable act either path performs.
+fn record(entry: &Entry, identity: identity::Identity) -> Result<Finished, StoreError> {
+    // Measured after the sync, so it counts what is actually there.
+    let bytes = identity::directory_size(&entry.path);
+
+    let mut meta = entry.meta.clone();
+    meta.status = Status::Complete;
+    meta.content_fingerprint = Some(identity.fingerprint);
+    meta.facts = Some(identity.facts);
+    meta.bytes = Some(bytes);
+    meta.write(&entry.path)?;
+
+    Ok(Finished {
+        fingerprint: identity.fingerprint,
+        facts: identity.facts,
+        bytes,
+        already_complete: false,
+    })
 }
 
 /// Whether `name` can be a database.

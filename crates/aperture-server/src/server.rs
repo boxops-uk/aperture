@@ -32,7 +32,7 @@ use std::{
 
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::{error::ServerError, session::Database};
+use crate::{error::ServerError, registry::Registry};
 
 /// A bound listener, and the socket path it owns.
 pub struct Listener {
@@ -94,15 +94,15 @@ impl Listener {
     /// [`ServerError::Io`] if accepting fails. A *connection* failing never reaches
     /// here: it ends that connection and the server carries on, because one client
     /// sending nonsense is not a reason to stop serving the others.
-    pub async fn run(self, databases: Vec<Arc<Database>>) -> Result<(), ServerError> {
+    pub async fn run(self, registry: Arc<Registry>) -> Result<(), ServerError> {
         let listener = UnixListener::from_std(self.listener.try_clone()?)?;
 
         loop {
             let (stream, _address) = listener.accept().await?;
-            let databases = databases.clone();
+            let registry = Arc::clone(&registry);
 
             tokio::spawn(async move {
-                if let Err(error) = serve_stream(stream, &databases).await {
+                if let Err(error) = serve_stream(stream, &registry).await {
                     eprintln!("connection ended: {error}");
                 }
             });
@@ -114,12 +114,12 @@ impl Listener {
     /// # Errors
     ///
     /// [`ServerError::Io`] if the runtime cannot be built, or whatever `run` reports.
-    pub fn run_blocking(self, databases: Vec<Arc<Database>>) -> Result<(), ServerError> {
+    pub fn run_blocking(self, registry: Arc<Registry>) -> Result<(), ServerError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
 
-        runtime.block_on(self.run(databases))
+        runtime.block_on(self.run(registry))
     }
 }
 
@@ -137,15 +137,12 @@ impl Drop for Listener {
 /// # Errors
 ///
 /// Whatever [`session::serve`](crate::session::serve) reports as fatal.
-pub async fn serve_stream(
-    stream: UnixStream,
-    databases: &[Arc<Database>],
-) -> Result<(), ServerError> {
+pub async fn serve_stream(stream: UnixStream, registry: &Arc<Registry>) -> Result<(), ServerError> {
     // Split rather than cloned: the session holds a buffered reader and a buffered
     // writer at once, and `into_split` is what gives it two independently-owned halves
     // of one socket.
     let (reader, writer) = stream.into_split();
-    crate::session::serve(reader, writer, databases).await
+    crate::session::serve(reader, writer, registry).await
 }
 
 /// Bind, announce, and serve — the whole of what a `serve` command does, on a runtime
@@ -157,7 +154,7 @@ pub async fn serve_stream(
 pub fn serve_unix(
     socket: impl AsRef<Path>,
     ready_file: Option<&Path>,
-    databases: Vec<Arc<Database>>,
+    registry: Arc<Registry>,
 ) -> Result<(), ServerError> {
     let listener = Listener::bind(socket)?;
 
@@ -165,5 +162,5 @@ pub fn serve_unix(
         listener.announce(at)?;
     }
 
-    listener.run_blocking(databases)
+    listener.run_blocking(registry)
 }

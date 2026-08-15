@@ -1,21 +1,21 @@
 //! One connection, from handshake to close.
 //!
-//! # What this is, and what it is not yet
+//! # What this is
 //!
-//! It is the frame loop [operations §5 `serve`](../../../docs/aperture-cli-design.md)
+//! The frame loop [operations §5 `serve`](../../../docs/aperture-cli-design.md)
 //! describes: a PG-shaped handshake, then framed messages tagged by stream, with a
-//! write stream and a query stream living on one connection at once.
+//! write stream, a query stream and a lifecycle request living on one connection at
+//! once — each on its own task, so none of them waits on another.
 //!
-//! It is **not** concurrent between streams yet. Frames carry a `stream` and the
-//! server honours it — two streams can be open, and their frames may arrive
-//! interleaved — but the server awaits each frame's work before reading the next,
-//! rather than running streams on separate tasks. §5's "per-connection single writer
-//! task that fairly interleaves ready streams" is what makes a long query stop
-//! starving a short one, and it is a scheduling change on top of this loop rather
-//! than a different loop.
+//! The reader loop never does a stream's work. It reads, routes to that stream's task,
+//! and goes back to reading; the one writer task takes a frame from each stream's
+//! queue in turn. That is what makes a long query stop starving a short one, and it is
+//! why a `create` — tens of keyspaces, tens of milliseconds each — costs the
+//! connection's other streams nothing.
 //!
-//! Deferred with it, and named in §5 as deferred: per-stream flow-control windows,
-//! in-band cancellation, and chunked incremental flushing of a long result.
+//! Still deferred, and named in §5 as deferred: per-stream flow-control windows. What
+//! is here instead is bounded per-stream queues plus connection backpressure, which is
+//! what §5 says to start with.
 //!
 //! # Where the blocking work goes, and why that is the whole point of the port
 //!
@@ -38,7 +38,13 @@
 //! silently started a *second* write stream, and the counts it got back would be for
 //! a stream it did not think it had.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
@@ -53,16 +59,18 @@ use aperture_engine::{
 };
 use aperture_ingest::{Ingested, intern_block};
 use aperture_schema::schema::{LocalInterner, PredicateTy, Schema};
-use aperture_store::store::FjallDb;
+use aperture_store::{meta::Status, store::FjallDb};
 use aperture_wire::{
     FrameHeader, FrameKind, StreamId, encode_desc, encode_frame, frame, value::encode_value,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    blocking,
     error::ServerError,
     outbound::{Outbound, run as outbound_run},
     protocol::{self, ErrorCode, Mode, Ready, Startup, kinds},
+    registry::Registry,
     rows,
 };
 
@@ -89,19 +97,50 @@ pub struct Database {
     ///
     /// Reads take nothing: they run against an immutable snapshot.
     pub writer: Mutex<()>,
+
+    /// Whether this database still takes writes (`ops-I2`).
+    ///
+    /// **Read twice, on purpose, and the two readings do different jobs.** The
+    /// handshake reads it without the lock, which is `ops-I2`'s "refused at
+    /// establishment": a client asking to write a sealed database is told so before it
+    /// sends anything, and no session waits on an in-flight ingest to be told. A write
+    /// reads it again *inside* the writer lock, and that reading is the exact one —
+    /// see [`Registry::finish`](crate::registry::Registry) for why the pair leaves no
+    /// third ordering.
+    writable: AtomicBool,
 }
 
 impl Database {
     #[must_use]
-    pub fn new(name: impl Into<String>, db: FjallDb, schema: Schema) -> Database {
+    pub fn new(
+        name: impl Into<String>,
+        db: FjallDb,
+        schema: Arc<Schema>,
+        status: Status,
+    ) -> Database {
         let fingerprint = protocol::provisional_fingerprint(&schema);
         Database {
             name: name.into(),
             db: Arc::new(db),
-            schema: Arc::new(schema),
+            schema,
             fingerprint,
             writer: Mutex::new(()),
+            writable: AtomicBool::new(status.is_writable()),
         }
+    }
+
+    /// Whether a write may still be accepted for this database.
+    #[must_use]
+    pub fn writable(&self) -> bool {
+        self.writable.load(Ordering::SeqCst)
+    }
+
+    /// Stop taking writes, forever.
+    ///
+    /// `pub(crate)` because it is only correct while the writer lock is held, and the
+    /// registry is the only caller that holds it.
+    pub(crate) fn seal(&self) {
+        self.writable.store(false, Ordering::SeqCst);
     }
 }
 
@@ -118,7 +157,13 @@ struct Writing {
 /// and per-stream state lives in the stream's own task, which is what lets a write
 /// stream's counters need no lock.
 struct Session {
-    database: Arc<Database>,
+    registry: Arc<Registry>,
+    /// `None` for a **control session** — one bound to no database at all.
+    ///
+    /// Which exists because `create` names a database that does not exist yet: a
+    /// lifecycle client cannot bind the thing it is about to make, and making it bind
+    /// some *other* database first would be a rule with no meaning behind it.
+    database: Option<Arc<Database>>,
     mode: Mode,
 }
 
@@ -129,11 +174,7 @@ struct Session {
 /// Only fatal faults escape: an I/O failure, or a peer whose frames no longer parse.
 /// Everything else is answered with an error frame on the stream that caused it and
 /// the connection carries on.
-pub async fn serve<R, W>(
-    reader: R,
-    writer: W,
-    databases: &[Arc<Database>],
-) -> Result<(), ServerError>
+pub async fn serve<R, W>(reader: R, writer: W, registry: &Arc<Registry>) -> Result<(), ServerError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -141,7 +182,7 @@ where
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
 
-    let session = match handshake(&mut reader, &mut writer, databases).await {
+    let session = match handshake(&mut reader, &mut writer, registry).await {
         Ok(session) => session,
         Err(error) => {
             // A failed handshake is answered and then the connection ends: there is
@@ -175,7 +216,7 @@ where
 async fn handshake<R, W>(
     reader: &mut R,
     writer: &mut W,
-    databases: &[Arc<Database>],
+    registry: &Arc<Registry>,
 ) -> Result<Session, ServerError>
 where
     R: AsyncRead + Unpin,
@@ -204,19 +245,41 @@ where
         )));
     }
 
-    let database = databases
-        .iter()
-        .find(|candidate| candidate.name == startup.database)
-        .ok_or_else(|| ServerError::UnknownDatabase(startup.database.clone()))?;
+    // An empty name is a **control session**: bound to no database, and the only
+    // session `create` could possibly be sent on. Every other name must resolve.
+    let database = if startup.database.is_empty() {
+        None
+    } else {
+        Some(
+            registry
+                .find(&startup.database)
+                .ok_or_else(|| ServerError::UnknownDatabase(startup.database.clone()))?,
+        )
+    };
+
+    let (fingerprint, predicates) = match &database {
+        Some(database) => (database.fingerprint, database.schema.len()),
+        None => (registry.fingerprint(), registry.schema().len()),
+    };
 
     // Zero means "do not check" — a reader, or a client written against whatever the
     // server has. A non-zero value is a claim, and a wrong claim is refused here
     // rather than after a block of facts nobody can read back.
-    if startup.schema_fingerprint != 0 && startup.schema_fingerprint != database.fingerprint {
+    if startup.schema_fingerprint != 0 && startup.schema_fingerprint != fingerprint {
         return Err(ServerError::SchemaMismatch {
             expected: startup.schema_fingerprint,
-            actual: database.fingerprint,
+            actual: fingerprint,
         });
+    }
+
+    // **`ops-I2`, at establishment.** Once a database is Complete every write-mode open
+    // is refused, forever — and refusing it *here* is what makes immutability the
+    // absence of a writable session rather than a check each write has to remember.
+    if startup.mode == Mode::ReadWrite
+        && let Some(database) = &database
+        && !database.writable()
+    {
+        return Err(ServerError::Sealed(database.name.clone()));
     }
 
     send(
@@ -225,15 +288,16 @@ where
         StreamId(0),
         &protocol::encode_ready(&Ready {
             version: protocol::VERSION,
-            schema_fingerprint: database.fingerprint,
-            predicates: database.schema.len() as u64,
+            schema_fingerprint: fingerprint,
+            predicates: predicates as u64,
         }),
     )
     .await?;
     writer.flush().await?;
 
     Ok(Session {
-        database: Arc::clone(database),
+        registry: Arc::clone(registry),
+        database,
         mode: startup.mode,
     })
 }
@@ -361,6 +425,7 @@ impl StreamTask {
             FrameKind::COPY_DATA => self.copy_data(payload).await,
             FrameKind::COPY_DONE => self.copy_done().await,
             kinds::QUERY => self.query(payload).await,
+            kinds::CONTROL => self.control(payload).await,
 
             other => Err(ServerError::Protocol(format!(
                 "no handler for frame kind `{other}`"
@@ -368,9 +433,54 @@ impl StreamTask {
         }
     }
 
+    /// The database this session is bound to, or the fault of asking without one.
+    fn database(&self) -> Result<&Arc<Database>, ServerError> {
+        self.session
+            .database
+            .as_ref()
+            .ok_or(ServerError::NoDatabase)
+    }
+
+    /// Carry out a lifecycle request.
+    ///
+    /// **Read-only means read-only, whatever the frame kind.** `ops-I6` resolves a
+    /// session's mode once at establishment, and a session that may not write facts
+    /// does not get to create, seal or delete a whole database by asking on a
+    /// different frame.
+    ///
+    /// It runs on a stream task like everything else, which is what keeps a `create` —
+    /// tens of keyspaces, tens of milliseconds each — off the reader loop and out of
+    /// the way of the queries sharing the connection.
+    async fn control(&mut self, payload: &[u8]) -> Result<(), ServerError> {
+        if self.session.mode != Mode::ReadWrite {
+            return Err(ServerError::ModeRefused);
+        }
+
+        let request = protocol::decode_control(payload)?;
+        let reply = self.session.registry.execute(&request).await?;
+
+        self.outbound
+            .send(
+                kinds::CONTROL_REPLY,
+                self.stream,
+                &protocol::encode_control_reply(&reply),
+            )
+            .await
+    }
+
     async fn open_write(&mut self) -> Result<(), ServerError> {
         if self.session.mode != Mode::ReadWrite {
             return Err(ServerError::ModeRefused);
+        }
+
+        let database = self.database()?;
+
+        // The establishment check again, for a session that was established *before*
+        // the seal — refusing here rather than at the first block, so a client is not
+        // told it may write and then told it may not. The binding refusal is the one
+        // inside the writer lock, in [`copy_data`](Self::copy_data).
+        if !database.writable() {
+            return Err(ServerError::Sealed(database.name.clone()));
         }
 
         if self.writing.is_some() {
@@ -394,7 +504,7 @@ impl StreamTask {
             )));
         }
 
-        let database = Arc::clone(&self.session.database);
+        let database = Arc::clone(self.database()?);
         let working = Arc::clone(&database);
         let block = payload.to_vec();
 
@@ -404,7 +514,17 @@ impl StreamTask {
         // server the database, and this gives one writer the server's half of it.
         let out: Ingested = {
             let _writing = database.writer.lock().await;
-            blocking(move || {
+
+            // **`ops-I2`, exactly.** The establishment check refused every session that
+            // began after the seal; this one catches the session that began *before*
+            // it, whose block would otherwise land in a database whose identity has
+            // already been recorded. Inside the lock, so there is no gap to slip
+            // through: a seal cannot happen while this guard is held.
+            if !database.writable() {
+                return Err(ServerError::Sealed(database.name.clone()));
+            }
+
+            blocking::run(move || {
                 intern_block(working.db.as_ref(), &working.schema, &block)
                     .map_err(ServerError::from)
             })
@@ -451,8 +571,8 @@ impl StreamTask {
             .map_err(|_| ServerError::Protocol("a query that is not UTF-8".to_owned()))?
             .to_owned();
 
-        let database = Arc::clone(&self.session.database);
-        let prepared = blocking({
+        let database = Arc::clone(self.database()?);
+        let prepared = blocking::run({
             let database = Arc::clone(&database);
             let source = source.clone();
             move || prepare(&database, &source)
@@ -478,7 +598,7 @@ impl StreamTask {
             let resume = cursor.take();
 
             let chunk =
-                blocking(move || run_chunk(&database, &plan, &shape, resume, &token)).await?;
+                blocking::run(move || run_chunk(&database, &plan, &shape, resume, &token)).await?;
 
             for row in &chunk.rows {
                 self.outbound
@@ -636,24 +756,6 @@ fn run_chunk(
             Iteratee::Suspended(_, cursor) => Some(cursor),
         },
     })
-}
-
-/// Run `work` on the blocking pool.
-///
-/// A panic in the work reaches here as a join error rather than unwinding the
-/// connection, so a bug in one query fails that stream instead of taking the server
-/// with it.
-async fn blocking<T, F>(work: F) -> Result<T, ServerError>
-where
-    F: FnOnce() -> Result<T, ServerError> + Send + 'static,
-    T: Send + 'static,
-{
-    match tokio::task::spawn_blocking(work).await {
-        Ok(result) => result,
-        Err(join) => Err(ServerError::Execution(format!(
-            "a blocking task did not finish: {join}"
-        ))),
-    }
 }
 
 // ---- frame plumbing ---------------------------------------------------------

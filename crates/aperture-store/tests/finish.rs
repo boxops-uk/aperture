@@ -123,21 +123,17 @@ const CONTENT: Content = &[
     ("store/codec.py", "codec", &[("encode_key", "def")]),
 ];
 
-/// Write `content` into a fresh database called `name`, in the order given.
-fn build(catalog: &Catalog, name: &str, content: Content) -> u64 {
-    let schema = schema();
-    catalog.create(name, &schema, 0xABCD).expect("it creates");
-    let (_entry, db) = catalog.open_write(name).expect("it opens");
-
+/// Write `content` into `db`, in the order given.
+fn write(db: &FjallDb, schema: &Schema, content: Content) {
     for (path, module, decls) in content {
-        let file = db.put(&schema, &FileFact(path)).expect("a file");
+        let file = db.put(schema, &FileFact(path)).expect("a file");
         let module = db
-            .put(&schema, &ModuleFact { file, name: module })
+            .put(schema, &ModuleFact { file, name: module })
             .expect("a module");
 
         for (decl, kind) in *decls {
             db.put(
-                &schema,
+                schema,
                 &DeclFact {
                     module,
                     name: decl,
@@ -147,7 +143,16 @@ fn build(catalog: &Catalog, name: &str, content: Content) -> u64 {
             .expect("a declaration");
         }
     }
+}
 
+/// Write `content` into a fresh database called `name`, in the order given, and seal
+/// it the offline way: nothing holds the store open by the time it is sealed.
+fn build(catalog: &Catalog, name: &str, content: Content) -> u64 {
+    let schema = schema();
+    catalog.create(name, &schema, 0xABCD).expect("it creates");
+    let (_entry, db) = catalog.open_write(name).expect("it opens");
+
+    write(&db, &schema, content);
     drop(db);
 
     catalog
@@ -175,6 +180,78 @@ fn sealing_records_the_identity_and_flips_the_status() {
     assert_eq!(entry.meta.content_fingerprint, Some(fingerprint));
     assert_eq!(entry.meta.facts, Some(7), "2 files + 2 modules + 3 decls");
     assert!(entry.meta.bytes.unwrap_or(0) > 0, "a size was measured");
+}
+
+/// **Two front doors, one implementation.** A database sealed through a handle this
+/// process already holds is the same artifact as one sealed by opening the directory:
+/// same identity, same counts, same status.
+///
+/// It has to be, and the reason is `ops-I1` rather than tidiness. A server owns every
+/// database under its root, so `finish` arriving over the wire is a seal of a store
+/// this process is *already* holding — the offline path's first act, opening the
+/// directory, is the one thing it cannot do. If the two doors answered differently,
+/// `ops-I4` would quietly depend on which one a build came through.
+#[test]
+fn sealing_through_a_held_handle_is_the_same_artifact() {
+    let (_dir, catalog) = catalog();
+    let schema = schema();
+
+    let offline = build(&catalog, "offline", CONTENT);
+
+    catalog.create("held", &schema, 0xABCD).expect("it creates");
+    let (_entry, db) = catalog.open_write("held").expect("it opens");
+    write(&db, &schema, CONTENT);
+
+    // The handle stays open across the seal, which is the whole difference.
+    let sealed = catalog
+        .finish_held("held", &db, &schema, false)
+        .expect("it seals");
+
+    assert_eq!(sealed.fingerprint, offline, "same content, same identity");
+    assert_eq!(sealed.facts, 7);
+    assert!(!sealed.already_complete);
+
+    let entry = catalog.get("held").expect("it is found");
+    assert_eq!(entry.status(), Status::Complete);
+    assert_eq!(entry.meta.content_fingerprint, Some(offline));
+    assert!(entry.meta.bytes.unwrap_or(0) > 0, "a size was measured");
+
+    // ...and `ops-I2` holds on this door too, from the moment the sidecar flipped —
+    // even though the handle that wrote it is still open. Closing the store is how
+    // the offline path says so; the server says it by sealing inside the writer lock.
+    assert!(matches!(
+        catalog.open_write("held").map(|_| ()),
+        Err(StoreError::NotWritable {
+            status: Status::Complete,
+            ..
+        })
+    ));
+
+    drop(db);
+}
+
+/// Sealing twice through a held handle is the same no-op the offline path answers
+/// with, rather than a second walk that would recompute an identity nobody asked for.
+#[test]
+fn finishing_a_held_database_twice_is_a_no_op() {
+    let (_dir, catalog) = catalog();
+    let schema = schema();
+
+    catalog.create("code", &schema, 0xABCD).expect("it creates");
+    let (_entry, db) = catalog.open_write("code").expect("it opens");
+    write(&db, &schema, CONTENT);
+
+    let first = catalog
+        .finish_held("code", &db, &schema, false)
+        .expect("it seals");
+    let again = catalog
+        .finish_held("code", &db, &schema, false)
+        .expect("it is a no-op");
+
+    assert!(!first.already_complete);
+    assert!(again.already_complete);
+    assert_eq!(again.fingerprint, first.fingerprint);
+    assert_eq!(again.facts, first.facts);
 }
 
 /// **`ops-I2` is downstream of sealing**: after `finish` there is no writable handle

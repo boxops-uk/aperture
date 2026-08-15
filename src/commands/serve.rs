@@ -6,8 +6,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use aperture_server::{Database, protocol, serve_unix};
-use aperture_store::store::FjallDb;
+use aperture_server::{Registry, protocol, serve_unix};
 
 use crate::{CliError, code_index, commands};
 
@@ -23,17 +22,12 @@ pub fn run(root: &Path, socket: &Path, ready_file: Option<&Path>) -> Result<(), 
     let schema = code_index::schema();
     let fingerprint = protocol::provisional_fingerprint(&schema);
 
-    let listing = catalog.list()?;
-
-    let mut databases = Vec::new();
-    for entry in &listing.entries {
-        let db = FjallDb::open(&entry.path)?;
-        databases.push(Arc::new(Database::new(
-            entry.name().to_owned(),
-            db,
-            code_index::schema(),
-        )));
-    }
+    // The registry takes the catalog with it, because owning the root and owning the
+    // databases under it are the same ownership: `create` and `remove` arriving over
+    // the wire need both, and a server that held only the open handles is exactly the
+    // server that had to be stopped before a lifecycle command could run.
+    let (registry, listing) = Registry::open(catalog, schema)?;
+    let registry = Arc::new(registry);
 
     println!("aperture serve");
     println!("  data dir   {}", root.display());
@@ -41,12 +35,13 @@ pub fn run(root: &Path, socket: &Path, ready_file: Option<&Path>) -> Result<(), 
     println!("  protocol   {}", protocol::VERSION);
     println!("  schema     {fingerprint:#018x}  (provisional — see PLAN Phase 8)");
 
-    if databases.is_empty() {
+    if listing.entries.is_empty() {
         // Said plainly rather than served silently: a server with nothing to serve is
-        // almost always a wrong `--data-dir`, and the fix is one command away.
+        // almost always a wrong `--data-dir`, and the fix is one command away — and
+        // now the command works without stopping this process first.
         println!("  databases  none — `aperture create <name>` makes one");
     } else {
-        println!("  databases  {}", databases.len());
+        println!("  databases  {}", registry.len());
         for entry in &listing.entries {
             println!("    {:<20} {}", entry.name(), entry.status());
         }
@@ -56,6 +51,6 @@ pub fn run(root: &Path, socket: &Path, ready_file: Option<&Path>) -> Result<(), 
         eprintln!("warning: {problem}");
     }
 
-    serve_unix(socket, ready_file, databases)?;
+    serve_unix(socket, ready_file, registry)?;
     Ok(())
 }
