@@ -1,0 +1,10 @@
+# Blocks produced by the .NET client, as hex — Phase 9e's acceptance criterion.
+# `aperture-client` encodes the same facts and must produce the same bytes.
+#
+# Regenerate with ./clients/dotnet/emit-golden.sh. A diff here is either a
+# deliberate format change — in which case both clients move together — or a
+# divergence, which is the thing this file exists to catch.
+schema-fingerprint f04e0ab4b89628ad
+block src.File 0 ffffffffffffffffffff4150424b00000000020000001c000000a379dd930d73746f72652f6b6579732e70790d71756572792f706c616e2e7079
+block src.Decl 2 ffffffffffffffffffff4150424b020000000300000065000000fc665fb21801010d73746f72652f6b6579732e7079046b657973066b65795f6f66036465660001010d73746f72652f6b6579732e7079046b657973047a65726f03646566808080801001010d71756572792f706c616e2e707904706c616e04506c616e05636c617373
+block src.Ref 4 ffffffffffffffffffff4150424b040000000100000033000000eec5d57e0826010d71756572792f706c616e2e7079011801010d73746f72652f6b6579732e7079046b657973066b65795f6f6603646566

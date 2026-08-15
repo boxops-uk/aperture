@@ -1299,13 +1299,41 @@ correct one: descriptor and row come from the same head type walked in the same 
 `encode_value` zips positionally too. The names are not lost — they live in the `Desc` the client
 receives.
 
-### 9e — `aperture-client`
+### 9e — `aperture-client` ✅
 
 The Rust twin of the C# client: connect, handshake, session modes, stream multiplexing, the write
 stream, and a query stream **that holds its cursor**. Used by the CLI, the shell, and any Rust
 deriver.
 
-*Acceptance:* the Rust and C# clients produce byte-identical blocks for the same facts.
+*Acceptance:* **done.** The Rust and C# clients produce byte-identical blocks for the same facts —
+a fixed corpus the .NET side writes out as hex (`./clients/dotnet/emit-golden.sh`) and the Rust
+side encodes independently and compares, plus the schema fingerprint alongside it so a divergence
+says *which* of the two things disagreed. The corpus is chosen for what it reaches: a value side,
+two levels of nesting, a record inside a key, two references to two predicates, and integers on
+both sides of the varint's one-byte boundary. 10 client tests.
+
+**One edge had to be turned round first.** The message vocabulary lived in `aperture-server`, so a
+Rust client would have had to depend on the server — fjall, the engine and a runtime, to send a
+handshake — or keep a second copy of the message formats. The second is worse than it sounds: the
+.NET client exists to *detect* drift between two implementations of this protocol, and a second
+Rust copy would be drift we caused ourselves. `protocol` is in `aperture-wire` now, which is where
+[operations §10](docs/aperture-cli-design.md) always put it.
+
+**A result is a bookmark, not an iterator**, and that is the design decision worth carrying into
+9f. `Rows` holds no borrow of the connection, so several results can be open at once — which is
+what the stream id, the server's per-stream tasks and a shell that holds one result at `\more`
+while running another query all need. `Connection::take(&mut rows, n)` reads *n* rows and stops;
+nothing is buffered at either end, because the place is kept by the *stream* staying open. Between
+pages the server is parked on a full outbound queue holding a bytes-only cursor with its snapshot
+already released ([I8](docs/invariants.md#i8)), so a pause of a millisecond and a pause of an hour
+cost it the same thing. A test already checks that a paged read of a thousand rows, in pages of 37,
+concatenates to exactly an uninterrupted run — [I4](docs/invariants.md#i4) from a client, ahead of
+the shell that will make it interactive.
+
+Frames for a stream nobody is currently reading are **parked, not dropped**. Since 9d-ii the server
+interleaves, so frames arrive in whatever order the work finishes; a client that assumed its own
+order would silently discard another stream's answers. Breaking the parking fails the
+two-results-open test and nothing else.
 
 ### 9f — `query`, `shell`, and the cursor
 
@@ -1341,8 +1369,8 @@ deriver.
 - [ ] `\more` is an interactive [I4](docs/invariants.md#i4) exerciser, and the pages concatenate to an uninterrupted run.
 - [x] The same inputs built twice produce the same content fingerprint (`ops-I4`) — including
       when one of them was sealed through a handle the server already held.
-- [ ] The workspace matches [operations §10](docs/aperture-cli-design.md) (see the cross-cutting note).
-      *All but `aperture-client`, which is 9e.*
+- [x] The workspace matches [operations §10](docs/aperture-cli-design.md) (see the cross-cutting note),
+      including the dependency direction it states: `client → wire`, and nothing depends on the server.
 
 **What is deliberately still missing afterwards**, so "incomplete" is a statement rather than a
 discovery: telemetry and tracing spans, one end-to-end error taxonomy, `db verify`/`backup`/

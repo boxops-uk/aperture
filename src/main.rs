@@ -13,7 +13,6 @@ mod commands;
 mod config;
 mod output;
 mod shell;
-mod wire;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -36,13 +35,13 @@ pub enum CliError {
     #[error("{0}")]
     Engine(#[from] aperture_engine::error::ApertureError),
 
-    /// A running server said no, and said why.
+    /// The client could not do it — a server that said no, or a socket that failed.
     ///
-    /// Its wording rather than a summary of it: the server is the thing that knows
-    /// what happened, and a tool that paraphrased would be one more place for the two
-    /// answers to drift apart.
+    /// The server's own wording rather than a summary of it: the server is the thing
+    /// that knows what happened, and a tool that paraphrased would be one more place
+    /// for the two answers to drift apart.
     #[error("{0}")]
-    Refused(String),
+    Client(#[from] aperture_client::ClientError),
 
     /// A store root held by a process that is **not** listening on this socket.
     ///

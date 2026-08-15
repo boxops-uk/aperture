@@ -37,6 +37,9 @@ path = "src/main.rs"
 proptest = ["dep:proptest", "aperture-engine/proptest"]
 
 [dependencies]
+# The tool is a wire client, and an ordinary one: `create`, `finish` and `db rm`
+# against a running server go through the same crate an external tool would use.
+aperture-client = { path = "crates/aperture-client" }
 aperture-encoding = { path = "crates/aperture-encoding" }
 aperture-engine = { path = "crates/aperture-engine" }
 aperture-schema = { path = "crates/aperture-schema" }

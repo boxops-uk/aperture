@@ -24,12 +24,13 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 |---|---|
 | `aperture-schema` | the type model (`schema`) and the physical row id (`id`) — depends on nothing |
 | `aperture-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
-| `aperture-wire` | the **transport** codec and its framing — `varint`, the schema-driven `value`/fact encoding, `crc`, `block` (a run of one predicate's facts behind a sync marker), `frame` (`[kind][stream][length]`). A sibling of `aperture-encoding`, not a layer on it: it depends on `aperture-schema` alone and shares no bytes with the storage codec |
+| `aperture-wire` | the **transport** codec, its framing, and the protocol's message vocabulary — `varint`, the schema-driven `value`/fact encoding, `crc`, `block` (a run of one predicate's facts behind a sync marker), `frame` (`[kind][stream][length]`), and `protocol` (what a startup frame carries, what a stream's life looks like — shared by server and client, **no I/O policy**). A sibling of `aperture-encoding`, not a layer on it: it depends on `aperture-schema` alone and shares no bytes with the storage codec |
 | `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, the errors the storage layer raises — and the **lifecycle**: `catalog` (the store root, `ops-I1`'s lock, `ops-I7`'s filesystem-as-catalog), `meta` (the `APERTURE_META` sidecar), `schema_doc` (the embedded schema copy), `identity` (`ops-I4`'s content hash), `ulid` |
 | `aperture-ingest` | the **write funnel** (`ops-I5`): `FactSink` (the write seam, as `FactStore` is the read seam), and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up. Sits above `store` and `wire` because it is the crossing between them, and neither should know the other |
 | `aperture-engine` | **focus** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here |
-| `aperture-server` | the wire **protocol** over a Unix socket: the message vocabulary (`protocol`), one connection's life (`session`), the store root and the databases open under it (`registry` — what makes `create`/`finish`/`remove` work against a *running* server), the fair writer (`outbound`), rows out without a fourth encoder (`rows`), the hop off the reactor (`blocking`), the listener (`server`) |
-| root `aperture-cli` | the **tool**: `cli` (the clap tree, §4), `config` (where things live), `commands/` (create, list, describe, finish, rm, serve, plus `route` — §2's address resolution, stated once), `wire` (a control session, until `aperture-client` in 9e), `output` (rendering, always client-side), `shell` (the Phase 5 REPL, embedded until 9f), and `code_index` — the built-in schema, hardcoded until Phase 8. The binary is `aperture` |
+| `aperture-client` | the **client**: `connection` (connect, handshake, the write stream, lifecycle requests, and the frame demultiplexer that parks another stream's frames rather than dropping them), `rows` (a query result as a **bookmark** — no borrow of the connection, so several are open at once, and `take` is the page `\more` is built on). Depends on `wire` and nothing else |
+| `aperture-server` | the wire protocol over a Unix socket: one connection's life (`session`), the store root and the databases open under it (`registry` — what makes `create`/`finish`/`remove` work against a *running* server), the fair writer (`outbound`), rows out without a fourth encoder (`rows`), the hop off the reactor (`blocking`), the listener (`server`) |
+| root `aperture-cli` | the **tool**: `cli` (the clap tree, §4), `config` (where things live), `commands/` (create, list, describe, finish, rm, serve, plus `route` — §2's address resolution, stated once, over `aperture-client`), `output` (rendering, always client-side), `shell` (the Phase 5 REPL, embedded until 9f), and `code_index` — the built-in schema, hardcoded until Phase 8. The binary is `aperture` |
 
 **A non-Rust client is part of the test surface.** `clients/dotnet` is a C#
 implementation of the wire protocol plus a console producer that writes a nested code
@@ -37,6 +38,12 @@ index into a real database and queries it back — `./clients/dotnet/run-demo.sh
 exists to answer what the Rust tests cannot: whether the protocol is implementable from
 outside, by something that shares no constants, no enums and no unwritten assumptions.
 It has already earned that twice.
+It is also **a checked-in golden**: `./clients/dotnet/emit-golden.sh` writes the blocks
+it encodes for a fixed corpus, and `aperture-client`'s
+`byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes
+(Phase 9e's criterion). The corpus and the schema are stated independently on each side
+on purpose — a shared statement would make the two agree by construction, which is the
+agreement being tested. The Rust test needs no `dotnet`; regenerating the golden does.
 
 `src/main.rs` compiles and runs what you type against a real store seeded with a **code index**
 (files → modules → declarations → references), written through the fact API; `:plan` shows the

@@ -12,19 +12,20 @@ pub mod list;
 pub mod rm;
 pub mod serve;
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
+use aperture_client::{ClientError, Connection};
 use aperture_store::{
     catalog::{Catalog, RootLock},
     error::StoreError,
 };
 
-use crate::{CliError, wire};
+use crate::{CliError, code_index};
 
 /// Where a lifecycle command's work is going to happen.
 pub enum Route {
     /// Through a running server, over its socket.
-    Server(wire::Server),
+    Server(Connection),
     /// In this process, holding the root (§2's `--embedded`, with the root as the
     /// path). The lock rides along and must be kept alive for the whole operation.
     Local(Catalog, RootLock),
@@ -46,12 +47,44 @@ pub enum Route {
 ///
 /// [`CliError::RootHeld`] if no server is listening and something else holds the root.
 pub fn route(root: &Path, socket: &Path) -> Result<Route, CliError> {
-    match wire::connect(socket)? {
+    match connect(socket)? {
         Some(server) => Ok(Route::Server(server)),
         None => {
             let (catalog, lock) = exclusive(root, socket)?;
             Ok(Route::Local(catalog, lock))
         }
+    }
+}
+
+/// Open a control session, or answer that no server is listening.
+///
+/// **A missing socket and a refused one are the same answer**: no server. The first is
+/// a root nothing has served; the second is the file a killed server left behind, and
+/// treating it as "a server is there" would refuse every command until someone deleted
+/// a stale inode by hand. Anything else — a socket that exists and will not talk to us
+/// — is reported rather than assumed away, because that is a server we are being kept
+/// out of, not the absence of one.
+///
+/// The session asserts this build's schema fingerprint rather than accepting whatever
+/// the server has. A tool whose built-in schema is not the server's would otherwise
+/// create a database against a schema it does not have, and find out by writing facts
+/// nobody can read back — which is precisely what that handshake field is for.
+fn connect(socket: &Path) -> Result<Option<Connection>, CliError> {
+    use std::io::ErrorKind;
+
+    match Connection::control(socket, Arc::new(code_index::schema())) {
+        Ok(server) => Ok(Some(server)),
+
+        Err(ClientError::Io(error))
+            if matches!(
+                error.kind(),
+                ErrorKind::NotFound | ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Ok(None)
+        }
+
+        Err(error) => Err(error.into()),
     }
 }
 

@@ -1,0 +1,23 @@
+[package]
+name = "aperture-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The schema, because a client must have one: the transport codec sends no names
+# and no types, so both ends supply them (see `aperture-wire`'s module docs).
+aperture-schema = { path = "../aperture-schema" }
+# The codec and the message vocabulary. **Not `aperture-server`** — operations §10
+# is explicit that nothing depends on the server, and a client that needed one to
+# talk to one would be a contradiction with a build time attached.
+aperture-wire = { path = "../aperture-wire" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# A real server to talk to, because a client tested against a mock is a client
+# tested against our idea of the server. Not a cycle: the server does not depend
+# on the client, and a dev-dependency would be allowed even if it did.
+aperture-server = { path = "../aperture-server" }
+aperture-store = { path = "../aperture-store" }
+lasso = { workspace = true }
+tempfile = "3.24.0"

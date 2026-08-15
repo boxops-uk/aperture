@@ -824,10 +824,12 @@ storage and its references are `FactId`s already.
 
 ## 10. Project structure
 
-Cargo workspace. **The bottom four crates exist** — `aperture-schema`, `-encoding`, `-store`,
-`-engine` — extracted ahead of Phase 7, since ingestion is the first thing that needs a real
-store/encoding boundary ([`PLAN.md`](../PLAN.md) cross-cutting note). The rest are unbuilt, and
-the root package is still the shell. The seam decided
+Cargo workspace. **Every crate below now exists**, and so does the dependency direction stated
+at the end of this section — `client → wire`, with nothing depending on `cli` or `server`. The
+bottom four came first, extracted ahead of Phase 7 since ingestion is the first thing that needs
+a real store/encoding boundary ([`PLAN.md`](../PLAN.md) cross-cutting note); `-wire`, `-ingest`
+and `-server` followed at 7a, and `-client` at 9e — which is also when the message vocabulary
+moved out of the server into `-wire`, where the line below always said it belonged. The seam decided
 during the embedded-mode discussion is structural: **the executor consumes
 `(storage handle, sealed snapshot)` and never assumes a connection** — that single cut yields
 embedded offline ingest/derivation (P0-required by the CI merge path) and embedded read-only
@@ -853,7 +855,9 @@ aperture/
 │   ├── aperture-wire/             # frame codec, message types, stream state machine —
 │   │                              # shared by server and client, no I/O policy
 │   ├── aperture-client/           # connection, handshake, session modes, stream mux,
-│   │                              # COPY writer — used by CLI, shell, and external tools/derivers
+│   │                              # COPY writer, and a query result as a *bookmark*
+│   │                              # (`take` is the page `\more` resumes) — used by
+│   │                              # CLI, shell, and external tools/derivers
 │   ├── aperture-server/           # listener, per-conn fair writer task, session enforcement
 │   │                              # (ops-I6), per-DB single writer, aperture.db.List
 │   └── aperture-cli/              # bin
@@ -872,9 +876,15 @@ aperture/
 └── tests/                         # assert_cmd + trycmd end-to-end; figment Jail for config
 ```
 
-Dependency direction: `cli → {client, ingest, store, schema, engine}`;
-`server → {wire, store, engine, ingest, schema}`; `client → wire → encoding`;
-`engine → {store, encoding, schema}`. Nothing depends on `cli` or `server`.
+Dependency direction, as built: `cli → {client, server, store, schema, engine, wire}`;
+`server → {wire, store, engine, ingest, schema}`; `client → {wire, schema}`;
+`wire → schema`; `engine → {store, encoding, schema}`; `store → {encoding, schema}`.
+
+Two footnotes, because the shape is not quite the one first written down. The CLI depends on
+`server` for the single reason that `aperture serve` is a subcommand — the tool is where the
+server is *hosted*, so nothing else does, and that is the rule's substance. And `client → wire`
+rather than `client → wire → encoding`: `wire` is a sibling of `encoding`, not a layer on it,
+because the transport and storage codecs share no bytes.
 
 ## 11. Deliberately deferred (with the seam that keeps each cheap)
 

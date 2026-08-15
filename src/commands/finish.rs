@@ -26,7 +26,19 @@ pub fn run(
         // rather than opening a second one, and the identity that comes back is the
         // same one this process would have computed. `ops-I4` does not depend on which
         // door a build came through, and there is a store test that says so.
-        Route::Server(mut server) => server.finish(name, allow_zero_facts),
+        //
+        // Restated as the store's own type rather than passed through: the client does
+        // not depend on a storage engine to be told what a fingerprint is, so the two
+        // shapes are the same fields under different names, and this is where they meet.
+        Route::Server(mut server) => {
+            let sealed = server.finish(name, allow_zero_facts)?;
+            Ok(Finished {
+                fingerprint: sealed.fingerprint,
+                facts: sealed.facts,
+                bytes: sealed.bytes,
+                already_complete: sealed.already_complete,
+            })
+        }
 
         Route::Local(catalog, _lock) => {
             Ok(catalog.finish(name, &code_index::schema(), allow_zero_facts)?)

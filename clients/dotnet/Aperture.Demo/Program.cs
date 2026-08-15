@@ -12,6 +12,11 @@ using Aperture.Client;
 var socket = Args("--socket") ?? "/tmp/aperture.sock";
 var database = Args("--database") ?? "code";
 
+// With `--golden <path>` this program connects to nothing: it encodes a fixed corpus
+// and writes the bytes out, for the Rust client's test to compare itself against. See
+// EmitGolden below for why that file exists.
+var goldenPath = Args("--golden");
+
 string? Args(string flag)
 {
     var argv = Environment.GetCommandLineArgs();
@@ -74,6 +79,12 @@ var schema = new ApertureSchema([
         ("from", ApertureType.Reference(Module)),
         ("to", ApertureType.Reference(Module))), null),
 ]);
+
+if (goldenPath is not null)
+{
+    EmitGolden(goldenPath);
+    return;
+}
 
 Console.WriteLine($"connecting to {socket} ({database})");
 Console.WriteLine($"  our schema fingerprint {schema.Fingerprint():x16}");
@@ -203,6 +214,69 @@ catch (ApertureServerException error)
 Run("F where src.File F");
 
 Console.WriteLine("done");
+
+// ---- the golden corpus ---------------------------------------------------------
+//
+// Phase 9e's acceptance criterion is that the Rust and C# clients produce **byte
+// identical** blocks for the same facts. Interoperating today does not prove that:
+// the two could disagree about something the server happens to tolerate, or about a
+// case neither demo exercises, and a fact file written by one would then not be the
+// file the other writes.
+//
+// So this mode encodes a fixed corpus and writes the bytes out. `aperture-client`'s
+// test reads the file, encodes the same facts from its own independent statement of
+// the same schema, and compares. Neither side can be changed alone without the other
+// noticing — which is the whole reason there is a second implementation at all.
+//
+// The corpus is chosen for what it *reaches* rather than for what it means: scalars,
+// a value side, two levels of nesting, a record inside a key, two references to two
+// different predicates, and integers on both sides of the varint's one-byte boundary.
+void EmitGolden(string path)
+{
+    (string Name, uint Predicate, IReadOnlyList<ApertureFact> Facts)[] blocks =
+    [
+        ("src.File", File, [FileFact("store/keys.py"), FileFact("query/plan.py")]),
+
+        ("src.Decl", Decl,
+        [
+            DeclFact("store/keys.py", "keys", "def", 12, "key_of"),
+            // Zero, and a value past a single varint byte: zigzag is where a codec
+            // that agrees on small numbers can still disagree.
+            DeclFact("store/keys.py", "keys", "def", 0, "zero"),
+            DeclFact("query/plan.py", "plan", "class", 2147483648, "Plan"),
+        ]),
+
+        ("src.Ref", Reference,
+        [
+            new(Reference, ApertureValue.Rec(
+                ApertureValue.Rec(ApertureValue.Of(4L), ApertureValue.Of(19L)),
+                ApertureValue.Of(ApertureRef.To(FileFact("query/plan.py"))),
+                ApertureValue.Of(ApertureRef.To(
+                    DeclFact("store/keys.py", "keys", "def", 12, "key_of"))))),
+        ]),
+    ];
+
+    List<string> lines =
+    [
+        "# Blocks produced by the .NET client, as hex — Phase 9e's acceptance criterion.",
+        "# `aperture-client` encodes the same facts and must produce the same bytes.",
+        "#",
+        "# Regenerate with ./clients/dotnet/emit-golden.sh. A diff here is either a",
+        "# deliberate format change — in which case both clients move together — or a",
+        "# divergence, which is the thing this file exists to catch.",
+        $"schema-fingerprint {schema.Fingerprint():x16}",
+    ];
+
+    foreach (var (name, predicate, facts) in blocks)
+    {
+        var bytes = Block.Encode(schema, predicate, facts);
+        lines.Add($"block {name} {predicate} {Convert.ToHexString(bytes).ToLowerInvariant()}");
+    }
+
+    // `System.IO.File`, spelled out: `File` is the predicate id above.
+    System.IO.File.WriteAllLines(path, lines);
+    Console.WriteLine($"wrote {blocks.Length} golden blocks to {path}");
+}
 
 static string Describe(ApertureType type) => type switch
 {
