@@ -3,6 +3,7 @@ pub mod cst;
 pub mod diag;
 pub mod error;
 pub mod fact;
+pub mod fact_store;
 pub mod fixture;
 pub mod flatten;
 pub mod format;

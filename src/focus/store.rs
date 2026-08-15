@@ -15,7 +15,7 @@
 //!   O(1) wholesale drop when a derived predicate is recomputed, and per-predicate
 //!   size/cardinality for free. Splitting `entities` too is what the snowflake
 //!   [`FactId`] buys:
-//!   [`point`](crate::focus::plan::FactStore::point) is handed a bare id, and the
+//!   [`point`](crate::focus::fact_store::FactStore::point) is handed a bare id, and the
 //!   id's tag names the tree, so identity lookup stays one lookup. Were `entities`
 //!   shared, dropping a derived predicate's `keys` tree would strand its values as
 //!   unreclaimable garbage.
@@ -51,9 +51,9 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
 use crate::focus::{
     error::{FormatError, StoreError},
     fact::{self, Fact},
+    fact_store::{Entity, FactStore},
     format::{FORMAT_KEY, FormatVersion, META_KEYSPACE},
     id::{FactId, FactIdError, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
-    plan::{Entity, FactStore},
     schema::{PREDICATE_ID_SIZE, PredicateId, Schema},
 };
 

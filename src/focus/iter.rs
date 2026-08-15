@@ -6,10 +6,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::focus::{
     error::{ApertureError, StoreCodecError, StoreError},
+    fact_store::FactStore,
     id::FactId,
     plan::{
-        Access, Address, Computed, FactStore, FieldPath, Plan, PlanFingerprint, Project, Residual,
-        ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        Access, Address, Computed, FieldPath, Plan, PlanFingerprint, Project, Residual, ResidualOp,
+        SeekKey, SeekKeyPart, Source, Step, Test,
     },
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId},
     tuple::{
@@ -1302,14 +1303,15 @@ fn compute(value: &Computed) -> Value {
 mod tests {
     use super::*;
     use crate::focus::{
+        fact_store::Entity,
         fixtures::{
             FrozenStore, PointSpy, collect_rows, compose, count_rows, fact_ref_field, i64_field,
             interner_with, run_with_suspends, str_field,
         },
         mem_store::MemStore,
         plan::{
-            Access, DerivedBind, Entity, FieldPath, Level, Plan, Project, Residual, ResidualOp,
-            SeekKey, SeekKeyPart,
+            Access, DerivedBind, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
+            SeekKeyPart,
             proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
         schema::{PredicateId, PredicateTy},
