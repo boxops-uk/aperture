@@ -24,6 +24,7 @@ pub mod error;
 pub mod fact;
 pub mod fact_store;
 pub mod format;
+pub mod identity;
 pub mod meta;
 pub mod schema_doc;
 pub mod store;

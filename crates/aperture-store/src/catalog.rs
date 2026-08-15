@@ -39,6 +39,7 @@ use aperture_schema::schema::{PredicateId, Schema};
 
 use crate::{
     error::StoreError,
+    identity,
     meta::{Meta, Scratch, Status, sync_dir},
     store::FjallDb,
     ulid,
@@ -71,6 +72,17 @@ impl Entry {
     pub fn status(&self) -> Status {
         self.meta.status
     }
+}
+
+/// What sealing a database came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Finished {
+    /// `hash(canonical schema, base facts)` — the database's identity (`ops-I4`).
+    pub fingerprint: u64,
+    pub facts: u64,
+    pub bytes: u64,
+    /// Whether it was already sealed, in which case nothing was done.
+    pub already_complete: bool,
 }
 
 /// What a scan of the root found, and what it could not make sense of.
@@ -313,6 +325,93 @@ impl Catalog {
         let entry = self.get(name)?;
         let db = FjallDb::open(&entry.path)?;
         Ok((entry, db))
+    }
+
+    /// Seal `name`: `Writable → Complete`.
+    ///
+    /// # The order is `ops-I3`, and the last step is the only one that matters
+    ///
+    /// 1. flush and `SyncAll` — every fact durable before anything claims they are;
+    /// 2. compute the content identity (`ops-I4`);
+    /// 3. one atomic sidecar write carrying the identity, the counts **and** the flip.
+    ///
+    /// Operations §5 describes 2 and 3 as "record it in the sidecar → atomically flip
+    /// status to Complete as the final durable act", which reads like two writes.
+    /// **One is the correct reading and the safer one.** Two would leave a window in
+    /// which a database is Writable *and* carries a content fingerprint — a
+    /// fingerprint that another write would immediately invalidate. One rename means
+    /// a crash leaves the old sidecar exactly as it was: Writable, no identity,
+    /// re-runnable. The sidecar write is the final durable act either way, which is
+    /// what `ops-I3` actually requires.
+    ///
+    /// Finishing a Complete database is a no-op with [`Finished::already_complete`]
+    /// set, rather than an error: a re-run after a crash cannot tell whether it is the
+    /// re-run or the original, and both should succeed.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NoSuchDatabase`]; [`StoreError::NotWritable`] if it is `Broken`;
+    /// [`StoreError::EmptyDatabase`] for a database with no facts unless
+    /// `allow_zero_facts`; and whatever the store or the identity walk reports.
+    pub fn finish(
+        &self,
+        name: &str,
+        schema: &Schema,
+        allow_zero_facts: bool,
+    ) -> Result<Finished, StoreError> {
+        let entry = self.get(name)?;
+
+        match entry.status() {
+            Status::Complete => {
+                return Ok(Finished {
+                    fingerprint: entry.meta.content_fingerprint.unwrap_or(0),
+                    facts: entry.meta.facts.unwrap_or(0),
+                    bytes: entry.meta.bytes.unwrap_or(0),
+                    already_complete: true,
+                });
+            }
+            Status::Broken => {
+                return Err(StoreError::NotWritable {
+                    name: name.to_owned(),
+                    status: Status::Broken,
+                });
+            }
+            Status::Writable => {}
+        }
+
+        let db = FjallDb::open(&entry.path)?;
+
+        // Durable first. Everything after this reads what is already on the disk, so
+        // an identity computed here describes bytes that survive a power loss.
+        db.persist()?;
+
+        let identity = identity::compute(&db, schema, entry.meta.schema_fingerprint)?;
+
+        // A silently-empty sealed artifact is the classic CI failure that looks like
+        // success, so it takes a flag to make one.
+        if identity.facts == 0 && !allow_zero_facts {
+            return Err(StoreError::EmptyDatabase(name.to_owned()));
+        }
+
+        // Measured after the sync, so it counts what is actually there. Dropped before
+        // the sidecar write for the same reason the sync came first: nothing should be
+        // holding the database open when it becomes immutable.
+        drop(db);
+        let bytes = identity::directory_size(&entry.path);
+
+        let mut meta = entry.meta.clone();
+        meta.status = Status::Complete;
+        meta.content_fingerprint = Some(identity.fingerprint);
+        meta.facts = Some(identity.facts);
+        meta.bytes = Some(bytes);
+        meta.write(&entry.path)?;
+
+        Ok(Finished {
+            fingerprint: identity.fingerprint,
+            facts: identity.facts,
+            bytes,
+            already_complete: false,
+        })
     }
 
     /// Delete `name`.

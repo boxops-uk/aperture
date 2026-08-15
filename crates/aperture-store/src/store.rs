@@ -195,6 +195,21 @@ impl FjallDb {
         Ok(())
     }
 
+    /// Make every write durable — `fsync`, not merely handed to the OS.
+    ///
+    /// What `finish` calls before it computes anything: an identity describing bytes
+    /// that a power loss could still take back would be a claim about a database that
+    /// might not exist (`ops-I3`).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the flush fails.
+    pub fn persist(&self) -> Result<(), StoreError> {
+        self.db
+            .persist(fjall::PersistMode::SyncAll)
+            .map_err(StoreError::Backend)
+    }
+
     /// The predicates this database has trees for, in id order.
     ///
     /// Recovered from the keyspace listing at open, so it answers what is *on disk*

@@ -172,6 +172,22 @@ pub enum StoreError {
         name: String,
         status: crate::meta::Status,
     },
+
+    /// A seal asked of a database holding no facts.
+    ///
+    /// A silently-empty sealed artifact is the classic CI failure that looks like
+    /// success — the build "succeeded" and shipped nothing — so making one takes
+    /// saying so.
+    #[error("`{0}` holds no facts; sealing an empty database takes --allow-zero-facts")]
+    EmptyDatabase(String),
+
+    /// Stored bytes that do not decode.
+    ///
+    /// Distinct from [`FactError::Codec`], which is the same fault on the way *in*:
+    /// this is bytes already on our own disk failing to be what they claim, which is
+    /// corruption rather than a caller's mistake.
+    #[error("stored bytes do not decode: {0}")]
+    Corrupt(#[from] StoreCodecError),
 }
 
 /// A fault in a **write**: a fact that does not fit the schema it is being written

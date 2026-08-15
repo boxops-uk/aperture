@@ -1164,7 +1164,7 @@ the seam that keeps it cheap.
 *inside* a create rather than always after it); `list` reads sidecars while a `FjallDb` handle
 is held open; a second holder of the root is refused by name. 21 tests.
 
-### 9b — `finish`, and identity that means something
+### 9b — `finish`, and identity that means something ✅
 
 - `ops-I3` ordering: flush + `SyncAll` → compute identity → record → flip status **as the last
   durable act**. Tested by injecting a failure at each step; a crash mid-finish leaves Writable
@@ -1178,8 +1178,19 @@ is held open; a second holder of the root is refused by name. 21 tests.
 - Refuse to seal a DB with no facts unless `--allow-zero-facts`.
 - After finish, every write-mode open is refused at establishment, forever (`ops-I2`).
 
-*Acceptance:* the same inputs built twice produce the same fingerprint; a fact written in a
-different order does not change it; finishing twice is a no-op with a notice.
+*Acceptance:* **done.** The same facts written in a *different order* produce the same
+fingerprint — with a non-vacuity check that the two databases really did assign ids differently;
+different facts, a different value side and a renamed *referenced* fact each change it; finishing
+twice is a no-op with a notice; an empty database will not seal without the flag; and a killed
+`finish` leaves a Writable database the command re-runs on, never a Complete one without an
+identity. 10 tests.
+
+**One design point worth carrying forward.** §5 reads "record it in the sidecar → atomically flip
+status to Complete as the final durable act", which sounds like two writes. It is **one**: two
+would leave a window where a database is Writable *and* carries a content fingerprint that another
+write would immediately invalidate. One rename means a crash leaves the old sidecar exactly as it
+was — Writable, no identity, re-runnable — and the sidecar write is still the final durable act,
+which is what `ops-I3` actually requires.
 
 ### 9c — The CLI, and the lifecycle commands
 
