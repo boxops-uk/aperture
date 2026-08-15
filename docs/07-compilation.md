@@ -572,7 +572,7 @@ target**: a generator or a field read, where there is no variable to bind and th
 have to be pushed inward. That is a different operation from binding, and the only part of
 `pattern = pattern` still without an answer.
 
-That split is what makes [`Slot`](#where-a-value-lives) the single substitution. One function —
+That split is what makes [`Slot`](#flatten--the-crux) the single substitution. One function —
 `resolve` — answers "where does this expression's value live" for every position that can
 consume one: a key field, the head, an alias's right side, and a record's pieces when it
 destructures. A constant is an ordinary arm of it rather than a parallel path, so

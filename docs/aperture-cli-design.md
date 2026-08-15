@@ -4,7 +4,7 @@ Design record capturing the decisions made during operational design. Each comma
 lists the behavioural requirements agreed so far, so this doc doubles as the build checklist.
 
 **Nothing in this file is implemented yet** — the whole operational surface is
-[Phase 9](../PLAN.md#phase-9--operations--production-ready). So where a decision below is
+[Phase 9](../PLAN.md#phase-9--operations-a-usable-tool). So where a decision below is
 weighed against Glean (source read at commit `95c0fb6`), it weighs Glean's **shipped code**
 against Aperture's **design**, and that asymmetry is worth keeping in view: Glean's costs are
 measured and admitted in its own source, Aperture's are predicted. The ledger of what is

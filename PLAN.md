@@ -125,7 +125,8 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
                            └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ✅ ─┬─▶ 5  REPL ✅  (→ remote-only later)
                                                                                     ├─▶ 6  dynamic derivation ✅ (machine change; I14 green)
                                                                                     │      └─▶ 6b  deferred query surface ✅ (`|`, never, `!`, subquery)
-                                                                                    └─▶ 7  ingestion ─▶ 8  schema (+ union types) ─▶ 8b  stored derivation ─▶ 9  operations
+                                                                                    └─▶ 7a wire ingestion ✅ ─▶ 9  operations ─▶ 8  schema (+ union types) ─▶ 8b  stored derivation
+                                                                                                             └─▶ 7b  file ingestion (deferred past 9)
 
 Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends on 1 (store + atomic put_fact).
               8b (stored derivation) is gated on **8**: a derived predicate cannot be built before it can be
@@ -134,6 +135,8 @@ Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends 
               6b depends on 6 for the **Cursor**: it is `Vec<Register>` today and `Vec<Slot>` after 6, and
               disjunction adds a per-branch discriminant to the same token — edit it once, re-prove I4 once.
               Nothing in 7–9 depends on 6b, so its position *before* 7 is a choice, not a constraint.
+              **9 was resequenced ahead of 7b and 8** — see the ordering principle. It depended on
+              "7–8"; with the schema hardcoded, 8 stops being a dependency and only 7a is needed.
 Gates:        Codec I1–I3 green.  Executor I4–I7, I9 green on MemStore.  I8/I11/I12 at Phase 1.  I10/I13 at Phase 8.
               FactRef marker — resolved (own marker 0x51, already in the codec); no longer gates ingestion.
               Union types gate on the schema DSL (8), not on 6b: a union cannot be declared before it can be written down.
@@ -159,6 +162,25 @@ with it** (6b), because disjunction extends the same token derived binds do and
 (ingestion, 7), remove the last hardcoded piece (schema, 8) — which is what finally unlocks
 **stored** derivation (8b), since a derived predicate cannot be built before it can be declared —
 and harden (operations, 9).
+
+**Amended after 7a: operations moved ahead of file ingestion and the schema DSL.** The original
+order put 9 last because it "depends on 7–8", and that reading was too strong. What 9 needs from 8
+is *a schema*, not a schema *language* — and a hardcoded one satisfies it, at the price of one
+function that Phase 8 deletes. What it needs from 7 is a way in, which 7a is. Against that, three
+things argued for pulling it forward:
+
+- **The lifecycle is what makes anything else usable.** Every phase so far produced a library. A
+  database that cannot be created, sealed, listed or removed is not a tool, and no amount of
+  further engine work changes that.
+- **The async runtime is cheapest now.** The server is small; every later feature makes the port
+  dearer, and the sync↔async bridge is what chunked results, fair interleaving and cancellation
+  all wait on.
+- **I4 and I8 have no interactive exerciser.** The bytes-only cursor and the whole resume battery
+  — the most heavily tested machinery in this project — are exercised only by tests. `\more` in a
+  wire shell is the first thing that holds a cursor across a round trip, and it is in 9.
+
+7b (file ingestion) is deferred past 9 outright: it is a throughput feature, and nothing in the
+lifecycle, the CLI or the runtime needs it.
 
 ---
 
@@ -652,7 +674,7 @@ folds, and anything else is a value that differs per row. The nearest candidate,
 would most likely become another *substitution* (an alias for a field of `X`'s register) rather
 than a value slot — so the first real producer is a **primitive**
 ([open decision](docs/open-decisions.md)) or a **subquery**
-([Phase 6b](#phase-6b--the-deferred-query-surface)). The machinery is built ahead of them on
+([Phase 6b](#phase-6b--the-deferred-query-surface-)). The machinery is built ahead of them on
 purpose, because its resume behaviour is the expensive thing to get wrong later; it is exercised
 by hand-built plans, and I14 records that scope rather than implying pressure the language does
 not yet apply.
@@ -932,7 +954,7 @@ flag is not wired). None is on 7b's path.
 
 **Goal.** Parse schemas so predicate/type definitions aren't hardcoded — a separate schema
 DSL feeding the same type model the query compiler uses. **Union types land here**, not in
-[Phase 6b](#phase-6b--the-deferred-query-surface), for three reasons that all point the same
+[Phase 6b](#phase-6b--the-deferred-query-surface-), for three reasons that all point the same
 way: `PredicateTy` (`schema.rs:23`) has four variants and no `Union`; there is no way to
 *declare* one until this phase, because the schema is hardcoded Rust; and
 [I10](docs/invariants.md#i10) freezes discriminants **the moment union data is written** —
@@ -1076,57 +1098,175 @@ rather than an error.
 
 ---
 
-## Phase 9 — Operations / production-ready
+## Phase 9 — Operations: a usable tool
 
-**Goal.** The hardening pass: telemetry, cohesive error handling, the full database/lifecycle
-+ connection layer, and the workspace restructure.
+**Goal.** Stop being a set of libraries. A person can create a database, put facts in it over the
+wire, query it interactively, seal it, and throw it away — with the lifecycle, the runtime and the
+CLI the design has specified all along.
 
-**Depends on:** Phases 7–8 (a writable, schema-validated, queryable DB).
+**Depends on:** Phase 7a (a writable, queryable DB over a socket). **Not Phase 8** — see the
+[ordering principle](#ordering-principle) for why a hardcoded schema satisfies what 9 needs from
+it, and what pulling 9 forward buys.
 
-**Design of record:** [`docs/aperture-cli-design.md`](docs/aperture-cli-design.md) **in
-full** — CLI tree (§4), per-command requirements (§5), operational invariants
-`ops-I1`–`ops-I10` (§1), wire protocol (§6), on-disk layout (§9), workspace structure (§10). Read
-it knowing that **none of it is implemented**: where it weighs a decision against Glean it is
-weighing Glean's shipped code against this design, so Glean's costs there are measured and ours are
-predicted.
+**Design of record:** [`docs/aperture-cli-design.md`](docs/aperture-cli-design.md) **in full** —
+CLI tree (§4), per-command requirements (§5), operational invariants `ops-I1`–`ops-I10` (§1), wire
+protocol (§6), on-disk layout (§9), workspace structure (§10). Note §10 puts lifecycle, sidecar
+read/write and store-root enumeration in **`aperture-store`**, not a crate of their own.
 
-**Invariants in scope:** *makes enforceable & tested:* `ops-I1`–`ops-I10`. *upholds under the
-real connection layer:* [I8](docs/invariants.md#i8) (drop-at-suspend, already guarded at
-Phase 1) now exercised through portals.
+**Invariants in scope:** *makes enforceable & tested:* `ops-I1`–`ops-I10`. *upholds under a real
+connection layer:* [I8](docs/invariants.md#i8), now exercised through portals rather than only by
+the Phase 1 guard. *first interactive exerciser for:* [I4](docs/invariants.md#i4).
 
-**Scope (coarse — decompose when reached):**
-- **DB / lifecycle** (`ops-I2`/`ops-I3`/`ops-I4`): `Writable → Complete` (+ `Broken`);
-  `create` embeds canonical schema + fingerprint (I13); ingest refused on Complete; `finish`
-  seals (flush + `SyncAll` → content-hash identity → atomic sidecar flip as the last durable
-  act); filesystem is the catalog (`ops-I7`); the sealed-snapshot machinery `ops-I8` needs, shared with [Phase 8b](#phase-8b--stored-derivation).
-- **Connection layer / wire protocol** (if not landed in Phase 7): PSQL-inspired framed
-  binary protocol with stream multiplexing, chunked `DataRow`s with a fair per-connection
-  writer, per-stream `Cancel`, the bounded-channel sync↔async bridge with byte `Cursor`
-  portals ([chapter 5](docs/05-resume.md)), default-closed bind (`ops-I10`). The remote-first
-  `shell` (re-pointing the Phase 5 REPL) lands here.
-- **The shell holds the cursor — first, and by a distance** ([operations
-  §5](docs/aperture-cli-design.md)). Phase 5's REPL discards the resume token
-  (`Iteratee::Suspended(rows, _)`, `src/main.rs`), so [I4](docs/invariants.md#i4) and
-  [I8](docs/invariants.md#i8) — a bytes-only cursor and an entire resume battery, the most
-  heavily tested machinery in this project — have **no interactive exerciser at all**. A wire
-  client *can* hold a `Cursor`; that is the whole point of a bytes-only continuation, and it is
-  the one item here that pressure-tests what the project spent the most effort on. Then, in
-  order: a profile view (facts searched per predicate, with a full-scan flag — the *outcome* to
-  `:plan`'s *intent*), `finish --allow-zero-facts`, a prefix-matching describe, and a readiness
-  signal for `serve`. Each is specified in operations §5.
-- **Telemetry:** query profiling (facts-searched-per-predicate — the counter already exists for
-  cancellation and is simply not surfaced), metrics, tracing spans.
-- **Cohesive errors:** one taxonomy end-to-end; no panics on data paths.
-- **Snapshot lifecycle & migration:** backup/restore; migration story for the frozen marker
-  (I3) & discriminant (I10) tables.
-- **CLI + config:** the §4 command tree; config hierarchy CLI > env > file > defaults (clap +
-  figment); XDG paths.
+### What "usable if incomplete" means
 
-**Acceptance:**
-- [ ] Operable as a real service: observable, diagnosable, with the defined lifecycle and connection layer.
-- [ ] `ops-I1`–`ops-I10` enforced and tested (end-to-end `assert_cmd`/`trycmd`).
-- [ ] The resume/streaming machinery runs against fjall through the real connection layer under the same batteries.
-- [ ] The workspace restructure is complete (see cross-cutting note) with all batteries green.
+```
+aperture create mydb                      # Writable DB, built-in schema stamped in
+aperture serve                            # owns the store root
+aperture list / describe mydb             # sidecar scan; works while the server holds them
+aperture query mydb 'X where src.File X'  # over the wire, streamed, Ctrl-C cancels
+aperture shell mydb                       # REPL over the wire; \more holds the cursor
+aperture finish mydb                      # seal: Writable → Complete, immutable
+aperture db rm mydb
+```
+
+Facts arrive over the wire — the C# client under `clients/dotnet` already does this, and
+`aperture-client` is its Rust twin.
+
+**Deliberately outside it**, so the phase has an edge: fact files (7b), schema parsing and the
+`schema` subcommands (8), `db backup`/`restore`/`verify`, shell completions, derivation (8b),
+cross-DB (`ops-I9`), authentication (`ops-I10` stays default-closed), provenance/properties, and
+per-predicate stats. Each is already listed in [operations §11](docs/aperture-cli-design.md) with
+the seam that keeps it cheap.
+
+### 9a — The database as an artifact
+
+`aperture-store` grows the lifecycle §10 assigns it.
+
+- `APERTURE_META` sidecar, **versioned**, written temp → fsync → rename. Fields exactly §9's:
+  name, instance, status, format version, schema fingerprint, content fingerprint (at finish),
+  counts, size, created_at. **No `externally_modified` and no provenance** — `ops-I6` and §5 say
+  so, and the versioned format is what makes them later additions rather than migrations.
+- `Status` = `Writable | Complete | Broken`.
+- Layout `<root>/<name>/<instance>/`, instance a provisional ULID.
+- **The catalog is the filesystem** (`ops-I7`): enumeration walks the root and reads sidecars,
+  never opening fjall — which is what lets `list` work while a server holds every DB.
+- Store-root lock for `ops-I1`. fjall's own lock gives per-DB detection; the *root* is what
+  `serve` owns.
+- `create` materialises every predicate's keyspaces up front (§9: a keyspace costs ~30 ms) and
+  embeds the canonical schema under `schema/` beside the sidecar.
+- **One built-in schema.** It is currently written twice — `src/main.rs` and
+  `src/bin/aperture-serve.rs` — and becomes one definition in the CLI package's lib target. The
+  catalog never sees it: `create` takes `&Schema` and records its fingerprint, which is the
+  down payment on [I13](docs/invariants.md#i13) that Phase 8 completes.
+
+*Acceptance:* a killed process mid-create leaves either nothing or a Writable DB; `list` reads
+sidecars while a server holds the DBs; a second `serve` on a held root is refused by name.
+
+### 9b — `finish`, and identity that means something
+
+- `ops-I3` ordering: flush + `SyncAll` → compute identity → record → flip status **as the last
+  durable act**. Tested by injecting a failure at each step; a crash mid-finish leaves Writable
+  and the command re-runs.
+- **Content fingerprint = `hash(canonical schema, base facts)`, computed for real.** Per
+  predicate in `keys` order, with references expanded to their target's *logical* key,
+  recursively, so no physical `FactId` enters the hash. This is exactly what
+  [the nested-reference decision](docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)
+  made well-defined, and it is what `ops-I4` has been asserting since before it was computable.
+  Recording a placeholder instead would put a lie in the artifact.
+- Refuse to seal a DB with no facts unless `--allow-zero-facts`.
+- After finish, every write-mode open is refused at establishment, forever (`ops-I2`).
+
+*Acceptance:* the same inputs built twice produce the same fingerprint; a fact written in a
+different order does not change it; finishing twice is a no-op with a notice.
+
+### 9c — The CLI, and the lifecycle commands
+
+`aperture-cli` (the root package, renamed). **First usable checkpoint.**
+
+- clap tree per §4; every global arg `#[arg(global = true)]`.
+- §2 address resolution: bare name → local socket, `aperture://host:port/db` → TCP, `--embedded
+  <path>` → in-process. **Never a silent fallback** from connect to open (`ops-I1`); a missing
+  server is a psql-style actionable error.
+- Config layering per §3 (figment: defaults → file → `APERTURE_` env → flags, every field
+  `Option<T>` so an unset flag does not clobber a lower layer).
+- Commands: `create`, `list`, `describe`, `finish`, `db rm`, `serve`.
+- Output rendering is **client-side** (`--format table|json|raw`); the server never produces JSON.
+
+*Acceptance:* `create → list → describe → finish → list → db rm` end to end (`assert_cmd`), with
+`list` showing the status change.
+
+### 9d — The async runtime
+
+Two steps, because one would be unreviewable.
+
+**9d-i — port to tokio, behaviour unchanged.** The mechanical half: listener and sessions become
+tasks. The design point that is *not* mechanical: **fjall is synchronous and the executor is
+CPU-bound**, so neither belongs on the reactor. They go behind `spawn_blocking` with a bounded
+channel between — which is the "bounded-channel sync↔async bridge with byte `Cursor` portals"
+this plan already named, and [chapter 5](docs/05-resume.md) is why the cursor makes it possible
+at all.
+
+**9d-ii — what the runtime was for.**
+- Per-connection reader task, and a **writer task doing round-robin over bounded per-stream
+  queues** (§5). Without it one chatty stream starves the socket even when the executor has
+  capacity — which is true of the server today, and said so in its module docs.
+- **Per-DB single writer task** (`ops-I1`, `ops-I5`): serialised writes made structural rather
+  than promised. fjall's non-transactional path loses updates on concurrent read-modify-write,
+  and a Writable DB is single-server-owned anyway, so serialisation is free.
+- **Chunked `DataRow`s** off the executor's `Suspended`: a large result never buffers and never
+  monopolises the connection.
+- **Per-stream `Cancel`** in band, mapped to the `CancellationToken` the executor already takes.
+- **Lifecycle over the wire.** §5's rule is that every DB-taking command works against any
+  address, with the server implementing it on the same core code as the embedded path — so
+  `create`/`finish`/`list`/`describe`/`drop` become control messages rather than requiring the
+  server be stopped. Two front doors, one implementation.
+
+*Acceptance:* a long query and a short one on one connection, and the short one finishes first —
+which is false today; cancelling a long query stops it inside a chunk; [I8](docs/invariants.md#i8)
+still holds through portals; every existing battery green.
+
+### 9e — `aperture-client`
+
+The Rust twin of the C# client: connect, handshake, session modes, stream multiplexing, the write
+stream, and a query stream **that holds its cursor**. Used by the CLI, the shell, and any Rust
+deriver.
+
+*Acceptance:* the Rust and C# clients produce byte-identical blocks for the same facts.
+
+### 9f — `query`, `shell`, and the cursor
+
+- `query`: streams incrementally, `--timeout`, Ctrl-C → a per-stream Cancel rather than a
+  connection teardown.
+- `shell`: **remote-first, always over the wire**, so the wire format has a permanent exerciser.
+  `\l` (via `aperture.db.List`), `\d [pred]` with prefix fallback, `\c`, `\timing`, `\cancel`,
+  `\q`, readline history.
+- **`\more` holds the cursor and resumes it.** The highest-value item in operations §5 by a
+  distance: the Phase 5 REPL discards the resume token at both call sites, so
+  [I4](docs/invariants.md#i4) and [I8](docs/invariants.md#i8) — a bytes-only cursor and the most
+  heavily tested machinery in this project — have **no interactive exerciser at all**. Paired with
+  a truncation footer that names the knob.
+- **`\profile`** — facts searched per predicate with a full-scan flag: the *outcome* to `:plan`'s
+  *intent*. The executor already counts rows examined for cancellation; this surfaces it.
+- `aperture.db.List` as a **virtual predicate** through the normal query machinery — no bespoke
+  control message for enumeration.
+- **TCP opt-in**: `--listen-tcp host:port`, default-closed (`ops-I10`), operator responsible for
+  the gateway in front of it.
+
+*Acceptance:* `\more` returns the next page and the concatenation equals an uninterrupted run —
+[I4](docs/invariants.md#i4), interactively, for the first time.
+
+**Acceptance — the phase:**
+- [ ] The command sequence at the top of this phase works, over the wire, against a running server.
+- [ ] `ops-I1`–`ops-I10` enforced and tested end-to-end (`assert_cmd`/`trycmd`).
+- [ ] A long query does not delay a short one on the same connection.
+- [ ] `\more` is an interactive [I4](docs/invariants.md#i4) exerciser, and the pages concatenate to an uninterrupted run.
+- [ ] The same inputs built twice produce the same content fingerprint (`ops-I4`).
+- [ ] The workspace matches [operations §10](docs/aperture-cli-design.md) (see the cross-cutting note).
+
+**What is deliberately still missing afterwards**, so "incomplete" is a statement rather than a
+discovery: telemetry and tracing spans, one end-to-end error taxonomy, `db verify`/`backup`/
+`restore`, and everything in the "outside it" list above. None blocks daily use; all are listed
+here rather than found later.
 
 ---
 
@@ -1166,7 +1306,7 @@ two *non-additive* constructs — derived facts (Phase 6) and the now-resolved `
 
 **Five items left this list and took phases**, because "additive" was a claim about the
 *machine* and never one about size: disjunction, `never`, negation and subqueries are
-[Phase 6b](#phase-6b--the-deferred-query-surface), and unions-as-data is
+[Phase 6b](#phase-6b--the-deferred-query-surface-), and unions-as-data is
 [Phase 8](#phase-8--schema-parsing-new-grammar). What they had in common as bullets was no
 acceptance criteria and no invariant accounting — while one of them changes the resume token
 and one of them freezes bytes on disk.
