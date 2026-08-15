@@ -95,6 +95,7 @@ dependencies = [
  "aperture-schema",
  "aperture-server",
  "aperture-store",
+ "aperture-wire",
  "byteview",
  "clap",
  "codespan-reporting",

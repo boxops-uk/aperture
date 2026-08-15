@@ -1216,7 +1216,7 @@ env → flags is the same shape with one layer missing, so adding the file is an
 routing lifecycle commands through a running server — which is 9d's, and until then a held root
 is refused with a message that says so rather than opened anyway.
 
-### 9d — The async runtime
+### 9d — The async runtime ✅
 
 Two steps, because one would be unreviewable.
 
@@ -1245,17 +1245,48 @@ nothing of the server's runtime, and that is where it is checked.
 - **Per-stream `Cancel`** in band, mapped to the `CancellationToken` the executor already takes.
 - **Lifecycle over the wire.** §5's rule is that every DB-taking command works against any
   address, with the server implementing it on the same core code as the embedded path — so
-  `create`/`finish`/`list`/`describe`/`drop` become control messages rather than requiring the
-  server be stopped. Two front doors, one implementation.
+  `create`/`finish`/`drop` become control messages rather than requiring the server be stopped,
+  and the server grows a **registry**: the store root and the databases open under it, in a map it
+  can change. Two front doors, one implementation.
 
-*Acceptance:* **done for the concurrency half.** A long query and a short one on one connection:
-the short one completes after **0** of the long one's 4000 rows. A cancel stops a stream inside a
-chunk and leaves the connection answering on another. A thousand-row result crosses four chunks —
-three real resumes through the bytes-only cursor — and comes back as a thousand *distinct* rows,
-which a resume that dropped or repeated one would not.
+*Acceptance:* **done.** A long query and a short one on one connection: the short one completes
+after **0** of the long one's 4000 rows. A cancel stops a stream inside a chunk and leaves the
+connection answering on another. A thousand-row result crosses four chunks — three real resumes
+through the bytes-only cursor — and comes back as a thousand *distinct* rows, which a resume that
+dropped or repeated one would not. And the whole command sequence — create, write, query, seal,
+delete — runs against a server that is up throughout, both over a socket (6 tests) and through the
+real binary (3). The .NET client passes unchanged, which is what says the new frames are additive.
 
-**Still to do in 9d:** lifecycle over the wire, so `create`/`finish`/`list`/`describe`/`drop`
-work against a running server rather than being refused by it.
+**Three of the five needed a way in, not five, and that is `ops-I7` rather than a shortcut.**
+`list` and `describe` read sidecars and never open fjall, so they already worked while a server
+held every database under the root — they were never the commands being refused. Only `create`,
+`finish` and `remove` mutate, and those became control frames on an ordinary stream: fair
+queueing, per-stream errors and task isolation all come free, and a `create` costing tens of
+milliseconds per keyspace does not stall the connection's reader. §5's *remote* `list` is the
+virtual predicate `aperture.db.List`, which is 9f's and is the normal query machinery.
+
+**How a command decides, in one place.** `commands::route` — a server listening on the derived
+socket takes the command; nothing listening means this process does the work under the root lock.
+That is §2's resolution rather than a fallback, and the ordering is the whole of it: the forbidden
+thing is to try the server, fail, and open the directory *anyway*, because a server might be
+holding it. Here nothing is opened until the socket has said none is. The lock stays the authority
+— a root held by something that is not listening is refused by name, with both halves in the
+message, which is the situation that actually needs one.
+
+**Two hazards the server has and the offline path does not**, each answered where it arises. A
+second handle on a store this process already holds: `Catalog::finish_held` takes the handle the
+caller has, and a store test pins that a database sealed through it is the same artifact — same
+identity — as one sealed by opening the directory, or `ops-I4` would depend on which door a build
+came through. And a database pulled out from under a session: `remove` takes it out of the map
+first, then deletes it only if the registry turns out to hold the last reference; otherwise the
+entry goes back and the request is refused by name, as psql does and for the same reason.
+
+**An `ops-I2` hole found on the way and closed.** The handshake never checked status — a Complete
+database accepted a read-write session, because the server had no idea what status anything was.
+It refuses at establishment now, and the interesting half is the session established *before* a
+seal: that one is caught inside the per-database writer lock, where the seal happens, so a block
+either takes the lock before it and the seal waits, or takes it after and finds the database no
+longer writable. There is no third order, and breaking either check fails exactly one test.
 
 **One bug worth carrying forward, found by the .NET demo and not by the Rust tests.** Rows were
 matched to their type *by name*, and that cannot work: a `PredicateTy::Record` holds a bare
@@ -1300,11 +1331,18 @@ deriver.
 
 **Acceptance — the phase:**
 - [ ] The command sequence at the top of this phase works, over the wire, against a running server.
+      *The lifecycle half does, as of 9d — `create`/`list`/`describe`/`finish`/`db rm` against a
+      server that is up throughout. `query` and `shell` are the remainder, and are 9f's.*
 - [ ] `ops-I1`–`ops-I10` enforced and tested end-to-end (`assert_cmd`/`trycmd`).
-- [ ] A long query does not delay a short one on the same connection.
+      *`ops-I1`–`ops-I7` are, over a socket and through the binary. `ops-I8` (the hoisted
+      finalization phase) and `ops-I9` (cross-DB) are unbuilt; `ops-I10` is default-closed and
+      has no opt-in to test until 9f's `--listen-tcp`.*
+- [x] A long query does not delay a short one on the same connection.
 - [ ] `\more` is an interactive [I4](docs/invariants.md#i4) exerciser, and the pages concatenate to an uninterrupted run.
-- [ ] The same inputs built twice produce the same content fingerprint (`ops-I4`).
+- [x] The same inputs built twice produce the same content fingerprint (`ops-I4`) — including
+      when one of them was sealed through a handle the server already held.
 - [ ] The workspace matches [operations §10](docs/aperture-cli-design.md) (see the cross-cutting note).
+      *All but `aperture-client`, which is 9e.*
 
 **What is deliberately still missing afterwards**, so "incomplete" is a statement rather than a
 discovery: telemetry and tracing spans, one end-to-end error taxonomy, `db verify`/`backup`/

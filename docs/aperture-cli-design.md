@@ -3,8 +3,10 @@
 Design record capturing the decisions made during operational design. Each command section
 lists the behavioural requirements agreed so far, so this doc doubles as the build checklist.
 
-**Nothing in this file is implemented yet** — the whole operational surface is
-[Phase 9](../PLAN.md#phase-9--operations-a-usable-tool). So where a decision below is
+**Most of this file is now built** — §1's lifecycle and its invariants, §2's resolution, §3's
+layering bar the file layer, §4's tree bar `query`/`shell`/`write`/`db backup`/`restore`/`verify`/
+`schema`/`completions`, §5's `serve`/`create`/`finish`/`list`/`describe`/`db rm`, and §6 entire.
+[Phase 9](../PLAN.md#phase-9--operations-a-usable-tool) tracks what is where. So where a decision below is
 weighed against Glean (source read at commit `95c0fb6`), it weighs Glean's **shipped code**
 against Aperture's **design**, and that asymmetry is worth keeping in view: Glean's costs are
 measured and admitted in its own source, Aperture's are predicted. The ledger of what is
@@ -210,6 +212,23 @@ direct directory access is a distinct, explicit, opt-in mode.
 
 **Least-surprise contract:** a bare name always means "ask the local server"; a path or URI
 means exactly what it says; the tool never guesses between them.
+
+**Amended at 9d, and the amendment is to rule 1 for *lifecycle* commands only.** `create`,
+`finish` and `db rm` resolve as: a server listening on the derived socket takes the command;
+nothing listening means this process does the work itself, under the root lock. Rule 1 as
+written would refuse them outright with no server up, which would make the tool unusable
+offline for the one job — building an artifact in CI — the offline path exists for.
+
+It does not weaken `ops-I1`, and the ordering is why. What that rule forbids is trying the
+server, failing, and opening the directory *anyway*, because a server might be holding it.
+Here nothing is opened until the socket has already answered that none is — rule 4's "the
+socket *is* the server-detection mechanism", used as the detection it says it is — and the
+root lock remains the authority behind it: a root held by something not listening is refused
+by name rather than opened. Reads (`list`, `describe`) never faced the question, since
+`ops-I7` means they take no lock and open no store.
+
+Query and write sessions are unchanged: those bind a database, and rule 1 governs them as
+written.
 
 ---
 
@@ -673,19 +692,27 @@ dedups against it. What a transaction would prevent here is a wasted row, not a 
 
 | | |
 |---|---|
-| **built** | the frame layer; the handshake, including the schema-fingerprint check; write streams (open → blocks → done → counts); query streams (descriptor → rows → complete); stream-level failure that leaves the connection usable |
-| **deferred, named in §5** | fair interleaving between streams; chunked incremental results; in-band cancellation; per-stream flow control; TCP (`ops-I10` default-closed) |
+| **built** | the frame layer; the handshake, including the schema-fingerprint check and `ops-I2` at establishment; write streams (open → blocks → done → counts); query streams (descriptor → chunked rows → complete); in-band per-stream cancellation; a reader task per connection and one fair writer over bounded per-stream queues; control frames for `create`/`finish`/`remove`; stream-level failure that leaves the connection usable |
+| **deferred, named in §5** | per-stream flow-control windows; TCP (`ops-I10` default-closed) |
 
-The two worth being precise about, because their absence is easy to mistake for their presence:
+Three worth being precise about, because each is easy to mistake for something it is not:
 
-- **Streams are real but not concurrent.** Frames carry a stream id, the server honours it, and two
-  streams coexist on a connection — but each frame is processed to completion as it arrives, so a
-  long query does delay a short one behind it. §5's per-connection writer task with round-robin over
-  per-stream queues is what fixes that, and it is a scheduler on top of this loop rather than a
-  different loop.
-- **A query's rows are collected, then sent.** The executor already suspends — `enumerate` returns
-  `Suspended` — so what is missing is the loop that resumes it between chunks, not the machinery
-  under it.
+- **A stream is a task, so a long query does not delay a short one.** The reader loop reads, routes
+  to that stream's task and goes back to reading; one writer task takes a frame from each stream's
+  queue in turn. Fairness is structural rather than a scheduling hope — a single shared output
+  channel is unfair in exactly the way that matters, since a million-row query fills it and a second
+  stream's four-frame answer waits behind all of them.
+- **A chunk boundary is a real resume.** Rows go out 256 at a time off the executor's `Suspended`,
+  and the next chunk resumes from the bytes-only cursor. This is the first thing in the project to
+  use resume for what it is *for* rather than to test it.
+- **A control frame is a stream like any other.** `create`, `finish` and `remove` are frames on an
+  ordinary stream rather than on stream 0, which is what keeps a `create` — tens of keyspaces, tens
+  of milliseconds each — off the reader loop, and gives lifecycle requests the same per-stream error
+  handling everything else has. A session may name **no** database, which is the only kind of
+  session `create` could be sent on. `list` and `describe` are deliberately not control frames:
+  `ops-I7` means they read sidecars and never open fjall, so they already work while a server holds
+  every database under the root, and §5's remote branch answers them through `aperture.db.List`.
+  All of it is additive — the protocol version does not move, and the .NET client passes unchanged.
 
 ### What this direction does *not* share with the read direction
 

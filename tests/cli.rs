@@ -171,11 +171,16 @@ fn several_databases_coexist() {
     assert!(fails(root, &["create", "alpha"]).contains("already exists"));
 }
 
-/// **`ops-I1` has no silent fallback.** A held root refuses the command and names the
-/// root; it never opens the directory anyway.
+/// **`ops-I1` has no silent fallback.** A root held by something that is *not*
+/// listening refuses the command and names both halves; it never opens the directory
+/// anyway.
 ///
-/// The lock is taken directly rather than by starting a server, which is the same
-/// thing to `flock` and does not need a socket, a port or a wait.
+/// The lock is taken directly rather than by starting a server, and since 9d that is
+/// no longer merely the cheaper way to hold it — it is the case being tested. A
+/// running server is found on its socket and the command routes through it
+/// (`over_a_server.rs`); what is left here is the genuinely confusing situation of a
+/// root that is owned and unreachable, which is the one that needs an actionable
+/// message.
 #[test]
 fn a_held_store_root_refuses_lifecycle_commands() {
     let dir = tempfile::tempdir().expect("a scratch directory");
@@ -193,10 +198,13 @@ fn a_held_store_root_refuses_lifecycle_commands() {
     ] {
         let stderr = fails(root, &args);
         assert!(
-            stderr.contains("held by a running server"),
+            stderr.contains("held by another process"),
             "{args:?} should have been refused: {stderr}"
         );
         assert!(stderr.contains(&root.display().to_string()), "{stderr}");
+
+        // Both halves, because "held" alone leaves someone with nowhere to look.
+        assert!(stderr.contains("aperture.sock"), "{stderr}");
     }
 
     // ...but reading works throughout, because enumeration never opens fjall

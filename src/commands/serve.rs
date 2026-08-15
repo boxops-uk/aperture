@@ -17,7 +17,7 @@ use crate::{CliError, code_index, commands};
 pub fn run(root: &Path, socket: &Path, ready_file: Option<&Path>) -> Result<(), CliError> {
     // Held for the process's life: the lock *is* the ownership, so it is taken before
     // anything is opened and released only when the server exits.
-    let (catalog, _lock) = commands::exclusive(root)?;
+    let (catalog, _lock) = commands::exclusive(root, socket)?;
 
     let schema = code_index::schema();
     let fingerprint = protocol::provisional_fingerprint(&schema);

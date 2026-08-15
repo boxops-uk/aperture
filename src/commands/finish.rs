@@ -1,19 +1,35 @@
 //! `aperture finish <db>`.
 
+use std::path::Path;
+
 use aperture_store::catalog::Finished;
 
-use crate::{CliError, code_index, commands};
+use crate::{
+    CliError, code_index,
+    commands::{self, Route},
+};
 
 /// # Errors
 ///
-/// [`CliError::RootHeld`] if a server owns the root, or whatever sealing reports —
-/// including [`StoreError::EmptyDatabase`](aperture_store::error::StoreError::EmptyDatabase)
-/// for a database with no facts.
+/// [`CliError::Refused`] if a running server declines — including a database holding
+/// no facts, which takes `--allow-zero-facts` whichever door it is sealed through —
+/// [`CliError::RootHeld`] if none is listening and something else holds the root, or
+/// whatever sealing reports.
 pub fn run(
-    root: &std::path::Path,
+    root: &Path,
+    socket: &Path,
     name: &str,
     allow_zero_facts: bool,
 ) -> Result<Finished, CliError> {
-    let (catalog, _lock) = commands::exclusive(root)?;
-    Ok(catalog.finish(name, &code_index::schema(), allow_zero_facts)?)
+    match commands::route(root, socket)? {
+        // The server seals through the handle it already holds (`Catalog::finish_held`)
+        // rather than opening a second one, and the identity that comes back is the
+        // same one this process would have computed. `ops-I4` does not depend on which
+        // door a build came through, and there is a store test that says so.
+        Route::Server(mut server) => server.finish(name, allow_zero_facts),
+
+        Route::Local(catalog, _lock) => {
+            Ok(catalog.finish(name, &code_index::schema(), allow_zero_facts)?)
+        }
+    }
 }

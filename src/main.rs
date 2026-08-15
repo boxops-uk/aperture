@@ -13,6 +13,7 @@ mod commands;
 mod config;
 mod output;
 mod shell;
+mod wire;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -35,24 +36,40 @@ pub enum CliError {
     #[error("{0}")]
     Engine(#[from] aperture_engine::error::ApertureError),
 
-    /// A store root a server owns.
+    /// A running server said no, and said why.
     ///
-    /// **Never a fallback to opening it directly** (`ops-I1`, §2): the message names
-    /// the root and says what to do, which is what a psql-style actionable error is
-    /// for.
+    /// Its wording rather than a summary of it: the server is the thing that knows
+    /// what happened, and a tool that paraphrased would be one more place for the two
+    /// answers to drift apart.
+    #[error("{0}")]
+    Refused(String),
+
+    /// A store root held by a process that is **not** listening on this socket.
+    ///
+    /// The ordinary case no longer reaches here: a running server owns its root, and a
+    /// lifecycle command finds it on the socket and routes through it. What is left is
+    /// the genuinely confusing case — something holds the root and is not answering —
+    /// so the message names both halves, which is what a psql-style actionable error
+    /// is for.
     #[error(
-        "the store root {} is held by a running server\n  \
-         lifecycle commands route through the server from PLAN 9d; until then, stop it first",
-        root.display()
+        "the store root {} is held by another process, and nothing is listening on {}\n  \
+         if a server is running, this is not its data directory — check --data-dir",
+        root.display(),
+        socket.display()
     )]
-    RootHeld { root: PathBuf },
+    RootHeld { root: PathBuf, socket: PathBuf },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let root = config::data_dir(cli.data_dir.clone());
 
-    match dispatch(&cli, &root) {
+    // Derived from the root rather than chosen (§2), which is what makes it the
+    // server-detection mechanism: a command that knows the data directory knows where
+    // to look, with nothing to configure and nothing to get out of step.
+    let socket = config::socket_path(&root, None);
+
+    match dispatch(&cli, &root, &socket) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("aperture: {error}");
@@ -61,16 +78,19 @@ fn main() -> ExitCode {
     }
 }
 
-fn dispatch(cli: &Cli, root: &std::path::Path) -> Result<(), CliError> {
+fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Result<(), CliError> {
     match &cli.command {
-        Command::Serve { socket, ready_file } => {
-            let socket = config::socket_path(root, socket.clone());
+        Command::Serve {
+            socket: bind,
+            ready_file,
+        } => {
+            let socket = config::socket_path(root, bind.clone());
             commands::serve::run(root, &socket, ready_file.as_deref())
         }
 
         Command::Create { name } => {
-            let entry = commands::create::run(root, name)?;
-            println!("created {} ({})", entry.name(), entry.meta.instance);
+            let created = commands::create::run(root, socket, name)?;
+            println!("created {} ({})", created.name, created.instance);
             Ok(())
         }
 
@@ -78,7 +98,7 @@ fn dispatch(cli: &Cli, root: &std::path::Path) -> Result<(), CliError> {
             name,
             allow_zero_facts,
         } => {
-            let sealed = commands::finish::run(root, name, *allow_zero_facts)?;
+            let sealed = commands::finish::run(root, socket, name, *allow_zero_facts)?;
 
             if sealed.already_complete {
                 println!("{name} is already complete ({:#018x})", sealed.fingerprint);
@@ -111,7 +131,7 @@ fn dispatch(cli: &Cli, root: &std::path::Path) -> Result<(), CliError> {
                 return Ok(());
             }
 
-            commands::rm::run(root, name)?;
+            commands::rm::run(root, socket, name)?;
             println!("removed {name}");
             Ok(())
         }
