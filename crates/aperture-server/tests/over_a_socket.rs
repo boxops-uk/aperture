@@ -103,8 +103,11 @@ fn start() -> Serving {
 
     let listener = Listener::bind(&socket).expect("a socket");
 
+    // `run_blocking`, because this thread has no runtime: the server is async now and
+    // the client below deliberately is not — a client written against the wire format
+    // should need nothing of the server's runtime, and this is where that is checked.
     thread::spawn(move || {
-        let _ = listener.run(vec![database]);
+        let _ = listener.run_blocking(vec![database]);
     });
 
     // The listener is bound before `run` is called, so the socket is already

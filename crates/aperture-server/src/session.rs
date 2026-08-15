@@ -8,16 +8,27 @@
 //!
 //! It is **not** concurrent between streams yet. Frames carry a `stream` and the
 //! server honours it — two streams can be open, and their frames may arrive
-//! interleaved — but the server processes each frame to completion as it arrives
+//! interleaved — but the server awaits each frame's work before reading the next,
 //! rather than running streams on separate tasks. §5's "per-connection single writer
 //! task that fairly interleaves ready streams" is what makes a long query stop
 //! starving a short one, and it is a scheduling change on top of this loop rather
-//! than a different loop. Phase 7a's criterion is that facts are writable over a
-//! socket and queried back on the same connection; fairness is §5's, and saying so
-//! here is better than implying it works.
+//! than a different loop.
 //!
 //! Deferred with it, and named in §5 as deferred: per-stream flow-control windows,
 //! in-band cancellation, and chunked incremental flushing of a long result.
+//!
+//! # Where the blocking work goes, and why that is the whole point of the port
+//!
+//! **fjall is synchronous and the executor is CPU-bound**, so neither belongs on the
+//! reactor: a query that scans a million rows would stall every other connection the
+//! thread happened to be driving. Every call that touches a store — ingesting a
+//! block, compiling and running a query — is moved to
+//! [`spawn_blocking`](tokio::task::spawn_blocking), and what stays here is framing and
+//! scheduling.
+//!
+//! That cut is what 9d-ii builds on. Once the engine is off the reactor, the reactor
+//! is free to interleave streams, flush a result in chunks, and notice a cancel — none
+//! of which is possible while a query owns the thread that would have to do them.
 //!
 //! # A write stream is a state, and that is the only state a connection has
 //!
@@ -27,18 +38,15 @@
 //! silently started a *second* write stream, and the counts it got back would be for
 //! a stream it did not think it had.
 
-use std::{
-    collections::HashMap,
-    io::{BufReader, BufWriter, Read, Write},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
+
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
 use aperture_engine::{
     compile::Compilation,
     iter::{Executor, Iteratee, Stream},
-    plan::Plan,
 };
-use aperture_ingest::intern_block;
+use aperture_ingest::{Ingested, intern_block};
 use aperture_schema::schema::Schema;
 use aperture_store::store::FjallDb;
 use aperture_wire::{
@@ -98,56 +106,62 @@ struct Session {
 /// Only fatal faults escape: an I/O failure, or a peer whose frames no longer parse.
 /// Everything else is answered with an error frame on the stream that caused it and
 /// the connection carries on.
-pub fn serve<R: Read, W: Write>(
+pub async fn serve<R, W>(
     reader: R,
     writer: W,
     databases: &[Arc<Database>],
-) -> Result<(), ServerError> {
+) -> Result<(), ServerError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
 
-    let database = match handshake(&mut reader, &mut writer, databases) {
+    let mut session = match handshake(&mut reader, &mut writer, databases).await {
         Ok(session) => session,
         Err(error) => {
             // A failed handshake is answered and then the connection ends: there is
             // no session to keep, and pretending otherwise leaves a client waiting
             // for a `Ready` that is never coming.
-            let _ = send_error(&mut writer, StreamId(0), &error);
+            let _ = send_error(&mut writer, StreamId(0), &error).await;
             return if error.is_fatal() { Err(error) } else { Ok(()) };
         }
     };
 
-    let mut session = database;
-
     loop {
-        let Some((header, payload)) = read_frame(&mut reader)? else {
+        let Some((header, payload)) = read_frame(&mut reader).await? else {
             return Ok(());
         };
 
-        match dispatch(&mut session, &mut writer, &header, &payload) {
+        match dispatch(&mut session, &mut writer, &header, &payload).await {
             Ok(()) => {}
             Err(error) if error.is_fatal() => {
-                let _ = send_error(&mut writer, header.stream, &error);
-                let _ = writer.flush();
+                let _ = send_error(&mut writer, header.stream, &error).await;
+                let _ = writer.flush().await;
                 return Err(error);
             }
             Err(error) => {
                 // A stream-level fault: report it on its own stream, forget any
                 // half-finished state for that stream, and keep the connection.
                 session.writing.remove(&header.stream.0);
-                send_error(&mut writer, header.stream, &error)?;
-                writer.flush()?;
+                send_error(&mut writer, header.stream, &error).await?;
+                writer.flush().await?;
             }
         }
     }
 }
 
-fn handshake<R: Read, W: Write>(
+async fn handshake<R, W>(
     reader: &mut R,
     writer: &mut W,
     databases: &[Arc<Database>],
-) -> Result<Session, ServerError> {
-    let Some((header, payload)) = read_frame(reader)? else {
+) -> Result<Session, ServerError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let Some((header, payload)) = read_frame(reader).await? else {
         return Err(ServerError::Protocol(
             "the connection closed before a startup frame".to_owned(),
         ));
@@ -194,8 +208,9 @@ fn handshake<R: Read, W: Write>(
             schema_fingerprint: database.fingerprint,
             predicates: database.schema.len() as u64,
         }),
-    )?;
-    writer.flush()?;
+    )
+    .await?;
+    writer.flush().await?;
 
     Ok(Session {
         database: Arc::clone(database),
@@ -204,17 +219,17 @@ fn handshake<R: Read, W: Write>(
     })
 }
 
-fn dispatch<W: Write>(
+async fn dispatch<W: AsyncWrite + Unpin>(
     session: &mut Session,
     writer: &mut W,
     header: &FrameHeader,
     payload: &[u8],
 ) -> Result<(), ServerError> {
     match header.kind {
-        kinds::OPEN_WRITE => open_write(session, writer, header.stream),
-        FrameKind::COPY_DATA => copy_data(session, header.stream, payload),
-        FrameKind::COPY_DONE => copy_done(session, writer, header.stream),
-        kinds::QUERY => query(session, writer, header.stream, payload),
+        kinds::OPEN_WRITE => open_write(session, writer, header.stream).await,
+        FrameKind::COPY_DATA => copy_data(session, header.stream, payload).await,
+        FrameKind::COPY_DONE => copy_done(session, writer, header.stream).await,
+        kinds::QUERY => query(session, writer, header.stream, payload).await,
 
         kinds::STARTUP => Err(ServerError::Protocol(
             "a second startup frame on an open session".to_owned(),
@@ -226,7 +241,7 @@ fn dispatch<W: Write>(
     }
 }
 
-fn open_write<W: Write>(
+async fn open_write<W: AsyncWrite + Unpin>(
     session: &mut Session,
     writer: &mut W,
     stream: StreamId,
@@ -243,12 +258,16 @@ fn open_write<W: Write>(
     }
 
     session.writing.insert(stream.0, Writing::default());
-    send(writer, FrameKind::COPY_IN_RESPONSE, stream, &[])?;
-    writer.flush()?;
+    send(writer, FrameKind::COPY_IN_RESPONSE, stream, &[]).await?;
+    writer.flush().await?;
     Ok(())
 }
 
-fn copy_data(session: &mut Session, stream: StreamId, payload: &[u8]) -> Result<(), ServerError> {
+async fn copy_data(
+    session: &mut Session,
+    stream: StreamId,
+    payload: &[u8],
+) -> Result<(), ServerError> {
     if !session.writing.contains_key(&stream.0) {
         return Err(ServerError::Protocol(format!(
             "stream {} carries fact blocks but was never opened for writing",
@@ -256,14 +275,15 @@ fn copy_data(session: &mut Session, stream: StreamId, payload: &[u8]) -> Result<
         )));
     }
 
-    // Ingest before touching the counters, so a failed block leaves them alone. The
-    // facts it wrote before failing are still written — interning is not a
-    // transaction, which `aperture-ingest` records and §6 defers.
-    let out = intern_block(
-        session.database.db.as_ref(),
-        &session.database.schema,
-        payload,
-    )?;
+    // Off the reactor: this writes to fjall, which is synchronous, and a block of a
+    // million facts would otherwise stall every connection this thread drives.
+    let database = Arc::clone(&session.database);
+    let block = payload.to_vec();
+
+    let out: Ingested = blocking(move || {
+        intern_block(database.db.as_ref(), &database.schema, &block).map_err(ServerError::from)
+    })
+    .await?;
 
     let writing = session
         .writing
@@ -276,7 +296,7 @@ fn copy_data(session: &mut Session, stream: StreamId, payload: &[u8]) -> Result<
     Ok(())
 }
 
-fn copy_done<W: Write>(
+async fn copy_done<W: AsyncWrite + Unpin>(
     session: &mut Session,
     writer: &mut W,
     stream: StreamId,
@@ -293,22 +313,69 @@ fn copy_done<W: Write>(
         kinds::COMPLETE,
         stream,
         &protocol::encode_complete(writing.created, writing.deduped),
-    )?;
-    writer.flush()?;
+    )
+    .await?;
+    writer.flush().await?;
     Ok(())
 }
 
-fn query<W: Write>(
+/// A query's answer, computed off the reactor.
+///
+/// Encoded bytes rather than values, so that nothing the engine owns crosses back:
+/// the async side writes frames and knows nothing about a `Plan`, an `Executor` or a
+/// `Value`.
+struct Answer {
+    descriptor: Vec<u8>,
+    rows: Vec<Vec<u8>>,
+}
+
+async fn query<W: AsyncWrite + Unpin>(
     session: &mut Session,
     writer: &mut W,
     stream: StreamId,
     payload: &[u8],
 ) -> Result<(), ServerError> {
     let source = std::str::from_utf8(payload)
-        .map_err(|_| ServerError::Protocol("a query that is not UTF-8".to_owned()))?;
+        .map_err(|_| ServerError::Protocol("a query that is not UTF-8".to_owned()))?
+        .to_owned();
 
-    let schema = Arc::clone(&session.database.schema);
-    let mut compilation = Compilation::new(source, &schema);
+    let database = Arc::clone(&session.database);
+    let answer = blocking(move || run_query(&database, &source)).await?;
+
+    // The descriptor goes first: a client needs it to decode anything, and sending it
+    // before the rows is also what will let a long query show its shape before its
+    // first row once results are chunked.
+    send(
+        writer,
+        FrameKind::ROW_DESCRIPTION,
+        stream,
+        &answer.descriptor,
+    )
+    .await?;
+
+    for row in &answer.rows {
+        send(writer, FrameKind::DATA_ROW, stream, row).await?;
+    }
+
+    send(
+        writer,
+        kinds::COMPLETE,
+        stream,
+        &protocol::encode_complete(answer.rows.len() as u64, 0),
+    )
+    .await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Compile and run, entirely on a blocking thread.
+///
+/// Everything the engine touches lives inside this function, which is what keeps the
+/// reactor free of it.
+fn run_query(database: &Database, source: &str) -> Result<Answer, ServerError> {
+    let schema = &database.schema;
+
+    let mut compilation = Compilation::new(source, schema);
     let plan = compilation.plan();
 
     if compilation.diagnostics().has_errors() {
@@ -319,7 +386,7 @@ fn query<W: Write>(
         .head_ty()
         .ok_or_else(|| ServerError::BadQuery("this query has no head type".to_owned()))?;
 
-    let (desc, row_ty, row_interner) = rows::row_shape(&schema, head, compilation.interner())?;
+    let (desc, row_ty, row_interner) = rows::row_shape(schema, head, compilation.interner())?;
 
     let Some(plan) = plan else {
         return Err(ServerError::BadQuery(
@@ -327,53 +394,14 @@ fn query<W: Write>(
         ));
     };
 
-    // The descriptor goes first, and it goes before the rows are computed: a client
-    // needs it to decode anything, and sending it early is also what lets a long
-    // query show its shape before its first row.
-    let mut described = vec![];
-    encode_desc(&mut described, &desc);
-    send(writer, FrameKind::ROW_DESCRIPTION, stream, &described)?;
-
-    let count = send_rows(
-        session,
-        writer,
-        stream,
-        plan,
-        &row_ty,
-        &row_interner,
-        compilation.interner(),
-    )?;
-
-    send(
-        writer,
-        kinds::COMPLETE,
-        stream,
-        &protocol::encode_complete(count, 0),
-    )?;
-    writer.flush()?;
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn send_rows<W: Write>(
-    session: &Session,
-    writer: &mut W,
-    stream: StreamId,
-    plan: Plan,
-    row_ty: &aperture_schema::schema::PredicateTy,
-    row_interner: &aperture_schema::schema::LocalInterner,
-    query_interner: &aperture_schema::schema::LocalInterner,
-) -> Result<u64, ServerError> {
-    // Collected rather than streamed, and that is the deferral §5 names: chunked
-    // incremental flushing wants the iteratee to yield between chunks, which is a
-    // scheduling change rather than a codec one. The executor already supports it —
-    // `enumerate` returns `Suspended` — so what is missing is the loop above, not the
-    // machinery below.
-    let collected = Executor::new(session.database.db.reader(), plan)
+    // Collected rather than streamed, which is the deferral §5 names: the executor
+    // already suspends — `enumerate` returns `Suspended` — so what is missing is the
+    // loop that resumes it between chunks, not the machinery under it.
+    let collected = Executor::new(database.db.reader(), plan)
         .enumerate(
             Vec::new(),
             |mut acc, mut row| {
-                acc.push(row.to_value(query_interner)?);
+                acc.push(row.to_value(compilation.interner())?);
                 Ok(Stream::Continue(acc))
             },
             &CancellationToken::new(),
@@ -382,24 +410,45 @@ fn send_rows<W: Write>(
 
     let (Iteratee::Done(values) | Iteratee::Suspended(values, _)) = collected;
 
-    let mut count = 0;
-    let mut buffer = vec![];
+    let mut descriptor = vec![];
+    encode_desc(&mut descriptor, &desc);
 
+    let mut encoded = Vec::with_capacity(values.len());
     for value in &values {
-        let wire = rows::to_wire(row_ty, value, row_interner)?;
+        let wire = rows::to_wire(&row_ty, value, &row_interner)?;
 
-        buffer.clear();
-        encode_value(&mut buffer, &session.database.schema, row_ty, &wire)?;
-        send(writer, FrameKind::DATA_ROW, stream, &buffer)?;
-        count += 1;
+        let mut buffer = vec![];
+        encode_value(&mut buffer, schema, &row_ty, &wire)?;
+        encoded.push(buffer);
     }
 
-    Ok(count)
+    Ok(Answer {
+        descriptor,
+        rows: encoded,
+    })
+}
+
+/// Run `work` on the blocking pool.
+///
+/// A panic in the work reaches here as a join error rather than unwinding the
+/// connection, so a bug in one query fails that stream instead of taking the server
+/// with it.
+async fn blocking<T, F>(work: F) -> Result<T, ServerError>
+where
+    F: FnOnce() -> Result<T, ServerError> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(join) => Err(ServerError::Execution(format!(
+            "a blocking task did not finish: {join}"
+        ))),
+    }
 }
 
 // ---- frame plumbing ---------------------------------------------------------
 
-fn send<W: Write>(
+async fn send<W: AsyncWrite + Unpin>(
     writer: &mut W,
     kind: FrameKind,
     stream: StreamId,
@@ -407,18 +456,18 @@ fn send<W: Write>(
 ) -> Result<(), ServerError> {
     let mut out = Vec::with_capacity(frame::HEADER_LEN + payload.len());
     encode_frame(&mut out, kind, stream, payload)?;
-    writer.write_all(&out)?;
+    writer.write_all(&out).await?;
     Ok(())
 }
 
-fn send_error<W: Write>(
+async fn send_error<W: AsyncWrite + Unpin>(
     writer: &mut W,
     stream: StreamId,
     error: &ServerError,
 ) -> Result<(), ServerError> {
     let payload = protocol::encode_error(error.code(), &error.to_string());
-    send(writer, FrameKind::ERROR, stream, &payload)?;
-    writer.flush()?;
+    send(writer, FrameKind::ERROR, stream, &payload).await?;
+    writer.flush().await?;
     Ok(())
 }
 
@@ -427,17 +476,19 @@ fn send_error<W: Write>(
 /// The header comes first and alone, which is the whole reason its length is
 /// fixed-width and up front: nine bytes say how many more to await, so a reader never
 /// guesses and never over-reads into the next frame.
-fn read_frame<R: Read>(reader: &mut R) -> Result<Option<(FrameHeader, Vec<u8>)>, ServerError> {
+async fn read_frame<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<(FrameHeader, Vec<u8>)>, ServerError> {
     let mut head = [0u8; frame::HEADER_LEN];
 
-    if !read_full(reader, &mut head)? {
+    if !read_full(reader, &mut head).await? {
         return Ok(None);
     }
 
     let header = frame::decode_header(&head)?;
     let mut payload = vec![0u8; header.length as usize];
 
-    if !read_full(reader, &mut payload)? {
+    if !read_full(reader, &mut payload).await? {
         return Err(ServerError::Protocol(
             "the connection closed between a frame header and its payload".to_owned(),
         ));
@@ -453,11 +504,14 @@ fn read_frame<R: Read>(reader: &mut R) -> Result<Option<(FrameHeader, Vec<u8>)>,
 /// normally and the other is a fault worth reporting. An empty buffer is trivially
 /// filled, which is what makes a zero-length payload — `COPY_DONE`, `COPY_IN_RESPONSE`
 /// — read the same way as any other.
-fn read_full<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<bool, ServerError> {
+async fn read_full<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut [u8],
+) -> Result<bool, ServerError> {
     let mut filled = 0;
 
     while filled < buffer.len() {
-        match reader.read(&mut buffer[filled..])? {
+        match reader.read(&mut buffer[filled..]).await? {
             0 if filled == 0 => return Ok(false),
             0 => {
                 return Err(ServerError::Protocol(format!(

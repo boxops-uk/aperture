@@ -13,6 +13,10 @@ aperture-schema = { path = "../aperture-schema" }
 aperture-store = { path = "../aperture-store" }
 aperture-wire = { path = "../aperture-wire" }
 thiserror = { workspace = true }
+# The runtime. `rt-multi-thread` because a connection's blocking work — every fjall
+# read and write, and the executor itself — goes to `spawn_blocking`, which wants a
+# pool to go to.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
 tokio-util = "0.7.18"
 
 [dev-dependencies]

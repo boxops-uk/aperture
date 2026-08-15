@@ -7,26 +7,36 @@
 //! second listener and a flag; leaving it out is the safe default, not an omission to
 //! be tidied up later.
 //!
-//! One thread per connection. §5 asks for a per-connection writer task that fairly
-//! interleaves ready streams, which this is not — see [`session`](crate::session) for
-//! what that would change and what it would not. A thread per connection is enough
-//! for P0's `max_connections` and needs no runtime, which keeps a large dependency
-//! decision out of a phase that does not need to make it.
+//! # Binding is synchronous, accepting is not
+//!
+//! [`Listener::bind`] takes the socket with `std` and only converts to tokio's inside
+//! [`run`](Listener::run). That is not fussiness: `tokio::net::UnixListener::bind`
+//! requires a runtime context, so binding there would mean a caller could not find out
+//! whether the socket was available until it had already started a runtime — and the
+//! *readiness file* has to be written after a successful bind and before anything
+//! connects, which is much easier to get right when binding is an ordinary fallible
+//! call.
+//!
+//! One task per connection, spawned onto the runtime. The blocking half of a
+//! connection's work — every fjall read and write — goes to
+//! [`spawn_blocking`](tokio::task::spawn_blocking) from inside
+//! [`session`](crate::session), so a task here is doing framing and nothing else.
 
 use std::{
     fs,
     io::Write,
-    os::unix::net::{UnixListener, UnixStream},
+    os::unix::net::UnixListener as StdUnixListener,
     path::{Path, PathBuf},
     sync::Arc,
-    thread,
 };
+
+use tokio::net::{UnixListener, UnixStream};
 
 use crate::{error::ServerError, session::Database};
 
 /// A bound listener, and the socket path it owns.
 pub struct Listener {
-    listener: UnixListener,
+    listener: StdUnixListener,
     path: PathBuf,
 }
 
@@ -48,7 +58,9 @@ impl Listener {
             fs::remove_file(&path)?;
         }
 
-        let listener = UnixListener::bind(&path)?;
+        let listener = StdUnixListener::bind(&path)?;
+        listener.set_nonblocking(true)?;
+
         Ok(Listener { listener, path })
     }
 
@@ -61,7 +73,9 @@ impl Listener {
     ///
     /// Glean's `--write-port`, and the ordering is the whole of it: a signal that
     /// appears before the listener does is a race dressed as a signal, and a test that
-    /// waits on it would connect to nothing and blame the server.
+    /// waits on it would connect to nothing and blame the server. Because
+    /// [`bind`](Self::bind) has already taken the socket by the time this is called,
+    /// a client that sees the file can connect.
     ///
     /// # Errors
     ///
@@ -73,26 +87,39 @@ impl Listener {
         Ok(())
     }
 
-    /// Accept forever, serving each connection on its own thread.
+    /// Accept forever, serving each connection on its own task.
     ///
     /// # Errors
     ///
     /// [`ServerError::Io`] if accepting fails. A *connection* failing never reaches
     /// here: it ends that connection and the server carries on, because one client
     /// sending nonsense is not a reason to stop serving the others.
-    pub fn run(&self, databases: Vec<Arc<Database>>) -> Result<(), ServerError> {
-        for stream in self.listener.incoming() {
-            let stream = stream?;
+    pub async fn run(self, databases: Vec<Arc<Database>>) -> Result<(), ServerError> {
+        let listener = UnixListener::from_std(self.listener.try_clone()?)?;
+
+        loop {
+            let (stream, _address) = listener.accept().await?;
             let databases = databases.clone();
 
-            thread::spawn(move || {
-                if let Err(error) = serve_stream(stream, &databases) {
+            tokio::spawn(async move {
+                if let Err(error) = serve_stream(stream, &databases).await {
                     eprintln!("connection ended: {error}");
                 }
             });
         }
+    }
 
-        Ok(())
+    /// [`run`](Self::run) on a runtime of its own, for a caller that has none.
+    ///
+    /// # Errors
+    ///
+    /// [`ServerError::Io`] if the runtime cannot be built, or whatever `run` reports.
+    pub fn run_blocking(self, databases: Vec<Arc<Database>>) -> Result<(), ServerError> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+
+        runtime.block_on(self.run(databases))
     }
 }
 
@@ -110,15 +137,19 @@ impl Drop for Listener {
 /// # Errors
 ///
 /// Whatever [`session::serve`](crate::session::serve) reports as fatal.
-pub fn serve_stream(stream: UnixStream, databases: &[Arc<Database>]) -> Result<(), ServerError> {
-    // Two handles on one socket: the session reads from one and writes to the other,
-    // which is what lets it hold a buffered reader and a buffered writer at once
-    // without either borrowing the other.
-    let reader = stream.try_clone()?;
-    crate::session::serve(reader, stream, databases)
+pub async fn serve_stream(
+    stream: UnixStream,
+    databases: &[Arc<Database>],
+) -> Result<(), ServerError> {
+    // Split rather than cloned: the session holds a buffered reader and a buffered
+    // writer at once, and `into_split` is what gives it two independently-owned halves
+    // of one socket.
+    let (reader, writer) = stream.into_split();
+    crate::session::serve(reader, writer, databases).await
 }
 
-/// Bind, announce, and serve — the whole of what a `serve` command does.
+/// Bind, announce, and serve — the whole of what a `serve` command does, on a runtime
+/// of its own.
 ///
 /// # Errors
 ///
@@ -134,5 +165,5 @@ pub fn serve_unix(
         listener.announce(at)?;
     }
 
-    listener.run(databases)
+    listener.run_blocking(databases)
 }

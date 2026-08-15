@@ -1220,12 +1220,18 @@ is refused with a message that says so rather than opened anyway.
 
 Two steps, because one would be unreviewable.
 
-**9d-i — port to tokio, behaviour unchanged.** The mechanical half: listener and sessions become
-tasks. The design point that is *not* mechanical: **fjall is synchronous and the executor is
-CPU-bound**, so neither belongs on the reactor. They go behind `spawn_blocking` with a bounded
-channel between — which is the "bounded-channel sync↔async bridge with byte `Cursor` portals"
-this plan already named, and [chapter 5](docs/05-resume.md) is why the cursor makes it possible
-at all.
+**9d-i — port to tokio, behaviour unchanged. ✅** The mechanical half: listener and sessions
+became tasks. The design point that is *not* mechanical: **fjall is synchronous and the executor
+is CPU-bound**, so neither belongs on the reactor. Every call that touches a store — ingesting a
+block, compiling and running a query — is behind `spawn_blocking`, and what stayed on the reactor
+is framing and scheduling. The engine no longer crosses back either: a query returns *encoded
+bytes*, so the async side knows nothing of a `Plan`, an `Executor` or a `Value`.
+
+That cut is what the rest of 9d is built on — once the engine is off the reactor, the reactor is
+free to interleave streams, flush in chunks and notice a cancel, none of which is possible while a
+query owns the thread that would have to do them. All nine socket tests pass unchanged, driven by
+a deliberately **synchronous** client: a client written against the wire format should need
+nothing of the server's runtime, and that is where it is checked.
 
 **9d-ii — what the runtime was for.**
 - Per-connection reader task, and a **writer task doing round-robin over bounded per-stream
