@@ -70,6 +70,26 @@ pub enum Command {
         format: Format,
     },
 
+    /// Run a query and print its rows.
+    Query {
+        name: String,
+        query: String,
+
+        #[arg(long, value_enum, default_value_t = RowFormat::Table)]
+        format: RowFormat,
+
+        /// Stop after this many rows, cancelling the rest in band.
+        ///
+        /// Not `LIMIT`: the query is unchanged and the server does the work up to the
+        /// point the cancel lands. What it bounds is what crosses the socket.
+        #[arg(long, value_name = "N")]
+        limit: Option<u64>,
+
+        /// Print rows and elapsed time to stderr, so it survives a pipe.
+        #[arg(long)]
+        timing: bool,
+    },
+
     /// An interactive REPL.
     Shell,
 
@@ -101,4 +121,26 @@ pub enum Format {
     Table,
     /// One JSON document, for a script.
     Json,
+}
+
+/// How to render a query's rows.
+///
+/// Its own enum rather than [`Format`]'s, because the shapes a *result* wants are not
+/// the shapes a listing wants: `raw` and `count` are meaningless for `list`, and the
+/// distinction between a shape that streams and one that cannot is a property of
+/// results alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RowFormat {
+    /// Aligned columns for a person. **The one shape that buffers** — see
+    /// [`crate::rows`].
+    Table,
+    /// One JSON document, written incrementally.
+    Json,
+    /// Tab-separated fields, one row per line. Streams.
+    Raw,
+    /// The row count and nothing else.
+    ///
+    /// For measuring the *server*: rendering is the client's cost, and a throughput
+    /// number that includes it is measuring the wrong process.
+    Count,
 }

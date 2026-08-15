@@ -9,6 +9,7 @@ pub mod create;
 pub mod describe;
 pub mod finish;
 pub mod list;
+pub mod query;
 pub mod rm;
 pub mod serve;
 

@@ -197,3 +197,67 @@ fn what_the_server_made_outlives_it() {
     ok(&root, &["db", "rm", "code", "--yes"]);
     assert!(ok(&root, &["list"]).contains("no databases"));
 }
+
+/// **`aperture query` is always over the wire** (§2's rule 1), streams its rows, and
+/// renders them client-side in whichever shape was asked for.
+///
+/// It writes nothing itself — the CLI has no `write` command until 7b — so what it
+/// queries is an empty database. That is enough to check the whole path: connect,
+/// compile on the server, descriptor, zero rows, complete. The *rows* path is checked
+/// where rows exist, in `aperture-client`'s tests and the loadgen.
+#[test]
+fn query_speaks_to_the_server_and_renders_client_side() {
+    let (_dir, root) = scratch();
+    let _serving = serve(&root);
+
+    ok(&root, &["create", "code"]);
+
+    // A scalar head: one unnamed column.
+    let table = ok(&root, &["query", "code", "F where src.File F"]);
+    assert!(table.contains("VALUE"), "{table}");
+    assert!(table.contains("0 row(s)"), "{table}");
+
+    // `count` is the shape a measurement wants: the tally and nothing else.
+    assert_eq!(
+        ok(
+            &root,
+            &["query", "code", "F where src.File F", "--format", "count"]
+        ),
+        "0\n"
+    );
+
+    // `json` is a document even when it is empty, so a script can parse it rather
+    // than special-casing nothing.
+    let json = ok(
+        &root,
+        &["query", "code", "F where src.File F", "--format", "json"],
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&json).expect("valid JSON"),
+        serde_json::json!([])
+    );
+
+    // A query that does not compile fails with the compiler's own diagnostics, and
+    // the exit code says so.
+    let stderr = fails(&root, &["query", "code", "this is not focus"]);
+    assert!(stderr.contains("invalid syntax"), "{stderr}");
+
+    // An unknown database is named rather than reported as an empty result.
+    let stderr = fails(&root, &["query", "nope", "F where src.File F"]);
+    assert!(stderr.contains("nope"), "{stderr}");
+}
+
+/// **§2 rule 1 has no fallback.** With nothing listening, a query says what to do
+/// about it — it never opens the directory, because a server might be holding it.
+#[test]
+fn a_query_with_no_server_says_so() {
+    let (_dir, root) = scratch();
+
+    // Created offline, so the database exists and only the server is missing.
+    ok(&root, &["create", "code"]);
+
+    let stderr = fails(&root, &["query", "code", "F where src.File F"]);
+    assert!(stderr.contains("could not connect"), "{stderr}");
+    assert!(stderr.contains("aperture serve"), "{stderr}");
+    assert!(stderr.contains("aperture.sock"), "{stderr}");
+}

@@ -12,6 +12,7 @@ mod code_index;
 mod commands;
 mod config;
 mod output;
+mod rows;
 mod shell;
 
 use std::{path::PathBuf, process::ExitCode};
@@ -29,6 +30,11 @@ pub enum CliError {
     #[error("{0}")]
     Store(#[from] aperture_store::error::StoreError),
 
+    /// Writing failed — usually a pipe the reader closed, which is how `| head` ends
+    /// a query rather than a fault worth a stack trace.
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+
     #[error("{0}")]
     Server(#[from] aperture_server::ServerError),
 
@@ -42,6 +48,18 @@ pub enum CliError {
     /// for the two answers to drift apart.
     #[error("{0}")]
     Client(#[from] aperture_client::ClientError),
+
+    /// Nothing is listening where a database was asked for.
+    ///
+    /// §2's rule 1, and the message it asks for: a bare name always means "ask the
+    /// local server", and there is **no** silent fallback to opening the directory,
+    /// because a server may be holding it (`ops-I1`). So the failure has to say what
+    /// to do about it rather than quietly doing something else.
+    #[error(
+        "could not connect to the Aperture server on socket {}\n           is one running? `aperture serve` starts one over this data directory",
+        socket.display()
+    )]
+    NoServer { socket: PathBuf },
 
     /// A store root held by a process that is **not** listening on this socket.
     ///
@@ -117,6 +135,34 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
 
         Command::Describe { name, format } => {
             print!("{}", commands::describe::run(root, name, *format)?);
+            Ok(())
+        }
+
+        Command::Query {
+            name,
+            query,
+            format,
+            limit,
+            timing,
+        } => {
+            let summary = commands::query::run(socket, name, query, *format, *limit)?;
+
+            if summary.truncated {
+                eprintln!(
+                    "aperture: stopped at {} rows; raise or drop --limit to see the rest",
+                    summary.rows
+                );
+            }
+
+            if *timing {
+                // stderr, so a timing number never lands in a pipe someone is parsing.
+                eprintln!(
+                    "{} row(s) in {:.3} ms",
+                    summary.rows,
+                    summary.elapsed.as_secs_f64() * 1000.0
+                );
+            }
+
             Ok(())
         }
 
