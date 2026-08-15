@@ -83,6 +83,19 @@ struct StoredFact {
     value: Vec<u8>,
 }
 
+/// What [`FjallDb::intern`](FjallStore::intern) answers: the fact's id, and whether
+/// this call is what put it there.
+///
+/// `created` is not bookkeeping. Interning is how a nested reference becomes an id
+/// ([chapter 3](../../docs/03-storage-model.md#interning-a-nested-fact)), and a
+/// target named under a thousand parents is one row — so the count a write stream
+/// reports back, and the dedup `ops-I5` promises, are both this flag summed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interned {
+    pub id: FactId,
+    pub created: bool,
+}
+
 /// A predicate's trees plus its own id allocator
 /// ([I11](../../docs/invariants.md#i11)).
 struct Predicate {
@@ -334,10 +347,48 @@ impl FjallDb {
     /// whatever [`put_fact`](Self::put_fact) reports otherwise.
     pub fn put<F: Fact>(&self, schema: &Schema, fact: &F) -> Result<FactId, StoreError> {
         let (predicate, key, value) = fact::encode(schema, fact)?;
+        Ok(self.intern(predicate, &key, &value)?.id)
+    }
 
-        if let Some(existing) = self.fact_at(predicate, &key)? {
+    /// **Resolve or create**: the id of the fact under `(predicate, key_fields)`,
+    /// writing it first if it is not there.
+    ///
+    /// The rule [`put`](Self::put) documents, lifted out to be reached from bytes as
+    /// well as from a typed value — which is what
+    /// [interning a nested reference](../../docs/03-storage-model.md#interning-a-nested-fact)
+    /// needs, since a fact arriving on the wire is bytes by the time its target has
+    /// to be looked up. There is one implementation of the rule rather than two,
+    /// which matters because the rule is `ops-I5`'s and drifting halves of it would
+    /// be two different databases depending on how a fact was written.
+    ///
+    /// - a **byte-identical** fact dedups: the id already assigned comes back with
+    ///   [`created`](Interned::created) false, and nothing is written;
+    /// - a **same-key, different-value** fact is rejected
+    ///   ([`StoreError::KeyAlreadyWritten`]).
+    ///
+    /// Never last-writer-wins and never first-writer-wins — either is
+    /// order-dependent, which [ops-I4](../../docs/aperture-cli-design.md) forbids.
+    ///
+    /// This is a check, not a lock: see [`put`](Self::put) for why
+    /// [ops-I1](../../docs/aperture-cli-design.md)'s single writer per DB is what
+    /// rules out the concurrent case.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::KeyAlreadyWritten`] on a conflict, and whatever
+    /// [`put_fact`](Self::put_fact) reports otherwise.
+    pub fn intern(
+        &self,
+        predicate: PredicateId,
+        key_fields: &[u8],
+        value: &[u8],
+    ) -> Result<Interned, StoreError> {
+        if let Some(existing) = self.fact_at(predicate, key_fields)? {
             return if existing.value == value {
-                Ok(existing.id)
+                Ok(Interned {
+                    id: existing.id,
+                    created: false,
+                })
             } else {
                 Err(StoreError::KeyAlreadyWritten {
                     predicate,
@@ -346,7 +397,10 @@ impl FjallDb {
             };
         }
 
-        self.put_fact(predicate, &key, &value)
+        Ok(Interned {
+            id: self.put_fact(predicate, key_fields, value)?,
+            created: true,
+        })
     }
 
     /// The fact already stored under `(predicate, key_fields)`, if there is one:

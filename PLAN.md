@@ -902,10 +902,16 @@ stratum boundary in the merge. *Done per task:* ingest-then-query returns the in
 
 **Acceptance — 7a:**
 - [ ] Facts are writable over a socket and queried back on the same connection.
-- [ ] Transport encoder/decoder round-trip property green (tier-1), nested references included.
-- [ ] A nested reference interns to the same `FactId` a second occurrence of that target resolves to — one row, however many parents name it.
-- [ ] A nested fact disagreeing with a stored one under the same key is rejected by name (`ops-I5`), and the connection's other streams survive.
-- [ ] Interning is bottom-up and total on any well-typed nested value: no order in which a parent is written before the child its key holds.
+- [x] Transport encoder/decoder round-trip property green (tier-1), nested references included.
+- [x] A nested reference interns to the same `FactId` a second occurrence of that target resolves to — one row, however many parents name it.
+- [x] A nested fact disagreeing with a stored one under the same key is rejected by name (`ops-I5`). *Surviving streams is the socket's half of that, and waits for it.*
+- [x] Interning is bottom-up and total on any well-typed nested value: no order in which a parent is written before the child its key holds. **Narrowed by the property that proved it:** total up to *self-consistency*. A fact naming one target twice with two different value sides is well-typed and contradictory, and is refused as an ordinary conflict — the criterion as written was too strong. The census proves both outcomes are reached, so the weakened property is not vacuous.
+
+**Built so far:** the transport codec and its framing (`aperture-wire` — `varint`, `value`,
+`crc`, `block`, `frame`) and the write funnel (`aperture-ingest` — `FactSink`, `intern_fact`,
+`intern_block`) against a real `FjallDb`. What is left of 7a is the socket: the PG-shaped
+handshake, the per-DB single writer task, and a query stream, so that ingest-then-query closes on
+one connection.
 
 **Acceptance — 7b:**
 - [ ] Facts are writable from files in parallel, and queried back.

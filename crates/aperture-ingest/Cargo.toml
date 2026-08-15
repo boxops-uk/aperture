@@ -1,0 +1,21 @@
+[package]
+name = "aperture-ingest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The three things a fact has to cross to get in: the wire form it arrived as, the
+# storage form it is written in, and the store that holds it. This crate is that
+# crossing and nothing else — which is why it is its own crate rather than a module
+# of any of them, since each would then have to know about the other two.
+aperture-encoding = { path = "../aperture-encoding" }
+aperture-schema = { path = "../aperture-schema" }
+aperture-store = { path = "../aperture-store" }
+aperture-wire = { path = "../aperture-wire" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+aperture-wire = { path = "../aperture-wire", features = ["proptest"] }
+lasso = { workspace = true }
+proptest = "1.11.0"
+tempfile = "3.24.0"

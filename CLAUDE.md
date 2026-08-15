@@ -26,6 +26,7 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 | `aperture-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
 | `aperture-wire` | the **transport** codec and its framing — `varint`, the schema-driven `value`/fact encoding, `crc`, `block` (a run of one predicate's facts behind a sync marker), `frame` (`[kind][stream][length]`). A sibling of `aperture-encoding`, not a layer on it: it depends on `aperture-schema` alone and shares no bytes with the storage codec |
 | `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, and the errors the storage layer raises |
+| `aperture-ingest` | the **write funnel** (`ops-I5`): `FactSink` (the write seam, as `FactStore` is the read seam), and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up. Sits above `store` and `wire` because it is the crossing between them, and neither should know the other |
 | `aperture-engine` | **focus** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here |
 | root `aperture` | the shell (`src/main.rs`); becomes `aperture-cli` when it grows a command tree |
 

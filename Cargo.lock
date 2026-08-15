@@ -94,6 +94,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aperture-ingest"
+version = "0.1.0"
+dependencies = [
+ "aperture-encoding",
+ "aperture-schema",
+ "aperture-store",
+ "aperture-wire",
+ "lasso",
+ "proptest",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "aperture-schema"
 version = "0.1.0"
 dependencies = [

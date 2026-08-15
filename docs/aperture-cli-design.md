@@ -644,9 +644,26 @@ with one already stored under that key is the same-key-different-value conflict,
 deterministically — never last-writer-wins, never first-writer-wins, because either is
 order-dependent and ops-I4 forbids it.
 
+**Interning — built** (`aperture-ingest`), against a real store, with `FjallDb::intern` as the
+resolve-or-create primitive shared with `put` so there is one implementation of the rule. The
+walk is bottom-up because it has to be: a parent's key holds its child's *id*, so until the child
+exists the parent has no bytes and therefore no identity to be written under. That is the same
+fact that makes a reference in a key impossible to put in a cycle, and so the same fact that
+makes the walk terminate.
+
+One consequence is worth knowing before a client hits it: **a single fact can contradict itself.**
+A nested fact both names and *defines* its target, so one message naming a target twice with two
+different value sides is a producer disagreeing with itself, and is refused as an ordinary
+conflict. It is not a special case in the walk — the second occurrence simply finds what the
+first wrote — and both orders reject, so the answer does not depend on the order the walk takes.
+
 **Failure is per stream, not per fact.** A rejected block fails the write stream; the connection
 and its other streams survive. Whether a failed stream's already-written facts are rolled back is
-a P0 decision recorded with the transaction story, not here.
+a P0 decision recorded with the transaction story, not here — a fact whose nested target interned
+cleanly and which then conflicted *has* written the target. That is close to harmless and the
+reason is worth stating: the target was legitimately named and legitimately defined, facts are
+immutable, and interning is idempotent, so retrying the whole message after fixing the conflict
+dedups against it. What a transaction would prevent here is a wasted row, not a wrong answer.
 
 ### What this direction does *not* share with the read direction
 
