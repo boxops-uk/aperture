@@ -21,12 +21,12 @@ order.
 From the repository root:
 
 ```sh
-cargo build --bin aperture-serve
+cargo build --bin aperture
 
 rm -rf /tmp/ap-demo && mkdir -p /tmp/ap-demo
-./target/debug/aperture-serve \
+./target/debug/aperture --data-dir /tmp/ap-demo/db create code
+./target/debug/aperture --data-dir /tmp/ap-demo/db serve \
     --socket /tmp/ap-demo/aperture.sock \
-    --data-dir /tmp/ap-demo/db \
     --ready-file /tmp/ap-demo/ready &
 
 # `--ready-file` appears only once the listener is accepting, so waiting on it is a

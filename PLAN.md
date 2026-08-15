@@ -1192,7 +1192,7 @@ write would immediately invalidate. One rename means a crash leaves the old side
 was — Writable, no identity, re-runnable — and the sidecar write is still the final durable act,
 which is what `ops-I3` actually requires.
 
-### 9c — The CLI, and the lifecycle commands
+### 9c — The CLI, and the lifecycle commands ✅
 
 `aperture-cli` (the root package, renamed). **First usable checkpoint.**
 
@@ -1205,8 +1205,16 @@ which is what `ops-I3` actually requires.
 - Commands: `create`, `list`, `describe`, `finish`, `db rm`, `serve`.
 - Output rendering is **client-side** (`--format table|json|raw`); the server never produces JSON.
 
-*Acceptance:* `create → list → describe → finish → list → db rm` end to end (`assert_cmd`), with
-`list` showing the status change.
+*Acceptance:* **done.** `create → list → describe → finish → list → db rm` end to end against the
+real binary, with `list` showing the status change; `--format json`; a held root refusing every
+lifecycle command by name while `list` and `describe` keep working (`ops-I1` with no silent
+fallback, `ops-I7` needing no lock). 5 tests, no `assert_cmd` — `CARGO_BIN_EXE_aperture` is set
+for integration tests, so the dependency buys nothing.
+
+**Two things this step did not do**, both deliberately: figment's config *file* layer (defaults →
+env → flags is the same shape with one layer missing, so adding the file is an insertion), and
+routing lifecycle commands through a running server — which is 9d's, and until then a held root
+is refused with a message that says so rather than opened anyway.
 
 ### 9d — The async runtime
 

@@ -29,7 +29,7 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 | `aperture-ingest` | the **write funnel** (`ops-I5`): `FactSink` (the write seam, as `FactStore` is the read seam), and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up. Sits above `store` and `wire` because it is the crossing between them, and neither should know the other |
 | `aperture-engine` | **focus** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here |
 | `aperture-server` | the wire **protocol** over a Unix socket: the message vocabulary (`protocol`), one connection's life (`session`), rows out without a fourth encoder (`rows`), the listener (`server`) |
-| root `aperture` | a lib (`code_index` — the built-in schema, hardcoded until Phase 8, **one definition** shared by both binaries) plus the shell (`src/main.rs`) and `src/bin/aperture-serve.rs`; becomes `aperture-cli` when it grows a command tree |
+| root `aperture-cli` | the **tool**: `cli` (the clap tree, §4), `config` (where things live), `commands/` (create, list, describe, finish, rm, serve), `output` (rendering, always client-side), `shell` (the Phase 5 REPL, embedded until 9f), and `code_index` — the built-in schema, hardcoded until Phase 8. The binary is `aperture` |
 
 **A non-Rust client is part of the test surface.** `clients/dotnet` is a C#
 implementation of the wire protocol plus a console producer that writes a nested code

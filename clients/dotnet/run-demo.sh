@@ -8,14 +8,15 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 scratch="${APERTURE_DEMO_DIR:-/tmp/ap-demo}"
 
-cargo build --manifest-path "$root/Cargo.toml" --bin aperture-serve
+cargo build --manifest-path "$root/Cargo.toml" --bin aperture
 
 rm -rf "$scratch"
 mkdir -p "$scratch"
 
-"$root/target/debug/aperture-serve" \
+"$root/target/debug/aperture" --data-dir "$scratch/db" create code
+
+"$root/target/debug/aperture" --data-dir "$scratch/db" serve \
     --socket "$scratch/aperture.sock" \
-    --data-dir "$scratch/db" \
     --ready-file "$scratch/ready" &
 server=$!
 trap 'kill "$server" 2>/dev/null || true' EXIT

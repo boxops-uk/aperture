@@ -1,13 +1,10 @@
-//! The `aperture` package's library half: the things both binaries need.
+//! The `aperture` command-line tool, as a library.
 //!
-//! There are two — the shell (`src/main.rs`) and the server
-//! (`src/bin/aperture-serve.rs`) — and until [Phase 8](../PLAN.md) parses schemas
-//! they both need the same one written down in Rust. It was written down twice, which
-//! is exactly the drift a shared definition prevents: a server serving one shape and
-//! a shell querying another is a mismatch nothing would report until a query returned
-//! nothing.
+//! The binary is a thin dispatcher over this; what lives here is the built-in schema
+//! — hardcoded until [Phase 8](../PLAN.md) parses them — which both the tool and its
+//! tests need one statement of.
 //!
-//! This is where the package becomes `aperture-cli`: Phase 9's command tree lands
-//! here, and `main.rs` becomes one command among several.
+//! This is `aperture-cli` in [operations §10](../docs/aperture-cli-design.md)'s
+//! layout, and the package is named for that.
 
 pub mod code_index;
