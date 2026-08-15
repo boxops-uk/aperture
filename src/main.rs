@@ -52,7 +52,7 @@ use std::{
 
 use aperture::focus::{
     compile::Compilation,
-    error::ApertureError,
+    error::{ApertureError, StoreError},
     fact::{Fact, ToValue, record},
     iter::{Address, Executor, Iteratee, Stream},
     lexer::{Token, tokenize},
@@ -453,7 +453,7 @@ struct Loader<'a> {
 }
 
 impl Loader<'_> {
-    fn put<F: Fact>(&mut self, fact: &F) -> Result<FactId, ApertureError> {
+    fn put<F: Fact>(&mut self, fact: &F) -> Result<FactId, StoreError> {
         self.written += 1;
         self.db.put(self.schema, fact)
     }
@@ -464,7 +464,7 @@ impl Loader<'_> {
         &mut self,
         rows: &[Row],
         resolve: impl Fn(&Row) -> F,
-    ) -> Result<Vec<FactId>, ApertureError> {
+    ) -> Result<Vec<FactId>, StoreError> {
         rows.iter().map(|row| self.put(&resolve(row))).collect()
     }
 }

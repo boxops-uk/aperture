@@ -4,7 +4,7 @@ use byteview::ByteView;
 use serde::{Serialize, Serializer};
 
 use crate::focus::{
-    error::{ApertureError, StoreError},
+    error::StoreError,
     iter::Address,
     schema::{PredicateId, PredicateTy, Symbol},
     tuple::Value,
@@ -886,7 +886,7 @@ pub struct Entity {
 }
 
 pub trait FactStore {
-    type Scan: Iterator<Item = Result<(ByteView, FactId), ApertureError>>;
+    type Scan: Iterator<Item = Result<(ByteView, FactId), StoreError>>;
 
     /// Open a scan of `lo..hi`, bounded to the predicate named by `lo`'s first
     /// [`PREDICATE_ID_SIZE`](crate::focus::schema::PREDICATE_ID_SIZE) bytes.
@@ -897,9 +897,9 @@ pub trait FactStore {
     /// each implementation invented an answer — one smuggled the error out as a
     /// first row, the others scanned across the predicate boundary and reported
     /// nothing.
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, ApertureError>;
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, StoreError>;
 
-    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError>;
+    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError>;
 }
 
 #[cfg(test)]

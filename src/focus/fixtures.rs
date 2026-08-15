@@ -244,7 +244,7 @@ pub fn assert_short_bound_is_rejected<S: FactStore>(store: &S, lo: &[u8]) {
     );
 
     match store.scan(lo, None) {
-        Err(ApertureError::Store(StoreError::ShortScanBound { len, expected })) => {
+        Err(StoreError::ShortScanBound { len, expected }) => {
             assert_eq!(len, lo.len());
             assert_eq!(expected, PREDICATE_ID_SIZE);
         }
@@ -313,7 +313,7 @@ impl<I: Iterator> Iterator for ProbedScan<I> {
 impl<S: FactStore> FactStore for DropProbe<S> {
     type Scan = ProbedScan<S::Scan>;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, ApertureError> {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, StoreError> {
         // Counted only once the inner scan exists. A failed open hands out
         // nothing, so incrementing first would leave a count no drop balances and
         // the I8 guard would report a leak that never happened.
@@ -326,7 +326,7 @@ impl<S: FactStore> FactStore for DropProbe<S> {
         })
     }
 
-    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
+    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError> {
         self.inner.point(id)
     }
 }
@@ -356,11 +356,11 @@ impl<S: FactStore> PointSpy<S> {
 impl<S: FactStore> FactStore for PointSpy<S> {
     type Scan = S::Scan;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, ApertureError> {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, StoreError> {
         self.inner.scan(lo, hi)
     }
 
-    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
+    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError> {
         self.point_calls.fetch_add(1, Ordering::Relaxed);
         self.inner.point(id)
     }
@@ -435,7 +435,7 @@ pub struct FrozenScan {
 }
 
 impl Iterator for FrozenScan {
-    type Item = Result<(ByteView, FactId), ApertureError>;
+    type Item = Result<(ByteView, FactId), StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx < self.end {
@@ -452,7 +452,7 @@ impl Iterator for FrozenScan {
 impl FactStore for FrozenStore {
     type Scan = FrozenScan;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<FrozenScan, ApertureError> {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<FrozenScan, StoreError> {
         // A scan never crosses out of the predicate named by `lo`'s prefix — the
         // trait's contract, which [`assert_scan_stays_in_predicate`] holds every
         // impl to. Like `MemStore`, this store keeps every predicate in one
@@ -479,7 +479,7 @@ impl FactStore for FrozenStore {
         })
     }
 
-    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
+    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError> {
         Ok(self.rows.iter().find(|f| f.fact_id == id).map(|f| Entity {
             key: f.key.slice(PREDICATE_ID_SIZE..),
             value: f.value.clone(),

@@ -13,9 +13,6 @@ pub enum ApertureError {
     #[error("decode error: {0}")]
     Decode(#[from] StoreCodecError),
 
-    #[error("cannot write this fact: {0}")]
-    Fact(#[from] FactError),
-
     #[error("{0} was read before anything was bound to it")]
     UseBeforeBind(Address),
 
@@ -86,9 +83,6 @@ pub enum ApertureError {
     #[error("a plan reads nested field {step} of a record with fewer fields than that")]
     NestedFieldOutOfRange { step: usize },
 
-    #[error("dangling fact id {0:?}: key present but no entity in the `entities` column family")]
-    DanglingFactId(FactId),
-
     /// A stored reference naming a **different predicate** than the field it sits
     /// in is declared to reference.
     ///
@@ -110,9 +104,6 @@ pub enum ApertureError {
 
     #[error("store error: {0}")]
     Store(#[from] StoreError),
-
-    #[error("{0}")]
-    Format(#[from] FormatError),
 }
 
 /// A database this build cannot read, decided from its
@@ -162,6 +153,23 @@ pub enum FormatError {
 pub enum StoreError {
     #[error("fjall: {0}")]
     Backend(#[from] fjall::Error),
+
+    /// A database this build cannot read — the [format stamp](crate::focus::format)
+    /// checked at open, before a row is touched.
+    #[error("{0}")]
+    Format(#[from] FormatError),
+
+    /// A value that does not fit the schema it is being written under, raised on
+    /// the way in by [`fact`](crate::focus::fact).
+    #[error("cannot write this fact: {0}")]
+    Fact(#[from] FactError),
+
+    /// A `keys` row naming an id with no row behind it in `entities`. The
+    /// [scan → point mapping](../../docs/03-storage-model.md) is a total function
+    /// only while every id resolves, so a gap is a fault in the store rather than
+    /// a query answering nothing.
+    #[error("dangling fact id {0:?}: key present but no entity in the `entities` column family")]
+    DanglingFactId(FactId),
 
     #[error("`keys` row value is {len} bytes, not an {expected}-byte fact id")]
     FactIdWidth { len: usize, expected: usize },

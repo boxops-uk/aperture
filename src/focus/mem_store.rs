@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use byteview::ByteView;
 
 use crate::focus::{
-    error::ApertureError,
+    error::StoreError,
     plan::{Entity, FactId, FactStore},
     schema::PredicateId,
     store::predicate_of,
@@ -61,7 +61,7 @@ pub struct MemScan {
 }
 
 impl Iterator for MemScan {
-    type Item = Result<(ByteView, FactId), ApertureError>;
+    type Item = Result<(ByteView, FactId), StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // The ids in this map came from `FactId::new`, so they are already valid.
@@ -74,7 +74,7 @@ impl Iterator for MemScan {
 impl FactStore for MemStore {
     type Scan = MemScan;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<MemScan, ApertureError> {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<MemScan, StoreError> {
         // A bound too short to name a predicate is rejected here exactly as the
         // real store rejects it. Reading it as "no predicate end, so scan on"
         // is how this store used to walk straight across the boundary while
@@ -110,7 +110,7 @@ impl FactStore for MemStore {
         })
     }
 
-    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
+    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError> {
         Ok(self.by_id.get(&id.raw()).map(|(k, v)| Entity {
             key: k.clone().into(),
             value: v.clone().into(),

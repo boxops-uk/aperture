@@ -463,7 +463,7 @@ enum Rows<S: FactStore> {
 }
 
 impl<S: FactStore> Iterator for Rows<S> {
-    type Item = Result<(ByteView, FactId), ApertureError>;
+    type Item = Result<(ByteView, FactId), StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
@@ -614,7 +614,7 @@ impl<S: FactStore> StackFrame<S> {
         // arrive here. Dropping the row instead would answer short and say nothing.
         let entity = store
             .point(fact_id)?
-            .ok_or(ApertureError::DanglingFactId(fact_id))?;
+            .ok_or(StoreError::DanglingFactId(fact_id))?;
 
         let mut bytes = Vec::with_capacity(PREDICATE_ID_SIZE + entity.key.len());
         bytes.extend_from_slice(&predicate_id.0.to_be_bytes());
@@ -917,7 +917,7 @@ fn project<S: FactStore>(
             let reg = state.fact(*address)?;
             let entity = store
                 .point(reg.fact_id)?
-                .ok_or(ApertureError::DanglingFactId(reg.fact_id))?;
+                .ok_or(StoreError::DanglingFactId(reg.fact_id))?;
             Ok(decode_typed(interner, &entity.value, ty)?)
         }
 
@@ -1781,9 +1781,9 @@ mod tests {
     struct ShortRowStore;
 
     impl FactStore for ShortRowStore {
-        type Scan = std::vec::IntoIter<Result<(ByteView, FactId), ApertureError>>;
+        type Scan = std::vec::IntoIter<Result<(ByteView, FactId), StoreError>>;
 
-        fn scan(&self, _lo: &[u8], _hi: Option<&[u8]>) -> Result<Self::Scan, ApertureError> {
+        fn scan(&self, _lo: &[u8], _hi: Option<&[u8]>) -> Result<Self::Scan, StoreError> {
             Ok(vec![Ok((
                 ByteView::from(vec![0u8; PREDICATE_ID_SIZE - 1]),
                 FactId::from_raw(1),
@@ -1791,7 +1791,7 @@ mod tests {
             .into_iter())
         }
 
-        fn point(&self, _id: FactId) -> Result<Option<Entity>, ApertureError> {
+        fn point(&self, _id: FactId) -> Result<Option<Entity>, StoreError> {
             Ok(None)
         }
     }
@@ -3431,7 +3431,7 @@ mod tests {
 
         assert!(matches!(
             collect_rows(store, plan, &interner_with(&[])),
-            Err(ApertureError::DanglingFactId(_)),
+            Err(ApertureError::Store(StoreError::DanglingFactId(_))),
         ));
     }
 

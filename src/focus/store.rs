@@ -49,7 +49,7 @@ use byteview::ByteView;
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
 
 use crate::focus::{
-    error::{ApertureError, FormatError, StoreError},
+    error::{FormatError, StoreError},
     fact::{self, Fact},
     format::{FORMAT_KEY, FormatVersion, META_KEYSPACE},
     plan::{Entity, FactId, FactStore, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
@@ -108,7 +108,7 @@ pub struct FjallDb {
 
 impl FjallDb {
     /// Open (creating if absent) the database at `path`.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, ApertureError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let db = Database::builder(path)
             .open()
             .map_err(StoreError::Backend)?;
@@ -154,7 +154,7 @@ impl FjallDb {
     ///
     /// Runs before any predicate tree is opened, because a version this build
     /// cannot read is a reason not to touch the rows at all.
-    fn stamp_or_check_format(db: &Database, holds_facts: bool) -> Result<(), ApertureError> {
+    fn stamp_or_check_format(db: &Database, holds_facts: bool) -> Result<(), StoreError> {
         let meta = db
             .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
             .map_err(StoreError::Backend)?;
@@ -187,7 +187,7 @@ impl FjallDb {
     pub fn create_predicates(
         &self,
         predicates: impl IntoIterator<Item = PredicateId>,
-    ) -> Result<(), ApertureError> {
+    ) -> Result<(), StoreError> {
         for predicate in predicates {
             self.predicate(predicate)?;
         }
@@ -195,7 +195,7 @@ impl FjallDb {
     }
 
     /// Open both of a predicate's trees and recover its allocator.
-    fn open_predicate(db: &Database, predicate: PredicateId) -> Result<Predicate, ApertureError> {
+    fn open_predicate(db: &Database, predicate: PredicateId) -> Result<Predicate, StoreError> {
         let trees = Trees {
             keys: db
                 .keyspace(
@@ -226,7 +226,7 @@ impl FjallDb {
     /// the data rather than keeping a counter in a sidecar means the allocator
     /// cannot disagree with what is stored — including after a crash, where a
     /// separately-persisted counter could be stale and hand out a live id twice.
-    fn recover_high_water(trees: &Trees, predicate: PredicateId) -> Result<u64, ApertureError> {
+    fn recover_high_water(trees: &Trees, predicate: PredicateId) -> Result<u64, StoreError> {
         let Some(row) = trees.entities.last_key_value() else {
             return Ok(0);
         };
@@ -239,15 +239,14 @@ impl FjallDb {
             return Err(StoreError::FactIdPredicateMismatch {
                 expected: predicate,
                 found: fact_id,
-            }
-            .into());
+            });
         }
 
         Ok(fact_id.sequence())
     }
 
     /// The handles for `predicate`, creating both trees on first write.
-    fn predicate(&self, predicate: PredicateId) -> Result<Arc<Predicate>, ApertureError> {
+    fn predicate(&self, predicate: PredicateId) -> Result<Arc<Predicate>, StoreError> {
         if predicate.0 > MAX_TAGGABLE_PREDICATE {
             // Rejected before the trees exist: a predicate whose id cannot be
             // tagged into a `FactId` can never have a fact written to it, so
@@ -255,8 +254,7 @@ impl FjallDb {
             return Err(StoreError::PredicateIdTooWide {
                 predicate: predicate.0,
                 max: MAX_TAGGABLE_PREDICATE,
-            }
-            .into());
+            });
         }
 
         // The read guard is bound and dropped explicitly rather than left as a
@@ -327,10 +325,10 @@ impl FjallDb {
     ///
     /// # Errors
     ///
-    /// [`ApertureError::Fact`] if the value does not fit the schema,
+    /// [`StoreError::Fact`] if the value does not fit the schema,
     /// [`StoreError::KeyAlreadyWritten`] if the key holds a different fact, and
     /// whatever [`put_fact`](Self::put_fact) reports otherwise.
-    pub fn put<F: Fact>(&self, schema: &Schema, fact: &F) -> Result<FactId, ApertureError> {
+    pub fn put<F: Fact>(&self, schema: &Schema, fact: &F) -> Result<FactId, StoreError> {
         let (predicate, key, value) = fact::encode(schema, fact)?;
 
         if let Some(existing) = self.fact_at(predicate, &key)? {
@@ -340,8 +338,7 @@ impl FjallDb {
                 Err(StoreError::KeyAlreadyWritten {
                     predicate,
                     existing: existing.id,
-                }
-                .into())
+                })
             };
         }
 
@@ -358,7 +355,7 @@ impl FjallDb {
         &self,
         predicate: PredicateId,
         key_fields: &[u8],
-    ) -> Result<Option<StoredFact>, ApertureError> {
+    ) -> Result<Option<StoredFact>, StoreError> {
         let handle = self.predicate(predicate)?;
 
         let mut index_key = Vec::with_capacity(PREDICATE_ID_SIZE + key_fields.len());
@@ -383,7 +380,7 @@ impl FjallDb {
             .entities
             .get(id.raw().to_be_bytes())
             .map_err(StoreError::Backend)?
-            .ok_or(ApertureError::DanglingFactId(id))?;
+            .ok_or(StoreError::DanglingFactId(id))?;
 
         // The row is `[key_len u32 BE][key][value]`; only the value is wanted, the
         // key being `key_fields` by construction.
@@ -427,7 +424,7 @@ impl FjallDb {
         predicate: PredicateId,
         key_fields: &[u8],
         value: &[u8],
-    ) -> Result<FactId, ApertureError> {
+    ) -> Result<FactId, StoreError> {
         let handle = self.predicate(predicate)?;
 
         // The counter is the only source of sequences, so uniqueness needs no
@@ -544,7 +541,7 @@ pub enum FjallScan {
 }
 
 impl Iterator for FjallScan {
-    type Item = Result<(ByteView, FactId), ApertureError>;
+    type Item = Result<(ByteView, FactId), StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
@@ -603,7 +600,7 @@ fn decode_fact_id(bytes: &[u8]) -> Result<FactId, StoreError> {
 /// The key becomes a `ByteView` by refcount move, never a copy — the register
 /// holds the whole row ([I5](../../docs/invariants.md#i5)) and the hot loop
 /// allocates nothing per row ([I9](../../docs/invariants.md#i9)).
-fn row_to_item(row: fjall::Guard) -> Result<(ByteView, FactId), ApertureError> {
+fn row_to_item(row: fjall::Guard) -> Result<(ByteView, FactId), StoreError> {
     let (key, value) = row.into_inner().map_err(StoreError::Backend)?;
     let fact_id = decode_fact_id(&value)?;
     Ok((ByteView::from(key), fact_id))
@@ -612,7 +609,7 @@ fn row_to_item(row: fjall::Guard) -> Result<(ByteView, FactId), ApertureError> {
 impl FactStore for FjallStore {
     type Scan = FjallScan;
 
-    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<FjallScan, ApertureError> {
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<FjallScan, StoreError> {
         // The bound's first four bytes name the predicate, which selects the tree.
         // `hi` cannot be used for this: it is typically `strinc(lo)`, whose carry
         // can name the *next* predicate (`strinc([0,0,0,0]) == [0,0,0,1]`).
@@ -629,7 +626,7 @@ impl FactStore for FjallStore {
         }))
     }
 
-    fn point(&self, id: FactId) -> Result<Option<Entity>, ApertureError> {
+    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError> {
         // The id's tag names the tree, so identity lookup is one point read even
         // though `entities` is split per predicate.
         let Some(handle) = self.predicates.get(&id.predicate().0) else {
@@ -651,7 +648,7 @@ impl FactStore for FjallStore {
             .ok_or(StoreError::TruncatedEntity(id))?;
         let key_end = KEY_LEN_LEN + u32::from_be_bytes(framing) as usize;
         if key_end > row.len() {
-            return Err(StoreError::TruncatedEntity(id).into());
+            return Err(StoreError::TruncatedEntity(id));
         }
 
         // Both halves are refcount views on the fetched row, not copies.
@@ -672,6 +669,7 @@ mod tests {
 
     use super::*;
     use crate::focus::{
+        error::ApertureError,
         fixtures::{
             DropProbe, FrozenStore, assert_scan_stays_in_predicate, assert_short_bound_is_rejected,
             collect_rows, i64_field, interner_with,
@@ -1081,7 +1079,7 @@ mod tests {
         // Reported by `scan` itself: opening is what failed, not a row.
         assert!(matches!(
             reader.scan(&[0, 0], None).err(),
-            Some(ApertureError::Store(StoreError::ShortScanBound { .. }))
+            Some(StoreError::ShortScanBound { .. })
         ));
     }
 
@@ -1095,11 +1093,11 @@ mod tests {
 
         assert!(matches!(
             db.put_fact(too_wide, &[1], &[]),
-            Err(ApertureError::Store(StoreError::PredicateIdTooWide { .. }))
+            Err(StoreError::PredicateIdTooWide { .. })
         ));
         assert!(matches!(
             db.create_predicates([too_wide]),
-            Err(ApertureError::Store(StoreError::PredicateIdTooWide { .. }))
+            Err(StoreError::PredicateIdTooWide { .. })
         ));
         assert_eq!(
             db.predicates
@@ -1180,7 +1178,7 @@ mod tests {
         assert!(
             matches!(
                 FjallDb::open(dir.path()),
-                Err(ApertureError::Format(FormatError::Unreadable { .. }))
+                Err(StoreError::Format(FormatError::Unreadable { .. }))
             ),
             "a database from another format must be refused, not read",
         );
@@ -1192,7 +1190,7 @@ mod tests {
         assert!(
             matches!(
                 FjallDb::open(dir.path()),
-                Err(ApertureError::Format(FormatError::Unstamped))
+                Err(StoreError::Format(FormatError::Unstamped))
             ),
             "an unstamped database holding facts must be refused, not stamped",
         );
@@ -1211,7 +1209,7 @@ mod tests {
         assert!(
             matches!(
                 FjallDb::open(dir.path()),
-                Err(ApertureError::Format(
+                Err(StoreError::Format(
                     FormatError::BadMagic { .. } | FormatError::Truncated { .. }
                 ))
             ),
@@ -1373,7 +1371,7 @@ mod tests {
         assert!(
             matches!(
                 fault,
-                ApertureError::Store(StoreError::FactIdSequence { sequence: 0, .. })
+                StoreError::FactIdSequence { sequence: 0, .. }
             ),
             "got {fault:?}"
         );
@@ -1454,7 +1452,7 @@ mod tests {
         assert!(
             matches!(
                 conflict,
-                ApertureError::Store(StoreError::KeyAlreadyWritten { existing, .. })
+                StoreError::KeyAlreadyWritten { existing, .. }
                     if existing == first
             ),
             "got {conflict:?}"
