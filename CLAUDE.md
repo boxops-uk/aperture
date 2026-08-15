@@ -25,11 +25,11 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 | `aperture-schema` | the type model (`schema`) and the physical row id (`id`) — depends on nothing |
 | `aperture-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
 | `aperture-wire` | the **transport** codec and its framing — `varint`, the schema-driven `value`/fact encoding, `crc`, `block` (a run of one predicate's facts behind a sync marker), `frame` (`[kind][stream][length]`). A sibling of `aperture-encoding`, not a layer on it: it depends on `aperture-schema` alone and shares no bytes with the storage codec |
-| `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, and the errors the storage layer raises |
+| `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, the errors the storage layer raises — and the **lifecycle**: `catalog` (the store root, `ops-I1`'s lock, `ops-I7`'s filesystem-as-catalog), `meta` (the `APERTURE_META` sidecar), `schema_doc` (the embedded schema copy), `ulid` |
 | `aperture-ingest` | the **write funnel** (`ops-I5`): `FactSink` (the write seam, as `FactStore` is the read seam), and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up. Sits above `store` and `wire` because it is the crossing between them, and neither should know the other |
 | `aperture-engine` | **focus** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here |
 | `aperture-server` | the wire **protocol** over a Unix socket: the message vocabulary (`protocol`), one connection's life (`session`), rows out without a fourth encoder (`rows`), the listener (`server`) |
-| root `aperture` | the shell (`src/main.rs`) and `src/bin/aperture-serve.rs`; becomes `aperture-cli` when it grows a command tree |
+| root `aperture` | a lib (`code_index` — the built-in schema, hardcoded until Phase 8, **one definition** shared by both binaries) plus the shell (`src/main.rs`) and `src/bin/aperture-serve.rs`; becomes `aperture-cli` when it grows a command tree |
 
 **A non-Rust client is part of the test surface.** `clients/dotnet` is a C#
 implementation of the wire protocol plus a console producer that writes a nested code

@@ -340,3 +340,157 @@ fn a_sidecar_round_trips_through_the_catalog() {
     assert_eq!(found.meta.facts, None, "counted at finish");
     assert_eq!(found.meta.bytes, None, "measured at finish");
 }
+
+// ---- creation across a real crash ------------------------------------------
+//
+// The claim is that a killed process leaves either nothing under a name or a whole
+// Writable database. Everything above tests the *handled* failures — the RAII guard
+// running, the existence check refusing. A `SIGKILL` runs no destructors, so the only
+// honest test of the atomicity claim is to kill one and look at what is left.
+//
+// Same shape as the store's own I12 crash guard: a child test aborts itself with a
+// watchdog, and the parent inspects the wreckage.
+
+/// The child's own test path, which is what `--exact` matches on. A stale path here
+/// produces a *passing* child, which the parent would read as "the crash never
+/// happened" — so the parent asserts the child failed.
+const CRASH_CHILD: &str = "crashing_creator_child_process";
+const CRASH_ROOT_VAR: &str = "APERTURE_CREATE_CRASH_ROOT";
+const CRASH_DELAY_VAR: &str = "APERTURE_CREATE_CRASH_DELAY_MS";
+
+/// **Creation is all-or-nothing across a crash.**
+///
+/// The cut point is deliberately uncontrolled: the child is aborted by a watchdog
+/// while it builds a database, so successive delays cut in different places —
+/// during keyspace creation, during the schema copy, between the sidecar and the
+/// rename. The property holds wherever it lands.
+#[test]
+fn a_killed_create_leaves_nothing_or_a_whole_database() {
+    // Several delays, because one would only ever cut in one place. The range
+    // brackets a create: keyspace creation dominates it at roughly 30 ms a pair, so
+    // the short delays land inside and the long one lands after.
+    let mut killed_mid_create = 0;
+
+    for delay_ms in [1u64, 5, 15, 40, 90, 200] {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let root = dir.path().join("store");
+
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("path to this test binary"))
+                .args(["--exact", CRASH_CHILD, "--ignored", "--nocapture"])
+                .env(CRASH_ROOT_VAR, &root)
+                .env(CRASH_DELAY_VAR, delay_ms.to_string())
+                .status()
+                .expect("spawn the crashing creator");
+
+        assert!(
+            !status.success(),
+            "the child was supposed to abort mid-create, not exit cleanly"
+        );
+
+        let catalog = Catalog::open(&root).expect("the store root survives");
+        let listing = catalog.list().expect("it lists");
+
+        // Non-vacuity: the child creates `alpha` *before* arming its watchdog, so if
+        // that is missing the kill landed before any real work and this run taught
+        // us nothing.
+        assert!(
+            listing.entries.iter().any(|e| e.name() == "alpha"),
+            "delay {delay_ms}ms: the child died before finishing its first database, \
+             so the crash case is vacuous"
+        );
+
+        // A half-built database must never be visible, and never be a problem: the
+        // scratch directory is dot-prefixed, so a scan skips it entirely.
+        assert!(
+            listing.problems.is_empty(),
+            "delay {delay_ms}ms: a crash left something the scan could not read: {:?}",
+            listing.problems
+        );
+
+        // `code` is the one being built when the process died. Either it is not
+        // there, or it is whole — and whole means openable, Writable, and with every
+        // predicate's trees present.
+        // A surviving scratch directory is proof the kill landed *inside* a create:
+        // the guard that removes it runs no destructors under `abort`. Counted so the
+        // test can say it reached the case it exists for.
+        let scratch_left = fs::read_dir(&root)
+            .expect("a listing")
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().starts_with(".create-"));
+
+        if scratch_left {
+            killed_mid_create += 1;
+            assert!(
+                !listing.entries.iter().any(|e| e.name() == "code"),
+                "delay {delay_ms}ms: a database was visible while its scratch build                  was still there"
+            );
+        }
+
+        match listing.entries.iter().find(|e| e.name() == "code") {
+            None => {}
+            Some(entry) => {
+                assert_eq!(
+                    entry.status(),
+                    Status::Writable,
+                    "delay {delay_ms}ms: a database that appeared must be Writable"
+                );
+
+                let (_entry, db) = catalog
+                    .open_read("code")
+                    .unwrap_or_else(|e| panic!("delay {delay_ms}ms: it must open: {e}"));
+
+                assert_eq!(
+                    db.predicate_ids(),
+                    vec![PredicateId(0), PredicateId(1)],
+                    "delay {delay_ms}ms: a database that appeared must be complete"
+                );
+            }
+        }
+    }
+
+    // The census. Without this the whole test could pass by never cutting inside a
+    // create at all — every kill landing after the rename, which proves nothing about
+    // atomicity. The *completed* outcome needs no census: every other test in this
+    // file creates a database successfully.
+    assert!(
+        killed_mid_create > 0,
+        "no run was killed while building a database, so nothing here tested \
+         atomicity"
+    );
+}
+
+/// Not a guard: the crashing half of the test above, run as a child process.
+///
+/// Builds one database to completion — so the parent can tell a real crash from one
+/// that landed before any work — and is then aborted partway through a second.
+#[test]
+#[ignore = "spawned as a child process by a_killed_create_leaves_nothing_or_a_whole_database"]
+fn crashing_creator_child_process() {
+    let root = std::env::var(CRASH_ROOT_VAR).expect("the parent sets the store root");
+    let delay_ms: u64 = std::env::var(CRASH_DELAY_VAR)
+        .expect("the parent sets the delay")
+        .parse()
+        .expect("a number");
+
+    let catalog = Catalog::open(&root).expect("a store root");
+
+    // Finished before the watchdog is armed: the parent's non-vacuity check.
+    catalog
+        .create("alpha", &schema(), 1)
+        .expect("the first database");
+
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        // `abort`, not `exit`: no destructors, so the scratch guard does not get to
+        // clean up. That is the case being tested.
+        std::process::abort();
+    });
+
+    // Whatever this returns is irrelevant — the watchdog is expected to win. If it
+    // somehow does not, the parent's `!status.success()` catches it.
+    let _ = catalog.create("code", &schema(), 1);
+
+    // Keep the process alive long enough for the watchdog even if `create` was fast.
+    std::thread::sleep(std::time::Duration::from_millis(delay_ms + 500));
+}

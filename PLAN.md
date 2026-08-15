@@ -1138,7 +1138,7 @@ cross-DB (`ops-I9`), authentication (`ops-I10` stays default-closed), provenance
 per-predicate stats. Each is already listed in [operations §11](docs/aperture-cli-design.md) with
 the seam that keeps it cheap.
 
-### 9a — The database as an artifact
+### 9a — The database as an artifact ✅
 
 `aperture-store` grows the lifecycle §10 assigns it.
 
@@ -1159,8 +1159,10 @@ the seam that keeps it cheap.
   catalog never sees it: `create` takes `&Schema` and records its fingerprint, which is the
   down payment on [I13](docs/invariants.md#i13) that Phase 8 completes.
 
-*Acceptance:* a killed process mid-create leaves either nothing or a Writable DB; `list` reads
-sidecars while a server holds the DBs; a second `serve` on a held root is refused by name.
+*Acceptance:* **done.** A killed process mid-create leaves either nothing or a Writable DB
+(a child process aborted by a watchdog at six delays, with a census proving the kill lands
+*inside* a create rather than always after it); `list` reads sidecars while a `FjallDb` handle
+is held open; a second holder of the root is refused by name. 21 tests.
 
 ### 9b — `finish`, and identity that means something
 
