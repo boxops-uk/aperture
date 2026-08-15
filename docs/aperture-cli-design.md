@@ -551,6 +551,50 @@ format inherits its fact encoding rather than defining a second one.
 - Handshake compares the client's expected schema fingerprint against the DB's — cheap early
   mismatch detection, enabled by self-describing DBs.
 
+### The value encoding
+
+**Built** — `aperture-wire` (`crates/aperture-wire/src/`), whose module docs are the design of
+record for the encoding itself. The shape of it, and what each choice is *not* paying for:
+
+| | storage (`aperture-encoding`) | transport (`aperture-wire`) |
+|---|---|---|
+| int | marker byte carrying the width, then a big-endian minimal magnitude, negatives ones'-complemented (I1) | LEB128 varint over zigzag |
+| string | marker, **escaped** contents, terminator — so a NUL costs two bytes | varint length, then the bytes, unescaped |
+| record | marker, fields, terminator | the fields, concatenated. Nothing else |
+| reference | marker + fixed 8 bytes, so it sorts as a band of its own | a varint union branch: an id, or the target fact |
+| field names / types / arities | — (schema-free by construction, I2) | **not sent at all** |
+
+The last row is the design. Both peers have the schema — the handshake compares fingerprints
+before data flows, and I13 freezes a DB's at create — so names, order, arity and type are things
+the reader already has. That is **Avro's** model, and Avro states the consequence plainly:
+*"Binary encoded Avro data does not include type information or field names"*, so *"a schema must
+always be used in order to read Avro data correctly"*, and a record is *"just the concatenation
+of the encodings of its fields"*.
+
+What is *not* borrowed is as deliberate. **Protobuf and Thrift** spend one to two bytes per field
+per message on a tag, and what it buys is a reader skipping fields it does not know — schema
+evolution between peers that never agreed. These peers have agreed, by fingerprint, before the
+first byte. **Cap'n Proto** spends wire size on fixed-width fields to buy O(1) access with no
+parse; every inbound fact is parsed regardless, to intern its references and re-encode it as a
+storage tuple, so there is no parse to avoid and the size is worse.
+
+Two properties are load-bearing rather than incidental:
+
+- **Minimal varints are enforced**, so one value has exactly one encoding. A block carries a
+  CRC32 and the same fact encoding is used on the wire and in a file (§8), so "the same facts"
+  has to mean "the same bytes" for a checksum to be worth computing.
+- **A reference is type-checked against the predicate it names**, both directions, free: a
+  `Fact(p)` field can only hold a reference to `p`, and the [snowflake
+  tag](03-storage-model.md#factid-allocation-i11) carries a fact's predicate in its top bits. That
+  catches the one corruption a bare id is prone to — an id from the right DB and the wrong tree —
+  which no length check or checksum would.
+
+Measured on the shapes a code index holds — `{ file : ref, line : int, col : int, name : str }` —
+the transport encoding is **40% smaller** than the storage one, and that comparison is a test.
+It is not a pointwise law and is not claimed as one: a varint is longer at the extremes
+(`i64::MIN` costs ten bytes here and nine in storage) and a length prefix passes three bytes at
+16 KiB where a terminator stays at one. The win is over the data, not over every value.
+
 ### What a client sends: the whole fact, references included
 
 A fact on the wire is `predicate + key + optional value`, and its **reference fields hold the

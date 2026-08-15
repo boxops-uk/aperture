@@ -1,0 +1,24 @@
+[package]
+name = "aperture-wire"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Mirrors the other crates': exposes the `arb_*` strategies to consumers outside
+# this crate's own `cfg(test)`.
+proptest = ["dep:proptest"]
+
+[dependencies]
+# The schema, and nothing else. The transport codec is driven by `PredicateTy`
+# and shares no code with the storage codec — see the module docs for why that
+# is the point rather than an omission.
+aperture-schema = { path = "../aperture-schema" }
+lasso = { workspace = true }
+proptest = { version = "1.11.0", optional = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The storage codec, for the tests that *contrast* against it: what transport
+# drops is the whole design, so the comparison is a test rather than a comment.
+aperture-encoding = { path = "../aperture-encoding", features = ["proptest"] }
+proptest = "1.11.0"
