@@ -800,7 +800,7 @@ mod tests {
     /// reference is written as the fact it names rather than as a snowflake integer.
     #[test]
     fn every_supported_entry_returns_its_rows() {
-        use crate::focus::{compile::Compilation, fixture, plan::FactId, store::FjallDb};
+        use crate::focus::{compile::Compilation, fixture, id::FactId, store::FjallDb};
 
         let dir = tempfile::tempdir().expect("a scratch directory");
         let db = FjallDb::open(dir.path()).expect("open");

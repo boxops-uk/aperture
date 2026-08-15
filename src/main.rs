@@ -23,7 +23,7 @@
 //!
 //! The schema is a **code index** because that is the canonical shape for a fact
 //! database: one fact per thing, and everything about a thing pointing at it by
-//! [`FactId`](aperture::focus::plan::FactId) rather than repeating it. A reference is
+//! [`FactId`](aperture::focus::id::FactId) rather than repeating it. A reference is
 //! also the one thing whose plan does not read like its source — following one splices
 //! an *id*, so `to = r0#` is the answer to "did it follow the reference, or compare the
 //! wrong bytes?".
@@ -54,9 +54,10 @@ use aperture::focus::{
     compile::Compilation,
     error::{ApertureError, StoreError},
     fact::{Fact, ToValue, record},
+    id::FactId,
     iter::{Executor, Iteratee, Stream},
     lexer::{Token, tokenize},
-    plan::{Access, Address, FactId, FactStore, FieldPath, Level, Plan, Project, SeekKey, Step},
+    plan::{Access, Address, FactStore, FieldPath, Level, Plan, Project, SeekKey, Step},
     print,
     schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner, Symbol},
     store::{FjallDb, FjallStore},

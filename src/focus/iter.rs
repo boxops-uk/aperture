@@ -6,9 +6,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::focus::{
     error::{ApertureError, StoreCodecError, StoreError},
+    id::FactId,
     plan::{
-        Access, Address, Computed, FactId, FactStore, FieldPath, Plan, PlanFingerprint, Project,
-        Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        Access, Address, Computed, FactStore, FieldPath, Plan, PlanFingerprint, Project, Residual,
+        ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId},
     tuple::{
@@ -1307,8 +1308,8 @@ mod tests {
         },
         mem_store::MemStore,
         plan::{
-            Access, DerivedBind, Entity, FactId, FieldPath, Level, Plan, Project, Residual,
-            ResidualOp, SeekKey, SeekKeyPart,
+            Access, DerivedBind, Entity, FieldPath, Level, Plan, Project, Residual, ResidualOp,
+            SeekKey, SeekKeyPart,
             proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
         schema::{PredicateId, PredicateTy},

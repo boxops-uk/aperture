@@ -4,7 +4,7 @@ use lasso::{Rodeo, RodeoReader, Spur};
 
 /// A predicate's position in the schema, which **is** its id.
 ///
-/// The field stays public, unlike [`FactId`](crate::focus::plan::FactId)'s, because
+/// The field stays public, unlike [`FactId`](crate::focus::id::FactId)'s, because
 /// there is no invariant here to protect: an id *is* a position, so building one
 /// from an index is the ordinary thing to do. The check that matters — that the id
 /// fits the fact-id tag — belongs where the tag is composed, and lives there.

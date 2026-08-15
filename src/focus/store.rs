@@ -52,7 +52,8 @@ use crate::focus::{
     error::{FormatError, StoreError},
     fact::{self, Fact},
     format::{FORMAT_KEY, FormatVersion, META_KEYSPACE},
-    plan::{Entity, FactId, FactStore, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
+    id::{FactId, FactIdError, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
+    plan::{Entity, FactStore},
     schema::{PREDICATE_ID_SIZE, PredicateId, Schema},
 };
 
@@ -251,10 +252,11 @@ impl FjallDb {
             // Rejected before the trees exist: a predicate whose id cannot be
             // tagged into a `FactId` can never have a fact written to it, so
             // failing at create is better than failing mid-ingest.
-            return Err(StoreError::PredicateIdTooWide {
+            return Err(FactIdError::PredicateIdTooWide {
                 predicate: predicate.0,
                 max: MAX_TAGGABLE_PREDICATE,
-            });
+            }
+            .into());
         }
 
         // The read guard is bound and dropped explicitly rather than left as a
@@ -586,10 +588,11 @@ fn decode_fact_id(bytes: &[u8]) -> Result<FactId, StoreError> {
     let id = FactId::from_raw(u64::from_be_bytes(bytes));
 
     if id.sequence() == 0 {
-        return Err(StoreError::FactIdSequence {
+        return Err(FactIdError::FactIdSequence {
             sequence: 0,
             max: MAX_FACT_SEQUENCE,
-        });
+        }
+        .into());
     }
 
     Ok(id)
@@ -677,8 +680,8 @@ mod tests {
         iter::{CANCELLATION_STRIDE, Executor, Iteratee, Stream},
         mem_store::MemStore,
         plan::{
-            Access, Address, FieldPath, Level, MAX_FACT_SEQUENCE, Plan, Project, Residual,
-            ResidualOp, SeekKey, SeekKeyPart, Step,
+            Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
+            SeekKeyPart, Step,
         },
         schema::PredicateTy,
         tuple::strinc,
@@ -1093,11 +1096,11 @@ mod tests {
 
         assert!(matches!(
             db.put_fact(too_wide, &[1], &[]),
-            Err(StoreError::PredicateIdTooWide { .. })
+            Err(StoreError::Id(FactIdError::PredicateIdTooWide { .. }))
         ));
         assert!(matches!(
             db.create_predicates([too_wide]),
-            Err(StoreError::PredicateIdTooWide { .. })
+            Err(StoreError::Id(FactIdError::PredicateIdTooWide { .. }))
         ));
         assert_eq!(
             db.predicates
@@ -1343,7 +1346,10 @@ mod tests {
     fn a_zeroed_fact_id_is_rejected_at_decode() {
         assert!(matches!(
             decode_fact_id(&[0u8; FACT_ID_LEN]),
-            Err(StoreError::FactIdSequence { sequence: 0, .. })
+            Err(StoreError::Id(FactIdError::FactIdSequence {
+                sequence: 0,
+                ..
+            }))
         ));
 
         // A corrupt `keys` row surfaces on the scan that reads it, rather than
@@ -1369,7 +1375,10 @@ mod tests {
             .expect("the corrupt row must surface");
 
         assert!(
-            matches!(fault, StoreError::FactIdSequence { sequence: 0, .. }),
+            matches!(
+                fault,
+                StoreError::Id(FactIdError::FactIdSequence { sequence: 0, .. })
+            ),
             "got {fault:?}"
         );
     }
@@ -1519,12 +1528,12 @@ mod tests {
     fn exhausted_sequence_space_is_an_error() {
         assert!(matches!(
             FactId::new(PredicateId(1), MAX_FACT_SEQUENCE + 1),
-            Err(StoreError::FactIdSequence { .. })
+            Err(FactIdError::FactIdSequence { .. })
         ));
         assert!(
             matches!(
                 FactId::new(PredicateId(1), 0),
-                Err(StoreError::FactIdSequence { .. })
+                Err(FactIdError::FactIdSequence { .. })
             ),
             "sequence 0 is reserved so that FactId(0) is never a fact"
         );

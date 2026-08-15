@@ -10,7 +10,8 @@ use byteview::ByteView;
 
 use crate::focus::{
     error::StoreError,
-    plan::{Entity, FactId, FactStore},
+    id::FactId,
+    plan::{Entity, FactStore},
     schema::PredicateId,
     store::predicate_of,
     tuple::strinc,

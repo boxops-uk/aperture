@@ -18,8 +18,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::focus::{
     error::{ApertureError, StoreError},
+    id::FactId,
     iter::{Cursor, Executor, Iteratee, Stream},
-    plan::{Entity, FactId, FactStore, Plan},
+    plan::{Entity, FactStore, Plan},
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId, SchemaInterner},
     store::predicate_of,
     tuple::{TupleEncoder, Value, put_i64, put_str, strinc},

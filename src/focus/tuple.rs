@@ -5,7 +5,7 @@ use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use crate::focus::{
     error::StoreCodecError,
-    plan::FactId,
+    id::FactId,
     schema::{LocalInterner, PredicateId, PredicateTy, Symbol},
 };
 
@@ -1180,7 +1180,7 @@ impl Serialize for Value {
 pub mod proptest {
     use super::*;
     use crate::focus::{
-        plan::{MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
+        id::{MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
         schema::{PredicateId, PredicateTy, SchemaInterner},
     };
     use ::proptest::prelude::*;

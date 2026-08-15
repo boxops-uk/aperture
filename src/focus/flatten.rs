@@ -3157,10 +3157,11 @@ mod tests {
         cst::CstNode,
         fixture,
         fixtures::{collect_rows, i64_field, run_with_suspends, str_field},
+        id::FactId,
         lower::lower,
         mem_store::MemStore,
         parse::parse,
-        plan::{FactId, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Test},
+        plan::{Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Test},
         tuple::Value,
         ty,
     };
@@ -5766,11 +5767,9 @@ pub mod proptest {
     use lasso::Rodeo;
 
     use crate::focus::{
+        id::FactId,
         mem_store::MemStore,
-        plan::{
-            FactId,
-            proptest::{FieldTy, FieldVal},
-        },
+        plan::proptest::{FieldTy, FieldVal},
         schema::{Predicate, PredicateId, PredicateTy, Schema},
         tuple::{MARK_RECORD, MARK_TERM, Value, fact_ref_bytes},
     };
@@ -7498,10 +7497,11 @@ mod battery {
         cst::CstNode,
         diag::Diagnostics,
         fixtures::{collect_rows, run_with_suspends},
+        id::FactId,
         lower::lower,
         parse::parse,
         plan::{
-            FactId, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+            Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
             proptest::{arb_interruption_schedule, cut_points},
         },
         schema::{LocalInterner, PredicateTy, Schema},

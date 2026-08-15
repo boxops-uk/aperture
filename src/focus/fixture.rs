@@ -53,7 +53,7 @@ use std::sync::Arc;
 use lasso::Rodeo;
 
 use crate::focus::{
-    plan::FactId,
+    id::FactId,
     schema::{Predicate, PredicateId, PredicateTy, Schema},
     tuple::{MARK_RECORD, MARK_TERM, fact_ref_bytes, put_i64, put_str},
 };

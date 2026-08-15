@@ -2,7 +2,8 @@ use thiserror::Error;
 
 use crate::focus::{
     format::FormatVersion,
-    plan::{Address, FactId, PlanFingerprint},
+    id::{FactId, FactIdError},
+    plan::{Address, PlanFingerprint},
     schema::{PredicateId, Symbol},
 };
 
@@ -185,15 +186,10 @@ pub enum StoreError {
     #[error("scan bound is {len} bytes, shorter than the {expected}-byte predicate prefix")]
     ShortScanBound { len: usize, expected: usize },
 
-    /// A predicate id too wide for the [`FactId`] tag. Reachable only from a
-    /// schema; the check lives here because the fact-id layout is what it breaks.
-    #[error("predicate id {predicate} does not fit the {max}-max fact-id tag")]
-    PredicateIdTooWide { predicate: u32, max: u32 },
-
-    /// Sequence 0 is reserved, and the space per predicate is finite: a predicate
-    /// that allocates past `max` needs a wider tag split, not a wrapped counter.
-    #[error("fact-id sequence {sequence} is outside 1..={max}")]
-    FactIdSequence { sequence: u64, max: u64 },
+    /// An id that could not be minted — [`FactIdError`], raised without a store
+    /// in reach and surfaced here when a store is the one that hit it.
+    #[error("{0}")]
+    Id(#[from] FactIdError),
 
     /// A fact written under one predicate with an id tagged for another. The id
     /// routes `point()`, so accepting it would file the fact where no query looks.

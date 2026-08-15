@@ -61,7 +61,7 @@
 
 use crate::focus::{
     error::FactError,
-    plan::FactId,
+    id::FactId,
     schema::{PredicateId, PredicateTy, Schema, SchemaInterner},
     tuple::{Value, encode_key, encode_typed},
 };

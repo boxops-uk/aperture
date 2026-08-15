@@ -6,6 +6,7 @@ pub mod fact;
 pub mod fixture;
 pub mod flatten;
 pub mod format;
+pub mod id;
 pub mod iter;
 pub mod lower;
 pub mod parse;
