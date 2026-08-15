@@ -111,6 +111,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tinyvec",
+ "tokio",
  "tokio-util",
 ]
 

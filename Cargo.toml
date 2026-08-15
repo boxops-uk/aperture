@@ -100,4 +100,8 @@ allocation-counter = "0.8.1"
 proptest = "1.11.0"
 # Scratch directories for the fjall store batteries (PLAN 1a+).
 tempfile = "3.24.0"
+# `examples/breakdown.rs` times the server's own hop off the reactor, which means
+# taking that hop itself. Nothing the tool ships needs a runtime, which is why this
+# is a dev-dependency and `aperture` still links none.
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
