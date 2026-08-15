@@ -195,6 +195,22 @@ impl FjallDb {
         Ok(())
     }
 
+    /// The predicates this database has trees for, in id order.
+    ///
+    /// Recovered from the keyspace listing at open, so it answers what is *on disk*
+    /// rather than what a schema says should be — which is the question `describe`
+    /// asks, and the one that distinguishes a database created from a schema from one
+    /// that has never been written to.
+    #[must_use]
+    pub fn predicate_ids(&self) -> Vec<PredicateId> {
+        self.predicates
+            .read()
+            .expect("predicate map lock is poisoned")
+            .keys()
+            .map(|id| PredicateId(*id))
+            .collect()
+    }
+
     /// Create the trees for `predicates` now rather than on first write.
     ///
     /// Keyspace creation is ~30 ms apiece, so lazy creation puts that latency

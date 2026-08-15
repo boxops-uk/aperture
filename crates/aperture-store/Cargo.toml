@@ -12,9 +12,16 @@ proptest = ["dep:proptest"]
 aperture-encoding = { path = "../aperture-encoding" }
 aperture-schema = { path = "../aperture-schema" }
 byteview = { workspace = true }
+# Entropy for the instance ULID, and nothing else.
+getrandom = "0.3"
 fjall = { workspace = true }
 lasso = { workspace = true }
+# The store-root lock (`ops-I1`) is `flock`, which std does not expose.
+libc = "0.2"
 proptest = { version = "1.11.0", optional = true }
+serde = { workspace = true }
+# The sidecar is a document a person reads; JSON is the format that assumes.
+serde_json = "1.0.150"
 thiserror = { workspace = true }
 
 [dev-dependencies]

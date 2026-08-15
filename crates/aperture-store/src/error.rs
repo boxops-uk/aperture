@@ -132,6 +132,46 @@ pub enum StoreError {
         predicate: PredicateId,
         existing: FactId,
     },
+
+    /// A fault in a database's sidecar — missing, unreadable, malformed, or written
+    /// by a sidecar format this build does not know.
+    ///
+    /// Carries the path because the sidecar is a file a person can go and look at,
+    /// which is most of the reason it is a readable document at all.
+    #[error("{path}: {detail}", path = path.display())]
+    Meta {
+        path: std::path::PathBuf,
+        detail: String,
+    },
+
+    /// A store root already owned by another process (`ops-I1`).
+    ///
+    /// Not a lock to wait on: the design refuses a lock fight outright, because the
+    /// alternative to failing here is two servers writing one directory.
+    #[error("the store root {root} is held by another process", root = root.display())]
+    RootHeld { root: std::path::PathBuf },
+
+    /// A database the store root does not hold.
+    #[error("no database named `{0}` in this store root")]
+    NoSuchDatabase(String),
+
+    /// A name that cannot be a directory, or could escape the store root.
+    #[error("`{name}` is not a usable database name: {detail}")]
+    BadDatabaseName { name: String, detail: &'static str },
+
+    /// A database that already exists under this name.
+    #[error("a database named `{0}` already exists")]
+    DatabaseExists(String),
+
+    /// A write asked of a database that is not [`Writable`](crate::meta::Status::Writable).
+    ///
+    /// `ops-I2`: once Complete, immutability is structural — no writable handle
+    /// exists — rather than defended per write.
+    #[error("`{name}` is {status} and cannot be written to")]
+    NotWritable {
+        name: String,
+        status: crate::meta::Status,
+    },
 }
 
 /// A fault in a **write**: a fact that does not fit the schema it is being written
