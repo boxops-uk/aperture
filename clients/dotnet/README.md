@@ -56,19 +56,28 @@ writing 6 declarations, every reference nested
   created 12, deduped 6 (of 18 facts touched)
   6 declarations + 3 modules + 3 files = 12 distinct facts
 
-the same block again: created 0, deduped 18
+a reference with a nested-record key: created 1, deduped 4
+the same declarations again: created 0, deduped 18
 ```
 
 Six declarations name three modules and three files, so eighteen facts are *touched*
-and twelve are *written*. Sending the same block again writes nothing at all —
-interning is idempotent, which is what makes retrying after a dropped connection safe.
+and twelve are *written*. The reference that follows carries a nested record in its key
+and points at a declaration and a file that already exist, so one fact is created and
+four dedup. Sending the same declarations again writes nothing at all — interning is
+idempotent, which is what makes retrying after a dropped connection safe.
 
 ## What a client has to know, and what it does not
 
 **It has to have the schema.** The value codec sends no field names, no type markers
 and no record arities: the server has them and so does the client, and sending what the
 reader already has is what a transmission-shaped format declines to do. `Schema.cs` is
-that, written down.
+that, written down — mirroring `aperture::code_index` on the Rust side, deliberately,
+because two independent statements of one schema is what the fingerprint is *for*.
+
+It has caught that too. When the server moved from a cut-down three-predicate schema to
+the real six-predicate code index, the demo was refused at the handshake with both
+fingerprints named, before a byte of data flowed — the whole mechanism working in the
+one situation it exists for.
 
 Until schemas are parsed (PLAN Phase 8) a client writes the schema out by hand and
 asserts it at the handshake with a fingerprint, which is what turns "we disagree about

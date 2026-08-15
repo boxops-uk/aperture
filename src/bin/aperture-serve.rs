@@ -12,82 +12,16 @@
 //!
 //! **The schema is hardcoded, and it has to be.** Schemas are not parsed until
 //! [Phase 8](../../PLAN.md) and a database does not carry one until
-//! [I13](../../docs/invariants.md#i13) lands with it, so somebody has to write this
-//! down in Rust. It is the code index the example indexer emits
-//! (`example/README.md`) and the shell serves, because a demo of "an indexer writes
-//! facts" wants a schema an indexer would actually produce. When Phase 8 lands, this
-//! function is deleted rather than ported.
+//! [I13](../../docs/invariants.md#i13) lands with it, so somebody has to write it
+//! down in Rust. It lives in [`aperture::code_index`] — shared with the shell, which
+//! is the point: it was written down twice, and a server serving one shape while a
+//! shell queries another is a mismatch nothing reports until a query returns
+//! nothing.
 
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
-use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use aperture_server::{Database, protocol, serve_unix};
 use aperture_store::store::FjallDb;
-use lasso::Rodeo;
-
-/// Predicate ids **are** positions in the schema, so the ones pointed at have to be
-/// named before the vector that defines them.
-const FILE: PredicateId = PredicateId(0);
-const MODULE: PredicateId = PredicateId(1);
-
-/// The code index: files, modules that name a file, declarations that name a module.
-///
-/// Field lists are sorted by name, as everywhere — a record's field order is part of
-/// its encoding ([chapter 6](../../docs/06-types-and-schema.md)).
-///
-/// ```text
-/// predicate src.File   : string
-/// predicate src.Module : { file : src.File, name : string }
-/// predicate src.Decl   : { kind : string, line : int, module : src.Module, name : string }
-/// ```
-fn code_index() -> Schema {
-    let mut rodeo = Rodeo::new();
-    let mut name = |text: &str| rodeo.get_or_intern(text);
-
-    let (file, module, decl) = (name("src.File"), name("src.Module"), name("src.Decl"));
-    let (f_file, f_kind, f_line, f_module, f_name) = (
-        name("file"),
-        name("kind"),
-        name("line"),
-        name("module"),
-        name("name"),
-    );
-
-    Schema::new(
-        rodeo.into_reader(),
-        Arc::from(vec![
-            Predicate {
-                name: file,
-                key: PredicateTy::Str,
-                value: None,
-            },
-            Predicate {
-                name: module,
-                key: PredicateTy::Record(
-                    vec![
-                        (f_file, PredicateTy::Fact(FILE)),
-                        (f_name, PredicateTy::Str),
-                    ]
-                    .into(),
-                ),
-                value: None,
-            },
-            Predicate {
-                name: decl,
-                key: PredicateTy::Record(
-                    vec![
-                        (f_kind, PredicateTy::Str),
-                        (f_line, PredicateTy::Int),
-                        (f_module, PredicateTy::Fact(MODULE)),
-                        (f_name, PredicateTy::Str),
-                    ]
-                    .into(),
-                ),
-                value: None,
-            },
-        ]),
-    )
-}
 
 struct Args {
     socket: PathBuf,
@@ -146,7 +80,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let schema = code_index();
+    let schema = aperture::code_index::schema();
     let fingerprint = protocol::provisional_fingerprint(&schema);
 
     let db = match FjallDb::open(&args.data_dir) {

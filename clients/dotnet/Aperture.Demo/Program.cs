@@ -28,23 +28,51 @@ string? Args(string flag)
 // ---- the schema, written down because a client must have it -------------------
 //
 // The transport codec sends no field names, no types and no arities: the server has
-// them and so does this. Field lists are sorted by name, because a record's field
-// order is part of its encoding — get that wrong and the handshake below says so.
+// them and so does this. Two rules are load-bearing, and the handshake below is what
+// checks them rather than something failing later:
+//
+//   * a predicate's id IS its position here;
+//   * a record's fields are in the schema's declared order, which is sorted by name,
+//     because that order is part of the encoding.
+//
+// This mirrors `aperture::code_index` on the Rust side. It is written twice on
+// purpose — that is the whole point of the fingerprint.
 
 const uint File = 0;
 const uint Module = 1;
 const uint Decl = 2;
+const uint Reference = 4;
 
 var schema = new ApertureSchema([
     new AperturePredicate("src.File", ApertureType.String, null),
+
     new AperturePredicate("src.Module", ApertureType.Rec(
         ("file", ApertureType.Reference(File)),
         ("name", ApertureType.String)), null),
+
+    // A value side: the declaration's kind. A value cannot be matched on (I6), which
+    // is what makes it the right home for something a query wants to *read* but never
+    // to filter by.
     new AperturePredicate("src.Decl", ApertureType.Rec(
-        ("kind", ApertureType.String),
         ("line", ApertureType.Integer),
         ("module", ApertureType.Reference(Module)),
-        ("name", ApertureType.String)), null),
+        ("name", ApertureType.String)), ApertureType.String),
+
+    new AperturePredicate("src.SearchByName", ApertureType.Rec(
+        ("name", ApertureType.String),
+        ("to", ApertureType.Reference(Decl))), null),
+
+    // A nested record inside a key, and two references to two different predicates.
+    new AperturePredicate("src.Ref", ApertureType.Rec(
+        ("at", ApertureType.Rec(
+            ("col", ApertureType.Integer),
+            ("line", ApertureType.Integer))),
+        ("file", ApertureType.Reference(File)),
+        ("to", ApertureType.Reference(Decl))), null),
+
+    new AperturePredicate("src.Import", ApertureType.Rec(
+        ("from", ApertureType.Reference(Module)),
+        ("to", ApertureType.Reference(Module))), null),
 ]);
 
 Console.WriteLine($"connecting to {socket} ({database})");
@@ -75,19 +103,21 @@ ApertureFact ModuleFact(string path, string name) =>
         ApertureValue.Of(ApertureRef.To(FileFact(path))),
         ApertureValue.Of(name)));
 
+// Fields in the schema's order — line, module, name — and the kind on the value side.
 ApertureFact DeclFact(string path, string module, string kind, long line, string name) =>
-    new(Decl, ApertureValue.Rec(
-        ApertureValue.Of(kind),
-        ApertureValue.Of(line),
-        ApertureValue.Of(ApertureRef.To(ModuleFact(path, module))),
-        ApertureValue.Of(name)));
+    new(Decl,
+        ApertureValue.Rec(
+            ApertureValue.Of(line),
+            ApertureValue.Of(ApertureRef.To(ModuleFact(path, module))),
+            ApertureValue.Of(name)),
+        ApertureValue.Of(kind));
 
 var declarations = new List<ApertureFact>
 {
-    DeclFact("store/keys.py", "keys", "function", 12, "key_of"),
-    DeclFact("store/keys.py", "keys", "function", 48, "key_prefix"),
-    DeclFact("store/keys.py", "keys", "function", 77, "key_successor"),
-    DeclFact("store/codec.py", "codec", "function", 7, "encode_key"),
+    DeclFact("store/keys.py", "keys", "def", 12, "key_of"),
+    DeclFact("store/keys.py", "keys", "def", 48, "key_prefix"),
+    DeclFact("store/keys.py", "keys", "def", 77, "key_successor"),
+    DeclFact("store/codec.py", "codec", "def", 7, "encode_key"),
     DeclFact("store/codec.py", "codec", "class", 31, "CodecError"),
     DeclFact("query/plan.py", "plan", "class", 5, "Plan"),
 };
@@ -101,10 +131,27 @@ Console.WriteLine($"  created {summary.Created}, deduped {summary.Deduped} "
 Console.WriteLine($"  {declarations.Count} declarations + 3 modules + 3 files = 12 distinct facts");
 Console.WriteLine();
 
+// A reference: a nested record in the key, plus two references to two predicates —
+// and the declaration it names is one already written, so it dedups rather than
+// creating a second copy.
+var references = new List<ApertureFact>
+{
+    new(Reference, ApertureValue.Rec(
+        ApertureValue.Rec(ApertureValue.Of(4L), ApertureValue.Of(19L)),
+        ApertureValue.Of(ApertureRef.To(FileFact("query/plan.py"))),
+        ApertureValue.Of(ApertureRef.To(
+            DeclFact("store/keys.py", "keys", "def", 12, "key_of"))))),
+};
+
+var refs = connection.Write(Reference, references);
+Console.WriteLine($"a reference with a nested-record key: created {refs.Created}, "
+    + $"deduped {refs.Deduped} (its file and declaration were already there)");
+Console.WriteLine();
+
 // Writing the same block again writes nothing: interning is idempotent, which is what
 // makes a retry after a dropped connection safe.
 var again = connection.Write(Decl, declarations);
-Console.WriteLine($"the same block again: created {again.Created}, deduped {again.Deduped}");
+Console.WriteLine($"the same declarations again: created {again.Created}, deduped {again.Deduped}");
 Console.WriteLine();
 
 // ---- reading them back, on the same connection --------------------------------
@@ -128,13 +175,17 @@ void Run(string focus)
 Run("F where src.File F");
 Run("N where src.Module {name = N}");
 Run("{at = D.line, what = D.name} where D = src.Decl _");
-Run("N where src.Decl {name = N, kind = \"class\"}");
+// The value side, which a query can read but never match on (I6).
+Run("D.value where D = src.Decl _");
 
 // The denial: declarations whose name does not start with `key`.
 Run("N where src.Decl {name = N}; N != \"key\"..");
 
 // Reaching through a reference — the join that makes a fact database worth having.
 Run("{decl = D.name, file = D.module.file} where D = src.Decl _");
+
+// The reference's nested-record key, read back.
+Run("{line = R.at.line, col = R.at.col} where R = src.Ref _");
 
 try
 {
