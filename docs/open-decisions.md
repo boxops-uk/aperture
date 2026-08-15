@@ -12,11 +12,13 @@ with a pointer to where they now live.
 
 Every decision this file was *opened* for has settled — the record is below. What replaced them
 came from two passes over the whole design. The first two questions are what comparing it against
-Glean left ([the comparison](glean-comparison.md) is the analysis); the last two are what an
-external audit of the repository found asserted but not decided. Both **gate a phase** rather
-than the engine, and both are cheapest to answer before that phase writes anything down. (The
-audit found a third — an on-disk format version — which is now
-[settled and built](#an-on-disk-format-version--settled-two-numbers-in-db-metadata).)
+Glean left ([the comparison](glean-comparison.md) is the analysis); the last is what an external
+audit of the repository found asserted but not decided. It **gates a phase** rather than the
+engine, and is cheapest to answer before that phase writes anything down. (The audit found two
+others: an on-disk format version, now [settled and
+built](#an-on-disk-format-version--settled-two-numbers-in-db-metadata), and what a reference is
+in a fact file, [settled when Phase 7 was
+sequenced](#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline).)
 
 ### Multiplicity — arrays, or one fact per element?
 
@@ -92,45 +94,6 @@ onto the caller.
 Worth knowing when deciding: a primitive would be the **first thing in the language to produce a
 `Step::Derive` at all**. A constant bind folds instead, so the machinery is currently exercised
 only by hand-built plans — which means the first primitive is also the first real test of it.
-
-### What a reference *is* in a fact file
-
-**Gates [Phase 7](../PLAN.md).** A stored reference is a final, DB-local
-[`FactId`](03-storage-model.md#factid-allocation-i11). An independent producer — an indexer on
-another machine, writing a file that will be ingested later — cannot know one. So a fact file's
-reference is *something else*, and nothing yet says what.
-
-The tag does not answer this. Per-predicate counters delete the global allocation bottleneck;
-they do not delete **reference relocation**, which has three separate causes
-([chapter 3](03-storage-model.md#factid-allocation-i11) now says so): two workers on the *same*
-predicate still share its counter, dedup at the merge frontier collapses two ids into one, and —
-the one specific to this design — **a reference can sit in a key**.
-
-That last one is not a nuance, it is a contradiction in the pipeline as written.
-[Operations §5](aperture-cli-design.md) has workers *encode storage tuples and sort* in step 2,
-and the per-predicate merge assign ids in step 3. A key holding a reference has no bytes until
-the target's id is final, so it has no sort position either: step 2 cannot finish before step 3.
-
-The candidate answers, with what each actually costs:
-
-- **Local ids plus substitution at ingest.** Glean's design, and it works. It is also the
-  subsystem the snowflake was said to delete, so choosing this is choosing to build it.
-- **Logical `(predicate, key)` references**, resolved to physical ids at ingest, with ingest
-  ordered by the reference graph. Sorting still waits on resolution, but only across strata
-  rather than within a batch. **A reference in a key cannot be part of a cycle** — the target
-  must be identified before the referring key exists — so the stratification this needs is
-  well-founded for exactly the case that forces it. Cycles are possible only through *values*,
-  where a reference is `nyi/fact-field` and unbuilt.
-- **References only to facts already in the target DB.** The cheapest, and it forbids a file
-  from carrying a self-contained subgraph.
-- **A content-derived stable id.** Removes relocation entirely and brings collision handling and
-  cyclic definitions with it.
-
-This also lands on [`ops-I4`](invariants.md#ops-i4): "hash the canonical schema and the base
-facts" is underspecified while a base fact contains a physical id, since two reproducible builds
-would hash differently for no semantic reason. Either the hash is over a canonical *logical*
-graph, or ingest has to guarantee deterministic final ids — which is a stronger promise than
-reproducibility alone.
 
 ### Re-derivation, and what happens to the high-water mark
 
@@ -328,15 +291,86 @@ The **resume cursor** carries its own version, on a separate counter, for the sa
 against the build rather than the database
 ([chapter 5](05-resume.md#the-cursor--bytes-nothing-else)).
 
-### Storage codec vs transport (wire) codec — settled
+### What a reference *is* on the way in — settled: the target fact, written inline
+
+**Settled: a reference a producer sends is the target fact itself**, nested in full — its key,
+and its value side if the predicate declares one — and ingest **interns** it: resolve the key
+against the target predicate, take the id if it is already there, allocate the next sequence if
+it is not, and substitute. A producer that already holds a [`FactId`](03-storage-model.md#factid-allocation-i11)
+may send that instead, so the wire form is *id or nested fact*; stored, a reference is a
+`FactId` and nothing else. This is a **transport** decision only — it changes what a producer
+sends, never what is on disk. Lives in
+[chapter 3](03-storage-model.md#interning-a-nested-fact) and
+[Operations §6](aperture-cli-design.md#6-wire-protocol--the-write-stream).
+
+**The reason is the producer, not the pipeline.** Every id-based answer — local ids plus a
+substitution table (Glean's), logical `(predicate, key)` references, ids that must already exist
+in the target — makes the *indexer* keep a map from every entity it has seen to the identity it
+was assigned, and emit in an order that respects it. That is bookkeeping proportional to the
+whole index, carried in the producer, for a target the producer is holding anyway. An indexer
+walking a syntax tree knows the file when it reaches the declaration; nesting lets it say so
+where it stands.
+
+It also makes the two directions one spelling. `Knows { from = Person { id = 1 } }` has been how
+a traversal is *written* since Phase 5 ([the comparison](glean-comparison.md#the-idiomatic-spelling-of-a-join--closed));
+it is now how a fact is *sent*.
+
+What made this look hard was a pipeline problem, and it is narrowed rather than solved:
+[operations §5](aperture-cli-design.md) has parallel workers encode storage tuples **and sort**
+in step 2, while ids are assigned at the step-3 merge — and a key holding a reference has no
+bytes, so no sort position, until then. Interning does not remove that ordering; it names it. On
+a **write stream** the ordering is free, because there is one writer consuming one stream and
+interning as it goes, which is why [Phase 7](../PLAN.md) does the wire first. In the parallel
+**file** pipeline it becomes a pre-pass or a stratum boundary — a Phase 7b question, asked with
+the interning primitive already built and tested.
+
+Three things fall out, and each is load-bearing rather than incidental:
+
+- **Interning is the dedup rule already specified**, not a second one. A nested target occurring
+  under a thousand parents is one row, written once; `ops-I5` already says byte-identical facts
+  dedup silently at the frontier.
+- **A nested fact both names and defines its target**, so a nested value that disagrees with a
+  target already present is exactly the **same-key-different-value** conflict `ops-I5` rejects.
+  No new rule, and the rejection stays order-independent.
+- **The walk terminates and is well founded.** A nested fact is a finite tree, interned
+  bottom-up. And the case that forces resolution before sorting — a reference in a *key* —
+  cannot be part of a cycle: the target must be fully identified before the referring key has
+  any bytes at all. Cycles are reachable only through *values*, where a reference is
+  `nyi/fact-field` and unbuilt.
+
+**It also closes the [`ops-I4`](invariants.md#ops-i4) underspecification.** "Hash the canonical
+schema and the base facts" could not be taken literally while a base fact contained a physical
+id — two reproducible builds would hash differently for no semantic reason. With references sent
+as nested facts, a DB has a canonical *logical* form: expand every reference to its target's
+key, recursively, and no physical id appears. The hash is over that, and reproducibility no
+longer requires the strictly stronger promise that ingest assign identical physical ids.
+
+**The cost, stated plainly, because it is the real one.** A reference costs the target's whole
+fact on the wire rather than eight bytes, and a producer emitting the same target under a
+thousand parents sends it a thousand times. That is the trade for deleting the producer's
+bookkeeping, and it is the right one for P0: the wire is framed and compressible, and a producer
+that *does* hold ids may send them. Block-local back-references — naming a fact by its ordinal
+earlier in the same block — are the obvious compaction, and are deliberately **not** in P0: they
+are a pure encoding win over a semantics that is now decided, so they can be added without
+changing what a reference means.
+
+### Storage codec vs transport (wire) codec — settled, and it runs both ways
 
 **One storage (tuple) codec for both keys *and* values** — values are tuple-encoded too, so
 queries can eventually *match on values* and `Project::Value` becomes decode-not-copy. It is
 FoundationDB-*inspired*, **not** FDB-compatible (don't call it "FDB"). A **distinct
-transport/wire codec** applies only to rows *after* they leave the executor (post-yield): a
-framed binary format, **not** order-preserving, never touching stored bytes. Lives in
-[chapter 3](03-storage-model.md#storage-codec-vs-transport-codec) and
-[Operations §6](aperture-cli-design.md).
+transport/wire codec**: a framed binary format, **not** order-preserving, never touching stored
+bytes. Lives in [chapter 3](03-storage-model.md#storage-codec-vs-transport-codec) and
+[Operations §6](aperture-cli-design.md#6-wire-protocol--the-write-stream).
+
+**Amended when Phase 7 was sequenced:** this entry was written read-only-shaped — "applies only
+to rows *after* they leave the executor (post-yield)" — because the read path was the only one
+that existed. The transport codec is **bidirectional**: rows out, and facts in. The two
+directions share a value encoding and differ in one thing, which is the whole of why the
+amendment is worth recording rather than quietly stretching the old wording — **only the inbound
+direction has a reference that is not an id**, since a fact on its way in may nest its target
+([above](#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)) and a row
+on its way out has been read from storage, where a reference is a `FactId` already.
 
 ### Schema compatibility (P0) — settled as subset containment
 

@@ -220,8 +220,10 @@ stacking test — so stacking is one consumer of five. Within a predicate the se
 so each of those survives as a per-predicate instance keyed by the tag; only a fact set *spanning*
 predicates degrades. Against that, Glean has **no concurrent writer at all** at the storage layer
 and buys parallelism back with the whole rebase/substitution subsystem, whose *allocation* half
-per-predicate counters delete — not its reference-relocation half, which no id scheme deletes
-([an open decision](open-decisions.md#what-a-reference-is-in-a-fact-file)).
+per-predicate counters delete — not its reference-relocation half, which no id scheme deletes.
+What Aperture does instead is not relocate: a producer sends
+[the target fact, not an id](open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline),
+and ingest [interns](03-storage-model.md#interning-a-nested-fact) it into one.
 **One live tension, unresolved:** "never reused" and Phase 8b's O(1) re-derivation by *tree
 drop* cannot both hold, because the high-water mark is recovered from the very tree being
 dropped — [open decision](open-decisions.md#re-derivation-and-what-happens-to-the-high-water-mark).

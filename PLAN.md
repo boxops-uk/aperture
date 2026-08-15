@@ -823,12 +823,31 @@ diagnostic with a corpus entry, and none of them is on the path to
 
 **Depends on:** Phase 1 (the store + atomic `put_fact` + FactId allocator).
 
-**Design of record:** the parallel decode→sort→k-way-merge→bulk-`ingest()` pipeline, the
-fact-file format + sync markers, and the wire COPY path are specified in
-[operations §5 & §8](docs/aperture-cli-design.md) (`ops-I5` one-write-funnel, `ops-I4`
-reproducibility). The storage-vs-transport codec split is
+**Sequenced wire-first, in two parts.** The **write stream over a socket** (§6) is 7a and the
+**file pipeline** (§5, §8) is 7b, in that order, and the reason is not preference. A parallel
+file ingest has to answer *where interning happens* — workers encode keys and sort in step 2,
+but a key holding a reference has no bytes until ids are assigned in step 3. A write stream has
+no such conflict: one writer, one ordered stream, interning as it arrives. So 7a builds and
+tests the interning primitive on the path that does not need the hard answer, and 7b asks it
+holding a working implementation. It also puts the **primary ingestion API** first, which is
+what a client actually programs against.
+
+**Design of record:** the write stream, the wire fact encoding and what a reference is on the
+way in are [operations §6](docs/aperture-cli-design.md#6-wire-protocol--the-write-stream); the
+parallel decode→sort→k-way-merge→bulk-`ingest()` pipeline and the fact-file format + sync
+markers are [operations §5 & §8](docs/aperture-cli-design.md) (`ops-I5` one-write-funnel,
+`ops-I4` reproducibility). Interning is
+[chapter 3](docs/03-storage-model.md#interning-a-nested-fact); the storage-vs-transport codec
+split — which runs **both ways** — is
 [chapter 3](docs/03-storage-model.md#storage-codec-vs-transport-codec). **Read those; don't
 restate them.**
+
+**The gate is closed.** A reference on the way in is
+[the target fact written inline](docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline),
+interned at ingest, or a `FactId` a producer already holds. Settled because the alternative
+answers all put a map from every entity to its assigned id inside the *indexer*; nesting means a
+producer emits what it has in hand where it stands. Both file format and wire format inherit it,
+so there is one fact encoding rather than two.
 
 **What already exists, and what this phase must *not* do to it.** `aperture_store::fact` +
 `FjallDb::put` are the **single-fact** seam ([chapter
@@ -847,18 +866,12 @@ side) is the part the streaming path still owes, by a different mechanism.
 - **Note:** the [`FactRef` marker](docs/open-decisions.md) is already resolved (own marker
   `0x51`), so writing fact-typed *bytes* is unblocked — no pre-work there.
 
-**Blocked until one decision is made: what a reference *is* in a fact file.**
-[Open decision](docs/open-decisions.md#what-a-reference-is-in-a-fact-file), and it has to be
-answered before the format is written down rather than discovered while writing it. A stored
-reference is a final DB-local `FactId`, which an independent producer cannot know; and because
-**a reference can sit in a key**, a key holding one has no bytes — and so no sort position —
-until the target's id is final. That is not compatible with the pipeline as specified, which has
-workers encode storage tuples *and sort* (step 2) before the per-predicate merge assigns ids
-(step 3). The per-predicate snowflake does not settle this: it deletes the global allocation
-bottleneck, not reference relocation
-([chapter 3](docs/03-storage-model.md#factid-allocation-i11)). It also reaches `ops-I4`, whose
-"hash the canonical schema and base facts" is underspecified while a base fact contains a
-physical id.
+**What interning buys `ops-I4`.** "Hash the canonical schema and base facts" could not be taken
+literally while a base fact contained a physical id — two reproducible builds would hash
+differently for no semantic reason. With references sent as nested facts, a DB has a canonical
+*logical* form (expand every reference to its target's key, recursively) and the hash is over
+that. Reproducibility no longer needs the strictly stronger promise that ingest assign identical
+physical ids.
 
 **Phase-specific rules:** the encoder must agree **byte-for-byte** with the read-path decoder
 (the round-trip property is the guard); dedup byte-identical facts silently and **reject
@@ -876,16 +889,29 @@ with no sync marker, header, CRC or footer index (`glean/if/glean.thrift:159-181
 split and Glean parallelises across batches; this pipeline splits **one file** at validated sync
 markers (`ops-I5`, operations §8).
 
-**Tasks:** `Db` + per-predicate partition handles; the fact-file format + sync-marker chunk
-splitter; the parallel decode→encode→sort→k-way-merge→bulk-`ingest()` pipeline with the
-dedup/reject rule; the framed wire protocol (CopyData-style fact blocks). *Done per task:*
-ingest-then-query returns the ingested facts.
+**Tasks — 7a, the write stream:** the transport codec (a wire fact: predicate, key, optional
+value, references id-or-nested) and its round-trip property; the frame layer and PG-shaped
+startup; the server and its socket, with the per-DB single writer task (`ops-I1`); **interning**
+— resolve-or-create a nested fact, bottom-up — and the write stream that funnels through it
+(`ops-I5`); a query stream, so ingest-then-query closes end to end.
 
-**Acceptance:**
-- [ ] Facts are writable programmatically and from files in parallel, and queried back.
-- [ ] Encoder/decoder round-trip property green (tier-1).
+**Tasks — 7b, the file pipeline:** `Db` + per-predicate partition handles; the fact-file format
++ sync-marker chunk splitter; the parallel decode→encode→sort→k-way-merge→bulk-`ingest()`
+pipeline, which is where *where interning happens* gets answered — a per-chunk pre-pass or a
+stratum boundary in the merge. *Done per task:* ingest-then-query returns the ingested facts.
+
+**Acceptance — 7a:**
+- [ ] Facts are writable over a socket and queried back on the same connection.
+- [ ] Transport encoder/decoder round-trip property green (tier-1), nested references included.
+- [ ] A nested reference interns to the same `FactId` a second occurrence of that target resolves to — one row, however many parents name it.
+- [ ] A nested fact disagreeing with a stored one under the same key is rejected by name (`ops-I5`), and the connection's other streams survive.
+- [ ] Interning is bottom-up and total on any well-typed nested value: no order in which a parent is written before the child its key holds.
+
+**Acceptance — 7b:**
+- [ ] Facts are writable from files in parallel, and queried back.
 - [ ] Ingest is order-independent: shuffling input chunks yields the same DB *or* the same deterministic rejection (tier-2 metamorphic).
 - [ ] Same-key-different-value is deterministically rejected regardless of chunking/worker interleaving.
+- [ ] One fact encoding, not two: a block is byte-identical on the wire and in a file.
 
 ---
 

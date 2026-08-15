@@ -357,14 +357,15 @@ Ingest facts from fact files or stdin.
      (the "hidden unchecked write" — it needs no per-key reads because the merge already
      established the invariants). One keyspace per predicate ⇒ per-predicate ingests are
      independent trees and may overlap.
-- **Steps 2 and 3 are not yet consistent, and one open decision is why.** A key may contain a
-  fact **reference**, and a reference is a final DB-local `FactId` — which step 3 assigns. So a
-  key holding one has no bytes, and therefore no sort position, at step 2. Dedup in step 3 makes
-  it worse in the same direction: collapsing two ids into one means redirecting every reference
-  to the loser. What a fact file's reference actually is —
-  [open decision](open-decisions.md#what-a-reference-is-in-a-fact-file) — determines whether this
-  is a pre-pass, a stratified ingest, or a substitution table. Do not implement the pipeline
-  before answering it.
+- **Steps 2 and 3 are still not consistent, and that is now a scheduling problem rather than an
+  unanswered one.** A key may contain a fact **reference**; a reference is interned to a final
+  `FactId` ([chapter 3](03-storage-model.md#interning-a-nested-fact)), and until it is, the key
+  holding it has no bytes and so no sort position at step 2. What a reference *is* is
+  [settled](open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)
+  — the target fact, nested — so what is left is *where interning happens in a parallel
+  pipeline*: a pre-pass over each chunk, or a stratum boundary in the merge. That is a Phase 7b
+  question, and it is asked with the primitive already built and tested by the write stream
+  (§6), which has no such conflict: one writer, one stream, interning as it arrives.
 - Schema validation against the DB's embedded schema on every path; a fact file's header
   fingerprint (§8) is checked for compatibility (subset containment, §7) before ingest.
 - Session typing per ops-I6: file ingestion is `ingest`, arbitrary tool sessions are `tool`. Both
@@ -532,7 +533,13 @@ Interactive psql-like REPL.
 
 ---
 
-## 6. Wire protocol summary (as it constrains commands)
+<a id="6-wire-protocol--the-write-stream"></a>
+## 6. Wire protocol, and the write stream
+
+**This is the primary ingestion API.** Phase 7 builds it before the file pipeline, and §8's file
+format inherits its fact encoding rather than defining a second one.
+
+### The frame layer
 
 - PG-inspired, **not** PG-compatible. Startup/handshake PG-shaped (version, DB name, session
   mode per ops-I6); thereafter framed: `[type:u8][stream_id:u32][len:u32][payload]`.
@@ -543,6 +550,60 @@ Interactive psql-like REPL.
   cancel; flow-control windows deferred (bounded queues + connection backpressure in P0).
 - Handshake compares the client's expected schema fingerprint against the DB's — cheap early
   mismatch detection, enabled by self-describing DBs.
+
+### What a client sends: the whole fact, references included
+
+A fact on the wire is `predicate + key + optional value`, and its **reference fields hold the
+target fact written inline** — key and value both, to any depth — or a `FactId` for a producer
+that already holds one. Ingest interns each nested fact and substitutes the id
+([chapter 3](03-storage-model.md#interning-a-nested-fact)). Stored, a reference is a `FactId`
+and only that; nesting is a transport form, not a storage one.
+
+```text
+    src.Decl {
+      module = src.Module {                    ← a whole fact, not an id
+        file = src.File "store/keys.py",       ← nested again
+        name = "keys"
+      },
+      name = "key_of", line = 12
+    }
+```
+
+**The producer keeps no book.** That is the whole reason for the shape: an indexer walking a
+syntax tree knows the file when it reaches the declaration, and every id-based alternative asks
+it to carry a map from every entity to an assigned identity, plus an emission order that
+respects one. Cost of the trade, stated: a repeated target is sent repeatedly. Block-local
+back-references would compact it and are deliberately not in P0 — a pure encoding win over a
+semantics that is now decided.
+
+### The write stream, end to end
+
+1. `CopyInResponse` — the server accepts the stream on a `read-write` session against a Writable
+   DB (ops-I1, ops-I2 refuse otherwise, at establishment rather than per fact).
+2. `CopyData*` — each frame carries one **block**: the same
+   `[block header][n facts]` §8 puts in a file, so on-wire and on-disk are one encoding.
+3. Per block, in the DB's single writer task: decode → **validate against the embedded schema**
+   (I13) → **intern** nested references bottom-up → storage-encode → write both column families
+   atomically (I12).
+4. `CopyDone` → the server replies with facts written, facts deduped, and the id range per
+   predicate. A conflict instead **fails the stream** with the offending key named.
+
+**Dedup and reject are ops-I5's, unchanged.** Interning *is* the dedup at this granularity: a
+target nested under a thousand parents resolves to one row. A nested fact whose value disagrees
+with one already stored under that key is the same-key-different-value conflict, rejected
+deterministically — never last-writer-wins, never first-writer-wins, because either is
+order-dependent and ops-I4 forbids it.
+
+**Failure is per stream, not per fact.** A rejected block fails the write stream; the connection
+and its other streams survive. Whether a failed stream's already-written facts are rolled back is
+a P0 decision recorded with the transaction story, not here.
+
+### What this direction does *not* share with the read direction
+
+Both directions use the transport codec, which is not the storage codec
+([chapter 3](03-storage-model.md#storage-codec-vs-transport-codec)). They differ in exactly one
+thing: **only inbound has a reference that is not an id.** A row on its way out was read from
+storage and its references are `FactId`s already.
 
 ## 7. Schema system summary
 
@@ -563,10 +624,13 @@ Interactive psql-like REPL.
 - **Envelope:** header (magic, format version, producing-schema fingerprint) → blocks → optional
   footer (block offsets, per-predicate grouping) for O(1) split assignment when the file was
   finalized under our control.
-- **How a fact in a block names another fact is undefined**, and is the one thing here that
-  cannot be filled in later: it decides whether a block is sortable in isolation (see §5) and
-  whether a file can carry a self-contained subgraph at all.
-  [Open decision](open-decisions.md#what-a-reference-is-in-a-fact-file).
+- **How a fact in a block names another fact is §6's answer, not a second one.** A reference is
+  the target fact written inline, or a `FactId` the producer holds
+  ([settled](open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)).
+  So a file **can** carry a self-contained subgraph, which is what an indexer emitting one
+  artifact needs. A block is *not* sortable in isolation, though — a key holding a nested
+  reference has no bytes until interning has run — and that is the §5 scheduling question, not a
+  format one.
 - **Block = `[sync marker][block header: magic, predicate id, n, length, CRC32][n facts]`.**
   RLE of the predicate ID: indexers writing in visitation order emit small blocks (bursts);
   the post-merge writer emits huge ones; blocks coalesce monotonically through k-merges until

@@ -295,15 +295,60 @@ reference can sit in a key**, and it does — `test.Ref : { of : test.Foo }` in 
 schema, `Reference` in the example code index. A key containing a reference has no bytes until
 the target's id is final, and therefore no sort position either. The ingest pipeline in
 [operations §5](aperture-cli-design.md) has workers encode storage tuples *and sort* before the
-per-predicate merge assigns ids, which those two steps cannot both satisfy. Resolving that is
-[an open decision](open-decisions.md#what-a-reference-is-in-a-fact-file) and it gates the
-fact-file format, not the engine.
+per-predicate merge assigns ids, which those two steps cannot both satisfy.
 
 Ordinary hand-written facts are unaffected, and the reason is worth stating: `put` returns the
 id, so the fact you write next names this one by a value you already hold
 ([below](#writing-a-fact-by-hand)). Referential integrity is a consequence of write order. That
 works precisely because a single writer is assigning ids as it goes — which is the thing a
-portable fact file does not have.
+portable fact file does not have. What a producer sends instead is the subject of the next
+section.
+
+<a id="interning-a-nested-fact"></a>
+## Interning a nested fact
+
+**A producer does not send ids. It sends the target fact.** A reference on the way in is the
+whole target — its key, and its value side if the predicate declares one — written inline where
+the reference belongs, and ingest turns it into a `FactId`
+([settled](open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)).
+A producer that *does* hold an id may send that instead; the inbound form is id-or-nested, and
+the stored form is an id either way. Nothing in this section reaches the disk format: a stored
+reference is [`MARK_FACT_REF`](02-tuple-codec.md#the-marker-table) and eight bytes, as it was.
+
+**Interning is resolve-or-create.** Walk the inbound value bottom-up. At each nested fact:
+encode its key with the storage codec, look that key up in the target predicate's `keys` tree
+(and in the batch's own frontier, for a target this batch is also creating), take the id if it
+is there, allocate the predicate's next sequence and write the fact if it is not — then
+substitute the id into the parent and carry on. The parent's key has its bytes only once its
+children do, which is why the walk is bottom-up rather than a matter of taste.
+
+Three properties make that safe, and each is a rule stated somewhere else rather than a new one:
+
+- **It terminates and it is well founded.** A nested fact is a finite tree. And a reference in a
+  *key* cannot be part of a cycle: the target has to be fully identified before the referring
+  key has any bytes at all, so there is no order in which the two could wait on each other.
+  Cycles are reachable only through *values*, where a reference is `nyi/fact-field` and unbuilt.
+- **"Already there" is the dedup rule.** A target nested under a thousand parents is one row,
+  written once — which is exactly `ops-I5`'s "dedup byte-identical facts silently", reached from
+  the other side.
+- **Disagreeing about it is the conflict rule.** A nested fact both *names* and *defines* its
+  target, so a nested value that differs from one already stored under that key is the
+  same-key-different-value case `ops-I5` rejects. No new rule and no new polarity — the
+  rejection stays deterministic and order-independent, which is what `ops-I4` needs of it.
+
+**What interning costs, and where.** One `keys` lookup per reference — a point read against a
+sorted tree, and against a tree the write path is already touching. On a **write stream** it is
+free of ordering trouble besides: one writer, one stream, interning as it arrives, so the
+step-2/step-3 conflict above never takes shape. It is the parallel **file** pipeline where that
+conflict has to be answered, as a pre-pass or a stratum boundary, and [Phase
+7](../PLAN.md) is sequenced to reach it with this primitive already built.
+
+**What it costs the producer is the point of it.** Nothing. The alternative answers all put a
+map from every entity to its assigned identity inside the *indexer*, plus an emission order that
+respects it — bookkeeping proportional to the whole index, for a target the indexer is holding
+in its hand. The trade is on the wire instead: a reference costs a whole fact rather than eight
+bytes, and a repeated target is sent repeatedly. Block-local back-references would compact that
+and are deliberately not in P0, being a pure encoding win over a decided semantics.
 
 **Sequence 0 is reserved**, so no valid id is `FactId(0)`: a zeroed or corrupt eight bytes is
 detectably not a fact, which is worth having on a path where I11 is what makes a bytes-only
@@ -526,12 +571,18 @@ Worth stating once, clearly (it recurs):
 - **Storage (tuple) codec** — [chapter 2](02-tuple-codec.md). Order-preserving,
   self-delimiting. Encodes **both keys *and* values** (values are tuple-encoded too, so
   queries can eventually *match on values*, and `Project::Value` becomes decode-not-copy).
-- **Transport / wire codec** — a separate, framed binary format applied only to rows
-  *after* they leave the executor (post-yield). **Not** order-preserving, never touches
-  stored bytes. Details in [Operations](aperture-cli-design.md).
+- **Transport / wire codec** — a separate, framed binary format, **not** order-preserving,
+  never touching stored bytes. It runs **both ways**: rows out after they leave the executor
+  (post-yield), and facts in on a write stream. Details in
+  [Operations §6](aperture-cli-design.md#6-wire-protocol--the-write-stream).
 
 Don't blur them: a constraint that applies to one (order-preservation, self-delimiting)
 does not apply to the other.
+
+The two *directions* differ in exactly one thing, and it is the thing worth remembering:
+**only inbound has a reference that is not an id.** A fact on its way in may nest its target
+([above](#interning-a-nested-fact)); a row on its way out was read from storage, where the
+reference is already a `FactId`.
 
 ---
 

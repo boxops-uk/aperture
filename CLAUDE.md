@@ -201,23 +201,36 @@ decoded data.
   overlapping predicates accept each other's cursors and answer short, silently
   ([chapter 5](docs/05-resume.md)). Interned names are deliberately outside the fingerprint —
   a `Symbol` is per-query, so hashing one would fail a legitimate resume.
-- **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — four. Two from
+- **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — three. Two from
   comparing the design against Glean: **multiplicity** (arrays *and* one fact per element — Glean
   writes both, deliberately; decide before the Phase 8 schema DSL fixes how schemas are written)
   and **primitives** (arithmetic, string functions, conditionals: not built, not even lexed, not
-  ruled out). Two that an external audit found asserted but never decided, each **gating a
-  phase and cheapest to answer before it**: **what a reference is in a fact file** (a stored
-  reference is a final DB-local `FactId` no independent producer can know — and since a reference
-  can sit in a *key*, a key holding one has no sort position until the target's id is final,
-  which the Phase 7 pipeline's encode-and-sort-then-merge order cannot supply; the snowflake
-  deletes the allocation bottleneck, **not** reference relocation); **re-derivation vs I11** (the
-  high-water mark is recovered from the `entities` tree, so Phase 8b's O(1) tree drop restarts
-  sequences at 1 and reuses ids that dependent predicates still reference). The audit's third —
-  an **on-disk format version** — is now [I15](docs/invariants.md#i15), settled and built: a
-  twelve-byte stamp in a `meta` keyspace, `codec` and `storage` versioned separately, checked at
-  open, with an unstamped DB holding facts **refused** rather than adopted. It makes nothing
-  migratable — I3 still binds every DB stamped `codec 1` — it makes a future codec a different
-  number rather than an impossibility.
+  ruled out). One that an external audit found asserted but never decided, **gating a phase and
+  cheapest to answer before it**: **re-derivation vs I11** (the high-water mark is recovered from
+  the `entities` tree, so Phase 8b's O(1) tree drop restarts sequences at 1 and reuses ids that
+  dependent predicates still reference). The audit's other two are settled: an **on-disk format
+  version** is now [I15](docs/invariants.md#i15), built — a twelve-byte stamp in a `meta`
+  keyspace, `codec` and `storage` versioned separately, checked at open, with an unstamped DB
+  holding facts **refused** rather than adopted; it makes nothing migratable (I3 still binds
+  every DB stamped `codec 1`), it makes a future codec a different number rather than an
+  impossibility. And **what a reference is on the way in** is the target fact, nested — see
+  below.
+- **A reference a producer sends is the whole target fact, not an id** — nested inline to any
+  depth, and **interned** at ingest into a `FactId`
+  ([chapter 3](docs/03-storage-model.md#interning-a-nested-fact),
+  [operations §6](docs/aperture-cli-design.md#6-wire-protocol--the-write-stream)). A producer
+  holding an id may send it, so the inbound form is id-or-nested; **stored, a reference is a
+  `FactId` and nothing else** — this is transport, never disk. Settled because every id-based
+  answer puts a map from each entity to its assigned identity inside the *indexer*, plus an
+  emission order respecting it; nesting lets a producer emit what it holds where it stands, and
+  makes the write side the same spelling as the read side (`Knows { from = Person { id = 1 } }`
+  has compiled since Phase 5). Interning is resolve-or-create, **bottom-up** — a parent's key has
+  no bytes until its children have ids — and it is total because a reference *in a key* cannot
+  be cyclic. It is not a new rule anywhere: "already there" is `ops-I5`'s silent dedup and
+  "disagrees" is its same-key-different-value reject. This is why **Phase 7 is wire-first**
+  ([PLAN.md](PLAN.md)): a write stream interns as it arrives, so the file pipeline's
+  encode-and-sort-before-ids conflict never takes shape, and 7b answers *where* interning goes
+  holding a built primitive.
   Everything the file was originally opened for has settled: intra-row repeated variables
   are **rejected**
   (`nyi/repeated-variable`, Phase 4), `pattern = pattern` is settled — the gate is the **left
