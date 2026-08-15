@@ -61,7 +61,9 @@ use aperture_ingest::{Ingested, intern_block};
 use aperture_schema::schema::{LocalInterner, PredicateTy, Schema};
 use aperture_store::{meta::Status, store::FjallDb};
 use aperture_wire::{
-    FrameHeader, FrameKind, StreamId, encode_desc, encode_frame, frame, value::encode_value,
+    FrameHeader, FrameKind, StreamId, encode_desc, encode_frame, frame,
+    protocol::{self, ErrorCode, Mode, Ready, Startup, kinds},
+    value::encode_value,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -69,7 +71,6 @@ use crate::{
     blocking,
     error::ServerError,
     outbound::{Outbound, run as outbound_run},
-    protocol::{self, ErrorCode, Mode, Ready, Startup, kinds},
     registry::Registry,
     rows,
 };

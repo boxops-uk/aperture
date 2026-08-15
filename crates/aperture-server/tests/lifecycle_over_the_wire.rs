@@ -23,14 +23,12 @@ use std::{
 };
 
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
-use aperture_server::{
-    Control, ControlOp, ControlReply, ErrorCode, Mode, Registry, Startup,
-    protocol::{self, kinds},
-    server::Listener,
-};
+use aperture_server::{Registry, server::Listener};
 use aperture_store::catalog::Catalog;
 use aperture_wire::{
-    FrameHeader, FrameKind, StreamId, WireFact, WireValue, encode_block, encode_frame, frame,
+    Control, ControlOp, ControlReply, ErrorCode, FrameHeader, FrameKind, Mode, Startup, StreamId,
+    WireFact, WireValue, encode_block, encode_frame, frame,
+    protocol::{self, kinds},
 };
 use lasso::Rodeo;
 

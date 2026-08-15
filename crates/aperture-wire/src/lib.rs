@@ -53,6 +53,9 @@
 //!   query row is shaped by the head rather than by a predicate. Sent once per
 //!   stream; rows then use the same value codec a fact's key does.
 //! - [`frame`] — `[kind][stream][length]`, the connection's multiplexing unit.
+//! - [`protocol`] — the **message vocabulary**: which kinds exist, what a startup
+//!   frame carries, what a stream's life looks like. Strictly above [`frame`], which
+//!   delimits messages and deliberately does not interpret them.
 //!
 //! The layering is worth reading as a claim about *where a length comes from*.
 //! [`value`] has no lengths at all — the schema says where every field ends.
@@ -68,14 +71,18 @@
 //! the rest of the file pipeline. Blocks are here because they are shared with the
 //! wire; the envelope is not shared with anything.
 //!
-//! **The protocol.** [`frame`] delimits messages and does not interpret them: which
-//! kinds exist, what a handshake says, and how a stream is opened and closed are the
-//! layer above. See [`FrameKind`] for why that is a decision and not a gap.
+//! **A session, and any I/O policy.** [`protocol`] says what a startup frame *means*;
+//! it opens no socket, holds no state and decides nothing about retries, timeouts or
+//! concurrency. That is `aperture-client`'s on one side and `aperture-server`'s on the
+//! other, and it is why both can share this crate without sharing each other —
+//! [operations §10](../../docs/aperture-cli-design.md)'s "shared by server and client,
+//! no I/O policy", and its rule that nothing depends on the server.
 //!
-//! **The protocol's message vocabulary.** [`frame`] delimits; `aperture-server`'s
-//! `protocol` module is what says a startup frame carries a database name. Kept apart
-//! so a client can be written against the codec without adopting a server's idea of a
-//! session.
+//! The vocabulary lived in `aperture-server` until 9e, which was fine while the server
+//! was its only speaker and wrong the moment a Rust client existed: a client would have
+//! had to depend on the server — dragging in fjall, the engine and a runtime to send a
+//! handshake — or write a second copy of the message formats, which is exactly the
+//! drift the .NET client exists to detect rather than to cause.
 //!
 //! [I1]: ../../docs/invariants.md#i1
 //! [I2]: ../../docs/invariants.md#i2
@@ -89,6 +96,7 @@ pub mod crc;
 pub mod desc;
 pub mod error;
 pub mod frame;
+pub mod protocol;
 pub mod value;
 pub mod varint;
 
@@ -96,4 +104,8 @@ pub use block::{BlockHeader, decode_block, encode_block, find_sync};
 pub use desc::{Desc, decode_desc, encode_desc};
 pub use error::WireError;
 pub use frame::{FrameHeader, FrameKind, StreamId, decode_frame, encode_frame};
+pub use protocol::{
+    Control, ControlOp, ControlReply, ErrorCode, Mode, Ready, Startup, kinds,
+    provisional_fingerprint,
+};
 pub use value::{WireFact, WireRef, WireValue, decode_fact, encode_fact, from_bytes, to_bytes};

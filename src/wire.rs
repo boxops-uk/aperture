@@ -28,12 +28,11 @@ use std::{
     path::Path,
 };
 
-use aperture_server::{
-    Control, ControlOp, ControlReply, Mode, Startup,
+use aperture_store::catalog::Finished;
+use aperture_wire::{
+    Control, ControlOp, ControlReply, FrameKind, Mode, Startup, StreamId, encode_frame, frame,
     protocol::{self, kinds},
 };
-use aperture_store::catalog::Finished;
-use aperture_wire::{FrameKind, StreamId, encode_frame, frame};
 
 use crate::{CliError, code_index};
 

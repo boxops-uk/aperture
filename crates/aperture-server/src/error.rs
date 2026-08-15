@@ -2,7 +2,7 @@ use aperture_ingest::IngestError;
 use aperture_wire::WireError;
 use thiserror::Error;
 
-use crate::protocol::ErrorCode;
+use aperture_wire::protocol::ErrorCode;
 
 /// Why the server could not do what a frame asked.
 #[derive(Debug, Error)]

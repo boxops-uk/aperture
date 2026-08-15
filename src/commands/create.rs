@@ -27,7 +27,7 @@ pub fn run(root: &Path, socket: &Path, name: &str) -> Result<Created, CliError> 
 
         Route::Local(catalog, _lock) => {
             let schema = code_index::schema();
-            let fingerprint = aperture_server::protocol::provisional_fingerprint(&schema);
+            let fingerprint = aperture_wire::provisional_fingerprint(&schema);
             catalog.create(name, &schema, fingerprint)?.meta.instance
         }
     };

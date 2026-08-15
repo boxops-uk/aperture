@@ -34,12 +34,9 @@ use aperture_store::{
     store::FjallDb,
 };
 
-use crate::{
-    blocking,
-    error::ServerError,
-    protocol::{self, Control, ControlOp, ControlReply},
-    session::Database,
-};
+use aperture_wire::protocol::{self, Control, ControlOp, ControlReply};
+
+use crate::{blocking, error::ServerError, session::Database};
 
 /// The store root, the databases open under it, and the schema they share.
 pub struct Registry {

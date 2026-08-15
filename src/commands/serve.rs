@@ -6,7 +6,8 @@
 
 use std::{path::Path, sync::Arc};
 
-use aperture_server::{Registry, protocol, serve_unix};
+use aperture_server::{Registry, serve_unix};
+use aperture_wire::protocol;
 
 use crate::{CliError, code_index, commands};
 

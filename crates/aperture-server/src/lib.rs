@@ -8,9 +8,11 @@
 //! [`aperture-engine`](aperture_engine) compiles and runs — so what lives here is the
 //! *conversation*: which frame means what, and what a stream's life looks like.
 //!
-//! - [`protocol`] — the message vocabulary. Kept apart from the codec so a client can
-//!   be written against the wire format without adopting a server's idea of a
-//!   session, which is what the .NET client under `clients/dotnet` does.
+//! The **message vocabulary** is not here: it is
+//! [`aperture_wire::protocol`], shared with `aperture-client`, because nothing should
+//! have to depend on a server to speak to one
+//! ([operations §10](../../docs/aperture-cli-design.md)).
+//!
 //! - [`session`] — one connection, from handshake to close.
 //! - [`registry`] — the store root and the databases open under it, which is what
 //!   makes `create`, `finish` and `remove` work *against a running server*.
@@ -41,14 +43,12 @@
 pub(crate) mod blocking;
 pub mod error;
 pub mod outbound;
-pub mod protocol;
 pub mod registry;
 pub mod rows;
 pub mod server;
 pub mod session;
 
 pub use error::ServerError;
-pub use protocol::{Control, ControlOp, ControlReply, ErrorCode, Mode, Ready, Startup, VERSION};
 pub use registry::Registry;
 pub use server::{Listener, serve_unix};
 pub use session::{Database, serve};

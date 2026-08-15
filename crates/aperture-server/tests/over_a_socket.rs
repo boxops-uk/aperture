@@ -15,15 +15,13 @@ use std::{
 };
 
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
-use aperture_server::{
-    ErrorCode, Mode, Registry, Startup,
-    protocol::{self, kinds},
-    server::Listener,
-};
+use aperture_server::{Registry, server::Listener};
 use aperture_store::catalog::Catalog;
 use aperture_wire::{
-    Desc, FrameHeader, FrameKind, StreamId, WireFact, WireRef, WireValue, decode_desc,
-    encode_block, encode_frame, frame, value::decode_value,
+    Desc, ErrorCode, FrameHeader, FrameKind, Mode, Startup, StreamId, WireFact, WireRef, WireValue,
+    decode_desc, encode_block, encode_frame, frame,
+    protocol::{self, kinds},
+    value::decode_value,
 };
 use lasso::Rodeo;
 

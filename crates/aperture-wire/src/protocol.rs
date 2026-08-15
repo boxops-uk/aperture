@@ -1,6 +1,6 @@
 //! **The message vocabulary** — what a frame's payload means.
 //!
-//! [`aperture_wire::frame`] delimits messages and deliberately does not interpret
+//! [`frame`](crate::frame) delimits messages and deliberately does not interpret
 //! them. This is the layer that does: which kinds exist, what a startup frame
 //! carries, and what a stream's life looks like. Kept apart from the codec so a
 //! client can be written against the wire format without adopting a server's idea of
@@ -54,12 +54,12 @@
 //!
 //! # Numbers are varints, not fixed width
 //!
-//! Payload fields use the same [`varint`](aperture_wire::varint) the value codec
+//! Payload fields use the same [`varint`](crate::varint) the value codec
 //! does. The fixed-width fields in the format are exactly the ones something must
 //! *skip* without parsing — a frame's length, a block's — and a handshake field is
 //! never skipped.
 
-use aperture_wire::{WireError, varint};
+use crate::{WireError, varint};
 
 /// The protocol version this build speaks.
 ///
@@ -70,7 +70,7 @@ pub const VERSION: u32 = 1;
 
 /// Frame kinds this protocol assigns, beyond the ones the codec already names.
 pub mod kinds {
-    use aperture_wire::FrameKind;
+    use crate::FrameKind;
 
     /// Client → server, stream 0: open the session.
     pub const STARTUP: FrameKind = FrameKind(b'S');
