@@ -29,7 +29,7 @@
 //! wrong bytes?".
 //!
 //! The facts themselves are written as **well-typed Rust values** through
-//! [`focus::fact`](aperture::focus::fact), which is what a hand-written deriver would
+//! [`focus::fact`](aperture_store::fact), which is what a hand-written deriver would
 //! do: a plain struct, named fields, and the schema deciding the encoding order. The
 //! `Fact` impls below deliberately list their fields in the order that reads well rather
 //! than the order the schema declares, because getting that wrong by hand writes a fact
@@ -52,20 +52,23 @@ use std::{
 
 use aperture::focus::{
     compile::Compilation,
-    error::{ApertureError, StoreError},
-    fact::{Fact, ToValue, record},
-    fact_store::FactStore,
+    error::ApertureError,
     iter::{Executor, Iteratee, Stream},
     lexer::{Token, tokenize},
     plan::{Access, Address, FieldPath, Level, Plan, Project, SeekKey, Step},
     print,
-    store::{FjallDb, FjallStore},
     syntax::Ty,
 };
 use aperture_encoding::tuple::{Value, decode_key};
 use aperture_schema::{
     id::FactId,
     schema::{LocalInterner, Predicate, PredicateId, PredicateTy, Schema, SchemaInterner, Symbol},
+};
+use aperture_store::{
+    error::StoreError,
+    fact::{Fact, ToValue, record},
+    fact_store::FactStore,
+    store::{FjallDb, FjallStore},
 };
 use lasso::Rodeo;
 
@@ -106,7 +109,7 @@ const DECL: PredicateId = PredicateId(2);
 /// Record fields are listed **sorted by name**, as everywhere: a record's field order
 /// is part of its encoding. The `Fact` impls below deliberately do *not* list them in
 /// that order, because a hand-written deriver has no reason to know it — see
-/// [`focus::fact`](aperture::focus::fact).
+/// [`focus::fact`](aperture_store::fact).
 ///
 /// What each predicate is here to show:
 ///

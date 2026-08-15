@@ -3155,16 +3155,15 @@ mod tests {
         compile::Compilation,
         corpus,
         cst::CstNode,
-        fixture,
         fixtures::{collect_rows, i64_field, run_with_suspends, str_field},
         lower::lower,
-        mem_store::MemStore,
         parse::parse,
         plan::{Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Test},
         ty,
     };
     use aperture_encoding::tuple::Value;
     use aperture_schema::id::FactId;
+    use aperture_store::{fixture, mem_store::MemStore};
 
     // ---- driving the front end ---------------------------------------------
 
@@ -5423,7 +5422,7 @@ mod tests {
 
     // ---- running what it produced ------------------------------------------
 
-    /// The shared [`fixture`](crate::focus::fixture)'s facts, in memory — the same
+    /// The shared [`fixture`](aperture_store::fixture)'s facts, in memory — the same
     /// rows the corpus gate runs against a real store and the same rows the shell
     /// serves, so a shape asserted here and an answer asserted there are about one
     /// database.
@@ -5766,15 +5765,13 @@ pub mod proptest {
     use ::proptest::prelude::*;
     use lasso::Rodeo;
 
-    use crate::focus::{
-        mem_store::MemStore,
-        plan::proptest::{FieldTy, FieldVal},
-    };
+    use crate::focus::plan::proptest::{FieldTy, FieldVal};
     use aperture_encoding::tuple::{MARK_RECORD, MARK_TERM, Value, fact_ref_bytes};
     use aperture_schema::{
         id::FactId,
         schema::{Predicate, PredicateId, PredicateTy, Schema},
     };
+    use aperture_store::mem_store::MemStore;
 
     /// Bounds are tight for the same reason the executor's are: the reorderability
     /// property re-runs each case once per permutation of the body, and the resume
@@ -7505,7 +7502,6 @@ mod battery {
             Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
             proptest::{arb_interruption_schedule, cut_points},
         },
-        store::FjallDb,
         ty,
     };
     use ::proptest::prelude::*;
@@ -7514,6 +7510,7 @@ mod battery {
         id::FactId,
         schema::{LocalInterner, PredicateTy, Schema},
     };
+    use aperture_store::store::FjallDb;
     use std::collections::BTreeSet;
     use tempfile::TempDir;
 

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use byteview::ByteView;
 
-use crate::focus::{
+use crate::{
     error::StoreError,
     fact_store::{Entity, FactStore},
     store::predicate_of,

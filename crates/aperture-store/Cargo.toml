@@ -1,0 +1,31 @@
+[package]
+name = "aperture-store"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# The in-memory model store and the shared fixture database, for consumers
+# outside this crate's own `cfg(test)` — the engine's batteries, above all.
+proptest = ["dep:proptest"]
+
+[dependencies]
+aperture-encoding = { path = "../aperture-encoding" }
+aperture-schema = { path = "../aperture-schema" }
+byteview = { workspace = true }
+fjall = { workspace = true }
+lasso = { workspace = true }
+proptest = { version = "1.11.0", optional = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The I9 allocation guard's counting allocator, and the engine — the latter only
+# for `tests/i8_snapshot.rs`, the one store guard that has to run a query. Cargo
+# permits that cycle because it is a dev-dependency, and keeping the test outside
+# `src/` is what stops it compiling a second copy of this crate: a unit test
+# reaching back through the engine would probe a `FactStore` that is a different
+# type from the one under test.
+allocation-counter = "0.8.1"
+aperture = { path = "../..", features = ["proptest"] }
+proptest = "1.11.0"
+tempfile = "3"
+tokio-util = "0.7.18"

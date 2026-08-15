@@ -1,13 +1,13 @@
 //! The **storage seam**: what the engine is allowed to ask of a store.
 //!
-//! Its own module rather than a section of [`store`](crate::focus::store), which
+//! Its own module rather than a section of [`store`](crate::store), which
 //! is the fjall implementation, or of [`plan`](crate::focus::plan), where it used
 //! to live. A plan is a description; a store is a thing that answers. Keeping the
 //! trait where either implementation could be mistaken for the definition is what
 //! makes a seam quietly grow the shape of one side of it.
 //!
-//! Two implementations meet here: [`FjallDb`](crate::focus::store::FjallStore) on
-//! disk and [`MemStore`](crate::focus::mem_store::MemStore) in memory, held to
+//! Two implementations meet here: [`FjallDb`](crate::store::FjallStore) on
+//! disk and [`MemStore`](crate::mem_store::MemStore) in memory, held to
 //! each other as a differential oracle
 //! ([testing](../../docs/testing.md)). The executor consumes a `(handle,
 //! snapshot)` and assumes nothing about a connection, which is the cut that lets
@@ -16,7 +16,7 @@
 
 use byteview::ByteView;
 
-use crate::focus::error::StoreError;
+use crate::error::StoreError;
 use aperture_schema::id::FactId;
 
 #[derive(Debug)]

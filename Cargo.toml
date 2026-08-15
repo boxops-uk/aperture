@@ -9,6 +9,7 @@ default-members = [".", "crates/*"]
 # fjall pin in particular is load-bearing (see below).
 [workspace.dependencies]
 byteview = "0.10.1"
+fjall = "=3.1.8"
 memchr = "2.8.2"
 lasso = "0.7.3"
 serde = { version = "1.0.150", features = ["derive"] }
@@ -28,11 +29,12 @@ edition = "2024"
 # `dep:proptest` is what keeps the strategies' own dependency out of an ordinary
 # build: the modules that need the crate are exactly the ones this feature (or
 # `cfg(test)`, which the dev-dependency covers) turns on.
-proptest = ["dep:proptest", "aperture-encoding/proptest"]
+proptest = ["dep:proptest", "aperture-encoding/proptest", "aperture-store/proptest"]
 
 [dependencies]
 aperture-encoding = { path = "crates/aperture-encoding" }
 aperture-schema = { path = "crates/aperture-schema" }
+aperture-store = { path = "crates/aperture-store" }
 byteview = { workspace = true }
 codespan-reporting = "0.13.1"
 # Pinned exactly, not a caret requirement, for two reasons that compound.
@@ -46,7 +48,7 @@ codespan-reporting = "0.13.1"
 # is confined to test builds, so a move breaks the guard rather than the library
 # — but a pin is what makes the break happen when someone chooses to upgrade,
 # with the guard in front of them, instead of on an unrelated `cargo update`.
-fjall = "=3.1.8"
+fjall = { workspace = true }
 lasso = { workspace = true }
 logos = "0.16.1"
 memchr = { workspace = true }
@@ -70,6 +72,7 @@ tokio-util = "0.7.18"
 # dependency, so the feature is what the batteries here compile against — the
 # cross-crate form of the rule the feature comment above describes.
 aperture-encoding = { path = "crates/aperture-encoding", features = ["proptest"] }
+aperture-store = { path = "crates/aperture-store", features = ["proptest"] }
 # Allocation-counting global allocator for the I9 hot-path guard
 # (`exec::scan_is_alloc_free_per_row`). Its counters are thread-local, so it
 # survives the parallel test harness; it installs its own `#[global_allocator]`

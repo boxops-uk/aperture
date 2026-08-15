@@ -2,18 +2,13 @@ pub mod compile;
 pub mod cst;
 pub mod diag;
 pub mod error;
-pub mod fact;
-pub mod fact_store;
-pub mod fixture;
 pub mod flatten;
-pub mod format;
 pub mod iter;
 pub mod lower;
 pub mod parse;
 pub mod plan;
 pub mod print;
 pub mod reorder;
-pub mod store;
 pub mod syntax;
 pub mod ty;
 
@@ -27,9 +22,6 @@ pub mod parser;
 // Test-support surface: the in-memory store and the hand-built fixtures the
 // executor batteries import. Gated so `--features proptest` exposes them to
 // consumers outside `cfg(test)` too (see `docs/testing.md`).
-#[cfg(any(test, feature = "proptest"))]
-pub mod mem_store;
-
 #[cfg(any(test, feature = "proptest"))]
 pub mod fixtures;
 

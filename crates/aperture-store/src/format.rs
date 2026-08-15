@@ -32,12 +32,12 @@
 
 use std::fmt;
 
-use crate::focus::error::FormatError;
+use crate::error::FormatError;
 
 /// The keyspace holding database-level metadata — the stamp today, the embedded
 /// schema when [I13](../../docs/invariants.md#i13) lands.
 ///
-/// Not a predicate keyspace: [`FjallDb::open`](crate::focus::store::FjallDb::open)
+/// Not a predicate keyspace: [`FjallDb::open`](crate::store::FjallDb::open)
 /// recovers predicates by the `keys.`/`entities.` prefixes, which this name does
 /// not carry, so it is invisible to that walk.
 pub const META_KEYSPACE: &str = "meta";

@@ -42,6 +42,7 @@ dependencies = [
  "allocation-counter",
  "aperture-encoding",
  "aperture-schema",
+ "aperture-store",
  "byteview",
  "codespan-reporting",
  "fjall",
@@ -78,6 +79,23 @@ dependencies = [
  "lasso",
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "aperture-store"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "aperture",
+ "aperture-encoding",
+ "aperture-schema",
+ "byteview",
+ "fjall",
+ "lasso",
+ "proptest",
+ "tempfile",
+ "thiserror",
+ "tokio-util",
 ]
 
 [[package]]

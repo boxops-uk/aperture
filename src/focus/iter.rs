@@ -5,8 +5,7 @@ use tinyvec::ArrayVec;
 use tokio_util::sync::CancellationToken;
 
 use crate::focus::{
-    error::{ApertureError, StoreError},
-    fact_store::FactStore,
+    error::ApertureError,
     plan::{
         Access, Address, Computed, FieldPath, Plan, PlanFingerprint, Project, Residual, ResidualOp,
         SeekKey, SeekKeyPart, Source, Step, Test,
@@ -23,6 +22,8 @@ use aperture_schema::{
     id::FactId,
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId},
 };
+use aperture_store::error::StoreError;
+use aperture_store::fact_store::FactStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Register {
@@ -799,7 +800,7 @@ pub struct Entry {
 /// one and resumes at a position that means something else
 /// ([chapter 5](../../docs/05-resume.md)).
 ///
-/// Separate from the [DB format stamp](crate::focus::format): that says what is on
+/// Separate from the [DB format stamp](aperture_store::format): that says what is on
 /// disk and this says what is in flight, they move for different reasons, and a
 /// cursor is checked against the build that reads it rather than against a database.
 pub const CURSOR_VERSION: u16 = 1;
@@ -1308,22 +1309,20 @@ fn compute(value: &Computed) -> Value {
 mod tests {
     use super::*;
     use crate::focus::{
-        fact_store::Entity,
         fixtures::{
             FrozenStore, PointSpy, collect_rows, compose, count_rows, fact_ref_field, i64_field,
             interner_with, run_with_suspends, str_field,
         },
-        mem_store::MemStore,
         plan::{
             Access, DerivedBind, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
             SeekKeyPart,
             proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
-        store::FjallDb,
     };
     use ::proptest::prelude::*;
     use aperture_encoding::tuple::{MARK_NULL, Value, decode_probe};
     use aperture_schema::schema::{PredicateId, PredicateTy};
+    use aperture_store::{fact_store::Entity, mem_store::MemStore, store::FjallDb};
     use std::{collections::BTreeSet, sync::atomic::Ordering};
     use tempfile::TempDir;
 

@@ -10,7 +10,7 @@
 //!
 //! | Classification | Meaning |
 //! |---|---|
-//! | [`Expectation::Supported`] | parses, typechecks, is implemented, and **returns these rows** against the shared [`fixture`](crate::focus::fixture) |
+//! | [`Expectation::Supported`] | parses, typechecks, is implemented, and **returns these rows** against the shared [`fixture`](aperture_store::fixture) |
 //! | [`Expectation::Diagnosed`] | parses, then draws **one specific diagnostic code** — either "not yet implemented" or a rejection of something meaningless |
 //! | [`Expectation::ParseError`] | not focus at all; a parse diagnostic is the correct answer |
 //!
@@ -36,19 +36,20 @@
 //!
 //! # The database these entries run against
 //!
-//! The shared [`fixture`](crate::focus::fixture) — its schema, its facts, and the
+//! The shared [`fixture`](aperture_store::fixture) — its schema, its facts, and the
 //! same rows the shell serves, so a corpus entry is something a person can type at
 //! the prompt. Every `Supported` entry records what it returns, and the gate below
 //! runs it against a **real** `FjallDb` to check.
 //!
 //! [chapter 7]: ../../../docs/07-compilation.md
 
-use crate::focus::{diag::Code, fixture};
+use crate::focus::diag::Code;
 use Expectation::{Diagnosed, ParseError, Supported};
 use aperture_schema::schema::Schema;
+use aperture_store::fixture;
 
 /// The schema the corpus is written against — the shared
-/// [`fixture`](crate::focus::fixture), which the shell serves too.
+/// [`fixture`](aperture_store::fixture), which the shell serves too.
 #[must_use]
 pub fn schema() -> Schema {
     fixture::schema()
@@ -58,7 +59,7 @@ pub fn schema() -> Schema {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expectation {
     /// Parses, typechecks, produces a plan, and running it against the
-    /// [`fixture`](crate::focus::fixture) returns exactly these rows.
+    /// [`fixture`](aperture_store::fixture) returns exactly these rows.
     ///
     /// The rows are a *rendering* — `1`, `ann`, `{a = ann, b = 1}`,
     /// `test.Foo#1` for a reference — joined by `"; "`, and empty for no rows.
@@ -801,8 +802,9 @@ mod tests {
     /// reference is written as the fact it names rather than as a snowflake integer.
     #[test]
     fn every_supported_entry_returns_its_rows() {
-        use crate::focus::{compile::Compilation, fixture, store::FjallDb};
+        use crate::focus::compile::Compilation;
         use aperture_schema::id::FactId;
+        use aperture_store::{fixture, store::FjallDb};
 
         let dir = tempfile::tempdir().expect("a scratch directory");
         let db = FjallDb::open(dir.path()).expect("open");
@@ -871,7 +873,7 @@ mod tests {
 
     /// Run a plan to completion and render its rows.
     fn run(
-        db: &crate::focus::store::FjallDb,
+        db: &aperture_store::store::FjallDb,
         plan: crate::focus::plan::Plan,
         interner: &aperture_schema::schema::LocalInterner,
         schema: &Schema,

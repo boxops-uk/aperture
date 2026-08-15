@@ -43,7 +43,7 @@
 //! numbering. [`facts`] therefore yields the sequence alongside each fact, in the
 //! order it must be written, and every store built from it agrees fact for fact,
 //! ids included: an in-memory one takes the sequence directly, and a real
-//! [`FjallDb`](crate::focus::store::FjallDb) is checked against what its allocator
+//! [`FjallDb`](crate::store::FjallDb) is checked against what its allocator
 //! hands out.
 //!
 //! [I11]: ../../../docs/invariants.md#i11

@@ -59,7 +59,7 @@
 //! [chapter 6]: ../../../docs/06-types-and-schema.md
 //! [I11]: ../../../docs/invariants.md#i11
 
-use crate::focus::error::FactError;
+use crate::error::FactError;
 use aperture_encoding::tuple::{Value, encode_key, encode_typed};
 use aperture_schema::{
     id::FactId,
@@ -285,7 +285,7 @@ fn shape(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::focus::fixture;
+    use crate::fixture;
     use aperture_encoding::tuple::decode_key;
 
     /// `test.Foo : { id : int, name : string } -> string` — a record key whose

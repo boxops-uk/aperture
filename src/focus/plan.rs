@@ -1077,12 +1077,10 @@ pub mod proptest {
         Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
         SeekKeyPart, Source, Step,
     };
-    use crate::focus::{
-        fixtures::{compose, i64_field, interner_with, str_field},
-        mem_store::MemStore,
-    };
+    use crate::focus::fixtures::{compose, i64_field, interner_with, str_field};
     use aperture_encoding::tuple::Value;
     use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy};
+    use aperture_store::mem_store::MemStore;
 
     /// Bounds are deliberately tight: the resume battery re-runs a plan once per
     /// cut point, so the work per case is quadratic in the row count.

@@ -15,7 +15,7 @@
 //!   O(1) wholesale drop when a derived predicate is recomputed, and per-predicate
 //!   size/cardinality for free. Splitting `entities` too is what the snowflake
 //!   [`FactId`] buys:
-//!   [`point`](crate::focus::fact_store::FactStore::point) is handed a bare id, and the
+//!   [`point`](crate::fact_store::FactStore::point) is handed a bare id, and the
 //!   id's tag names the tree, so identity lookup stays one lookup. Were `entities`
 //!   shared, dropping a derived predicate's `keys` tree would strand its values as
 //!   unreclaimable garbage.
@@ -29,7 +29,7 @@
 //!   and buys byte-identical rows across this store and
 //!   `MemStore` (`src/focus/mem_store.rs`) — which is what lets the
 //!   resume battery ([I4](../../docs/invariants.md#i4)) transfer to fjall
-//!   unchanged, since a [`Cursor`](crate::focus::iter::Cursor) is bytes-only and
+//!   unchanged, since a [`Cursor`](aperture::focus::iter::Cursor) is bytes-only and
 //!   re-seeks by exactly these bytes.
 //!
 //! `FjallDb` is the long-lived handle and owns the id allocator
@@ -48,7 +48,7 @@ use std::{
 use byteview::ByteView;
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
 
-use crate::focus::{
+use crate::{
     error::{FormatError, StoreError},
     fact::{self, Fact},
     fact_store::{Entity, FactStore},
@@ -146,7 +146,7 @@ impl FjallDb {
         })
     }
 
-    /// Check the [format stamp](crate::focus::format), or write it if this
+    /// Check the [format stamp](crate::format), or write it if this
     /// database is new ([I15](../../docs/invariants.md#i15)).
     ///
     /// `holds_facts` is what separates the two cases, and it is asked of the
@@ -295,7 +295,7 @@ impl FjallDb {
     /// Write a **well-typed value** as a fact, checked against the schema.
     ///
     /// The way to write a fact by hand: name the predicate and its fields, and let
-    /// [`fact`](crate::focus::fact) resolve them — a field the predicate does not
+    /// [`fact`](crate::fact) resolve them — a field the predicate does not
     /// declare, one left out, one of the wrong shape, or a value side that should not
     /// be there is an error rather than bytes nobody can read back. See that module for
     /// why naming the fields is the point.
@@ -559,7 +559,7 @@ impl Iterator for FjallScan {
 ///
 /// Shared by every [`FactStore`], so the contract for a malformed bound is one
 /// behaviour rather than one per implementation.
-pub(crate) fn predicate_of(lo: &[u8]) -> Result<u32, StoreError> {
+pub fn predicate_of(lo: &[u8]) -> Result<u32, StoreError> {
     let prefix = lo
         .get(..PREDICATE_ID_SIZE)
         .ok_or(StoreError::ShortScanBound {
@@ -670,24 +670,15 @@ mod tests {
 
     use proptest::prelude::*;
     use tempfile::TempDir;
-    use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::focus::{
-        error::ApertureError,
+    use crate::{
         fixtures::{
-            DropProbe, FrozenStore, assert_scan_stays_in_predicate, assert_short_bound_is_rejected,
-            collect_rows, i64_field, interner_with,
+            FrozenStore, assert_scan_stays_in_predicate, assert_short_bound_is_rejected, i64_field,
         },
-        iter::{CANCELLATION_STRIDE, Executor, Iteratee, Stream},
         mem_store::MemStore,
-        plan::{
-            Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
-            SeekKeyPart, Step,
-        },
     };
     use aperture_encoding::tuple::strinc;
-    use aperture_schema::schema::PredicateTy;
 
     /// One fact as drawn: predicate, key bytes, value bytes.
     type FactDraw = (u32, Vec<u8>, Vec<u8>);
@@ -1423,14 +1414,14 @@ mod tests {
     /// broken.
     #[test]
     fn put_is_write_once_and_says_so_in_release() {
-        use crate::focus::{
+        use crate::{
             fact::{Fact as _, ToValue, record},
             fixture,
         };
         use aperture_encoding::tuple::Value;
 
         struct Foo(&'static str);
-        impl crate::focus::fact::Fact for Foo {
+        impl crate::fact::Fact for Foo {
             const PREDICATE: &'static str = "test.Foo";
             fn key(&self) -> Value {
                 record([("id", 1.to_value()), ("name", "ann".to_value())])
@@ -1543,7 +1534,11 @@ mod tests {
 
     /// Name of the child test that crashes mid-write for
     /// [`no_half_present_facts`], and the variable carrying it the DB path.
-    const CRASH_CHILD: &str = "focus::store::tests::crashing_writer_child_process";
+    /// The child's own test path, which is what `--exact` matches on. It moved
+    /// when this module became its own crate (`focus::store::tests::…` →
+    /// `store::tests::…`), and a stale path is a *passing* child rather than an
+    /// error — which the parent then reads as "the crash never happened".
+    const CRASH_CHILD: &str = "store::tests::crashing_writer_child_process";
     const CRASH_DIR_VAR: &str = "APERTURE_I12_CRASH_DIR";
 
     /// How many predicates the crashing writer spreads its facts across, and how
@@ -1613,214 +1608,6 @@ mod tests {
             assert!(!ids.contains(&id), "{id:?} was reissued after a crash");
         }
         assert_bijection(&db);
-    }
-
-    /// A two-level plan over `outer` and `inner`: scan `outer`, seek `inner` by the
-    /// outer row's first field, project the outer field. Two levels means two scans
-    /// are open at a mid-stream cut, so the probe is watching more than one thing.
-    fn two_level_plan(outer: PredicateId, inner: PredicateId) -> Plan {
-        Plan {
-            nvars: 2,
-            body: Step::levels([
-                Level::seek(
-                    Access {
-                        predicate_id: outer,
-                        seek_key: SeekKey::Prefix(Box::new([])),
-                    },
-                    Box::new([Address::new(0)]),
-                    Box::new([]),
-                ),
-                Level::seek(
-                    Access {
-                        predicate_id: inner,
-                        seek_key: SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
-                            address: Address::new(0),
-                            path: FieldPath::field(0),
-                        }])),
-                    },
-                    Box::new([Address::new(1)]),
-                    Box::new([]),
-                ),
-            ]),
-            head: Project::RegisterField {
-                address: Address::new(0),
-                path: FieldPath::field(0),
-                ty: PredicateTy::Int,
-            },
-        }
-    }
-
-    /// A DB whose two-level plan yields several rows: three `outer` facts, each
-    /// with two `inner` matches.
-    fn snapshot_probe_db() -> (FjallDb, TempDir, Plan) {
-        let dir = TempDir::new().expect("tempdir");
-        let db = FjallDb::open(dir.path()).expect("open");
-        let (outer, inner) = (PredicateId(0), PredicateId(1));
-
-        for x in 1i64..=3 {
-            db.put_fact(outer, &i64_field(x), &[]).expect("put");
-            for y in [10i64, 20] {
-                let key = [i64_field(x), i64_field(y)].concat();
-                db.put_fact(inner, &key, &[]).expect("put");
-            }
-        }
-
-        let plan = two_level_plan(outer, inner);
-        (db, dir, plan)
-    }
-
-    /// [I8](../../docs/invariants.md#i8) — an immutable snapshot per query,
-    /// released at **every** stop.
-    ///
-    /// A fjall scan pins a read snapshot, and a pinned snapshot keeps LSM blocks
-    /// and a whole superseded generation alive, so an idle portal must hold none.
-    /// `Executor::enumerate` takes `self` by value, which is what makes this
-    /// structural: done, suspend, cancel and error unwind all drop the frame stack
-    /// and the store handle. This asserts it for each of the four, against two
-    /// independent witnesses — the drop probe (which object is still alive) and
-    /// fjall's own open-snapshot count (whether the engine still considers the
-    /// snapshot open).
-    ///
-    /// Untestable on `MemStore`, whose scan copies rows out and pins nothing —
-    /// which is why fjall is pulled forward to Phase 1.
-    #[test]
-    fn snapshot_released_at_suspend() {
-        let (db, _dir, _) = snapshot_probe_db();
-        let (outer, inner) = (PredicateId(0), PredicateId(1));
-        let interner = interner_with(&[]);
-        let cancel = CancellationToken::new();
-
-        assert_eq!(db.open_snapshots(), 0, "a seeded DB holds no snapshot");
-
-        // Positive control: while a run is in flight, both witnesses must see the
-        // snapshot pinned. Without this the assertions below could pass vacuously.
-        //
-        // The two counts are independently derived and must agree exactly. fjall's
-        // tracker counts live *references* to a snapshot nonce — `Snapshot` holds
-        // one and each `Iter` clones it — so at a cut inside a two-level plan it
-        // reads 3: the reader plus one per open scan, which is precisely what the
-        // drop probe is counting.
-        let (probe, live) = DropProbe::new(db.reader());
-        assert_eq!(db.open_snapshots(), 1, "a reader must open a snapshot");
-        assert_eq!(live.load(Ordering::SeqCst), 1);
-
-        let mut mid_run = None;
-        let out = Executor::new(probe, two_level_plan(outer, inner))
-            .enumerate(
-                0usize,
-                |n, _row| {
-                    mid_run = Some((db.open_snapshots(), live.load(Ordering::SeqCst)));
-                    Ok(Stream::Suspend(n + 1))
-                },
-                &cancel,
-            )
-            .expect("run");
-
-        assert!(
-            matches!(out, Iteratee::Suspended(1, _)),
-            "expected a suspend"
-        );
-        assert_eq!(
-            mid_run,
-            Some((3, 3)),
-            "mid-run: expected the store handle plus two open scans, seen by both witnesses"
-        );
-        assert_eq!(
-            live.load(Ordering::SeqCst),
-            0,
-            "the executor kept a scan or the store handle alive past a suspend"
-        );
-        assert_eq!(
-            db.open_snapshots(),
-            0,
-            "a fjall snapshot survived a suspend — an idle portal is pinning LSM blocks"
-        );
-
-        // Running to completion releases it too.
-        let (probe, live) = DropProbe::new(db.reader());
-        let rows = collect_rows(probe, two_level_plan(outer, inner), &interner).expect("run");
-        assert_eq!(rows.len(), 6, "the plan must produce rows to be a real run");
-        assert_eq!(live.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            db.open_snapshots(),
-            0,
-            "a snapshot survived a completed run"
-        );
-
-        // An error unwinding out of `step` releases it: the executor is consumed on
-        // that path too, so there is no "failed query still holding a snapshot".
-        let (probe, live) = DropProbe::new(db.reader());
-        let failed = Executor::new(probe, two_level_plan(outer, inner)).enumerate(
-            (),
-            |(), _row| Err(ApertureError::AdvanceAfterClose),
-            &cancel,
-        );
-        assert!(failed.is_err(), "the step was supposed to fail");
-        assert_eq!(live.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            db.open_snapshots(),
-            0,
-            "a snapshot survived an error unwind"
-        );
-
-        // And a cancellation, which is the one stop that needs setting up rather
-        // than asking for: the token is polled every `CANCELLATION_STRIDE` rows
-        // examined, so the run has to be at least that long to reach a poll.
-        //
-        // The shape here is the *skipped*-row half — a residual that rejects the
-        // whole predicate bar one row — because that is the half where a snapshot
-        // is held across the most work. The matched-row half is
-        // `iter::a_matching_scan_observes_cancellation`, which is about the poll
-        // interval rather than the snapshot.
-        let dir = TempDir::new().expect("tempdir");
-        let big = FjallDb::open(dir.path()).expect("open");
-        let last = CANCELLATION_STRIDE as i64;
-        for x in 0..=last {
-            big.put_fact(outer, &i64_field(x), &[]).expect("put");
-        }
-
-        let filtered = Plan {
-            nvars: 1,
-            body: Step::levels([Level::seek(
-                Access {
-                    predicate_id: outer,
-                    seek_key: SeekKey::Prefix(Box::new([])),
-                },
-                Box::new([Address::new(0)]), // Matches only the final key, so the run skips every other row
-                // and trips the poll on the way.
-                Box::new([Residual {
-                    path: FieldPath::field(0),
-                    op: ResidualOp::EqConst(i64_field(last).into_boxed_slice()),
-                }]),
-            )]),
-            head: Project::RegisterField {
-                address: Address::new(0),
-                path: FieldPath::field(0),
-                ty: PredicateTy::Int,
-            },
-        };
-
-        let cancelled = CancellationToken::new();
-        cancelled.cancel();
-
-        let (probe, live) = DropProbe::new(big.reader());
-        let stopped = Executor::new(probe, filtered).enumerate(
-            0usize,
-            |n, _row| Ok(Stream::Continue(n + 1)),
-            &cancelled,
-        );
-
-        assert!(
-            matches!(stopped, Err(ApertureError::Cancelled)),
-            "expected the run to be cancelled, got {:?}",
-            stopped.map(|_| "a completed run")
-        );
-        assert_eq!(live.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            big.open_snapshots(),
-            0,
-            "a snapshot survived a cancellation"
-        );
     }
 
     /// Not a guard: the crashing half of [`no_half_present_facts`], run as a child
