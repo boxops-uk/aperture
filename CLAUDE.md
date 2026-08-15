@@ -38,6 +38,14 @@ index into a real database and queries it back — `./clients/dotnet/run-demo.sh
 exists to answer what the Rust tests cannot: whether the protocol is implementable from
 outside, by something that shares no constants, no enums and no unwritten assumptions.
 It has already earned that twice.
+Beside it, **`Aperture.Indexer` is that client pointed at somebody's real source** —
+Buildalyzer runs a design-time build per project out of process, Roslyn answers what
+every name in the result means, and the facts go down the same socket:
+`./clients/dotnet/index-repo.sh <checkout>`
+([its README](clients/dotnet/Aperture.Indexer/README.md)). That is where a database large
+enough to be worth measuring comes from, and it is the same argument as the demo's made
+at a size where it stops being an argument: a producer holding no fact ids, every
+reference nested, emitting in whatever order a syntax walk reaches things.
 It is also **a checked-in golden**: `./clients/dotnet/emit-golden.sh` writes the blocks
 it encodes for a fixed corpus, and `aperture-client`'s
 `byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes

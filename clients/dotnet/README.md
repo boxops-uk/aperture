@@ -15,6 +15,7 @@ order.
 |---|---|
 | `Aperture.Client` | the library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection |
 | `Aperture.Demo` | a console program that writes a small code index and queries it |
+| `Aperture.Indexer` | a **real** indexer — Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is ([its README](Aperture.Indexer/README.md)) |
 
 ## Running it
 
@@ -101,3 +102,20 @@ There is no test project: the console program *is* the test, and it is a better 
 than a unit suite would be, because it runs against the real server over a real socket.
 A unit test of this codec against constants copied from the Rust would prove the
 constants were copied.
+
+## The indexer
+
+`Aperture.Indexer` is the demo's argument made at scale: the same client library, the
+same nested references and the same handshake, driven by **Buildalyzer** (a design-time
+build per project, out of process) and **Roslyn** (what every name in the result means)
+over a checkout of somebody's real .NET source.
+
+```sh
+./clients/dotnet/index-repo.sh ~/src/SomeSolution
+```
+
+The demo answers *is the protocol implementable from outside*. The indexer answers the
+two questions after it: is it **usable** from outside by a producer with a real workload,
+and does the database hold up when the facts were not chosen to be convenient. It has its
+own [README](Aperture.Indexer/README.md) — what it maps onto the six predicates, what it
+resolves, and what the numbers it prints mean.

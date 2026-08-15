@@ -40,6 +40,12 @@ internal sealed record Options
     /// <summary>Stop after this many projects. 0 means all of them.</summary>
     public int MaxProjects { get; init; }
 
+    /// <summary>
+    /// How much of the machine to use: design-time builds at once — each its own
+    /// process — and files walked at once inside this one.
+    /// </summary>
+    public int Jobs { get; init; } = Math.Min(4, Environment.ProcessorCount);
+
     /// <summary>Let the design-time build restore first. Off is much faster when it is already restored.</summary>
     public bool Restore { get; init; } = true;
 
@@ -65,6 +71,7 @@ internal sealed record Options
           --batch <n>           facts per block (default: 4096)
           --max-files <n>       stop after n source files
           --max-projects <n>    stop after n projects
+          --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
           --no-refs             declarations only: no src.Ref, no src.Import
           --no-restore          do not let the design-time build restore first
           --syntax-only         skip MSBuild; glob *.cs and parse them
@@ -85,6 +92,7 @@ internal sealed record Options
         var socket = "/tmp/aperture.sock";
         var database = "code";
         int batch = 4096, maxFiles = 0, maxProjects = 0;
+        var jobs = Math.Min(4, Environment.ProcessorCount);
         bool references = true, restore = true, syntaxOnly = false;
         bool dryRun = false, smoke = true, verbose = false;
 
@@ -123,6 +131,7 @@ internal sealed record Options
                     case "--batch": batch = Number(); break;
                     case "--max-files": maxFiles = Number(); break;
                     case "--max-projects": maxProjects = Number(); break;
+                    case "--jobs": jobs = Math.Max(1, Number()); break;
                     case "--no-refs": references = false; break;
                     case "--no-restore": restore = false; break;
                     case "--syntax-only": syntaxOnly = true; break;
@@ -168,6 +177,7 @@ internal sealed record Options
             Batch = batch,
             MaxFiles = maxFiles,
             MaxProjects = maxProjects,
+            Jobs = jobs,
             References = references,
             Restore = restore,
             SyntaxOnly = syntaxOnly,

@@ -50,14 +50,14 @@ internal static class Program
         {
             projects = Loader.Load(options, Console.Out);
         }
-        catch (Exception failure) when (failure is IOException or InvalidOperationException)
+        catch (Exception failure) when (failure is IOException or InvalidOperationException or ArgumentException)
         {
             Console.Error.WriteLine($"could not load {options.Source}: {failure.Message}");
             return 1;
         }
 
         loading.Stop();
-        Console.WriteLine($"  {projects.Count} compilation(s) in {loading.Elapsed.TotalSeconds:F1}s");
+        Console.WriteLine($"  {projects.Count} project(s) to walk, loaded in {loading.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine();
 
         using var connection = Connect(options);
@@ -86,7 +86,15 @@ internal static class Program
                     break;
                 }
 
-                indexer.Index(project, _ =>
+                // Compiled here rather than up front, so one project's symbols are
+                // reachable only while that project is being walked.
+                if (project.Compile() is not { } compilation)
+                {
+                    Console.WriteLine($"  ! {project.Name}: no compilation, skipping it");
+                    continue;
+                }
+
+                indexer.Index(compilation, _ =>
                 {
                     // Every couple of seconds, not every file: a hundred thousand
                     // progress lines is not progress.
@@ -232,7 +240,7 @@ internal static class Program
 
                 foreach (var row in result.Rows.Take(5))
                 {
-                    Console.WriteLine($"    {Render(row)}");
+                    Console.WriteLine($"    {Render(row, result.Shape)}");
                 }
 
                 if (result.Rows.Count > 5)
@@ -249,13 +257,26 @@ internal static class Program
         }
     }
 
-    private static string Render(ApertureValue value) => value switch
+    /// <summary>
+    /// A row, named by the descriptor it came with.
+    /// </summary>
+    /// <remarks>
+    /// A record is positional on the wire — the names are in the row descriptor the
+    /// server sent once, at the head of the stream. Printing a row without them says
+    /// <c>{5, 283}</c> for a line and a column and leaves a reader to guess which is
+    /// which, and the two orders are both plausible.
+    /// </remarks>
+    private static string Render(ApertureValue value, ApertureType type) => (value, type) switch
     {
-        ApertureValue.Int number => number.Value.ToString(CultureInfo.InvariantCulture),
-        ApertureValue.Str text => $"\"{text.Value}\"",
-        ApertureValue.Ref { Value: ApertureRef.Id id } => $"#{id.FactId >> 40}:{id.FactId & 0xFFFFFFFFFF}",
-        ApertureValue.Ref { Value: ApertureRef.Nested nested } => $"<{Render(nested.Fact.Key)}>",
-        ApertureValue.Record record => "{" + string.Join(", ", record.Fields.Select(Render)) + "}",
+        (ApertureValue.Int number, _) => number.Value.ToString(CultureInfo.InvariantCulture),
+        (ApertureValue.Str text, _) => $"\"{text.Value}\"",
+        (ApertureValue.Ref { Value: ApertureRef.Id id }, _) => $"#{id.FactId >> 40}:{id.FactId & 0xFFFFFFFFFF}",
+
+        (ApertureValue.Record record, ApertureType.Record shape)
+            when record.Fields.Count == shape.Fields.Count =>
+            "{" + string.Join(", ", record.Fields.Select((field, index) =>
+                $"{shape.Fields[index].Name} = {Render(field, shape.Fields[index].Type)}")) + "}",
+
         _ => "?",
     };
 

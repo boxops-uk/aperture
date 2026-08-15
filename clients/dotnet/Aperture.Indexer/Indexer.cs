@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 
 using Aperture.Client;
@@ -41,7 +42,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
 
     /// <summary>A declaration fact, the module it was declared in, and how often it was named.</summary>
     /// <remarks>
-    /// <paramref name="Uses"/> is counted for one reason only: to have a name worth
+    /// <see cref="Uses"/> is counted for one reason only: to have a name worth
     /// querying at the end of a run. Which declaration a repository leans on hardest is
     /// not knowable in advance, and a smoke query against an arbitrary name can quietly
     /// return nothing and look like it worked.
@@ -75,6 +76,17 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
     private readonly HashSet<string> _walked = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// The one lock: everything above, the counters, and the sink.
+    /// </summary>
+    /// <remarks>
+    /// One rather than several because the things it guards are reached through each
+    /// other — a reference wants a declaration, which wants a module, which wants a
+    /// file, and each may emit a fact. Several locks in that shape is an ordering
+    /// problem nobody needs for critical sections this short.
+    /// </remarks>
+    private readonly Lock _gate = new();
+
+    /// <summary>
     /// Symbol to declaration, for one compilation.
     /// </summary>
     /// <remarks>
@@ -105,18 +117,41 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
 
     private int _sampleUses;
 
-    public bool Exhausted => options.MaxFiles > 0 && Files >= options.MaxFiles;
+    public bool Exhausted => options.MaxFiles > 0 && _claimed >= options.MaxFiles;
 
-    /// <summary>Index one project, reporting each file as it is finished.</summary>
-    public void Index(LoadedProject project, Action<string>? onFile = null)
+    /// <summary>Files handed to the walk, which is what `--max-files` counts.</summary>
+    private int _claimed;
+
+    /// <summary>
+    /// Index one project, reporting each file as it is finished.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Which files, decided in order; then walked in parallel.</b> Asking a symbol
+    /// what it means is most of the cost of indexing, a <see cref="Compilation"/> is
+    /// thread-safe, and separate semantic models over one compilation are exactly what
+    /// an IDE runs concurrently all day. What must not become concurrent is <i>which</i>
+    /// files: choosing them sequentially is what keeps <c>--max-files 2000</c> the same
+    /// two thousand files on every run.
+    /// </para>
+    /// <para>
+    /// Everything downstream of the symbol — the memos, the counters, the sink — is
+    /// under one lock. The critical sections are dictionary work between binding calls
+    /// that are far longer, and holding the sink's flush inside the lock is
+    /// backpressure rather than a cost: a write stream is one at a time anyway.
+    /// </para>
+    /// </remarks>
+    public void Index(Compilation compilation, Action<string>? onFile = null)
     {
         _declarations = new Dictionary<ISymbol, Declared?>(SymbolEqualityComparer.Default);
 
-        foreach (var tree in project.Compilation.SyntaxTrees)
+        var walking = new List<(SyntaxTree Tree, string Path)>();
+
+        foreach (var tree in compilation.SyntaxTrees)
         {
             if (Exhausted)
             {
-                return;
+                break;
             }
 
             var path = Relative(tree.FilePath);
@@ -126,23 +161,41 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
                 continue;
             }
 
-            IndexTree(project.Compilation.GetSemanticModel(tree), tree, path);
-
-            Files++;
-            onFile?.Invoke(path);
+            walking.Add((tree, path));
+            _claimed++;
         }
+
+        Parallel.ForEach(
+            walking,
+            new ParallelOptions { MaxDegreeOfParallelism = options.Jobs },
+            item =>
+            {
+                IndexTree(compilation.GetSemanticModel(item.Tree), item.Tree, item.Path);
+
+                lock (_gate)
+                {
+                    Files++;
+                    onFile?.Invoke(item.Path);
+                }
+            });
     }
 
     private void IndexTree(SemanticModel model, SyntaxTree tree, string path)
     {
         var syntax = tree.GetRoot();
-        var file = FileOf(path);
+        ApertureFact file;
+        Module here;
 
-        // The file's own module, for the dependency edges below. A file may declare
-        // more than one namespace — each declaration is filed under its own — but the
-        // edge "this file depends on that one" needs a single end, and the first
-        // namespace in the file is the one that names it.
-        var here = ModuleFor(path, PrimaryNamespace(syntax));
+        lock (_gate)
+        {
+            file = FileOf(path);
+
+            // The file's own module, for the dependency edges below. A file may declare
+            // more than one namespace — each declaration is filed under its own — but
+            // the edge "this file depends on that one" needs a single end, and the first
+            // namespace in the file is the one that names it.
+            here = ModuleFor(path, PrimaryNamespace(syntax));
+        }
 
         foreach (var node in syntax.DescendantNodes())
         {
@@ -177,9 +230,12 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
     {
         if (model.GetDeclaredSymbol(node) is { } symbol)
         {
-            // The fact is emitted by `DeclFor` the first time the symbol is reached, by
-            // whichever path reaches it first. Here that is its own declaration.
-            DeclFor(symbol);
+            lock (_gate)
+            {
+                // The fact is emitted by `DeclFor` the first time the symbol is reached,
+                // by whichever path reaches it first. Here that is its own declaration.
+                DeclFor(symbol);
+            }
         }
     }
 
@@ -196,7 +252,11 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
 
         if (symbol is null)
         {
-            Unresolved++;
+            lock (_gate)
+            {
+                Unresolved++;
+            }
+
             return;
         }
 
@@ -208,39 +268,48 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
             return;
         }
 
-        if (DeclFor(symbol) is not { } target)
+        // The symbol is resolved; from here on it is bookkeeping, and bookkeeping is
+        // shared.
+        lock (_gate)
         {
-            External++;
-            return;
-        }
-
-        var at = name.Identifier.GetLocation().GetLineSpan().StartLinePosition;
-        sink.Add(CodeIndex.Ref, CodeIndex.RefFact(at.Line + 1, at.Character + 1, file, target.Fact));
-        References++;
-
-        if (++target.Uses > _sampleUses)
-        {
-            _sampleUses = target.Uses;
-            SampleName = target.Name;
-        }
-
-        // The dependency edge the reference implies. In C# a `using` names a namespace,
-        // which is declared across many files and says nothing about which of them this
-        // one needs; what carries that is where the names actually resolved to.
-        if (target.Module.Id != here.Id)
-        {
-            var edge = ((long)here.Id << 32) | (uint)target.Module.Id;
-
-            if (_imports.Add(edge))
+            if (DeclFor(symbol) is not { } target)
             {
-                sink.Add(CodeIndex.Import, CodeIndex.ImportFact(here.Fact, target.Module.Fact));
+                External++;
+                return;
+            }
+
+            var at = name.Identifier.GetLocation().GetLineSpan().StartLinePosition;
+            sink.Add(CodeIndex.Ref, CodeIndex.RefFact(at.Line + 1, at.Character + 1, file, target.Fact));
+            References++;
+
+            if (++target.Uses > _sampleUses)
+            {
+                _sampleUses = target.Uses;
+                SampleName = target.Name;
+            }
+
+            // The dependency edge the reference implies. In C# a `using` names a
+            // namespace, which is declared across many files and says nothing about
+            // which of them this one needs; what carries that is where the names
+            // actually resolved to.
+            if (target.Module.Id != here.Id)
+            {
+                var edge = ((long)here.Id << 32) | (uint)target.Module.Id;
+
+                if (_imports.Add(edge))
+                {
+                    sink.Add(CodeIndex.Import, CodeIndex.ImportFact(here.Fact, target.Module.Fact));
+                }
             }
         }
     }
 
     /// <summary>The declaration a symbol names, or nothing if it is not in this index.</summary>
+    /// <remarks>Called with <see cref="_gate"/> held: it memoises, counts and emits.</remarks>
     private Declared? DeclFor(ISymbol symbol)
     {
+        Debug.Assert(_gate.IsHeldByCurrentThread, "the declaration memo is shared");
+
         symbol = Canonical(symbol);
 
         if (_declarations.TryGetValue(symbol, out var known))
@@ -339,6 +408,8 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
 
     private ApertureFact FileOf(string path)
     {
+        Debug.Assert(_gate.IsHeldByCurrentThread, "the file memo is shared");
+
         if (_files.TryGetValue(path, out var known))
         {
             return known;
@@ -352,6 +423,8 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
 
     private Module ModuleFor(string path, string name)
     {
+        Debug.Assert(_gate.IsHeldByCurrentThread, "the module memo is shared");
+
         if (_modules.TryGetValue((path, name), out var known))
         {
             return known;

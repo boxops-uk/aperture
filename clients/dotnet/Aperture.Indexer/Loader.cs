@@ -8,8 +8,16 @@ using Microsoft.CodeAnalysis.CSharp;
 
 namespace Aperture.Indexer;
 
-/// <summary>A project, compiled and ready to walk.</summary>
-internal sealed record LoadedProject(string Name, Compilation Compilation);
+/// <summary>
+/// A project, and the compilation of it — on demand.
+/// </summary>
+/// <remarks>
+/// A function rather than a compilation, because asking for one materialises every
+/// symbol table in it. Over four hundred projects that is the difference between a
+/// machine indexing and a machine swapping; asked for one at a time, each is reachable
+/// only while it is being walked.
+/// </remarks>
+internal sealed record LoadedProject(string Name, Func<Compilation?> Compile);
 
 /// <summary>
 /// Turning a checkout into compilations, which is the half of an indexer that is not
@@ -53,49 +61,64 @@ internal static class Loader
 
         var workspace = new AdhocWorkspace();
         var analyzers = Analyzers(entry, options, log);
+
+        if (options.MaxProjects > 0 && analyzers.Count > options.MaxProjects)
+        {
+            log.WriteLine($"  stopping at {options.MaxProjects} projects (--max-projects)");
+            analyzers = analyzers.Take(options.MaxProjects).ToList();
+        }
+
+        // Each design-time build is its own `dotnet msbuild` process, so several at once
+        // is several processes and not several threads in this one. That is what makes
+        // it worth doing: a few hundred projects at three seconds each is the difference
+        // between a coffee and a lunch, and the results are independent.
+        var results = new IAnalyzerResult?[analyzers.Count];
+
+        Parallel.For(0, analyzers.Count, new ParallelOptions { MaxDegreeOfParallelism = options.Jobs }, index =>
+        {
+            results[index] = BuildOne(analyzers[index], options, log);
+        });
+
         var built = 0;
         var failed = 0;
 
-        foreach (var analyzer in analyzers)
+        // Added in the order the solution lists them rather than the order they
+        // finished, so two runs over one checkout produce the same index.
+        foreach (var result in results)
         {
-            if (options.MaxProjects > 0 && built >= options.MaxProjects)
-            {
-                log.WriteLine($"  stopping at {options.MaxProjects} projects (--max-projects)");
-                break;
-            }
-
-            var name = Path.GetFileName(analyzer.ProjectFile.Path);
-            var started = DateTime.UtcNow;
-
-            IAnalyzerResults results;
-            try
-            {
-                results = analyzer.Build(BuildOptions(options));
-            }
-            catch (Exception failure)
-            {
-                log.WriteLine($"  ! {name}: the design-time build threw — {failure.Message}");
-                failed++;
-                continue;
-            }
-
-            var result = Preferred(results);
-
             if (result is null)
             {
-                log.WriteLine($"  ! {name}: the design-time build failed, skipping it");
                 failed++;
                 continue;
             }
 
-            // `addProjectReferences: true` pulls in whatever this project references and
-            // is not already here, which is what makes a cross-project reference resolve
-            // to source rather than to a metadata symbol with no location to point at.
-            result.AddToWorkspace(workspace, addProjectReferences: true);
-            built++;
+            // **It may already be here, and by its own doing.** The previous project's
+            // add pulled its project references in with it, and one of those may be this
+            // one — a test project sorts before the library it tests as often as not.
+            // Adding it twice throws and takes the whole run with it.
+            if (Holds(workspace, result.ProjectFilePath))
+            {
+                built++;
+                continue;
+            }
 
-            var elapsed = (DateTime.UtcNow - started).TotalSeconds;
-            log.WriteLine($"  built {name} ({result.TargetFramework}, {result.SourceFiles.Length} files, {elapsed:F1}s)");
+            try
+            {
+                // `addProjectReferences: true` pulls in whatever this project references
+                // and is not already here, which is what makes a cross-project reference
+                // resolve to source rather than to a metadata symbol with no location to
+                // point at.
+                result.AddToWorkspace(workspace, addProjectReferences: true);
+                built++;
+            }
+            catch (InvalidOperationException refused)
+            {
+                // One project the workspace will not take is not worth the other four
+                // hundred.
+                log.WriteLine($"  ! {Path.GetFileName(result.ProjectFilePath)}: "
+                    + $"the workspace refused it — {refused.Message}");
+                failed++;
+            }
         }
 
         if (built == 0)
@@ -112,24 +135,72 @@ internal static class Loader
             log.WriteLine($"  {failed} project(s) skipped, {built} built");
         }
 
-        var loaded = new List<LoadedProject>();
+        // Ordered by path, not by whatever order the workspace hands them back: with
+        // `--max-files` the order decides *which* files get indexed, and a run that
+        // indexes a different two thousand each time is not a measurement.
+        return workspace.CurrentSolution.Projects
+            .Where(project => project.Language == LanguageNames.CSharp)
+            .OrderBy(project => project.FilePath ?? project.Name, StringComparer.Ordinal)
+            .Select(project => new LoadedProject(
+                project.Name,
+                () => project.GetCompilationAsync().GetAwaiter().GetResult()))
+            .ToList();
+    }
 
-        foreach (var project in workspace.CurrentSolution.Projects)
+    /// <summary>Whether the workspace already has the project at <paramref name="path"/>.</summary>
+    private static bool Holds(Workspace workspace, string? path) =>
+        path is not null
+        && workspace.CurrentSolution.Projects.Any(project =>
+            project.FilePath is { } held
+            && string.Equals(Path.GetFullPath(held), Path.GetFullPath(path), StringComparison.Ordinal));
+
+    /// <summary>One project's design-time build, or nothing and a reason.</summary>
+    private static IAnalyzerResult? BuildOne(IProjectAnalyzer analyzer, Options options, TextWriter log)
+    {
+        var name = Path.GetFileName(analyzer.ProjectFile.Path);
+        var started = DateTime.UtcNow;
+
+        IAnalyzerResults results;
+
+        try
         {
-            if (project.Language != LanguageNames.CSharp)
-            {
-                continue;
-            }
-
-            var compilation = project.GetCompilationAsync().GetAwaiter().GetResult();
-
-            if (compilation is not null)
-            {
-                loaded.Add(new LoadedProject(project.Name, compilation));
-            }
+            results = analyzer.Build(BuildOptions(options));
+        }
+        catch (Exception failure)
+        {
+            Say($"  ! {name}: the design-time build threw — {failure.Message}");
+            return null;
         }
 
-        return loaded;
+        if (Preferred(results) is not { } result)
+        {
+            // The first error is nearly always the real one, and a repository that will
+            // not restore says so in the same three words four hundred times.
+            var reason = results.BuildEventArguments
+                .OfType<Microsoft.Build.Framework.BuildErrorEventArgs>()
+                .Select(error => error.Message)
+                .FirstOrDefault();
+
+            Say($"  ! {name}: the design-time build failed, skipping it"
+                + (reason is null ? string.Empty : $" — {reason}"));
+
+            return null;
+        }
+
+        var elapsed = (DateTime.UtcNow - started).TotalSeconds;
+        Say($"  built {name} ({result.TargetFramework}, {result.SourceFiles.Length} files, {elapsed:F1}s)");
+
+        return result;
+
+        // Several builds run at once, and a half-interleaved progress line is worse
+        // than a slightly delayed one.
+        void Say(string line)
+        {
+            lock (log)
+            {
+                log.WriteLine(line);
+            }
+        }
     }
 
     /// <summary>Every project the entry point names.</summary>
@@ -257,13 +328,20 @@ internal static class Loader
             ? options.Source
             : Path.GetDirectoryName(options.Source)!;
 
-        var files = Directory
+        var found = Directory
             .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
             .Where(Indexable)
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToList();
 
-        log.WriteLine($"  syntax-only: {files.Count} file(s) under {root}");
+        // `--max-files` bounds the *parse* here, not just the walk. Parsing seventeen
+        // thousand files to index two thousand of them is the wrong shape for the flag
+        // people reach for when they want a quick answer.
+        var files = options.MaxFiles > 0 && found.Count > options.MaxFiles
+            ? found.Take(options.MaxFiles).ToList()
+            : found;
+
+        log.WriteLine($"  syntax-only: {files.Count} of {found.Count} file(s) under {root}");
 
         var parse = new CSharpParseOptions(LanguageVersion.Preview);
         var trees = new List<SyntaxTree>(files.Count);
@@ -294,7 +372,7 @@ internal static class Loader
             references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
-        return new LoadedProject("syntax-only", compilation);
+        return new LoadedProject("syntax-only", () => compilation);
 
         static bool Indexable(string path) =>
             !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
