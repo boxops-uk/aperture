@@ -121,7 +121,7 @@ pub fn render_profile(profile: &aperture_client::QueryProfile, rows: u64) -> Str
 }
 
 /// Connect, turning "nothing is listening" into the error §2 asks for.
-fn connect(socket: &Path, database: &str, mode: Mode) -> Result<Connection, CliError> {
+pub(crate) fn connect(socket: &Path, database: &str, mode: Mode) -> Result<Connection, CliError> {
     use std::io::ErrorKind;
 
     match Connection::connect(

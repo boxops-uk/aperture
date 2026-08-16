@@ -12,6 +12,7 @@ pub mod list;
 pub mod query;
 pub mod rm;
 pub mod serve;
+pub mod shell;
 
 use std::{path::Path, sync::Arc};
 

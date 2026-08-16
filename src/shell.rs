@@ -2,9 +2,15 @@
 //!
 //! Phase 5's REPL, moved under the command tree unchanged. It is *embedded* and
 //! self-contained: it makes its own database, seeds it, answers queries, and throws
-//! it away. [Phase 9f](../PLAN.md) re-points it at the wire client and gives it a
-//! database to connect to, which is when `\more` finally holds a cursor across a
-//! round trip — the thing I4 and I8 have never had an interactive exerciser for.
+//! it away.
+//!
+//! **Phase 9f added a second shell rather than re-pointing this one**, which is a
+//! change from what this file used to predict. `aperture shell <db>` is
+//! [`crate::commands::shell`] — always over the wire, and where `\more` holds a cursor
+//! across a round trip. What kept this one alive is `:plan` and `:type`: they need a
+//! compiler in the same process as the question, and a client holds a query's text and
+//! never its plan. So the split is not two ways of doing one thing — it is the two
+//! things a person actually wants, and the argument says which.
 //!
 //! `aperture` — an interactive shell for the focus language.
 //!
@@ -384,7 +390,7 @@ fn colour(token: Token) -> &'static str {
     }
 }
 
-struct FocusHelper;
+pub(crate) struct FocusHelper;
 
 impl FocusHelper {
     /// Where this line's **focus source** begins, if any.
@@ -644,7 +650,7 @@ fn colours_enabled() -> bool {
 /// words, and separating types from field names is the whole reason to colour this at
 /// all — so they are painted as keywords on that assumption.
 #[derive(Clone, Copy)]
-enum Role {
+pub(crate) enum Role {
     /// A predicate name, or a reference to one — `src.Decl`.
     Predicate,
     /// A record field name — `line`.
@@ -666,7 +672,7 @@ impl Role {
         }
     }
 
-    fn paint(self, text: &str) -> String {
+    pub(crate) fn paint(self, text: &str) -> String {
         if !colours_enabled() {
             return text.to_owned();
         }
@@ -674,7 +680,11 @@ impl Role {
     }
 }
 
-fn render_predicate_ty(ty: &PredicateTy, schema: &Schema, interner: &SchemaInterner) -> String {
+pub(crate) fn render_predicate_ty(
+    ty: &PredicateTy,
+    schema: &Schema,
+    interner: &SchemaInterner,
+) -> String {
     match ty {
         PredicateTy::Int => Role::Keyword.paint("int"),
         PredicateTy::Str => Role::Keyword.paint("str"),

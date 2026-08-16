@@ -75,6 +75,15 @@ pub enum CliError {
         socket.display()
     )]
     RootHeld { root: PathBuf, socket: PathBuf },
+
+    /// The terminal, rather than anything Aperture did.
+    ///
+    /// Its own variant because it is the one failure here that says nothing about the
+    /// database: a readline that cannot open a tty is a fact about where the tool was
+    /// run, and folding it into [`Io`](CliError::Io) would file it under "a pipe
+    /// closed".
+    #[error("the shell could not start: {0}")]
+    Shell(String),
 }
 
 fn main() -> ExitCode {
@@ -180,7 +189,13 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             Ok(())
         }
 
-        Command::Shell => Ok(shell::main()?),
+        // Two shells, and the argument is the whole difference. Named or not, neither
+        // one silently opens a store root a server might hold: the wire shell connects
+        // or says nothing is listening, and the demo makes its own scratch database.
+        Command::Shell { database } => match database {
+            Some(database) => commands::shell::run(socket, database),
+            None => Ok(shell::main()?),
+        },
 
         Command::Db(DbCommand::Rm { name, yes }) => {
             if !*yes {

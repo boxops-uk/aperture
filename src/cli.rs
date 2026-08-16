@@ -98,7 +98,16 @@ pub enum Command {
     },
 
     /// An interactive REPL.
-    Shell,
+    ///
+    /// With a database, it is the product shell: **always over the wire**, so the
+    /// format has a permanent exerciser and `\more` holds a real cursor across a real
+    /// round trip. With none, it is Phase 5's embedded demo over a scratch database it
+    /// seeds itself — which is where `:plan` and `:type` live, a plan being a thing a
+    /// client never holds.
+    Shell {
+        /// The database to connect to.
+        database: Option<String>,
+    },
 
     /// Administrative commands.
     #[command(subcommand)]
