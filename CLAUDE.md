@@ -46,6 +46,12 @@ every name in the result means, and the facts go down the same socket:
 enough to be worth measuring comes from, and it is the same argument as the demo's made
 at a size where it stops being an argument: a producer holding no fact ids, every
 reference nested, emitting in whatever order a syntax walk reaches things.
+**It is also what the built-in schema's other sixteen predicates are for.** `code_index`
+holds three layers: the source one `example/index.py` fills, a **build layer** (project,
+assembly, compilation, the two dependency graphs) and a **declaration graph** (member,
+extends, implements, override, parameter, type, doc, attribute) — each answerable only
+by something holding a compiler and a build system, which is what makes this client part
+of the schema rather than a consumer of it.
 It is also **a checked-in golden**: `./clients/dotnet/emit-golden.sh` writes the blocks
 it encodes for a fixed corpus, and `aperture-client`'s
 `byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes

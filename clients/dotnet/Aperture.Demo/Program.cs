@@ -48,6 +48,16 @@ const uint Module = 1;
 const uint Decl = 2;
 const uint Reference = 4;
 
+// The build layer and the declaration graph. This program writes none of them — it is
+// six declarations somebody typed out, and they are answered by a compiler — but the
+// fingerprint is over the *whole* schema, so a client that omits them is a client the
+// handshake refuses. `Aperture.Indexer` is what fills them.
+const uint Project = 6;
+const uint Assembly = 7;
+const uint Package = 11;
+const uint Param = 17;
+const uint Doc = 19;
+
 var schema = new ApertureSchema([
     new AperturePredicate("src.File", ApertureType.String, null),
 
@@ -78,6 +88,71 @@ var schema = new ApertureSchema([
     new AperturePredicate("src.Import", ApertureType.Rec(
         ("from", ApertureType.Reference(Module)),
         ("to", ApertureType.Reference(Module))), null),
+
+    // ---- the build layer: what compiled a file, and into what ---------------------
+
+    new AperturePredicate("src.Project", ApertureType.String, null),
+
+    new AperturePredicate("src.Assembly", ApertureType.String, null),
+
+    new AperturePredicate("src.Compilation", ApertureType.Rec(
+        ("assembly", ApertureType.Reference(Assembly)),
+        ("framework", ApertureType.String),
+        ("project", ApertureType.Reference(Project))), null),
+
+    new AperturePredicate("src.ProjectSource", ApertureType.Rec(
+        ("file", ApertureType.Reference(File)),
+        ("project", ApertureType.Reference(Project))), null),
+
+    new AperturePredicate("src.ProjectRef", ApertureType.Rec(
+        ("from", ApertureType.Reference(Project)),
+        ("to", ApertureType.Reference(Project))), null),
+
+    new AperturePredicate("src.Package", ApertureType.Rec(
+        ("name", ApertureType.String),
+        ("version", ApertureType.String)), null),
+
+    new AperturePredicate("src.PackageRef", ApertureType.Rec(
+        ("package", ApertureType.Reference(Package)),
+        ("project", ApertureType.Reference(Project))), null),
+
+    // ---- the declaration graph ----------------------------------------------------
+
+    new AperturePredicate("src.Member", ApertureType.Rec(
+        ("container", ApertureType.Reference(Decl)),
+        ("member", ApertureType.Reference(Decl))), null),
+
+    new AperturePredicate("src.Extends", ApertureType.Rec(
+        ("base", ApertureType.Reference(Decl)),
+        ("type", ApertureType.Reference(Decl))), null),
+
+    new AperturePredicate("src.Implements", ApertureType.Rec(
+        ("iface", ApertureType.Reference(Decl)),
+        ("type", ApertureType.Reference(Decl))), null),
+
+    new AperturePredicate("src.Override", ApertureType.Rec(
+        ("base", ApertureType.Reference(Decl)),
+        ("member", ApertureType.Reference(Decl))), null),
+
+    new AperturePredicate("src.Param", ApertureType.Rec(
+        ("decl", ApertureType.Reference(Decl)),
+        ("index", ApertureType.Integer),
+        ("name", ApertureType.String)), ApertureType.String),
+
+    // A key of one field, which encodes as the bare reference does.
+    new AperturePredicate("src.TypeOf", ApertureType.Rec(
+        ("decl", ApertureType.Reference(Decl))), ApertureType.String),
+
+    new AperturePredicate("src.Doc", ApertureType.Rec(
+        ("decl", ApertureType.Reference(Decl))), ApertureType.String),
+
+    new AperturePredicate("src.Attribute", ApertureType.Rec(
+        ("attribute", ApertureType.String),
+        ("target", ApertureType.Reference(Decl))), null),
+
+    new AperturePredicate("src.Line", ApertureType.Rec(
+        ("file", ApertureType.Reference(File)),
+        ("line", ApertureType.Integer)), ApertureType.String),
 ]);
 
 if (goldenPath is not null)
@@ -253,6 +328,40 @@ void EmitGolden(string path)
                 ApertureValue.Of(ApertureRef.To(FileFact("query/plan.py"))),
                 ApertureValue.Of(ApertureRef.To(
                     DeclFact("store/keys.py", "keys", "def", 12, "key_of"))))),
+        ]),
+
+        // A reference in the *middle* of a key, an integer after it, and a value side
+        // behind all three — none of which the three blocks above put together.
+        ("src.Param", Param,
+        [
+            new(Param,
+                ApertureValue.Rec(
+                    ApertureValue.Of(ApertureRef.To(
+                        DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
+                    ApertureValue.Of(0L),
+                    ApertureValue.Of("key")),
+                ApertureValue.Of("bytes")),
+
+            // A negative, because zigzag is where two codecs that agree about every
+            // positive integer can still disagree. A parameter is never at index -1;
+            // this corpus is chosen for what it reaches, not for what it means.
+            new(Param,
+                ApertureValue.Rec(
+                    ApertureValue.Of(ApertureRef.To(
+                        DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
+                    ApertureValue.Of(-1L),
+                    ApertureValue.Of("rest")),
+                ApertureValue.Of("int")),
+        ]),
+
+        // A key of one field, which encodes as the bare reference does — and would go
+        // on doing so if either client quietly started framing records.
+        ("src.Doc", Doc,
+        [
+            new(Doc,
+                ApertureValue.Rec(ApertureValue.Of(ApertureRef.To(
+                    DeclFact("query/plan.py", "plan", "class", 5, "Plan")))),
+                ApertureValue.Of("A plan is an ordered list of steps.")),
         ]),
     ];
 

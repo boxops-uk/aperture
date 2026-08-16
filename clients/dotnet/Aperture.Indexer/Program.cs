@@ -44,11 +44,11 @@ internal static class Program
         Console.WriteLine($"  schema fingerprint {CodeIndex.Schema.Fingerprint():x16}");
 
         var loading = Stopwatch.StartNew();
-        IReadOnlyList<LoadedProject> projects;
+        LoadedSolution solution;
 
         try
         {
-            projects = Loader.Load(options, Console.Out);
+            solution = Loader.Load(options, root, Console.Out);
         }
         catch (Exception failure) when (failure is IOException or InvalidOperationException or ArgumentException)
         {
@@ -57,7 +57,8 @@ internal static class Program
         }
 
         loading.Stop();
-        Console.WriteLine($"  {projects.Count} project(s) to walk, loaded in {loading.Elapsed.TotalSeconds:F1}s");
+        Console.WriteLine($"  {solution.Projects.Count} project(s) to walk, "
+            + $"loaded in {loading.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine();
 
         using var connection = Connect(options);
@@ -75,10 +76,15 @@ internal static class Program
 
         using (var sink = new FactSink(options, connection))
         {
-            indexer = new Indexer(options, sink, root);
+            indexer = new Indexer(options, sink, root, solution.Build);
             var reported = TimeSpan.Zero;
 
-            foreach (var project in projects)
+            // The build layer first, and whole: this is what the repository *is*, not
+            // what the walk reached, so a run stopped early by `--max-files` still says
+            // which projects exist and what they depend on.
+            solution.Build.Emit(sink);
+
+            foreach (var project in solution.Projects)
             {
                 if (indexer.Exhausted)
                 {
@@ -187,6 +193,15 @@ internal static class Program
             + $"{Count(indexer.External)} to declarations outside the index, "
             + $"{Count(indexer.Unresolved)} unresolved");
 
+        if (indexer.Unattributed > 0)
+        {
+            // Shared source, or a checkout with no project files under `--source`. Said
+            // out loud because a silent zero for `src.ProjectSource` looks like a bug in
+            // the schema rather than a fact about the repository.
+            Console.WriteLine($"  {Count(indexer.Unattributed)} file(s) no project compiles "
+                + "(shared source, or outside every project directory)");
+        }
+
         if (indexer.Conflicts > 0)
         {
             Console.WriteLine($"  {Count(indexer.Conflicts)} declaration key(s) reached with two kinds; "
@@ -214,6 +229,9 @@ internal static class Program
 
         Run("every namespace, which is a scan", "N where src.Module {name = N}");
 
+        Run("every assembly the repository builds, which is the build layer",
+            "A where src.Assembly A");
+
         if (sample is not null)
         {
             Run($"declarations named `{sample}`, which is a seek",
@@ -223,6 +241,31 @@ internal static class Program
             Run($"uses of `{sample}`, which is a join",
                 $"{{line = R.at.line, col = R.at.col}} where R = src.Ref {{to = D}}; "
                 + $"src.SearchByName {{name = \"{sample}\", to = D}}");
+
+            // Into the declaration graph and out the other side: a name, the
+            // declaration it reaches, and a seek into a predicate keyed by that
+            // declaration. `src.Param`'s key is (decl, index, name), so this is one seek
+            // and the parameters come back in order.
+            if (indexer.SampleMethod is { } method)
+            {
+                Run($"the parameters of `{method}`, which is a seek keyed by a declaration",
+                    $"{{at = P.index, name = P.name, type = P.value}} "
+                    + $"where src.SearchByName {{name = \"{method}\", to = D}}; "
+                    + $"P = src.Param {{decl = D}}");
+            }
+
+            // Two references followed — declaration to module to file — and the result
+            // used as the key of a third predicate. No string is compared: the file is
+            // an id by the time `src.Line` is seeked.
+            //
+            // **The conjuncts are in this order because the field access needs it.**
+            // `reorder` is free to run them either way round, but `D.module.file` is
+            // typechecked where it is written, and a variable no earlier conjunct has
+            // bound has no type there to take a field of.
+            Run($"the source of the file declaring `{sample}`, which is a fetch then a seek",
+                $"{{line = L.line, text = L.value}} "
+                + $"where src.SearchByName {{name = \"{sample}\", to = D}}; "
+                + $"L = src.Line {{file = D.module.file}}");
         }
 
         void Run(string what, string focus)

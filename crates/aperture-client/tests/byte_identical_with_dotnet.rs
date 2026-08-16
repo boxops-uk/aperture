@@ -27,6 +27,11 @@ const FILE: PredicateId = PredicateId(0);
 const MODULE: PredicateId = PredicateId(1);
 const DECL: PredicateId = PredicateId(2);
 const REFERENCE: PredicateId = PredicateId(4);
+const PROJECT: PredicateId = PredicateId(6);
+const ASSEMBLY: PredicateId = PredicateId(7);
+const PACKAGE: PredicateId = PredicateId(11);
+const PARAM: PredicateId = PredicateId(17);
+const DOC: PredicateId = PredicateId(19);
 
 /// The demo's schema, restated in Rust.
 ///
@@ -39,9 +44,35 @@ fn schema() -> Schema {
 
     let (file, module, decl) = (sym("src.File"), sym("src.Module"), sym("src.Decl"));
     let (search, reference, import) = (sym("src.SearchByName"), sym("src.Ref"), sym("src.Import"));
+    let (project, assembly, compilation) = (
+        sym("src.Project"),
+        sym("src.Assembly"),
+        sym("src.Compilation"),
+    );
+    let (project_source, project_ref) = (sym("src.ProjectSource"), sym("src.ProjectRef"));
+    let (package, package_ref) = (sym("src.Package"), sym("src.PackageRef"));
+    let (member, extends, implements, overrides) = (
+        sym("src.Member"),
+        sym("src.Extends"),
+        sym("src.Implements"),
+        sym("src.Override"),
+    );
+    let (param, type_of, doc, attribute, line_of) = (
+        sym("src.Param"),
+        sym("src.TypeOf"),
+        sym("src.Doc"),
+        sym("src.Attribute"),
+        sym("src.Line"),
+    );
 
     let (f_at, f_col, f_file, f_from) = (sym("at"), sym("col"), sym("file"), sym("from"));
     let (f_line, f_module, f_name, f_to) = (sym("line"), sym("module"), sym("name"), sym("to"));
+    let (f_assembly, f_framework, f_project) = (sym("assembly"), sym("framework"), sym("project"));
+    let (f_package, f_version, f_container) = (sym("package"), sym("version"), sym("container"));
+    let (f_member, f_base, f_type, f_iface) =
+        (sym("member"), sym("base"), sym("type"), sym("iface"));
+    let (f_decl, f_index, f_attribute, f_target) =
+        (sym("decl"), sym("index"), sym("attribute"), sym("target"));
 
     Schema::new(
         rodeo.into_reader(),
@@ -100,6 +131,131 @@ fn schema() -> Schema {
                     (f_to, PredicateTy::Fact(MODULE)),
                 ])),
                 value: None,
+            },
+            // The build layer. Nothing below is written by the demo, and all of it is
+            // in the fingerprint — which is the point: a client that states a shorter
+            // schema is refused at the handshake rather than at the first fact.
+            Predicate {
+                name: project,
+                key: PredicateTy::Str,
+                value: None,
+            },
+            Predicate {
+                name: assembly,
+                key: PredicateTy::Str,
+                value: None,
+            },
+            Predicate {
+                name: compilation,
+                key: PredicateTy::Record(Arc::from([
+                    (f_assembly, PredicateTy::Fact(ASSEMBLY)),
+                    (f_framework, PredicateTy::Str),
+                    (f_project, PredicateTy::Fact(PROJECT)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: project_source,
+                key: PredicateTy::Record(Arc::from([
+                    (f_file, PredicateTy::Fact(FILE)),
+                    (f_project, PredicateTy::Fact(PROJECT)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: project_ref,
+                key: PredicateTy::Record(Arc::from([
+                    (f_from, PredicateTy::Fact(PROJECT)),
+                    (f_to, PredicateTy::Fact(PROJECT)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: package,
+                key: PredicateTy::Record(Arc::from([
+                    (f_name, PredicateTy::Str),
+                    (f_version, PredicateTy::Str),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: package_ref,
+                key: PredicateTy::Record(Arc::from([
+                    (f_package, PredicateTy::Fact(PACKAGE)),
+                    (f_project, PredicateTy::Fact(PROJECT)),
+                ])),
+                value: None,
+            },
+            // The declaration graph.
+            Predicate {
+                name: member,
+                key: PredicateTy::Record(Arc::from([
+                    (f_container, PredicateTy::Fact(DECL)),
+                    (f_member, PredicateTy::Fact(DECL)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: extends,
+                key: PredicateTy::Record(Arc::from([
+                    (f_base, PredicateTy::Fact(DECL)),
+                    (f_type, PredicateTy::Fact(DECL)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: implements,
+                key: PredicateTy::Record(Arc::from([
+                    (f_iface, PredicateTy::Fact(DECL)),
+                    (f_type, PredicateTy::Fact(DECL)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: overrides,
+                key: PredicateTy::Record(Arc::from([
+                    (f_base, PredicateTy::Fact(DECL)),
+                    (f_member, PredicateTy::Fact(DECL)),
+                ])),
+                value: None,
+            },
+            // A reference in the middle of a key, an integer after it, and a value
+            // behind both.
+            Predicate {
+                name: param,
+                key: PredicateTy::Record(Arc::from([
+                    (f_decl, PredicateTy::Fact(DECL)),
+                    (f_index, PredicateTy::Int),
+                    (f_name, PredicateTy::Str),
+                ])),
+                value: Some(PredicateTy::Str),
+            },
+            // A key of one field.
+            Predicate {
+                name: type_of,
+                key: PredicateTy::Record(Arc::from([(f_decl, PredicateTy::Fact(DECL))])),
+                value: Some(PredicateTy::Str),
+            },
+            Predicate {
+                name: doc,
+                key: PredicateTy::Record(Arc::from([(f_decl, PredicateTy::Fact(DECL))])),
+                value: Some(PredicateTy::Str),
+            },
+            Predicate {
+                name: attribute,
+                key: PredicateTy::Record(Arc::from([
+                    (f_attribute, PredicateTy::Str),
+                    (f_target, PredicateTy::Fact(DECL)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: line_of,
+                key: PredicateTy::Record(Arc::from([
+                    (f_file, PredicateTy::Fact(FILE)),
+                    (f_line, PredicateTy::Int),
+                ])),
+                value: Some(PredicateTy::Str),
             },
         ]),
     )
@@ -173,7 +329,49 @@ fn corpus() -> Vec<(&'static str, PredicateId, Vec<WireFact>)> {
                 value: None,
             }],
         ),
+        // A reference in the *middle* of a key, an integer after it, and a value side
+        // behind all three — and a negative integer, since zigzag is where two codecs
+        // that agree about every positive one can still disagree.
+        (
+            "src.Param",
+            PARAM,
+            vec![param(0, "key", "bytes"), param(-1, "rest", "int")],
+        ),
+        // A key of one field, which encodes as the bare reference does.
+        (
+            "src.Doc",
+            DOC,
+            vec![WireFact {
+                predicate: DOC,
+                key: WireValue::Record(Box::from([WireValue::Ref(WireRef::Nested(Box::new(
+                    decl("query/plan.py", "plan", "class", 5, "Plan"),
+                )))])),
+                value: Some(WireValue::Str(
+                    "A plan is an ordered list of steps.".to_owned(),
+                )),
+            }],
+        ),
     ]
+}
+
+/// A parameter of `key_of`, which is the declaration three of the blocks above already
+/// nest — so this block is also the same nested fact reached a fourth way.
+fn param(index: i64, name: &str, ty: &str) -> WireFact {
+    WireFact {
+        predicate: PARAM,
+        key: WireValue::Record(Box::from([
+            WireValue::Ref(WireRef::Nested(Box::new(decl(
+                "store/keys.py",
+                "keys",
+                "def",
+                12,
+                "key_of",
+            )))),
+            WireValue::Int(index),
+            WireValue::Str(name.to_owned()),
+        ])),
+        value: Some(WireValue::Str(ty.to_owned())),
+    }
 }
 
 /// One golden line: what the C# client said a block's bytes are.

@@ -18,6 +18,17 @@ internal sealed record Options
     /// </summary>
     public string? Root { get; init; }
 
+    /// <summary>
+    /// The <c>dotnet</c> host that runs the design-time builds.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <c>&lt;root&gt;/.dotnet/dotnet</c> when the checkout has one, which
+    /// is where a repository pinning an SDK in <c>global.json</c> bootstraps it — the
+    /// arcade convention, and dotnet/runtime's. Null means whichever <c>dotnet</c>
+    /// Buildalyzer finds, which is right for a repository that pins nothing.
+    /// </remarks>
+    public string? Dotnet { get; init; }
+
     public string Socket { get; init; } = "/tmp/aperture.sock";
 
     public string Database { get; init; } = "code";
@@ -31,11 +42,44 @@ internal sealed record Options
     /// <summary>Emit <c>src.Ref</c> and <c>src.Import</c>. Off is a decls-only index.</summary>
     public bool References { get; init; } = true;
 
+    /// <summary>
+    /// Emit <c>src.Line</c>: the file's line table, one fact per line of source.
+    /// </summary>
+    /// <remarks>
+    /// The largest predicate in the index by bytes and the second largest by count, and
+    /// the only one whose facts are not about a symbol — so it is the one worth being
+    /// able to leave out when what is being measured is the semantic index.
+    /// </remarks>
+    public bool Lines { get; init; } = true;
+
+    /// <summary>Emit <c>src.Doc</c>: the doc comment above a declaration.</summary>
+    public bool Docs { get; init; } = true;
+
     /// <summary>Facts per block. A block is one <c>CopyData</c> frame and one interning batch.</summary>
     public int Batch { get; init; } = 4096;
 
     /// <summary>Stop after this many source files. 0 means all of them.</summary>
     public int MaxFiles { get; init; }
+
+    /// <summary>
+    /// Skip this many source files before indexing, in path order — <c>--syntax-only</c>
+    /// only.
+    /// </summary>
+    /// <remarks>
+    /// <b>What makes a checkout too big for one compilation indexable anyway.</b> A
+    /// syntax-only run holds every tree of its <c>--source</c> at once, which for
+    /// dotnet/runtime is more memory than most machines have. With this, the same source
+    /// root is indexed in slices — <c>--skip-files 0 --max-files 4000</c>, then 4000,
+    /// then 8000 — each run costing only what its slice holds, and the facts accumulating
+    /// in one database because interning does not care which run wrote a target first.
+    /// <para>
+    /// The cost is real and worth stating: a reference from a slice to a declaration in
+    /// another slice binds against the framework's metadata rather than against source,
+    /// so it is dropped as external. Slices bounded at a library keep nearly all of it;
+    /// slices that cut one in half do not.
+    /// </para>
+    /// </remarks>
+    public int SkipFiles { get; init; }
 
     /// <summary>Stop after this many projects. 0 means all of them.</summary>
     public int MaxProjects { get; init; }
@@ -66,13 +110,17 @@ internal sealed record Options
 
           --source <path>       a .sln, .slnx, .csproj, or a directory holding one (required)
           --root <path>         paths are reported relative to this (default: the solution's directory)
+          --dotnet <path>       the dotnet host to build with (default: <root>/.dotnet/dotnet if present)
           --socket <path>       the server's socket (default: /tmp/aperture.sock)
           --database <name>     the database to write to (default: code)
           --batch <n>           facts per block (default: 4096)
           --max-files <n>       stop after n source files
+          --skip-files <n>      skip the first n files, in path order (--syntax-only)
           --max-projects <n>    stop after n projects
           --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
           --no-refs             declarations only: no src.Ref, no src.Import
+          --no-lines            do not write the line table (src.Line)
+          --no-docs             do not write doc comments (src.Doc)
           --no-restore          do not let the design-time build restore first
           --syntax-only         skip MSBuild; glob *.cs and parse them
           --dry-run             index and encode, but connect to nothing
@@ -88,12 +136,13 @@ internal sealed record Options
         options = null!;
         error = null;
 
-        string? source = null, root = null, emit = null;
+        string? source = null, root = null, emit = null, dotnet = null;
         var socket = "/tmp/aperture.sock";
         var database = "code";
-        int batch = 4096, maxFiles = 0, maxProjects = 0;
+        int batch = 4096, maxFiles = 0, maxProjects = 0, skipFiles = 0;
         var jobs = Math.Min(4, Environment.ProcessorCount);
         bool references = true, restore = true, syntaxOnly = false;
+        bool lines = true, docs = true;
         bool dryRun = false, smoke = true, verbose = false;
 
         for (var index = 0; index < argv.Length; index++)
@@ -125,14 +174,18 @@ internal sealed record Options
                 {
                     case "--source": source = Value(); break;
                     case "--root": root = Value(); break;
+                    case "--dotnet": dotnet = Value(); break;
                     case "--socket": socket = Value(); break;
                     case "--database": database = Value(); break;
                     case "--emit": emit = Value(); break;
                     case "--batch": batch = Number(); break;
                     case "--max-files": maxFiles = Number(); break;
+                    case "--skip-files": skipFiles = Number(); break;
                     case "--max-projects": maxProjects = Number(); break;
                     case "--jobs": jobs = Math.Max(1, Number()); break;
                     case "--no-refs": references = false; break;
+                    case "--no-lines": lines = false; break;
+                    case "--no-docs": docs = false; break;
                     case "--no-restore": restore = false; break;
                     case "--syntax-only": syntaxOnly = true; break;
                     case "--dry-run": dryRun = true; break;
@@ -171,14 +224,18 @@ internal sealed record Options
         {
             Source = Path.GetFullPath(source),
             Root = root is null ? null : Path.GetFullPath(root),
+            Dotnet = dotnet is null ? Bootstrapped(source, root) : Path.GetFullPath(dotnet),
             Socket = socket,
             Database = database,
             Emit = emit is null ? null : Path.GetFullPath(emit),
             Batch = batch,
             MaxFiles = maxFiles,
+            SkipFiles = skipFiles,
             MaxProjects = maxProjects,
             Jobs = jobs,
             References = references,
+            Lines = lines,
+            Docs = docs,
             Restore = restore,
             SyntaxOnly = syntaxOnly,
             DryRun = dryRun,
@@ -187,5 +244,41 @@ internal sealed record Options
         };
 
         return true;
+    }
+
+    /// <summary>
+    /// The <c>dotnet</c> a checkout bootstrapped for itself, if it did.
+    /// </summary>
+    /// <remarks>
+    /// A repository pinning an SDK in <c>global.json</c> installs it into <c>.dotnet</c>
+    /// at its root — arcade's convention, and what <c>eng/common/dotnet.sh</c> does.
+    /// Finding it is worth more than a flag nobody remembers to pass: the failure it
+    /// prevents is every design-time build failing at once, which reads as a repository
+    /// that will not build rather than a host that cannot run its MSBuild.
+    /// <para>
+    /// <b>The <c>global.json</c> beside it is the whole test.</b> A bare <c>.dotnet</c>
+    /// directory is not evidence of anything — <c>$HOME/.dotnet</c> is where a per-user
+    /// install lands, so walking ancestors for the directory alone finds it for every
+    /// checkout under a home directory and quietly builds against the wrong SDK. What
+    /// is being looked for is a checkout that pinned one, and the pin is the file.
+    /// </para>
+    /// </remarks>
+    private static string? Bootstrapped(string source, string? root)
+    {
+        var checkout = root ?? (Directory.Exists(source) ? source : Path.GetDirectoryName(source));
+
+        while (checkout is not null)
+        {
+            var host = Path.Combine(checkout, ".dotnet", "dotnet");
+
+            if (File.Exists(host) && File.Exists(Path.Combine(checkout, "global.json")))
+            {
+                return Path.GetFullPath(host);
+            }
+
+            checkout = Path.GetDirectoryName(checkout);
+        }
+
+        return null;
     }
 }

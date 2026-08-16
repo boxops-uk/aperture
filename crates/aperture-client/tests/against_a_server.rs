@@ -16,17 +16,20 @@ use lasso::Rodeo;
 
 const FILE: PredicateId = PredicateId(0);
 const DECL: PredicateId = PredicateId(1);
+const DOC: PredicateId = PredicateId(2);
 
 fn schema() -> Schema {
     let mut rodeo = Rodeo::new();
-    let (file, decl) = (
+    let (file, decl, doc) = (
         rodeo.get_or_intern("src.File"),
         rodeo.get_or_intern("src.Decl"),
+        rodeo.get_or_intern("src.Doc"),
     );
-    let (f_file, f_line, f_name) = (
+    let (f_file, f_line, f_name, f_decl) = (
         rodeo.get_or_intern("file"),
         rodeo.get_or_intern("line"),
         rodeo.get_or_intern("name"),
+        rodeo.get_or_intern("decl"),
     );
 
     Schema::new(
@@ -48,6 +51,17 @@ fn schema() -> Schema {
                     .into(),
                 ),
                 value: None,
+            },
+            // **A key of one field, and that field a reference.** The shape the built-in
+            // schema uses for an attribute *of* something — a declaration has at most
+            // one doc comment and at most one type, so the declaration alone is the
+            // identity and the answer is the value. It encodes as the bare reference
+            // does, which is exactly why it is worth a test of its own: nothing else
+            // here would notice if a record of one started framing itself.
+            Predicate {
+                name: doc,
+                key: PredicateTy::Record(vec![(f_decl, PredicateTy::Fact(DECL))].into()),
+                value: Some(PredicateTy::Str),
             },
         ]),
     )
@@ -74,6 +88,20 @@ fn decl(path: &str, line: i64, name: &str) -> WireFact {
             .into(),
         ),
         value: None,
+    }
+}
+
+/// A doc comment for a declaration, nested three deep: doc → declaration → file.
+fn doc(path: &str, line: i64, name: &str, text: &str) -> WireFact {
+    WireFact {
+        predicate: DOC,
+        key: WireValue::Record(
+            vec![WireValue::Ref(WireRef::Nested(Box::new(decl(
+                path, line, name,
+            ))))]
+            .into(),
+        ),
+        value: Some(WireValue::Str(text.to_owned())),
     }
 }
 
@@ -137,7 +165,7 @@ fn facts_written_by_this_client_are_queried_back_by_it() {
     let mut connection = serving.open(Mode::ReadWrite);
 
     assert_eq!(connection.hello().version, 1);
-    assert_eq!(connection.hello().predicates, 2);
+    assert_eq!(connection.hello().predicates, 3);
     assert_eq!(
         connection.hello().schema_fingerprint,
         provisional_fingerprint(&schema()),
@@ -169,6 +197,70 @@ fn facts_written_by_this_client_are_queried_back_by_it() {
     assert_eq!(paths, ["store/codec.py", "store/keys.py"]);
     assert!(rows.finished());
     assert_eq!(rows.sent(), 2);
+}
+
+/// **A key of one field, holding a reference, behind a value.**
+///
+/// Three things at once, and each is a place a shape can be got wrong on its own: the
+/// key is a record of one — which encodes as its single field and must not start
+/// framing itself — the field is a reference nested two levels deep, so interning has
+/// to reach the file through the declaration before the doc's key has any bytes, and
+/// the fact has a value side that the query reads without matching on
+/// ([I6](../../../docs/invariants.md#i6)).
+///
+/// It is written here rather than only in the encoder's golden because encoding a shape
+/// correctly and *storing* one are different claims.
+#[test]
+fn a_key_of_one_field_holds_a_reference_and_a_value() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    let written = connection
+        .write(
+            DOC,
+            &[
+                doc(
+                    "store/keys.py",
+                    12,
+                    "key_of",
+                    "The key a row is filed under.",
+                ),
+                doc("store/codec.py", 7, "encode_key", "Order-preserving."),
+            ],
+        )
+        .expect("the facts are written");
+
+    // Two docs, two declarations, two files: nothing was here before, and every one of
+    // the six was named by nesting rather than by an id.
+    assert_eq!((written.created, written.deduped), (6, 0));
+
+    // The value is read, the reference is followed, and neither is matched on.
+    let mut rows = connection
+        .query("{name = D.name, text = T.value} where T = src.Doc {decl = D}")
+        .expect("it compiles");
+
+    let mut answers: Vec<String> = connection
+        .drain(&mut rows)
+        .expect("the rows arrive")
+        .iter()
+        .map(|row| match row {
+            WireValue::Record(fields) => match (&fields[0], &fields[1]) {
+                (WireValue::Str(name), WireValue::Str(text)) => format!("{name}: {text}"),
+                other => panic!("expected two strings, got {other:?}"),
+            },
+            other => panic!("expected a record row, got {other:?}"),
+        })
+        .collect();
+
+    answers.sort();
+
+    assert_eq!(
+        answers,
+        [
+            "encode_key: Order-preserving.",
+            "key_of: The key a row is filed under.",
+        ]
+    );
 }
 
 /// **The page holds its place, and the pages concatenate.**

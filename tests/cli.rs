@@ -127,9 +127,14 @@ fn json_output_is_a_rendering_not_a_different_query() {
             .expect("valid JSON");
 
     assert_eq!(described["name"], "code");
+
+    // The built-in schema's own count, not a number written down twice: what this is
+    // checking is that `describe` reports the schema the database was created with, and
+    // a literal here fails whenever a predicate is appended — which says nothing about
+    // the rendering.
     assert_eq!(
         described["schema"]["predicates"].as_array().unwrap().len(),
-        6
+        aperture_cli::code_index::schema().len()
     );
 }
 

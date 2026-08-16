@@ -4,6 +4,7 @@ using System.Text;
 using Aperture.Client;
 
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Aperture.Indexer;
@@ -35,19 +36,28 @@ namespace Aperture.Indexer;
 /// forget all of it and the same index comes out, more slowly.
 /// </para>
 /// </remarks>
-internal sealed class Indexer(Options options, FactSink sink, string root)
+internal sealed class Indexer(Options options, FactSink sink, string root, ProjectIndex projects)
 {
     /// <summary>A module fact, and a small integer to key sets and maps by.</summary>
     private sealed record Module(ApertureFact Fact, int Id);
 
     /// <summary>A declaration fact, the module it was declared in, and how often it was named.</summary>
     /// <remarks>
+    /// <para>
     /// <see cref="Uses"/> is counted for one reason only: to have a name worth
     /// querying at the end of a run. Which declaration a repository leans on hardest is
     /// not knowable in advance, and a smoke query against an arbitrary name can quietly
     /// return nothing and look like it worked.
+    /// </para>
+    /// <para>
+    /// <see cref="First"/> says this run is the one that settled the declaration's key,
+    /// and it is what gates every fact carrying a <i>value</i> — the kind, the type, the
+    /// doc comment. See <see cref="_kinds"/>: two declarations agreeing on a key and
+    /// disagreeing on a value are a conflict the server is right to reject, and the
+    /// cheapest way not to send one is to describe a key once.
+    /// </para>
     /// </remarks>
-    private sealed record Declared(ApertureFact Fact, Module Module, string Name)
+    private sealed record Declared(ApertureFact Fact, Module Module, string Name, string Kind, bool First)
     {
         public int Uses { get; set; }
     }
@@ -112,10 +122,21 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
     /// <summary>Declaration keys reached with two different kinds. See <see cref="_kinds"/>.</summary>
     public int Conflicts { get; private set; }
 
+    /// <summary>Lines of source written as <c>src.Line</c> facts.</summary>
+    public long Lines { get; private set; }
+
+    /// <summary>Files no project compiles — shared source, or a checkout with no project files.</summary>
+    public int Unattributed { get; private set; }
+
     /// <summary>The most-referenced declaration's short name — something to query for.</summary>
     public string? SampleName { get; private set; }
 
+    /// <summary>The most-referenced *method*, which is what a query about parameters needs.</summary>
+    public string? SampleMethod { get; private set; }
+
     private int _sampleUses;
+
+    private int _sampleMethodUses;
 
     public bool Exhausted => options.MaxFiles > 0 && _claimed >= options.MaxFiles;
 
@@ -197,6 +218,8 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
             here = ModuleFor(path, PrimaryNamespace(syntax));
         }
 
+        IndexLines(tree, file);
+
         foreach (var node in syntax.DescendantNodes())
         {
             switch (node)
@@ -223,6 +246,49 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
                     Reference(model, name, file, here);
                     break;
             }
+        }
+    }
+
+    /// <summary>
+    /// The file's line table: one <c>src.Line</c> fact per line, the text on the value
+    /// side.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Every line, including the blank ones.</b> A line table whose gaps mean
+    /// "empty" is a table a consumer has to know a rule about, and the rule is
+    /// indistinguishable from "that line was never indexed". Completeness is the
+    /// property that makes it a table.
+    /// </para>
+    /// <para>
+    /// Built outside the lock and added inside it. A large file is a few thousand facts,
+    /// and holding the sink — whose flush is a write stream — across the construction of
+    /// all of them would serialise the walk behind the network.
+    /// </para>
+    /// </remarks>
+    private void IndexLines(SyntaxTree tree, ApertureFact file)
+    {
+        if (!options.Lines)
+        {
+            return;
+        }
+
+        var text = tree.GetText();
+        var facts = new List<ApertureFact>(text.Lines.Count);
+
+        foreach (var line in text.Lines)
+        {
+            facts.Add(CodeIndex.LineFact(file, line.LineNumber + 1, Clip(line.ToString())));
+        }
+
+        lock (_gate)
+        {
+            foreach (var fact in facts)
+            {
+                sink.Add(CodeIndex.Line, fact);
+            }
+
+            Lines += facts.Count;
         }
     }
 
@@ -288,6 +354,15 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
                 SampleName = target.Name;
             }
 
+            // A second sample, kept separately because the most-used declaration in a
+            // repository is nearly always a type — and a type has no parameters, so the
+            // query that demonstrates `src.Param` would return nothing and look broken.
+            if (target.Kind == "method" && target.Uses > _sampleMethodUses)
+            {
+                _sampleMethodUses = target.Uses;
+                SampleMethod = target.Name;
+            }
+
             // The dependency edge the reference implies. In C# a `using` names a
             // namespace, which is declared across many files and says nothing about
             // which of them this one needs; what carries that is where the names
@@ -318,8 +393,235 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
         }
 
         var built = Build(symbol);
+
+        // **The memo is written before the graph is walked, and that is load-bearing.**
+        // Describing a declaration reaches its container, its base type and the
+        // interface members it implements — every one of which is a declaration this
+        // function is then asked for. Containment is a tree and inheritance is a DAG in
+        // code that compiles; this indexer is pointed at code that sometimes does not,
+        // and a cycle would otherwise recurse until the stack ran out.
         _declarations[symbol] = built;
+
+        if (built is { First: true })
+        {
+            Describe(symbol, built);
+        }
+
         return built;
+    }
+
+    /// <summary>
+    /// Everything about a declaration that is not the declaration: what contains it,
+    /// what it extends and implements, what it overrides, its parameters, its type, its
+    /// doc comment, its attributes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the half a syntax walk cannot do.</b> Every question here is asked of
+    /// a symbol — what a base type resolves to across projects, which interface member
+    /// a method implicitly implements, what a parameter's type is after inference — and
+    /// the answers are what make the index a graph rather than a list of names.
+    /// </para>
+    /// <para>
+    /// Called with <see cref="_gate"/> held, once per declaration key, from
+    /// <see cref="DeclFor"/> — see there for why it is called after the memo is written.
+    /// </para>
+    /// </remarks>
+    private void Describe(ISymbol symbol, Declared declared)
+    {
+        Debug.Assert(_gate.IsHeldByCurrentThread, "the declaration memo is shared");
+
+        // Containment. `src.Decl`'s name is already qualified by its containing types,
+        // which is how a person reads the nesting; this is how a query joins on it.
+        if (symbol.ContainingType is { } containing && DeclFor(containing) is { } parent)
+        {
+            sink.Add(CodeIndex.Member, CodeIndex.MemberFact(parent.Fact, declared.Fact));
+        }
+
+        foreach (var attribute in symbol.GetAttributes())
+        {
+            // Resolved only, and here the reason is about *keys* rather than values: an
+            // attribute the compiler could not bind displays as whatever the source
+            // wrote, so `[Obsolete]` and `System.ObsoleteAttribute` would be two keys
+            // for one attribute and a search for either would miss the other.
+            if (attribute.AttributeClass is { } applied
+                && Known(applied)
+                && applied.OriginalDefinition.ToDisplayString() is { Length: > 0 } name)
+            {
+                sink.Add(CodeIndex.Attribute, CodeIndex.AttributeFact(name, declared.Fact));
+            }
+        }
+
+        if (options.Docs && DocComment(symbol) is { } doc)
+        {
+            sink.Add(CodeIndex.Doc, CodeIndex.DocFact(declared.Fact, doc));
+        }
+
+        switch (symbol)
+        {
+            case INamedTypeSymbol type:
+                DescribeType(type, declared);
+                break;
+
+            case IMethodSymbol method:
+                Parameters(declared, method.Parameters);
+
+                // A constructor's return type is `void` because Roslyn has to say
+                // something, not because the constructor returns anything.
+                if (method.MethodKind is not (MethodKind.Constructor or MethodKind.StaticConstructor
+                    or MethodKind.Destructor))
+                {
+                    TypeOf(declared, method.ReturnType);
+                }
+
+                Overrides(declared, method.OverriddenMethod);
+                break;
+
+            case IPropertySymbol property:
+                // An indexer's parameters are its subscript — `this[int index]`.
+                Parameters(declared, property.Parameters);
+                TypeOf(declared, property.Type);
+                Overrides(declared, property.OverriddenProperty);
+                break;
+
+            case IFieldSymbol field:
+                TypeOf(declared, field.Type);
+                break;
+
+            case IEventSymbol @event:
+                TypeOf(declared, @event.Type);
+                Overrides(declared, @event.OverriddenEvent);
+                break;
+        }
+    }
+
+    /// <summary>What a type extends, what it implements, and who implements it.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b><c>AllInterfaces</c>, not the interfaces the declaration lists.</b> A type
+    /// that says <c>: List&lt;T&gt;</c> is an <c>IEnumerable</c>, and a query asking for
+    /// every enumerable in a repository is asking the semantic question. There is no
+    /// recursion in focus to close a transitive relation with afterwards, so the
+    /// closure is written down — which is a decision this schema makes twice, the other
+    /// being <c>src.SearchByName</c>.
+    /// </para>
+    /// <para>
+    /// <c>System.Object</c> is skipped: every class extends it, the edge distinguishes
+    /// nothing, and in an index <i>of</i> the framework it would be one key with a
+    /// hundred thousand rows under it.
+    /// </para>
+    /// </remarks>
+    private void DescribeType(INamedTypeSymbol type, Declared declared)
+    {
+        if (type.BaseType is { SpecialType: not SpecialType.System_Object } @base
+            && DeclFor(@base) is { } extended)
+        {
+            sink.Add(CodeIndex.Extends, CodeIndex.ExtendsFact(extended.Fact, declared.Fact));
+        }
+
+        foreach (var iface in type.AllInterfaces)
+        {
+            if (DeclFor(iface) is { } implemented)
+            {
+                sink.Add(CodeIndex.Implements, CodeIndex.ImplementsFact(implemented.Fact, declared.Fact));
+            }
+
+            // **Implicit implementation is the common case in C#**, and there is nothing
+            // in the syntax that says a method implements an interface member — only the
+            // compiler knows. Asked here, per type, rather than per member: the answer
+            // is a lookup on the type either way, and a member-by-member sweep would ask
+            // the same question once for every interface member the type has.
+            foreach (var member in iface.GetMembers())
+            {
+                if (type.FindImplementationForInterfaceMember(member) is not { } implementation
+                    || !SymbolEqualityComparer.Default.Equals(implementation.ContainingType, type))
+                {
+                    // Either nothing implements it — an abstract class may leave it — or
+                    // a base type does, in which case the edge belongs to that type and
+                    // is emitted when it is described.
+                    continue;
+                }
+
+                if (DeclFor(member) is { } required && DeclFor(implementation) is { } provided)
+                {
+                    sink.Add(CodeIndex.Override, CodeIndex.OverrideFact(required.Fact, provided.Fact));
+                }
+            }
+        }
+
+        // A delegate's signature is on the method it invokes, which has no declaration
+        // of its own for the walk to reach.
+        if (type.DelegateInvokeMethod is { } invoke)
+        {
+            Parameters(declared, invoke.Parameters);
+            TypeOf(declared, invoke.ReturnType);
+        }
+    }
+
+    private void Parameters(Declared declared, IReadOnlyList<IParameterSymbol> parameters)
+    {
+        for (var index = 0; index < parameters.Count; index++)
+        {
+            if (!Known(parameters[index].Type))
+            {
+                continue;
+            }
+
+            sink.Add(
+                CodeIndex.Param,
+                CodeIndex.ParamFact(
+                    declared.Fact,
+                    index,
+                    parameters[index].Name,
+                    Clip(parameters[index].Type.ToDisplayString())));
+        }
+    }
+
+    /// <summary>
+    /// Whether the compiler resolved this type, rather than leaving the name it could
+    /// not bind.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>An unresolved type is not merely imprecise — it is a conflict waiting to
+    /// happen.</b> A type and a doc comment are <i>values</i>, and `ops-I5` rejects a
+    /// second value for a key that already has one. Resolved, a type displays the same
+    /// everywhere: <c>System.Collections.Generic.List&lt;T&gt;</c>. Unresolved, it
+    /// displays as whatever the source happened to write — so the same declaration
+    /// reached from a run that resolved it and a run that did not is one key with two
+    /// answers, and the server is right to fail the stream carrying the second.
+    /// </para>
+    /// <para>
+    /// That is not hypothetical: it is the ordinary case when a checkout is indexed in
+    /// slices (<c>--skip-files</c>), where a declaration is walked by one run and merely
+    /// referenced by another.
+    /// </para>
+    /// </remarks>
+    private static bool Known(ITypeSymbol type) => type.TypeKind != TypeKind.Error;
+
+    /// <summary>
+    /// The type a declaration says it is, as a <i>spelling</i> rather than as an
+    /// identity.
+    /// </summary>
+    /// <remarks>
+    /// `ReadOnlySpan&lt;byte&gt;` is what a reader wants shown and never what a query
+    /// filters by — the identity is already in the index, since the type name in a
+    /// declaration is an ordinary reference that the walk resolves like any other.
+    /// </remarks>
+    private void TypeOf(Declared declared, ITypeSymbol type)
+    {
+        if (Known(type))
+        {
+            sink.Add(CodeIndex.TypeOf, CodeIndex.TypeOfFact(declared.Fact, Clip(type.ToDisplayString())));
+        }
+    }
+
+    private void Overrides(Declared declared, ISymbol? overridden)
+    {
+        if (overridden is not null && DeclFor(overridden) is { } target)
+        {
+            sink.Add(CodeIndex.Override, CodeIndex.OverrideFact(target.Fact, declared.Fact));
+        }
     }
 
     /// <summary>
@@ -373,11 +675,18 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
         var module = ModuleFor(path, NamespaceOf(symbol));
         var name = QualifiedName(symbol);
         var kind = KindOf(symbol);
+        var first = true;
 
-        var key = $"{module.Id} {line} {name}";
+        var key = $"{module.Id}\0{line}\0{name}";
 
         if (_kinds.TryGetValue(key, out var settled))
         {
+            // Not the first symbol to reach this key, which is the whole of what
+            // `First` tells `Describe`: a type, a doc comment and a kind are all
+            // *values*, and a second answer for a settled key is the same-key
+            // different-value conflict `ops-I5` fails the stream over.
+            first = false;
+
             if (settled != kind)
             {
                 // Keep the first answer rather than send the server two. See `_kinds`.
@@ -403,7 +712,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
         sink.Add(CodeIndex.SearchByName, CodeIndex.SearchFact(simple, fact));
 
         Declarations++;
-        return new Declared(fact, module, simple);
+        return new Declared(fact, module, simple, kind, first);
     }
 
     private ApertureFact FileOf(string path)
@@ -418,6 +727,22 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
         var fact = CodeIndex.FileFact(path);
         _files[path] = fact;
         sink.Add(CodeIndex.File, fact);
+
+        // **What compiles this file** — here rather than in the walk, because a file
+        // fact is also created for a file nobody walked: a declaration in another
+        // project, reached through a reference, names one.
+        var owners = projects.Owners(path);
+
+        foreach (var project in owners)
+        {
+            sink.Add(CodeIndex.ProjectSource, CodeIndex.ProjectSourceFact(fact, project.Fact));
+        }
+
+        if (owners.Count == 0)
+        {
+            Unattributed++;
+        }
+
         return fact;
     }
 
@@ -526,6 +851,84 @@ internal sealed class Indexer(Options options, FactSink sink, string root)
 
         return qualified.ToString();
     }
+
+    /// <summary>
+    /// The doc comment somebody wrote above a declaration, stripped of its slashes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The trivia rather than <c>GetDocumentationCommentXml</c>: that builds and
+    /// formats an XML document per symbol, and what a search result wants to show is
+    /// what a person typed. The tags are left in — they are part of what was written,
+    /// and a consumer that wants only the summary can find it.
+    /// </para>
+    /// <para>
+    /// <b>A partial type documented in two files gets one of them.</b> The declaration
+    /// this reads is the one <c>src.Decl</c>'s line came from, so the fact and its
+    /// value name the same place, which is the property that matters.
+    /// </para>
+    /// </remarks>
+    private static string? DocComment(ISymbol symbol)
+    {
+        if (symbol.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not { } node)
+        {
+            return null;
+        }
+
+        // **A field's comment is above the declaration, not above the declarator.**
+        // `int a, b;` is one declaration and two declarators, the symbol hangs off the
+        // declarator, and the trivia is on the statement two levels up — so asking the
+        // declarator finds nothing, silently, for every documented field in a codebase.
+        if (node is VariableDeclaratorSyntax { Parent.Parent: BaseFieldDeclarationSyntax field })
+        {
+            node = field;
+        }
+
+        StringBuilder? text = null;
+
+        foreach (var trivia in node.GetLeadingTrivia())
+        {
+            if (!trivia.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia)
+                && !trivia.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia))
+            {
+                continue;
+            }
+
+            text ??= new StringBuilder();
+
+            foreach (var line in trivia.ToFullString().Split('\n'))
+            {
+                var stripped = line.TrimStart().TrimStart('/', '*').Trim();
+
+                if (stripped.Length > 0)
+                {
+                    if (text.Length > 0)
+                    {
+                        text.Append('\n');
+                    }
+
+                    text.Append(stripped);
+                }
+            }
+        }
+
+        return text is { Length: > 0 } ? Clip(text.ToString()) : null;
+    }
+
+    /// <summary>
+    /// A string bounded, because a block is bounded.
+    /// </summary>
+    /// <remarks>
+    /// A block carries up to <c>--batch</c> facts in one frame, and a frame's payload
+    /// caps at 64 MiB — so a generated file with a megabyte on one line, or a doc
+    /// comment holding an entire specification, is a stream failure rather than a large
+    /// fact. Four thousand characters is past anything a person writes on a line and
+    /// leaves the default batch two orders of magnitude clear of the cap.
+    /// </remarks>
+    private static string Clip(string text) =>
+        text.Length <= MaxText ? text : text[..MaxText];
+
+    private const int MaxText = 4096;
 
     private static string KindOf(ISymbol symbol) => symbol switch
     {

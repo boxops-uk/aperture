@@ -1163,6 +1163,14 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
                             "\n  {written} facts from example/index.json in {}",
                             dir.display()
                         );
+                        // Most of the predicates above have none, and that is not a
+                        // broken seed: they are answered by a compiler and a build
+                        // system, which `example/index.py` is not. Said here because an
+                        // empty predicate looks like a bug from the prompt.
+                        println!(
+                            "  the build layer and the declaration graph are empty here — \
+                             they are written by clients/dotnet/Aperture.Indexer"
+                        );
                     }
                     _ if line == ":help" => print_help(),
                     _ if line == ":quit" || line == ":q" => return Ok(()),

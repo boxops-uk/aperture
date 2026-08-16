@@ -76,9 +76,13 @@ that, written down — mirroring `aperture::code_index` on the Rust side, delibe
 because two independent statements of one schema is what the fingerprint is *for*.
 
 It has caught that too. When the server moved from a cut-down three-predicate schema to
-the real six-predicate code index, the demo was refused at the handshake with both
-fingerprints named, before a byte of data flowed — the whole mechanism working in the
-one situation it exists for.
+the real code index, the demo was refused at the handshake with both fingerprints named,
+before a byte of data flowed — the whole mechanism working in the one situation it exists
+for. When the schema later grew from six predicates to twenty-two it was the *golden*
+that spoke first — `byte_identical_with_the_dotnet_client` compares fingerprints before
+it compares a single byte, and said so in one line rather than as a hex diff. That is
+also why this program states all twenty-two and writes facts for six: the fingerprint is
+over the schema, not over the part of it a client happens to use.
 
 Until schemas are parsed (PLAN Phase 8) a client writes the schema out by hand and
 asserts it at the handshake with a fingerprint, which is what turns "we disagree about
@@ -117,5 +121,5 @@ over a checkout of somebody's real .NET source.
 The demo answers *is the protocol implementable from outside*. The indexer answers the
 two questions after it: is it **usable** from outside by a producer with a real workload,
 and does the database hold up when the facts were not chosen to be convenient. It has its
-own [README](Aperture.Indexer/README.md) — what it maps onto the six predicates, what it
-resolves, and what the numbers it prints mean.
+own [README](Aperture.Indexer/README.md) — what it maps onto the twenty-two predicates,
+what it resolves, and what the numbers it prints mean.

@@ -25,6 +25,14 @@ So the facts now come from a real parse of real (if small) source, and the corpu
 here to be read alongside the answers: every row the shell prints names a file, a line
 and a column you can go and look at.
 
+**Six of the schema's twenty-two predicates, and that is the whole of what `ast` can
+answer.** The rest — a type's base and interfaces, what a member overrides, a parameter's
+type, which project compiles a file — are questions about *symbols* and about the build,
+and Python's `ast` knows neither. They are filled by
+[`Aperture.Indexer`](../clients/dotnet/Aperture.Indexer/README.md), which has Roslyn and
+MSBuild to ask. A predicate nobody here fills is an empty keyspace in the shell's scratch
+database and nothing else; `:schema` lists it with no facts under it.
+
 The corpus is Python because its parser ships with it. The exercise is the facts, not
 the front end that finds them. It is deliberately about the same things Aperture is —
 a codec, key ranges, a store, a plan, a runner — so a query about it reads as a
