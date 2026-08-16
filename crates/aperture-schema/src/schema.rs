@@ -344,16 +344,117 @@ mod tests {
     }
 }
 
-/// Phase-8 invariant guards: [I10](../../docs/invariants.md#i10) stable union
-/// discriminants and [I13](../../docs/invariants.md#i13) the embedded, frozen
-/// schema.
+/// Phase-8 invariant guards that are **live**.
 ///
-/// Both need the schema DSL — a parser, a canonical form, and fingerprints — which
-/// arrives in **Phase 8** ([`PLAN.md`](../../PLAN.md)); today's schema is
-/// hardcoded fixtures with no unions and no identity. The guards are written up
-/// front as the specification, `#[ignore]`d until their subject exists, and named
-/// under `pending_phase_8` so `cargo test -- --ignored --list` (the coverage
-/// ledger) shows the phase that owns them.
+/// One so far: [I13](../../docs/invariants.md#i13)'s order-independence half, which
+/// went green when the canonical form and fingerprints landed at 8.3
+/// ([`fingerprint`](crate::fingerprint)). It sits here rather than beside that module
+/// because the [registry](../../docs/invariants.md) names it `schema::…`, and a guard
+/// that moves is a guard the registry stops pointing at.
+#[cfg(test)]
+mod guards {
+    // I13 — schema identity is a property of the schema, not of its source layout.
+    // The fingerprint is taken over the *canonical* form, so how the declarations
+    // happen to be spread across files and orderings cannot change it; otherwise a
+    // reformatting would invalidate every existing fact file (and `ops-I4`
+    // reproducibility with it).
+    //
+    // **Field order is not source layout.** A record's field order *is* its encoding
+    // order and decides the seek prefix, so permuting fields is a semantic change and
+    // belongs in the negative control, never in the permuted-input arm. Asserting
+    // otherwise would certify two schemas as identical whose facts have incompatible
+    // bytes. Glean draws the line in the same place.
+    #[test]
+    fn fingerprint_is_order_independent() {
+        use crate::{
+            fingerprint::identity,
+            syntax::{lower::lower, parse::parse},
+        };
+
+        fn identity_of(source: &str) -> crate::fingerprint::Identity {
+            let mut diags = vec![];
+            let cst = parse(source, &mut diags).expect("it parses");
+            let lowered = lower(&cst, &mut diags).expect("it lowers");
+            assert!(diags.is_empty(), "{source}\n{diags:?}");
+            identity(&lowered.schema)
+        }
+
+        // The same schema, written three ways: one block, the predicates permuted, and
+        // split across two blocks of the same namespace. Layout and declaration order
+        // are the only differences.
+        let plain = identity_of(
+            "schema src { predicate File : string\n \
+             predicate Module : { file : File, name : string }\n \
+             predicate Decl : { module : Module, line : int } -> string }",
+        );
+        let permuted = identity_of(
+            "schema src { predicate Decl : { module : Module, line : int } -> string\n \
+             predicate Module : { file : File, name : string }\n \
+             predicate File : string }",
+        );
+        let split = identity_of(
+            "schema src { predicate Decl : { module : Module, line : int } -> string }\n\
+             schema src { predicate File : string\n \
+             predicate Module : { file : File, name : string } }",
+        );
+
+        for other in [&permuted, &split] {
+            assert_eq!(
+                plain.canonical(),
+                other.canonical(),
+                "the canonical form is not byte-identical across layouts"
+            );
+            assert_eq!(plain.schema(), other.schema());
+            assert_eq!(plain.predicates(), other.predicates());
+        }
+
+        // **The negative control**, without which the assertions above hold for a
+        // constant function. Each of these is a genuine semantic change and each must
+        // move the fingerprint.
+        let renamed = identity_of(
+            "schema src { predicate File : string\n \
+             predicate Module : { file : File, title : string }\n \
+             predicate Decl : { module : Module, line : int } -> string }",
+        );
+        let retyped = identity_of(
+            "schema src { predicate File : string\n \
+             predicate Module : { file : File, name : string }\n \
+             predicate Decl : { module : Module, line : string } -> string }",
+        );
+        let reordered = identity_of(
+            "schema src { predicate File : string\n \
+             predicate Module : { name : string, file : File }\n \
+             predicate Decl : { module : Module, line : int } -> string }",
+        );
+        let dropped_value = identity_of(
+            "schema src { predicate File : string\n \
+             predicate Module : { file : File, name : string }\n \
+             predicate Decl : { module : Module, line : int } }",
+        );
+
+        for (what, other) in [
+            ("a renamed field", &renamed),
+            ("a retyped field", &retyped),
+            ("a permuted field order", &reordered),
+            ("a dropped value side", &dropped_value),
+        ] {
+            assert_ne!(
+                plain.schema(),
+                other.schema(),
+                "{what} must move the schema fingerprint"
+            );
+        }
+    }
+}
+
+/// Phase-8 invariant guards still **pending**: [I10](../../docs/invariants.md#i10)
+/// stable union discriminants, and [I13](../../docs/invariants.md#i13)'s ingest half.
+///
+/// Both need what 8.3 did not build — unions in `PredicateTy`, and a database to
+/// validate an ingest against. Written up front as the specification, `#[ignore]`d
+/// until their subject exists, and named under `pending_phase_8` so
+/// `cargo test -- --ignored --list` (the coverage ledger) shows the phase that owns
+/// them.
 #[cfg(test)]
 mod pending_phase_8 {
     // I10 — union alternative discriminants are explicit, assigned once, and
@@ -388,34 +489,6 @@ mod pending_phase_8 {
     fn ingest_rejects_incompatible_schema() {
         unimplemented!(
             "Phase 8: assert ingest rejects a fact file whose schema is not subset-compatible"
-        );
-    }
-
-    // I13 — schema identity is a property of the schema, not of its source
-    // layout. The fingerprint is taken over the *canonical* form, so how the
-    // declarations happen to be spread across files and orderings cannot change
-    // it; otherwise a reformatting would invalidate every existing fact file
-    // (and `ops-I4` reproducibility with it).
-    //
-    // Procedure: build the same schema from two different source orderings — the
-    // predicates permuted and split across files differently — and assert the
-    // canonical forms are byte-identical and the fingerprints equal. A genuine
-    // semantic change must still change the fingerprint (the negative control, or
-    // the property passes trivially for a constant function).
-    //
-    // **Field order is not source layout.** A record's field order *is* its
-    // encoding order (`focus::fact`), and it decides the seek prefix — so
-    // permuting fields is a semantic change and belongs in the negative control,
-    // never in the permuted-input arm. Asserting otherwise would certify two
-    // schemas as identical whose facts have incompatible bytes. Glean draws the
-    // line in the same place: field order is inside its per-predicate
-    // fingerprint, and a field reorder is handled as a *transform* rather than as
-    // identity.
-    #[test]
-    #[ignore = "I13 — pending Phase 8 (needs canonical form + fingerprints, PLAN 8)"]
-    fn fingerprint_is_order_independent() {
-        unimplemented!(
-            "Phase 8: assert two source orderings of one schema share a fingerprint, and a semantic change does not"
         );
     }
 }

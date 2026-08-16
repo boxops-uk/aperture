@@ -9,6 +9,7 @@
 //! type model, [chapter 3](../../../docs/03-storage-model.md#factid-allocation-i11)
 //! for the id.
 
+pub mod fingerprint;
 pub mod id;
 pub mod schema;
 pub mod syntax;
