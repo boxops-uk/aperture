@@ -646,9 +646,21 @@ pub fn provisional_fingerprint(schema: &aperture_schema::schema::Schema) -> u64 
         match shape {
             PredicateTy::Int => feed(hash, b"int"),
             PredicateTy::Str => feed(hash, b"str"),
+            // **By name, not by id.** An id is a *position*, and since Phase 8 that
+            // position comes from sorting a schema's names — so two ends that agree
+            // about every predicate can still number them differently, and hashing the
+            // number would make them disagree about a schema they share. The name is
+            // the thing both ends actually have.
             PredicateTy::Fact(id) => {
                 feed(hash, b"fact");
-                feed(hash, &id.0.to_le_bytes());
+                feed(
+                    hash,
+                    schema
+                        .get(*id)
+                        .and_then(|p| p.name())
+                        .unwrap_or("?")
+                        .as_bytes(),
+                );
             }
             PredicateTy::Record(fields) => {
                 feed(hash, b"record");
@@ -664,14 +676,16 @@ pub fn provisional_fingerprint(schema: &aperture_schema::schema::Schema) -> u64 
         }
     }
 
-    let mut hash = OFFSET;
-
-    for index in 0..schema.len() {
-        let id = aperture_schema::schema::PredicateId(index as u32);
-        let Some(predicate) = schema.get(id) else {
-            continue;
-        };
-
+    // **By name, in name order — not in the order the schema was written.** Position is
+    // not part of what two ends agree about: the server's schema comes from parsing a
+    // `.aps` file, whose predicates lowering sorts, and a hand-written client's comes
+    // from a list somebody typed in whatever order read well. Hashing the traversal
+    // order made those two disagree about a schema they shared, which is the failure
+    // this ordering exists to prevent — and it is the same rule the real canonical form
+    // uses ([chapter 6](../../../docs/06-types-and-schema.md)), so nothing here has to
+    // be unlearned when that replaces this.
+    let mut named: Vec<_> = (0..schema.len())
+        .map(|index| aperture_schema::schema::PredicateId(index as u32))
         // **A virtual predicate is not part of the schema two ends have to agree
         // about.** It is answered by whoever runs the query rather than stored, so it
         // is a property of the server, not of the database — a client that never heard
@@ -679,13 +693,19 @@ pub fn provisional_fingerprint(schema: &aperture_schema::schema::Schema) -> u64 
         // at the handshake would make every deployment choice a wire-compatibility
         // event. It is also why the embedded schema copy leaves them out: nothing in
         // the artifact holds one.
-        if schema.is_virtual(id) {
-            continue;
-        }
-
+        .filter(|id| !schema.is_virtual(*id))
+        .filter_map(|id| schema.get(id))
         // A predicate with no resolvable name still has to contribute *something*
         // distinct, or two of them would be indistinguishable in the hash.
-        feed(&mut hash, predicate.name().unwrap_or("\u{0}?").as_bytes());
+        .map(|predicate| (predicate.name().unwrap_or("\u{0}?"), predicate))
+        .collect();
+
+    named.sort_by_key(|(name, _)| *name);
+
+    let mut hash = OFFSET;
+
+    for (name, predicate) in named {
+        feed(&mut hash, name.as_bytes());
         feed_ty(&mut hash, schema, predicate.key().ty);
 
         match predicate.value() {
@@ -868,5 +888,80 @@ mod tests {
             decode_ready(&bytes),
             Err(WireError::TrailingBytes(1))
         ));
+    }
+
+    /// **Declaration order is not part of a schema.** The server's comes from parsing a
+    /// `.aps` file, whose predicates lowering sorts by name; a hand-written client's
+    /// comes from a list somebody typed. This is not hypothetical — the two disagreed
+    /// exactly here, and the .NET demo failed its handshake against a schema it agreed
+    /// with predicate for predicate.
+    ///
+    /// The reference through `Fact` is the half that could still hide a position: a
+    /// referent is fed **by name**, so the two schemas below point at the same
+    /// predicate through two different ids and must still hash alike.
+    #[test]
+    fn the_fingerprint_does_not_depend_on_declaration_order() {
+        use std::sync::Arc;
+
+        use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
+        use lasso::Rodeo;
+
+        /// `order` names the position each of the two predicates takes, so one call
+        /// builds the schema and the other builds it back to front.
+        fn built(swapped: bool) -> Schema {
+            let mut rodeo = Rodeo::new();
+            let (a, b, field) = (
+                rodeo.get_or_intern("t.A"),
+                rodeo.get_or_intern("t.B"),
+                rodeo.get_or_intern("a"),
+            );
+
+            let at = u32::from(swapped);
+
+            let first = Predicate {
+                name: a,
+                key: PredicateTy::Str,
+                value: None,
+            };
+            let second = Predicate {
+                name: b,
+                key: PredicateTy::Record(Arc::from([(
+                    field,
+                    PredicateTy::Fact(PredicateId(1 - at)),
+                )])),
+                value: None,
+            };
+
+            let predicates = if swapped {
+                vec![second, first]
+            } else {
+                vec![first, second]
+            };
+
+            Schema::new(rodeo.into_reader(), Arc::from(predicates))
+        }
+
+        assert_eq!(
+            provisional_fingerprint(&built(false)),
+            provisional_fingerprint(&built(true)),
+            "the same schema written in two orders is the same schema"
+        );
+
+        // The control: order not mattering must not have made *content* stop mattering.
+        let mut rodeo = Rodeo::new();
+        let name = rodeo.get_or_intern("t.A");
+        let different = Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name,
+                key: PredicateTy::Int,
+                value: None,
+            }]),
+        );
+
+        assert_ne!(
+            provisional_fingerprint(&built(false)),
+            provisional_fingerprint(&different)
+        );
     }
 }

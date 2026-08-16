@@ -105,7 +105,13 @@ public sealed class ApertureSchema(IReadOnlyList<AperturePredicate> predicates)
         const ulong offset = 0xcbf29ce484222325;
         var hash = offset;
 
-        foreach (var predicate in Predicates)
+        // **By name, in name order — not in the order this schema was written.** The
+        // server's schema comes from parsing a `.aps` file, whose predicates are sorted
+        // by name; the list above is in whatever order reads well. Hashing the
+        // declaration order made the two disagree about a schema they share, which is
+        // what this sort exists to prevent. `Ordinal` because the server compares UTF-8
+        // bytes and has no notion of a culture.
+        foreach (var predicate in Predicates.OrderBy(p => p.Name, StringComparer.Ordinal))
         {
             Feed(ref hash, predicate.Name);
             FeedType(ref hash, predicate.Key);
@@ -140,7 +146,7 @@ public sealed class ApertureSchema(IReadOnlyList<AperturePredicate> predicates)
         }
     }
 
-    private static void FeedType(ref ulong hash, ApertureType type)
+    private void FeedType(ref ulong hash, ApertureType type)
     {
         switch (type)
         {
@@ -154,13 +160,11 @@ public sealed class ApertureSchema(IReadOnlyList<AperturePredicate> predicates)
 
             case ApertureType.Fact fact:
                 Feed(ref hash, "fact");
-                // Explicitly little-endian rather than `BitConverter`, which follows
-                // the host: the Rust side writes `to_le_bytes`, and a fingerprint that
-                // depended on the client's architecture would fail the handshake on
-                // exactly the machines nobody tests on.
-                Span<byte> predicate = stackalloc byte[4];
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(predicate, fact.Predicate);
-                Feed(ref hash, predicate);
+                // **By name, not by id.** An id is a position, and since Phase 8 the
+                // server sorts a schema's names to get one — so two ends that agree
+                // about every predicate can still number them differently, and hashing
+                // the number would make them disagree about a schema they share.
+                Feed(ref hash, NameOf(fact.Predicate));
                 break;
 
             case ApertureType.Record record:
