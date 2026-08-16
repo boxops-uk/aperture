@@ -25,7 +25,10 @@
 //! backpressure", which is this. A stream that produces faster than the socket drains
 //! blocks itself, and no other stream notices.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
@@ -34,7 +37,7 @@ use tokio::{
 
 use aperture_wire::{FrameKind, StreamId, encode_frame};
 
-use crate::error::ServerError;
+use crate::{error::ServerError, stats::ServerStats};
 
 /// Frames one stream may have waiting before its producer is made to wait.
 ///
@@ -65,21 +68,17 @@ pub struct Outbound {
     work: Notify,
     /// A slot was freed.
     room: Notify,
-}
-
-impl Default for Outbound {
-    fn default() -> Self {
-        Self::new()
-    }
+    stats: Arc<ServerStats>,
 }
 
 impl Outbound {
     #[must_use]
-    pub fn new() -> Outbound {
+    pub fn new(stats: Arc<ServerStats>) -> Outbound {
         Outbound {
             queues: Mutex::new(Queues::default()),
             work: Notify::new(),
             room: Notify::new(),
+            stats,
         }
     }
 
@@ -113,6 +112,8 @@ impl Outbound {
                     self.work.notify_one();
                     return Ok(());
                 }
+
+                self.stats.queue_full_wait();
             }
 
             // Registered before the lock is retaken, so a slot freed in between is
@@ -224,7 +225,7 @@ mod tests {
     /// waiting does not get a hundred turns before a stream with one gets its first.
     #[tokio::test]
     async fn a_chatty_stream_does_not_starve_a_quiet_one() {
-        let outbound = Outbound::new();
+        let outbound = Outbound::new(Arc::new(ServerStats::default()));
 
         // Deliberately at the queue bound: more would block, which is the *other*
         // property and is tested below.
@@ -256,7 +257,7 @@ mod tests {
     /// The rotation keeps going round rather than favouring the lowest id.
     #[tokio::test]
     async fn the_rotation_visits_every_stream_in_turn() {
-        let outbound = Outbound::new();
+        let outbound = Outbound::new(Arc::new(ServerStats::default()));
 
         for stream in 1..=3u32 {
             for _ in 0..3 {
@@ -279,7 +280,7 @@ mod tests {
     /// A full queue makes its **own** producer wait and nobody else's.
     #[tokio::test]
     async fn a_full_queue_blocks_only_its_own_stream() {
-        let outbound = std::sync::Arc::new(Outbound::new());
+        let outbound = std::sync::Arc::new(Outbound::new(Arc::new(ServerStats::default())));
 
         for _ in 0..QUEUE_DEPTH {
             outbound
@@ -315,7 +316,7 @@ mod tests {
     /// stream believed it had sent.
     #[tokio::test]
     async fn closing_drains_what_is_already_queued() {
-        let outbound = Outbound::new();
+        let outbound = Outbound::new(Arc::new(ServerStats::default()));
 
         outbound
             .send(kind(), StreamId(1), b"a")

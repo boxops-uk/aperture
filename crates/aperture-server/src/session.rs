@@ -195,8 +195,10 @@ where
         }
     };
 
+    let _connection = registry.stats().connection_opened();
+
     let session = Arc::new(session);
-    let outbound = Arc::new(Outbound::new());
+    let outbound = Arc::new(Outbound::new(Arc::clone(registry.stats())));
 
     // The one task that writes. Everything else queues.
     let pump = {
@@ -381,7 +383,12 @@ impl StreamHandle {
             writing: None,
         };
 
+        let live = session.registry.stats().stream_opened();
+
         tokio::spawn(async move {
+            // Held by the task, so the gauge falls on every way out there is — return,
+            // error, the channel closing, or the task being dropped mid-await.
+            let _live = live;
             let mut task = task;
 
             while let Some((header, payload)) = receiver.recv().await {
@@ -569,17 +576,39 @@ impl StreamTask {
     /// rather than to test it: the cursor here is the same bytes-only token
     /// [chapter 5](../../../docs/05-resume.md) is about.
     async fn query(&mut self, payload: &[u8], profiled: bool) -> Result<(), ServerError> {
+        let stats = Arc::clone(self.session.registry.stats());
+        stats.query_started();
+
+        let outcome = self.run_query(payload, profiled, &stats).await;
+        match &outcome {
+            Ok(()) => stats.query_completed(),
+            Err(_) => stats.query_failed(),
+        }
+        outcome
+    }
+
+    async fn run_query(
+        &mut self,
+        payload: &[u8],
+        profiled: bool,
+        stats: &Arc<crate::stats::ServerStats>,
+    ) -> Result<(), ServerError> {
         let source = std::str::from_utf8(payload)
             .map_err(|_| ServerError::Protocol("a query that is not UTF-8".to_owned()))?
             .to_owned();
 
         let database = Arc::clone(self.database()?);
-        let prepared = blocking::run({
+        let prepared = {
+            let queued = std::time::Instant::now();
+            let stats = Arc::clone(stats);
             let database = Arc::clone(&database);
             let source = source.clone();
-            move || prepare(&database, &source)
-        })
-        .await?;
+            blocking::run(move || {
+                stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
+                prepare(&database, &source)
+            })
+            .await?
+        };
 
         self.outbound
             .send(
@@ -605,14 +634,24 @@ impl StreamTask {
             let resume = cursor.take();
             let mut counted = std::mem::take(&mut profile);
 
-            let chunk = blocking::run(move || {
-                let chunk = run_chunk(&database, &plan, &shape, resume, &token, &mut counted)?;
-                Ok((chunk, counted))
-            })
-            .await?;
+            let chunk = {
+                // Timed from *here* rather than inside: what this measures is how long
+                // the hop waited before the pool had room for it, which is the only
+                // sight there is of a blocking pool nothing throttles (`F8`).
+                let queued = std::time::Instant::now();
+                let stats = Arc::clone(stats);
+                blocking::run(move || {
+                    stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
+                    let chunk = run_chunk(&database, &plan, &shape, resume, &token, &mut counted)?;
+                    Ok((chunk, counted))
+                })
+                .await?
+            };
 
             let (chunk, counted) = chunk;
             profile = counted;
+
+            stats.chunk_sent(chunk.rows.len() as u64);
 
             for row in &chunk.rows {
                 self.outbound

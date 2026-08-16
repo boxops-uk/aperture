@@ -47,8 +47,10 @@ pub mod registry;
 pub mod rows;
 pub mod server;
 pub mod session;
+pub mod stats;
 
 pub use error::ServerError;
 pub use registry::Registry;
 pub use server::{Listener, serve_unix};
 pub use session::{Database, serve};
+pub use stats::ServerStats;

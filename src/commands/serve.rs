@@ -16,6 +16,25 @@ use crate::{CliError, code_index, commands};
 /// [`CliError::RootHeld`] if another server owns the root, or whatever binding or
 /// opening reports.
 pub fn run(root: &Path, socket: &Path, ready_file: Option<&Path>) -> Result<(), CliError> {
+    // **`--features console`, and a developer's build only.**
+    //
+    // Turns on `tokio-console`, which shows every task, where it is parked and how long
+    // it has been there — the view that finding `bench/FINDINGS.md` §10 needed, and
+    // which that investigation reproduced by hand with a counter per await site.
+    //
+    // Off by default and deliberately not an operator's switch: it serves gRPC on
+    // 127.0.0.1:6669, and a listening port that appears because a feature was on is the
+    // shape `ops-I10` exists to refuse. It also needs `RUSTFLAGS="--cfg tokio_unstable"`,
+    // so it cannot be turned on by accident:
+    //
+    // ```text
+    // RUSTFLAGS="--cfg tokio_unstable" cargo run --release --features console \
+    //     --bin aperture -- --data-dir PATH serve
+    // tokio-console
+    // ```
+    #[cfg(feature = "console")]
+    console_subscriber::init();
+
     // Held for the process's life: the lock *is* the ownership, so it is taken before
     // anything is opened and released only when the server exits.
     let (catalog, _lock) = commands::exclusive(root, socket)?;

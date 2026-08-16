@@ -3,6 +3,12 @@ name = "aperture-server"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Task-level instrumentation for `tokio-console`, off by default. The flag belongs
+# here because this is the crate that spawns the tasks worth looking at; the CLI's
+# `console` feature turns it on along with the subscriber that serves them.
+console = ["tokio/tracing"]
+
 [dependencies]
 # The read path (engine), the write path (ingest), the store they meet over, and
 # the codec both directions speak.

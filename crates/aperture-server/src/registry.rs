@@ -36,7 +36,7 @@ use aperture_store::{
 
 use aperture_wire::protocol::{self, Control, ControlOp, ControlReply};
 
-use crate::{blocking, error::ServerError, session::Database};
+use crate::{blocking, error::ServerError, session::Database, stats::ServerStats};
 
 /// The store root, the databases open under it, and the schema they share.
 pub struct Registry {
@@ -51,6 +51,13 @@ pub struct Registry {
     /// Sorted, so a listing derived from it is stable; behind a lock, so a `create`
     /// can add to it while connections are being served.
     open: RwLock<BTreeMap<String, Arc<Database>>>,
+    /// This server's counters.
+    ///
+    /// Here because the registry is already *the* per-server shared value — every
+    /// session is handed one, and there is exactly one per running server — so hanging
+    /// the counters on it costs no new plumbing. It is not a claim that counting is a
+    /// registry concern: [`ServerStats`] is its own module for that reason.
+    stats: Arc<ServerStats>,
 }
 
 impl Registry {
@@ -95,9 +102,19 @@ impl Registry {
                 schema,
                 fingerprint,
                 open: RwLock::new(open),
+                stats: Arc::new(ServerStats::default()),
             },
             listing,
         ))
+    }
+
+    /// This server's counters.
+    ///
+    /// Readable, and read by tests; not *reported* anywhere, which is
+    /// [`stats`](crate::stats)'s own note to explain.
+    #[must_use]
+    pub fn stats(&self) -> &Arc<ServerStats> {
+        &self.stats
     }
 
     /// The schema fingerprint a session that names no database handshakes against.

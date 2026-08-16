@@ -36,7 +36,22 @@ path = "src/main.rs"
 # `cfg(test)`, which the dev-dependency covers) turns on.
 proptest = ["dep:proptest", "aperture-engine/proptest"]
 
+# **tokio-console, for looking at tasks rather than counting them.**
+#
+# Off by default and it is a *developer's* feature, not an operator's: it opens a gRPC
+# port, which is exactly the thing `ops-I10`'s default-closed argument is about. What it
+# buys is the view that would have found `bench/FINDINGS.md` §10 in minutes instead of an
+# afternoon — every task, where it is parked, and how long it has been there. The leak
+# was found by hand-rolling a worse version of this.
+#
+# It also needs `--cfg tokio_unstable`, which is why running it is two flags rather than
+# one; `serve`'s docs give the line.
+console = ["dep:console-subscriber", "aperture-server/console"]
+
 [dependencies]
+# Task-level introspection for `--features console`. Optional, and nothing but the
+# feature refers to it.
+console-subscriber = { version = "0.4", optional = true }
 # The tool is a wire client, and an ordinary one: `create`, `finish` and `db rm`
 # against a running server go through the same crate an external tool would use.
 aperture-client = { path = "crates/aperture-client" }
