@@ -495,7 +495,14 @@ fn the_dotnet_clients_blocks_decode_here() {
         let (decoded, _) = aperture_wire::decode_block(bytes, &schema)
             .unwrap_or_else(|error| panic!("`{name}` does not decode: {error}"));
 
-        assert_eq!(header.predicate, *predicate, "{name}");
+        // The header names its predicate now rather than numbering it, so this
+        // asserts the *name* — and that the reader resolves it to the id it expects.
+        assert_eq!(header.predicate, *name, "{name}");
+        assert_eq!(
+            schema.find_position(name).map(|(id, _)| id),
+            Some(*predicate),
+            "`{name}` does not resolve to the id the corpus declares"
+        );
         assert_eq!(header.count as usize, facts.len(), "{name}");
         assert_eq!(&decoded, facts, "`{name}` decodes to different facts");
     }

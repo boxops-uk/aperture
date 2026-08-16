@@ -37,6 +37,15 @@ pub enum WireError {
     #[error("declared length {declared} exceeds the {available} bytes remaining")]
     LengthOutOfRange { declared: u64, available: usize },
 
+    /// A block naming a predicate the reader's schema does not declare.
+    ///
+    /// **The failure a name on the wire replaces an id with.** An id disagreeing
+    /// between two databases was a silent mis-decode — the bytes were read as some
+    /// other predicate's shape; a name that is not there is a refusal that says which
+    /// name, before a byte of payload is trusted.
+    #[error("no predicate called `{0}` in this schema")]
+    UnknownPredicateName(String),
+
     /// A union branch index the reader has no branch for.
     #[error("unknown reference form {0}")]
     UnknownRefForm(u64),

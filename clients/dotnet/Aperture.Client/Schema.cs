@@ -61,6 +61,16 @@ public sealed class ApertureSchema(IReadOnlyList<AperturePredicate> predicates)
             ? Predicates[(int)id]
             : throw new ApertureProtocolException($"no predicate {id} in this schema");
 
+    /// <summary>
+    /// The fully-qualified name of a predicate, which is what a block header carries.
+    /// </summary>
+    /// <remarks>
+    /// A client's ids are its <i>own</i> — a position in the list it declares — and the
+    /// server's may differ. Naming the predicate on the wire is what makes that nobody's
+    /// problem.
+    /// </remarks>
+    public string NameOf(uint id) => this[id].Name;
+
     public uint IdOf(string name)
     {
         for (var index = 0; index < Predicates.Count; index++)

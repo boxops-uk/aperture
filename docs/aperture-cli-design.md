@@ -793,8 +793,16 @@ storage and its references are `FactId`s already.
 - **Block — built** (`aperture-wire::block`), 30 bytes of framing:
 
   ```text
-  [sync: FF × 10][magic "APBK"][predicate u32][count u32][length u32][crc32 u32][payload]
+  [sync: FF × 10][magic "APBK"][name_len u32][count u32][length u32][crc32 u32][name][payload]
   ```
+
+  **The predicate is named, not numbered** (Phase 8). The header carried the database's id
+  until then, which made a fact file meaningful only against the database whose numbering
+  wrote it and made every client keep a table of ids in step with a server's. A name costs
+  about six bytes *once per block* — the RLE below is exactly why that is nothing — and a
+  client's ids become its own. The name sits after the fixed-width fields so a splitter still
+  reaches `length` at a fixed offset, and it cannot contribute to a marker for the reason a
+  string cannot.
 
   RLE of the predicate ID: indexers writing in visitation order emit small blocks (bursts);
   the post-merge writer emits huge ones; blocks coalesce monotonically through k-merges until

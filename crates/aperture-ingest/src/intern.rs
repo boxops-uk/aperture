@@ -4,7 +4,7 @@
 use aperture_encoding::tuple::{Value, encode_key, encode_typed};
 use aperture_schema::{
     id::FactId,
-    schema::{PredicateId, PredicateTy, Schema},
+    schema::{PredicateTy, Schema},
 };
 use aperture_wire::{WireFact, WireRef, WireValue, block};
 
@@ -219,16 +219,21 @@ fn resolve<S: FactSink>(
 
 /// The predicate a block declares, without decoding its facts.
 ///
+/// A **name**, since Phase 8: a block names its predicate rather than numbering it, so a
+/// splitter can group blocks without a schema and a caller resolves the name against
+/// whichever database it is writing into.
+///
 /// # Errors
 ///
 /// Whatever [`block::decode_header`] reports.
-pub fn block_predicate(bytes: &[u8]) -> Result<PredicateId, IngestError> {
+pub fn block_predicate(bytes: &[u8]) -> Result<&str, IngestError> {
     Ok(block::decode_header(bytes)?.predicate)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aperture_schema::schema::PredicateId;
     use aperture_store::store::Interned;
     use aperture_wire::value::proptest::arb_schema_and_fact;
     use proptest::prelude::*;

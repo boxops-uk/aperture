@@ -9,9 +9,26 @@
 //! what makes "one fact encoding, not two" a thing that can be checked.
 //!
 //! ```text
-//!   [sync: FF × 10][magic "APBK"][predicate u32][count u32][length u32][crc32 u32][payload]
-//!    └ 10 B         └────────────────── header, 20 B ──────────────────┘  └ length B
+//!   [sync: FF × 10][magic "APBK"][name_len u32][count u32][length u32][crc32 u32][name][payload]
+//!    └ 10 B         └────────────────── header, 20 B ─────────────────┘  └ name_len  └ length B
 //! ```
+//!
+//! # The predicate is named, not numbered
+//!
+//! The header carried a `predicate u32` — the *database's* id — until Phase 8. That made a
+//! fact file meaningful only against the database whose numbering produced it, and it made
+//! every client keep a table of ids in step with a server's. A name costs about six more
+//! bytes **once per block**, against payloads of hundreds to thousands of facts, and buys
+//! both back: a client never learns a database's numbering, and a file is portable to any
+//! database whose schema declares those names.
+//!
+//! It is also a better failure. A wrong id decoded the payload as some other predicate's
+//! shape, silently; a name that is not there is [`WireError::UnknownPredicateName`], before
+//! a byte of payload is trusted.
+//!
+//! The name sits **after** the fixed-width fields on purpose — see below, a splitter must
+//! reach `length` at a fixed offset — and cannot contribute to a sync marker for the reason
+//! a string cannot: it is UTF-8, and UTF-8 never uses `0xF8`–`0xFF`.
 //!
 //! # The sync marker is structurally impossible in a block's own bytes
 //!
@@ -76,7 +93,7 @@ pub const SYNC: [u8; 10] = [0xFF; 10];
 /// checksum is computed.
 pub const MAGIC: [u8; 4] = *b"APBK";
 
-/// Bytes of header after the marker: magic, predicate, count, length, checksum.
+/// Bytes of header after the marker: magic, name length, count, length, checksum.
 pub const HEADER_LEN: usize = MAGIC.len() + 4 + 4 + 4 + 4;
 
 /// Total framing per block.
@@ -94,11 +111,21 @@ pub const MAX_FACTS: u32 = 0x00FF_FFFF;
 /// to be trusted with that.
 pub const MAX_PAYLOAD: u32 = 0x0400_0000;
 
+/// The longest predicate name a block may carry.
+///
+/// Capped for the same reason `count` and `length` are: the top two bytes stay zero, so the
+/// field cannot contribute to a run of `0xFF`. A fully-qualified predicate name is a few
+/// dozen bytes, so this is a bound on absurdity rather than a limit anyone meets.
+pub const MAX_NAME: u32 = 0x0000_FFFF;
+
 /// What a block says about itself, before its facts are decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BlockHeader {
-    pub predicate: PredicateId,
+pub struct BlockHeader<'a> {
+    /// The predicate's fully-qualified name, borrowed from the block's own bytes.
+    pub predicate: &'a str,
     pub count: u32,
+    /// Payload bytes, *not* counting the name — so a block occupies
+    /// `OVERHEAD + name.len() + length`.
     pub length: u32,
 }
 
@@ -121,6 +148,22 @@ pub fn encode_block(
             what: "facts",
             declared: facts.len() as u64,
             max: u64::from(MAX_FACTS),
+        });
+    };
+
+    // The name is resolved here, from the schema this call already takes, so a caller
+    // still speaks its own `PredicateId` and only the *wire* carries a name.
+    let name = schema
+        .get(predicate)
+        .and_then(|p| p.name())
+        .ok_or(WireError::UnknownPredicate(predicate.0))?;
+
+    let name_len = u32::try_from(name.len()).ok().filter(|n| *n <= MAX_NAME);
+    let Some(name_len) = name_len else {
+        return Err(WireError::BlockTooLarge {
+            what: "predicate name bytes",
+            declared: name.len() as u64,
+            max: u64::from(MAX_NAME),
         });
     };
 
@@ -152,14 +195,20 @@ pub fn encode_block(
     // because `length` is what a splitter uses to skip.
     let mut header = Vec::with_capacity(HEADER_LEN - 4);
     header.extend_from_slice(&MAGIC);
-    header.extend_from_slice(&predicate.0.to_le_bytes());
+    header.extend_from_slice(&name_len.to_le_bytes());
     header.extend_from_slice(&count.to_le_bytes());
     header.extend_from_slice(&length.to_le_bytes());
 
-    let checksum = crc::finish(crc::update(crc::update(crc::start(), &header), &payload));
+    // Name as well as payload: it is as load-bearing as either, and a corrupted one
+    // would otherwise resolve to a different predicate or to none.
+    let checksum = crc::finish(crc::update(
+        crc::update(crc::update(crc::start(), &header), name.as_bytes()),
+        &payload,
+    ));
 
     out.extend_from_slice(&header);
     out.extend_from_slice(&checksum.to_le_bytes());
+    out.extend_from_slice(name.as_bytes());
     out.extend_from_slice(&payload);
 
     Ok(())
@@ -168,7 +217,7 @@ pub fn encode_block(
 /// Read the header of the block starting at `bytes[0]`, without decoding its facts.
 ///
 /// What a splitter calls: it validates enough to trust `length`, then skips.
-pub fn decode_header(bytes: &[u8]) -> Result<BlockHeader, WireError> {
+pub fn decode_header(bytes: &[u8]) -> Result<BlockHeader<'_>, WireError> {
     if bytes.len() < OVERHEAD {
         return Err(WireError::UnexpectedEof);
     }
@@ -187,7 +236,15 @@ pub fn decode_header(bytes: &[u8]) -> Result<BlockHeader, WireError> {
         u32::from_le_bytes(header[start..start + 4].try_into().expect("four bytes"))
     };
 
-    let (predicate, count, length, declared_crc) = (field(0), field(1), field(2), field(3));
+    let (name_len, count, length, declared_crc) = (field(0), field(1), field(2), field(3));
+
+    if name_len > MAX_NAME {
+        return Err(WireError::BlockTooLarge {
+            what: "predicate name bytes",
+            declared: u64::from(name_len),
+            max: u64::from(MAX_NAME),
+        });
+    }
 
     if count > MAX_FACTS {
         return Err(WireError::BlockTooLarge {
@@ -205,20 +262,27 @@ pub fn decode_header(bytes: &[u8]) -> Result<BlockHeader, WireError> {
         });
     }
 
-    let payload_at = OVERHEAD;
+    let name_at = OVERHEAD;
+    let payload_at = name_at + name_len as usize;
     let payload_end = payload_at + length as usize;
 
     if payload_end > bytes.len() {
         return Err(WireError::LengthOutOfRange {
-            declared: u64::from(length),
-            available: bytes.len() - payload_at,
+            declared: u64::from(name_len) + u64::from(length),
+            available: bytes.len() - name_at,
         });
     }
 
-    // Header first, then payload — the same order and the same bytes `encode_block`
-    // folded, minus the checksum field itself.
+    let name =
+        std::str::from_utf8(&bytes[name_at..payload_at]).map_err(|_| WireError::BadString)?;
+
+    // Header, then name, then payload — the same order and the same bytes
+    // `encode_block` folded, minus the checksum field itself.
     let checksum = crc::finish(crc::update(
-        crc::update(crc::start(), &header[..MAGIC.len() + 12]),
+        crc::update(
+            crc::update(crc::start(), &header[..MAGIC.len() + 12]),
+            name.as_bytes(),
+        ),
         &bytes[payload_at..payload_end],
     ));
 
@@ -230,7 +294,7 @@ pub fn decode_header(bytes: &[u8]) -> Result<BlockHeader, WireError> {
     }
 
     Ok(BlockHeader {
-        predicate: PredicateId(predicate),
+        predicate: name,
         count,
         length,
     })
@@ -240,12 +304,20 @@ pub fn decode_header(bytes: &[u8]) -> Result<BlockHeader, WireError> {
 pub fn decode_block(bytes: &[u8], schema: &Schema) -> Result<(Vec<WireFact>, usize), WireError> {
     let header = decode_header(bytes)?;
 
-    let payload = &bytes[OVERHEAD..OVERHEAD + header.length as usize];
+    // Name → *this* reader's id. Two databases may number a predicate differently and
+    // neither has to care, which is the whole point of naming it on the wire.
+    let predicate = schema
+        .find_position(header.predicate)
+        .map(|(id, _)| id)
+        .ok_or_else(|| WireError::UnknownPredicateName(header.predicate.to_owned()))?;
+
+    let name_len = header.predicate.len();
+    let payload = &bytes[OVERHEAD + name_len..OVERHEAD + name_len + header.length as usize];
     let mut facts = Vec::with_capacity(header.count.min(4096) as usize);
     let mut at = 0;
 
     for _ in 0..header.count {
-        let (fact, used) = decode_fact(&payload[at..], schema, header.predicate)?;
+        let (fact, used) = decode_fact(&payload[at..], schema, predicate)?;
         facts.push(fact);
         at += used;
     }
@@ -258,7 +330,7 @@ pub fn decode_block(bytes: &[u8], schema: &Schema) -> Result<(Vec<WireFact>, usi
         return Err(WireError::TrailingBytes(payload.len() - at));
     }
 
-    Ok((facts, OVERHEAD + header.length as usize))
+    Ok((facts, OVERHEAD + name_len + header.length as usize))
 }
 
 /// The offset of the next block at or after `from`, or `None`.
@@ -485,8 +557,11 @@ mod tests {
         let mut out = vec![];
         encode_block(&mut out, &schema, PredicateId(0), &[]).expect("an empty block");
 
-        assert_eq!(out.len(), OVERHEAD);
-        assert_eq!(decode_block(&out, &schema), Ok((vec![], OVERHEAD)));
+        // Framing plus the name it carries — a block names its predicate now, so the
+        // floor is `OVERHEAD` and the name rather than `OVERHEAD` alone.
+        let framed = OVERHEAD + "gen.P0".len();
+        assert_eq!(out.len(), framed);
+        assert_eq!(decode_block(&out, &schema), Ok((vec![], framed)));
     }
 
     /// A fact of another predicate is refused at encode, because the header names
