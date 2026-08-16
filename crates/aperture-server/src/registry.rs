@@ -41,11 +41,12 @@ use crate::{blocking, error::ServerError, session::Database, stats::ServerStats}
 /// The store root, the databases open under it, and the schema they share.
 pub struct Registry {
     catalog: Catalog,
-    /// One built-in schema for every database, hardcoded until
-    /// [Phase 8](../../../PLAN.md) parses them. When that lands this becomes the
-    /// schema each database was *created* against, read from its own embedded copy —
-    /// which is [I13](../../../docs/invariants.md#i13), and is why nothing below
-    /// assumes the schema and the registry have the same lifetime.
+    /// One built-in schema for every database — since Phase 8.4 *parsed* from
+    /// `schemas/code.aps` rather than written in Rust, but still one schema the whole
+    /// root shares. What is left to do is per-database: this becomes the schema each
+    /// database was *created* against, read from its own embedded copy — which is
+    /// [I13](../../../docs/invariants.md#i13), and is why nothing below assumes the
+    /// schema and the registry have the same lifetime.
     schema: Arc<Schema>,
     fingerprint: u64,
     /// Sorted, so a listing derived from it is stable; behind a lock, so a `create`

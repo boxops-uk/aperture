@@ -8,7 +8,6 @@
 //! addressing rules it is built to obey.
 
 mod cli;
-mod code_index;
 mod commands;
 mod config;
 mod output;
@@ -21,6 +20,7 @@ use std::{path::PathBuf, process::ExitCode};
 
 use clap::Parser;
 
+pub use aperture_cli::code_index;
 use cli::{Cli, Command, DbCommand};
 
 /// Why a command could not run.

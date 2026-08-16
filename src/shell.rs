@@ -59,7 +59,6 @@
 
 use std::{borrow::Cow, io::IsTerminal, path::Path, sync::OnceLock};
 
-use crate::code_index;
 use aperture_encoding::tuple::{Value, decode_key};
 use aperture_engine::{
     compile::Compilation,
@@ -80,7 +79,6 @@ use aperture_store::{
     fact_store::FactStore,
     store::{FjallDb, FjallStore},
 };
-
 use codespan_reporting::term::{
     self,
     termcolor::{ColorChoice, StandardStream},
@@ -1132,7 +1130,7 @@ pub fn main() -> Result<(), ApertureError> {
 }
 
 fn shell(dir: &Path) -> Result<(), ApertureError> {
-    let schema = code_index::schema();
+    let schema = crate::code_index::schema();
 
     let db = FjallDb::open(dir)?;
     db.create_predicates((0..schema.len()).map(|index| PredicateId(index as u32)))?;

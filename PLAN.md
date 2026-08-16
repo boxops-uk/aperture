@@ -884,7 +884,8 @@ side) is the part the streaming path still owes, by a different mechanism.
 - *strengthens (at scale):* [I11](docs/invariants.md#i11), [I12](docs/invariants.md#i12).
 - *upholds (relies on):* [ops-I4](docs/invariants.md#ops-i4) (reproducibility ⇒ conflict
   handling is order-independent), [I13](docs/invariants.md#i13) (validate ingest against the
-  embedded schema — against the still-hardcoded schema until Phase 8).
+  embedded schema — against the one built-in schema, per-database copies being Phase 8.4's
+  remaining half).
 - **Note:** the [`FactRef` marker](docs/open-decisions.md) is already resolved (own marker
   `0x51`), so writing fact-typed *bytes* is unblocked — no pre-work there.
 

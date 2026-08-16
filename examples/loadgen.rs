@@ -41,15 +41,14 @@ use aperture_cli::{
 use aperture_client::{Connection, Mode, WireFact, WireRef, WireValue};
 use aperture_schema::schema::{PredicateId, Schema};
 
-/// Positions in the built-in schema. An id **is** a position, so these are the schema's
-/// order and not a naming convention.
-const FILE: PredicateId = PredicateId(0);
-const MODULE: PredicateId = PredicateId(1);
-const DECL: PredicateId = PredicateId(2);
-const SEARCH: PredicateId = PredicateId(3);
-const REF: PredicateId = PredicateId(4);
-const IMPORT: PredicateId = PredicateId(5);
-const LINE: PredicateId = PredicateId(21);
+/// Ids, **looked up by name** rather than written down.
+///
+/// A position comes from sorting the schema's names, so a literal here would be a second
+/// statement of something `schemas/code.aps` already decides — and wrong the first time a
+/// predicate sorting earlier is added.
+fn p(name: &str) -> PredicateId {
+    code_index::id(name)
+}
 
 /// Lines written per file, for the one predicate that is large without being about a
 /// symbol.
@@ -171,7 +170,7 @@ fn parse() -> Result<Options, String> {
 
 fn file(index: usize) -> WireFact {
     WireFact {
-        predicate: FILE,
+        predicate: p("src.File"),
         key: WireValue::Str(format!("src/f{index:07}.py")),
         value: None,
     }
@@ -179,7 +178,7 @@ fn file(index: usize) -> WireFact {
 
 fn module(index: usize) -> WireFact {
     WireFact {
-        predicate: MODULE,
+        predicate: p("src.Module"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(file(index)))),
             WireValue::Str(format!("m{index:07}")),
@@ -198,7 +197,7 @@ fn module(index: usize) -> WireFact {
 /// is not simply "bytes divided by time".
 fn decl(file_index: usize, n: usize) -> WireFact {
     WireFact {
-        predicate: DECL,
+        predicate: p("src.Decl"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(module(file_index)))),
             WireValue::Str(format!("symbol_{file_index:07}_{n:03}")),
@@ -213,7 +212,7 @@ fn decl(file_index: usize, n: usize) -> WireFact {
 /// The same declaration keyed by its short name — what a person searches for.
 fn search(file_index: usize, n: usize) -> WireFact {
     WireFact {
-        predicate: SEARCH,
+        predicate: p("src.SearchByName"),
         key: WireValue::Record(Box::from([
             WireValue::Str(format!("symbol_{file_index:07}_{n:03}")),
             WireValue::Ref(WireRef::Nested(Box::new(decl(file_index, n)))),
@@ -226,7 +225,7 @@ fn search(file_index: usize, n: usize) -> WireFact {
 /// its target's — which is the whole reason `src.Ref` carries one.
 fn reference(file_index: usize, n: usize, files: usize) -> WireFact {
     WireFact {
-        predicate: REF,
+        predicate: p("src.Ref"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(decl(file_index, n)))),
             WireValue::Ref(WireRef::Nested(Box::new(file((file_index + 1) % files)))),
@@ -243,7 +242,7 @@ fn reference(file_index: usize, n: usize, files: usize) -> WireFact {
 /// star: a star would make every join fan out from one row.
 fn import(file_index: usize, files: usize) -> WireFact {
     WireFact {
-        predicate: IMPORT,
+        predicate: p("src.Import"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(module(file_index)))),
             WireValue::Ref(WireRef::Nested(Box::new(module((file_index + 1) % files)))),
@@ -254,7 +253,7 @@ fn import(file_index: usize, files: usize) -> WireFact {
 
 fn line(file_index: usize, n: usize) -> WireFact {
     WireFact {
-        predicate: LINE,
+        predicate: p("src.Line"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(file(file_index)))),
             WireValue::Int(n as i64),
@@ -303,18 +302,18 @@ fn seed(options: &Options, schema: &Arc<Schema>) {
 
     for (predicate, facts) in [
         (
-            DECL,
+            p("src.Decl"),
             (0..options.files)
                 .flat_map(|index| (0..options.decls_per_file).map(move |n| decl(index, n)))
                 .collect::<Vec<_>>(),
         ),
         (
-            SEARCH,
+            p("src.SearchByName"),
             (0..options.files)
                 .flat_map(|index| (0..options.decls_per_file).map(move |n| search(index, n)))
                 .collect(),
         ),
-        (REF, {
+        (p("src.Ref"), {
             let files = options.files;
             (0..options.files)
                 .flat_map(|index| {
@@ -322,14 +321,14 @@ fn seed(options: &Options, schema: &Arc<Schema>) {
                 })
                 .collect()
         }),
-        (IMPORT, {
+        (p("src.Import"), {
             let files = options.files;
             (0..options.files)
                 .map(|index| import(index, files))
                 .collect()
         }),
         (
-            LINE,
+            p("src.Line"),
             (0..options.files)
                 .flat_map(|index| (0..LINES_PER_FILE).map(move |n| line(index, n)))
                 .collect(),

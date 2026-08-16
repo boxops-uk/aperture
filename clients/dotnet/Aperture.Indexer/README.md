@@ -60,9 +60,12 @@ It is interning working, and it is the number this whole exercise exists to meas
 
 ## How C# maps onto the code index
 
-The schema is the server's — twenty-two predicates, hardcoded until Phase 8 — so the
-question is not what to declare but what to put in it. `CodeIndex.cs` states it a third
-time, independently, because that is what the handshake fingerprint is for.
+The schema is the server's — twenty-two predicates, now parsed from `schemas/code.aps`
+rather than written in Rust — so the question is not what to declare but what to put in
+it. `CodeIndex.cs` states it a third time, independently, because that is what the
+handshake fingerprint is for. **Declaration order is not part of that agreement**: the
+fingerprint sorts by name on both sides, so this file may list predicates in whatever
+order reads well.
 
 **The source layer**, which every indexer here fills:
 

@@ -1,0 +1,104 @@
+# The built-in code index — three layers, and the joins between them are the point.
+#
+# This file *is* the schema. It was twenty-two predicates of hand-written Rust until
+# Phase 8; the parser reads it now, which is what makes a schema something a person can
+# write rather than something the binary was compiled with.
+#
+# **Field order is the key order, and the key order is the index design.** A query can
+# narrow on a leading run of a record's fields and only filter on the rest, so where a
+# field sits decides what is fast. Two of these were once alphabetical by habit and cost
+# 56,274 rows examined per row produced on an ordinary join — see `bench/FINDINGS.md` §2.
+# Read each record as "what is this predicate fast at", not as a list of attributes.
+
+schema src {
+
+  # ---- the source layer -------------------------------------------------------
+  #
+  # What a syntax walk can see. `example/index.py` fills exactly these six with
+  # Python's `ast`; everything below them needs a compiler and a build system.
+
+  # A path, relative to the index root.
+  predicate File : string
+
+  # The **namespace**, per file. A file declaring two namespaces is two modules: the
+  # C# analogue of a Python module is not the project, because a project spans
+  # namespaces and a namespace spans projects.
+  predicate Module : { file : File, name : string }
+
+  # Declared `{module, name, line}`, and the line goes last on purpose: the join
+  # anybody writes is "the declarations in this module", often narrowed by name, and
+  # the line is what distinguishes two declarations that agree on both.
+  #
+  # The value side is the declaration's *kind* — `def`, `class`, `method` — because it
+  # is the one thing a query wants to read without matching on, and a value cannot be
+  # matched (I6).
+  predicate Decl : { module : Module, name : string, line : int } -> string
+
+  # **The search index over declaration names**, and the one predicate here that exists
+  # for a reason about *keys* rather than about the code. A declaration's key begins
+  # with its module, so `src.Decl {name = "encode"..}` reaches the name only after the
+  # scan has opened. Keyed with the name leading, the same prefix is a range.
+  #
+  # It is the same names twice over, which is what a *derived* predicate is: data a
+  # query could compute, stored keyed the way the query wants to read it. Written by
+  # hand until Phase 8b can declare one.
+  predicate SearchByName : { name : string, to : Decl }
+
+  # Declared `{to, file, at}`, because find-references is the question: "where is this
+  # used" seeks only if the target leads. The file comes second so "this declaration's
+  # uses in this file" narrows too, and it is a field of its own because `to` reaches
+  # the file the *declaration* is in, which for a reference worth having is a different
+  # one.
+  predicate Ref : { to : Decl, file : File, at : { line : int, col : int } }
+
+  # module → module, deduped: what a name in this file resolved to, rather than what a
+  # `using` or an `import` statement claimed.
+  predicate Import : { from : Module, to : Module }
+
+  # ---- the build layer: what compiled a file, and into what --------------------
+
+  # A `.csproj` path, as a file is a path.
+  predicate Project : string
+
+  # An assembly name.
+  predicate Assembly : string
+
+  # The **crossing**: a project, a target framework, and the assembly the pair
+  # produces.
+  predicate Compilation : { assembly : Assembly, framework : string, project : Project }
+
+  # Edges, which is how a many-to-many is said without arrays.
+  predicate ProjectSource : { file : File, project : Project }
+  predicate ProjectRef : { from : Project, to : Project }
+
+  # A **compound identity** — a package is its name *and* its version, and neither
+  # alone.
+  predicate Package : { name : string, version : string }
+  predicate PackageRef : { package : Package, project : Project }
+
+  # ---- the declaration graph: what a syntax walk cannot see --------------------
+  #
+  # All four of these lead with the end of the edge you fan out *from*, which is the
+  # seek. `{base, type}` makes "everything deriving from this" a seek; the other three
+  # are the same choice made again.
+
+  predicate Member : { container : Decl, member : Decl }
+  predicate Extends : { base : Decl, type : Decl }
+  predicate Implements : { iface : Decl, type : Decl }
+  predicate Override : { base : Decl, member : Decl }
+
+  # An `int` in the middle of a key, so a method's parameters come back in order.
+  predicate Param : { decl : Decl, index : int, name : string } -> string
+
+  # A key of one field, which is what an *attribute of something else* is.
+  predicate TypeOf : { decl : Decl } -> string
+  predicate Doc : { decl : Decl } -> string
+
+  # A string leading the key, so `[Obsolete]` everywhere is a seek rather than a scan.
+  predicate Attribute : { attribute : string, target : Decl }
+
+  # The **wide row**: a file's line table, one fact per line, the text on the value
+  # side. The largest predicate by bytes and the second largest by count.
+  predicate Line : { file : File, line : int } -> string
+
+}

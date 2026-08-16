@@ -38,6 +38,13 @@ use super::{
 /// is the cheap way to catch it, and it doubles as a bound on absurd-but-finite nesting.
 const MAX_ALIAS_DEPTH: usize = 32;
 
+/// The namespace reserved for predicates a **server** answers rather than stores.
+///
+/// Everything under it is numbered after every stored predicate, so that serving one
+/// cannot move an id a database has already written into its keyspace names and into
+/// every `FactId` it holds. Glean reserves `builtin` for the same kind of reason.
+pub const RESERVED_NAMESPACE: &str = "aperture.";
+
 /// What one source lowered to.
 pub struct Lowered {
     pub schema: Schema,
@@ -106,7 +113,23 @@ pub fn lower(cst: &Cst<'_>, diags: &mut Vec<Diagnostic>) -> Option<Lowered> {
     // The sort is what makes this independent of where a declaration was written, which
     // is requirement (1) of D1 — reproducibility — and it is why two files listing the
     // same predicates in different orders build the same database.
-    predicates.sort_by(|a, b| a.qualified.cmp(&b.qualified));
+    //
+    // **`aperture.*` sorts last, and that is load-bearing rather than tidy.** A server
+    // serves the stored schema *plus* the predicates it answers itself, while a database
+    // creates its keyspaces from the stored one alone. If a reserved name could sort into
+    // the middle, adding one would shift every stored id — and every query would then
+    // read a keyspace belonging to a different predicate. Reserving the namespace to the
+    // end makes "adding a virtual predicate renumbers nothing" true by construction,
+    // which is the same rule D1 gives additions in general.
+    predicates.sort_by(|a, b| {
+        let key = |d: &Declared| {
+            (
+                d.qualified.starts_with(RESERVED_NAMESPACE),
+                d.qualified.clone(),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
 
     let ids: BTreeMap<&str, PredicateId> = predicates
         .iter()
@@ -175,6 +198,17 @@ pub fn lower(cst: &Cst<'_>, diags: &mut Vec<Diagnostic>) -> Option<Lowered> {
         // Some predicate was refused. The ids above were assigned over *all* of them, so
         // continuing would hand back a schema whose positions no longer match its ids —
         // the one thing a `PredicateId` may not do.
+        //
+        // **And a refusal always has a reason.** Returning `None` with an empty sink is
+        // a compiler bug rather than a bad schema, and it is one that costs an afternoon:
+        // the caller reports "it did not lower" and has nothing to point at. This caught
+        // exactly that when a grammar rule turned out to be inlined away.
+        debug_assert!(
+            !diags.is_empty(),
+            "lowering refused {} of {} predicates and said nothing",
+            predicates.len() - built.len(),
+            predicates.len()
+        );
         return None;
     }
 
@@ -426,7 +460,7 @@ impl Resolver<'_, '_> {
                 return None;
             }
 
-            let name = token_text(self.cst, field, |t| matches!(t, super::lexer::Token::LId))?;
+            let name = field_name(self.cst, field)?;
             let ty = kids(self.cst, field).find(|n| is_ty(self.cst, *n))?;
             let ty = self.ty(ty, depth)?;
 
@@ -515,6 +549,22 @@ fn token_text<'a>(
         Node::Token(t, _) if want(t) => Some(&cst.source()[cst.span(child)]),
         _ => None,
     })
+}
+
+/// A field's name — its first token, whatever kind.
+///
+/// **Not a rule lookup.** `field_name` in the grammar is an alternation of single
+/// tokens, and `lelwel` inlines such a rule rather than emitting a node for it, so
+/// asking for a `FieldName` node finds nothing and answers `None` — which is how this
+/// silently refused the whole built-in schema once. A field's first token *is* its
+/// name, keyword or not.
+fn field_name<'a>(cst: &'a Cst<'a>, field: NodeRef) -> Option<&'a str> {
+    // The first child either way: `lelwel` wraps the alternation in a `field_name` node,
+    // and reading it as *text* rather than by rule name means this keeps working whether
+    // it wraps or inlines. Asking for a node by name is what silently refused the whole
+    // built-in schema once — the lookup missed, `ty` answered `None`, and nothing said so.
+    let first = kids(cst, field).next()?;
+    Some(&cst.source()[cst.span(first)])
 }
 
 /// The text of a rule child, for rules that wrap a single token (`ns`).

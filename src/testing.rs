@@ -71,7 +71,7 @@ pub fn serving(files: usize) -> Serving {
 /// A file, by index — the same key the seeder writes, so a test can name one.
 fn file_fact(n: usize) -> WireFact {
     WireFact {
-        predicate: code_index::FILE,
+        predicate: code_index::id("src.File"),
         // Zero-padded, so the order rows come back in is the order they were written —
         // which is what lets a paging test compare sequences rather than sets.
         key: WireValue::Str(format!("f{n:05}.py")),
@@ -82,7 +82,7 @@ fn file_fact(n: usize) -> WireFact {
 /// A module in that file, nesting it — so something in this corpus holds a **reference**.
 fn module_fact(n: usize) -> WireFact {
     WireFact {
-        predicate: code_index::MODULE,
+        predicate: code_index::id("src.Module"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(file_fact(n)))),
             WireValue::Str(format!("m{n:05}")),
@@ -95,7 +95,7 @@ fn module_fact(n: usize) -> WireFact {
 /// *through* a reference and make the store answer a point read.
 fn decl_fact(n: usize) -> WireFact {
     WireFact {
-        predicate: code_index::DECL,
+        predicate: code_index::id("src.Decl"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(module_fact(n)))),
             WireValue::Str(format!("d{n:05}")),
@@ -126,7 +126,7 @@ fn seed(serving: &Serving, files: usize) {
     let facts: Vec<WireFact> = (0..files).map(file_fact).collect();
 
     writer
-        .write(code_index::FILE, &facts)
+        .write(code_index::id("src.File"), &facts)
         .expect("the files are written");
 
     // One block per predicate, because a block is a run of one predicate's facts. The
@@ -134,12 +134,12 @@ fn seed(serving: &Serving, files: usize) {
     // than creating — which is the write path a real producer takes.
     let modules: Vec<WireFact> = (0..files).map(module_fact).collect();
     writer
-        .write(code_index::MODULE, &modules)
+        .write(code_index::id("src.Module"), &modules)
         .expect("the modules are written");
 
     let decls: Vec<WireFact> = (0..files).map(decl_fact).collect();
     writer
-        .write(code_index::DECL, &decls)
+        .write(code_index::id("src.Decl"), &decls)
         .expect("the declarations are written");
 }
 

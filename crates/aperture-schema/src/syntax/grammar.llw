@@ -83,10 +83,24 @@ ty:
 // **A record and a sum share their braces**, as they do in Angle, and are told apart
 // by the separator after the first field. Factored so the decision is one token of
 // lookahead: `,` continues a record, `|` starts a sum, `}` ends a record of one.
-field_list: field ((',' field)* @record_fields | ('|' field)+ @sum_fields);
+//
+// **A trailing separator is allowed**, which is why the field after one is optional
+// rather than required: every real schema writes `{ a : int, b : string, }` sooner or
+// later, and `field (',' field)*` would need two tokens of lookahead to permit it.
+// `focus`'s statement list is the same shape for the same reason.
+field_list: field ((',' [field])* @record_fields | ('|' [field])+ @sum_fields);
 
 // `= <nat>` is the alternative's **discriminant**, and it is a sum's business rather
 // than a record's — accepted on both here, rejected on a record downstream, because
 // "a discriminant on a record field" is worth a sentence rather than a caret between
 // two tokens.
-field: LId [':' ty] ['=' Nat];
+field: field_name [':' ty] ['=' Nat];
+
+// **A keyword may be a field name**, which is not a nicety: the built-in code index
+// has `src.Extends { base, type }`, and `type` is how a named type is declared. Angle
+// carries the same list for the same reason. A field name is never in a position where
+// a keyword could also start something, so this costs the grammar nothing.
+field_name:
+  LId | 'type' | 'set' | 'enum' | 'maybe'
+| 'import' | 'predicate' | 'schema' | 'derive' | 'stored' | 'evolves'
+;

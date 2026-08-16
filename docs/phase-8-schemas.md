@@ -338,6 +338,22 @@ before anything depends on it, and unions come last because they are the widest 
 - **8.4 — Load a database from a schema file.** `create` takes a schema path; the embedded copy
   becomes the canonical form; `code_index` is deleted. *Done when* a parsed schema runs a query
   end to end, and when `ingest_rejects_incompatible_schema` is green.
+  - **Half done.** The hardcoded Rust schema is gone: `schemas/code.aps` and
+    `schemas/catalogue.aps` are the statement, `code_index` is the two lines that parse them
+    plus the lookups that used to be id constants, and the parsed schema runs the .NET demo
+    end to end — created, written to over the wire, and queried back. What is left is
+    `create --schema <path>`, the embedded copy becoming the canonical form, and the sidecar
+    recording the real fingerprint.
+  - **What deleting the constants found.** `provisional_fingerprint` hashed predicates in
+    *traversal* order, and lowering sorts a schema's predicates by name while a hand-written
+    client lists them in whatever order reads well. The two ends then disagreed about a schema
+    they agreed with predicate for predicate — the .NET demo failed its handshake against a
+    database built from the same 22 declarations. Both sides now sort by name, which is what
+    the real canonical form does anyway, and
+    `the_fingerprint_does_not_depend_on_declaration_order` pins it with a negative control. It
+    is worth reading as evidence for D2: the fingerprint had **two** independent
+    reimplementations of it, and it took a client that was not the one being changed to notice
+    they had drifted.
 - **8.5 — `schema check` / `fingerprint` / `diff`.** The three commands §5 specifies, `diff`
   answering `Identical | Compatible (n added) | Breaking` with per-predicate reasons.
 - **8.6 — Unions.** `PredicateTy::Union`, marker `0x52`, the discriminant freeze, `X.alt?`
@@ -349,11 +365,16 @@ before anything depends on it, and unions come last because they are the widest 
 
 ## 5. What this deletes, and what has to move with it
 
-- **`src/code_index.rs` goes.** It is 22 predicates of hardcoded Rust and its own module doc
-  says it is deleted rather than ported. Its `KEY_ORDER` guard becomes the schema file itself;
-  its `CATALOGUE`/`with_catalogue` split has to survive, because a virtual predicate is a
-  property of the *server* and must stay out of the fingerprint, the embedded copy, and the
-  keyspaces.
+- **`src/code_index.rs` goes.** ✅ *Mostly done.* The 22 predicates of hardcoded Rust are
+  gone, and so are the six id constants beside them — an id is a position, and a constant was
+  a second statement of something the schema decides. What survives is exactly what §5
+  predicted had to: the `with_catalogue` split, because a virtual predicate is a property of
+  the *server* and stays out of the fingerprint, the embedded copy and the keyspaces. The
+  `KEY_ORDER` guard did **not** become the schema file — it still reads the parsed schema and
+  asserts the intended field order, because "the file says what the file says" is not a guard,
+  and field order is what decides which questions are seeks. What is left of the module is a
+  *default* schema rather than a definition: the one you get when `create` was not given a
+  path.
 - **Both .NET schema statements and the golden.** `Aperture.Indexer/CodeIndex.cs` and
   `Aperture.Demo/Program.cs` state the schema independently *on purpose* — that is what makes
   the byte-identical golden meaningful. What they must **not** do is reimplement the

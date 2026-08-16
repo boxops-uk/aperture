@@ -1,0 +1,27 @@
+# The store root, declared as a predicate so a query can ask about it.
+#
+# **Virtual**: answered by whoever is running the query out of what it knows, rather
+# than read from a keyspace. That makes it a property of the *server* and not of any
+# database, which is why it is a file of its own rather than a block in `code.aps` — it
+# is deliberately absent from the handshake fingerprint, from the copy embedded at
+# create, and from every artifact's keyspaces. A client that has never heard of it
+# connects exactly as before.
+#
+# Every field is a key field and there is no value side. A value cannot be matched on
+# (I6), and a listing exists to be filtered — by name, by status, by how big something
+# got. There is no storage here for the distinction to buy anything back: a virtual
+# predicate's key is simply the tuple a query may ask about, and the order is the order
+# a lookup narrows in.
+
+schema aperture.db {
+
+  predicate List : {
+    name : string,
+    instance : string,
+    status : string,
+    facts : int,
+    bytes : int,
+    created : string,
+  }
+
+}
