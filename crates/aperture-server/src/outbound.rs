@@ -96,7 +96,14 @@ impl Outbound {
         encode_frame(&mut frame, kind, stream, payload)?;
 
         loop {
-            {
+            // **Registered while the lock is held**, which is what makes the wait
+            // race-free rather than nearly race-free. `Notified` does not register with
+            // the `Notify` until it is first polled, so creating it after releasing the
+            // lock leaves a window in which [`close`](Self::close) can run, wake every
+            // waiter there is, and find this one not yet among them — after which
+            // nothing would ever wake it again. `enable` does the registration up
+            // front, so a `close` that follows is guaranteed to see this waiter.
+            let notified = {
                 let mut queues = self.queues.lock().await;
 
                 if queues.closed {
@@ -114,18 +121,38 @@ impl Outbound {
                 }
 
                 self.stats.queue_full_wait();
-            }
 
-            // Registered before the lock is retaken, so a slot freed in between is
-            // not missed — `Notify` remembers one permit.
-            self.room.notified().await;
+                let mut notified = Box::pin(self.room.notified());
+                notified.as_mut().enable();
+                notified
+            };
+
+            notified.await;
         }
     }
 
-    /// Stop the writer once everything queued has gone out.
+    /// Stop the writer, and **wake everything waiting on it**.
+    ///
+    /// The second half is not tidiness. A stream whose queue is full waits for the
+    /// writer to take a frame, and the writer is the only thing that ever frees a slot
+    /// — so if it has stopped, every producer waiting on it waits forever. That is not
+    /// hypothetical: it is what a client vanishing mid-result does. The socket write
+    /// fails, the writer task ends on the spot, and any stream still answering parks on
+    /// a queue nobody will drain, holding its chunk, its plan and a handle on the
+    /// database for the life of the process.
+    ///
+    /// Measured before this woke them: **37,783 stream tasks stuck after 122,951 such
+    /// connections, and 2.3 GB that never came back** — the whole of
+    /// `bench/FINDINGS.md` §10.
     pub async fn close(&self) {
         self.queues.lock().await.closed = true;
         self.work.notify_one();
+
+        // `notify_waiters`, not `notify_one`: every waiter has to learn this, and it is
+        // deliberately the variant that stores no permit — a producer arriving after
+        // this sees `closed` under the lock instead, which is the same answer by a
+        // shorter route.
+        self.room.notify_waiters();
     }
 
     /// Take the next frame in rotation, or `None` when closed and drained.
@@ -310,6 +337,77 @@ mod tests {
         // Draining one frame frees the slot and releases the producer.
         outbound.next().await.expect("a frame");
         blocked.await.expect("the task joins").expect("it queues");
+    }
+
+    /// **Closing releases every producer waiting for room, and this is a leak guard.**
+    ///
+    /// The writer is the only thing that frees a slot, so a producer at the queue bound
+    /// is waiting on the writer specifically. When the socket fails under it — a client
+    /// that asked for a large result and vanished — the writer stops, and without this
+    /// the producer waits for a drain that can never happen: the stream task never
+    /// returns, and it holds its chunk, its plan and a database handle for the life of
+    /// the *process*, not the connection.
+    ///
+    /// It was not a theoretical corner. Measured before the fix: 122,951 such
+    /// connections left **37,783 stream tasks parked here** and 2.3 GB resident that
+    /// never came back, which is a local denial of service reachable by any client that
+    /// hangs up mid-answer.
+    ///
+    /// The timeout is the assertion. A regression here does not fail, it *hangs*, and a
+    /// hanging test is one somebody eventually reaches for `--test-threads` over rather
+    /// than reads.
+    #[tokio::test]
+    async fn closing_releases_producers_waiting_for_room() {
+        let outbound = std::sync::Arc::new(Outbound::new(Arc::new(ServerStats::default())));
+
+        for _ in 0..QUEUE_DEPTH {
+            outbound
+                .send(kind(), StreamId(1), b"x")
+                .await
+                .expect("it queues");
+        }
+
+        let blocked = {
+            let outbound = std::sync::Arc::clone(&outbound);
+            tokio::spawn(async move { outbound.send(kind(), StreamId(1), b"x").await })
+        };
+
+        // Parked, and demonstrably so before the close — otherwise this would pass
+        // against an implementation that never blocked in the first place.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!blocked.is_finished(), "the producer should be waiting");
+
+        outbound.close().await;
+
+        let released = tokio::time::timeout(std::time::Duration::from_secs(5), blocked)
+            .await
+            .expect("a producer waiting for room must be released when the writer stops")
+            .expect("the task joins");
+
+        assert!(
+            released.is_err(),
+            "and it must be told the connection went, not handed a slot that leads nowhere"
+        );
+    }
+
+    /// The same, for a producer that arrives *after* the close.
+    ///
+    /// `notify_waiters` deliberately stores no permit, so this one cannot be woken by
+    /// the notification — it has to find `closed` under the lock instead. Both routes
+    /// have to work, because which one a producer takes is a matter of scheduling.
+    #[tokio::test]
+    async fn a_producer_arriving_after_the_close_is_refused() {
+        let outbound = Outbound::new(Arc::new(ServerStats::default()));
+        outbound.close().await;
+
+        let sent = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            outbound.send(kind(), StreamId(1), b"x"),
+        )
+        .await
+        .expect("it must not wait for a writer that has stopped");
+
+        assert!(sent.is_err(), "a closed connection accepts no frames");
     }
 
     /// Closing drains what is queued and then stops, rather than dropping frames a

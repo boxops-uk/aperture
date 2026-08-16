@@ -203,7 +203,18 @@ where
     // The one task that writes. Everything else queues.
     let pump = {
         let outbound = Arc::clone(&outbound);
-        tokio::spawn(async move { outbound_run(&outbound, &mut writer).await })
+        tokio::spawn(async move {
+            let result = outbound_run(&outbound, &mut writer).await;
+
+            // **Whichever half stops first tells the other.** The writer is the only
+            // thing that ever frees a queue slot, so a producer waiting for one waits
+            // on this task specifically; if the socket failed under it, that wait can
+            // never end on its own. Closing here rather than only after `read_loop`
+            // returns covers the case where the write side dies while the read side is
+            // still open, which is a half-closed peer rather than a departed one.
+            outbound.close().await;
+            result
+        })
     };
 
     let result = read_loop(&mut reader, &session, &outbound).await;
@@ -365,6 +376,32 @@ struct StreamHandle {
     inbound: mpsc::Sender<(FrameHeader, Vec<u8>)>,
     /// Cancelling this stops the stream's current work — and only this stream's.
     cancel: CancellationToken,
+}
+
+/// **A stream's work belongs to its connection, and ends with it.**
+///
+/// Dropping a [`CancellationToken`] does not cancel it, so without this the map in
+/// [`read_loop`] could go — taking the only `Sender` with it — while the task it named
+/// was still inside a query, computing chunk after chunk for a client that had gone. The
+/// task would only find out when it next tried to *send*, and it does not try until the
+/// chunk it is on is finished; a large result is many chunks, each one a job on the
+/// blocking pool that nobody will ever read.
+///
+/// Dropping the handle is the one event that means "nobody is listening any more" — it
+/// covers the reader ending for *any* reason, which is why the cancel lives here rather
+/// than at one of `read_loop`'s several exits.
+///
+/// **This is about wasted work, and it is not what fixed the leak** — worth stating
+/// plainly, because the two look like the same bug and one of them is a decoy. Adding
+/// this alone left 106,215 stream tasks stuck after 383,121 abandoned connections,
+/// because they were parked in [`Outbound::send`](crate::outbound::Outbound::send)
+/// waiting for queue room rather than anywhere a cancellation could reach them. What
+/// releases those is [`Outbound::close`](crate::outbound::Outbound::close) waking its
+/// waiters; see `bench/FINDINGS.md` §10.
+impl Drop for StreamHandle {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 
 impl StreamHandle {
