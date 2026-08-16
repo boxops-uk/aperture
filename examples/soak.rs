@@ -62,7 +62,6 @@ struct Options {
     clients: usize,
     seconds: u64,
     think_ms: u64,
-    files: usize,
     stalled: usize,
 }
 
@@ -75,7 +74,6 @@ usage: soak [options]
   --clients N       concurrent connections, each a thread (default 32)
   --seconds S       how long to sustain the load (default 15)
   --think-ms MS     pause between one client's queries (default 0 — as hard as it can)
-  --files N         what the database was seeded with, so the mix can name a key
   --stalled N       extra clients that ask for everything and then stop reading
 
 A **stalled** client is the classic way a server falls over: it asks for a large
@@ -94,7 +92,10 @@ fn main() {
     };
 
     let schema = Arc::new(code_index::schema());
-    let classes = Arc::new(mix(&options));
+    let pivots = sample(&options, &schema);
+    let classes = Arc::new(mix(&pivots));
+
+    println!("sampled: {} · {}", pivots.file, pivots.directory);
 
     println!(
         "soak — {} clients, {}s, {} think, mix of {} classes",
@@ -127,6 +128,7 @@ fn main() {
     }
 
     let started = Instant::now();
+    let cpu_before = Cpu::now();
 
     let samples: Vec<Vec<(usize, Duration)>> = thread::scope(|scope| {
         let handles: Vec<_> = (0..options.clients)
@@ -156,13 +158,148 @@ fn main() {
         measured
     });
 
+    let wall = started.elapsed();
+    let cpu = cpu_before.since(wall);
+
     report(
         &classes,
         &samples,
-        started.elapsed(),
+        wall,
         errors.load(Ordering::SeqCst),
         &options,
+        &cpu,
     );
+}
+
+/// CPU seconds, taken twice and subtracted.
+///
+/// **The generator shares this machine with the server**, and a synchronous client is
+/// one OS thread per user, so at high client counts some of what looks like the server
+/// saturating is this process saturating. The only way to tell them apart is to report
+/// what each burned: `mine` is this process, `machine` is every core that was not idle.
+/// `machine - mine` is the server's share plus whatever else is running, which on an
+/// otherwise quiet box is the number that matters.
+struct Cpu {
+    mine: f64,
+    machine: f64,
+    /// Wall seconds × cores — the ceiling both of the above are measured against.
+    available: f64,
+}
+
+impl Cpu {
+    fn now() -> Cpu {
+        Cpu {
+            mine: self_cpu_seconds(),
+            machine: machine_busy_seconds(),
+            available: 0.0,
+        }
+    }
+
+    fn since(&self, wall: Duration) -> Cpu {
+        let cores = std::thread::available_parallelism().map_or(1.0, |n| n.get() as f64);
+
+        Cpu {
+            mine: self_cpu_seconds() - self.mine,
+            machine: machine_busy_seconds() - self.machine,
+            available: wall.as_secs_f64() * cores,
+        }
+    }
+}
+
+/// The kernel counts in clock ticks, and there are 100 a second on every Linux this
+/// runs on. Read rather than assumed would mean linking `libc` for one constant.
+const TICKS_PER_SECOND: f64 = 100.0;
+
+fn self_cpu_seconds() -> f64 {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+
+    // `comm` is arbitrary text in parentheses, so the fields only line up after the
+    // last `)`. From there, token 11 is `utime` and token 12 is `stime`.
+    let Some(rest) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
+        return 0.0;
+    };
+
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let at = |index: usize| -> f64 {
+        fields
+            .get(index)
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+
+    (at(11) + at(12)) / TICKS_PER_SECOND
+}
+
+fn machine_busy_seconds() -> f64 {
+    let stat = std::fs::read_to_string("/proc/stat").unwrap_or_default();
+    let Some(line) = stat.lines().next() else {
+        return 0.0;
+    };
+
+    // `cpu user nice system idle iowait irq softirq steal …` — busy is everything
+    // except idle and iowait, because a core waiting on disk is not one this is
+    // competing for.
+    let fields: Vec<f64> = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|value| value.parse().ok())
+        .collect();
+
+    let total: f64 = fields.iter().sum();
+    let idle: f64 = fields.iter().skip(3).take(2).sum();
+
+    (total - idle) / TICKS_PER_SECOND
+}
+
+/// The values the cheap classes ask for, **sampled from the database** rather than
+/// computed from what it was seeded with.
+///
+/// Computing them only works against a corpus this file wrote. Against somebody's
+/// indexed checkout there is no arithmetic that lands on a key which exists, and a point
+/// lookup for a key that is not there measures a miss — which is a different, and
+/// cheaper, query than the one the mix is supposed to be weighted around.
+struct Pivots {
+    file: String,
+    directory: String,
+}
+
+/// One connection, two queries, before any load starts.
+fn sample(options: &Options, schema: &Arc<Schema>) -> Pivots {
+    let mut connection = Connection::connect(
+        &options.socket,
+        &options.database,
+        Arc::clone(schema),
+        Mode::ReadOnly,
+        false,
+    )
+    .expect("the server is listening");
+
+    let mut rows = connection
+        .query("F where src.File F")
+        .expect("src.File compiles");
+
+    // Deep enough in that a seek has somewhere to seek past, and the last row taken
+    // rather than the first, so a short predicate still answers.
+    let page = connection
+        .take(&mut rows, 16_000)
+        .expect("the scan answers");
+    connection.cancel(&mut rows).ok();
+
+    let file = page
+        .iter()
+        .rev()
+        .find_map(|value| match value {
+            aperture_wire::WireValue::Str(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("src.File holds at least one row");
+
+    let directory = match file.rfind('/') {
+        Some(cut) => file[..=cut].to_owned(),
+        None => file.clone(),
+    };
+
+    Pivots { file, directory }
 }
 
 /// A weighted mix, lopsided on purpose.
@@ -170,22 +307,17 @@ fn main() {
 /// Most of a population asks cheap questions; a few ask for everything. The expensive
 /// class is what makes the cheap class's p99 mean something — without it the test is
 /// "is one query fast", which is already known.
-fn mix(options: &Options) -> Vec<Class> {
-    let middle = format!("src/f{:07}.py", options.files / 2);
-
+fn mix(pivots: &Pivots) -> Vec<Class> {
     vec![
         Class {
             name: "point lookup",
             weight: 80,
-            focus: format!("F where src.File F; F = \"{middle}\""),
+            focus: format!("F where src.File F; F = \"{}\"", pivots.file),
         },
         Class {
             name: "small scan",
             weight: 15,
-            focus: format!(
-                "F where src.File F; F = \"src/f{:05}\"..",
-                options.files / 100
-            ),
+            focus: format!("F where src.File F; F = \"{}\"..", pivots.directory),
         },
         Class {
             name: "full scan",
@@ -319,6 +451,7 @@ fn report(
     wall: Duration,
     errors: u64,
     options: &Options,
+    cpu: &Cpu,
 ) {
     let mut per_class: Vec<Vec<Duration>> = classes.iter().map(|_| vec![]).collect();
 
@@ -376,6 +509,17 @@ fn report(
     println!(
         "  errors         {errors}{}",
         if errors == 0 { "" } else { "   <-- LOOK" }
+    );
+
+    // Reported beside every result, per the phase plan's constraint §5: without it a
+    // flat achieved rate is ambiguous between "the server is full" and "the generator
+    // is". `server side` is everything busy that was not this process.
+    println!(
+        "  cpu            {:.0}% of {:.0} core-seconds — generator {:.0}%, server side {:.0}%",
+        100.0 * cpu.machine / cpu.available.max(1.0),
+        cpu.available,
+        100.0 * cpu.mine / cpu.available.max(1.0),
+        100.0 * (cpu.machine - cpu.mine).max(0.0) / cpu.available.max(1.0),
     );
 }
 
@@ -442,7 +586,6 @@ fn parse() -> Result<Options, String> {
     let mut clients = 32;
     let mut seconds = 15;
     let mut think_ms = 0;
-    let mut files = 20_000;
     let mut stalled = 0;
 
     let mut at = 0;
@@ -462,7 +605,6 @@ fn parse() -> Result<Options, String> {
             "--clients" => clients = value()?.parse().map_err(|_| "--clients takes a number")?,
             "--seconds" => seconds = value()?.parse().map_err(|_| "--seconds takes a number")?,
             "--think-ms" => think_ms = value()?.parse().map_err(|_| "--think-ms takes a number")?,
-            "--files" => files = value()?.parse().map_err(|_| "--files takes a number")?,
             "--stalled" => stalled = value()?.parse().map_err(|_| "--stalled takes a number")?,
             "--help" | "-h" => {
                 println!("{USAGE}");
@@ -484,7 +626,6 @@ fn parse() -> Result<Options, String> {
         clients: clients.max(1),
         seconds: seconds.max(1),
         think_ms,
-        files,
         stalled,
     })
 }

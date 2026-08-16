@@ -14,12 +14,57 @@
 > raises. Treat §3's S6 as a description of what exists plus the gaps below it, and
 > S7 as `soak --seconds` extended.
 >
-> What remains genuinely unbuilt: **S0** (a shared corpus/workload module — `loadgen`
-> and `soak` each state their own), **S1–S3** (the in-process rungs and the scaling
-> curve across corpus sizes; `breakdown` covers compile and a no-steps execute, not
-> cost at scale or the price of paging), the **sweep to 1000 with a resource
-> footprint**, **server-side counters**, and the **findings register**. The
-> hypotheses in §2 stand — none has been answered in writing yet.
+> **S1–S3 are now built and run.** `examples/engine.rs --layer executor|compile|store`
+> is the instrument, and it was run against a real index — `dotnet/runtime`'s whole
+> `src/` tree, **18,176,899 facts**, built by `Aperture.Indexer`. The results, and the
+> three findings they turned up, are in [`bench/FINDINGS.md`](../bench/FINDINGS.md):
+> **F7 answered** (paging costs one seek per page — 4–12 µs, ~10% of a 256-row chunk),
+> **F3 answered** (compile is 4–14 µs, linear in query size, 2–7% of the round-trip
+> floor), and two things that were on nobody's list: **nothing ever compacted**, which cost
+> up to 180× on a seek and 2× on disk — now **fixed, in `finish`**, with two guards and the
+> artifact measured at 1.7 GB → 853 MB — and **a key's field order**, which the schema
+> declares and `code_index` happens to declare alphabetically, decides whether a join seeks
+> or rescans, at 56,274× the rows examined. F5 turns out not to be reachable from
+> the query side at all, because a fact's *value* cannot be read by a query.
+>
+> **S4a, S6 and S7 have now been run against the sealed index too**, on 8 cores. The
+> population sweep goes to 2048 clients: capacity plateaus at **~67 q/s for the standard mix
+> and does not collapse**, zero errors anywhere, and the cheap query stays on the right side
+> of the expensive one by a factor of 7,400. A fifty-minute soak at a sub-knee rate — 145,582
+> queries — shows **no drift at any percentile**. **F1 is confirmed but bounded** (~3.5 kB a
+> query, retained for a connection's life and reused after it closes), **F4 is confirmed and
+> misattributed** (the row encoder is 1.5×, the framing and transport above it 3.6×), **F2 is
+> refuted**, and **F8 behaves exactly as predicted**. `soak` grew sampled pivots (it computed
+> them from `--files`, which only ever worked against a corpus it seeded itself) and a
+> CPU-attribution line, so a flat achieved rate can be read as the server's rather than the
+> generator's.
+>
+> **Task 10f's counters are built**, and deliberately only counted: `ServerStats` is a
+> struct of relaxed atomics on the `Registry`, wired through connections, stream tasks,
+> queries, chunks, rows, blocking dispatches and queue-full waits, with gauges held by a
+> `Drop` guard so they are right on every exit path. There is **no exporter, no endpoint
+> and no stats file** — exposing them is a separate decision with an operational cost, and
+> a `/metrics` listener in particular is a second port on a server whose `ops-I10` safety
+> argument rests on binding being default-closed. The durable home the design already names
+> — a virtual predicate over the socket that exists — remains the right one, and any
+> Prometheus or OTEL exporter belongs on the far side of it, as a *client* rather than a
+> feature of the server.
+>
+> They earned their keep immediately: the leak's regression guard asserts on
+> `streams_live`, which is the thing a server owes rather than the mechanism that broke.
+> **`--features console`** adds `tokio-console` for the other half of that problem — seeing
+> where a task is parked rather than counting how many there are — off by default, and
+> needing `--cfg tokio_unstable` so it cannot be turned on by accident.
+>
+> What remains genuinely unbuilt: **S0** (the catalogue grew to seventeen workloads with
+> sampled pivots, but it lives in `examples/engine.rs` rather than a shared
+> `src/workload.rs`, so `loadgen` and `soak` still state their own), the **scaling curve
+> across corpus *sizes*** (what is published is one 18M-fact database across predicates
+> spanning 142 → 8.58M rows), and **`bench/baselines/<host>.json`**. **F6** is the one hypothesis untouched, and the only one
+> that needs a *write* path: every database measured here is `Complete`.
+>
+> **§5's host description is stale**: this box is now 8 cores / 32 GB / 185 GB free, not
+> 4 / 15 / 5.8. The disk constraint that shaped the plan is gone.
 
 **Goal.** Find out whether Aperture DB holds up for a few hundred to ~1000 concurrent
 users issuing overlapping queries of mixed complexity — by building a ladder of
@@ -58,10 +103,14 @@ over `PLAN.md` and `CLAUDE.md` returns nothing:
 | Artifact | What it does | Status |
 |---|---|---|
 | `examples/loadgen.rs` (568 ln) | End to end over a real socket. Seeds N files × K decls, runs 8 named workloads over C connections, reports p50/p95/p99/max, query/s, row/s, rows examined | committed |
-| `examples/breakdown.rs` (~435 ln) | Decomposes the ~211 µs per-query fixed cost by subtraction — transport, compiler, `spawn_blocking` hop, mpsc hop, with the residual as the signal | **uncommitted / in flight** |
+| `examples/breakdown.rs` (509 ln) | Decomposes the ~211 µs per-query fixed cost by subtraction — transport, compiler, `spawn_blocking` hop, mpsc hop, with the residual as the signal | committed |
+| `examples/soak.rs` (490 ln) | The weighted mix: N virtual users, think time, per-class percentiles, offered vs achieved, `--stalled` for paused readers | committed |
+| `examples/codesearch.rs` | **The product workload.** Prefix search paged to 50–100, terms sampled from the corpus, no unbounded query — ~6,100 q/s against the generic mix's 67 | committed |
+| `examples/engine.rs` | **S1–S3.** In-process against a real index: ns/row with `Profile` attribution, the paging comparison taken apart per page, the raw scan/seek/point floor under it | committed |
 | `scripts/bench.sh` (71 ln) | create · serve · seed · measure, release-only by construction | committed |
 | `iter::Profile` → `PROFILE` frame → `query --profile` | Rows examined per plan step, with a full-scan flag | committed, fully plumbed |
-| `clients/dotnet/Aperture.Indexer` + `index-repo.sh` | Indexes a real .NET checkout over the wire; `--max-files` dials the size; reports created/deduped | in flight |
+| `clients/dotnet/Aperture.Indexer` + `index-repo.sh` | Indexes a real .NET checkout over the wire; `--max-files` dials the size; reports created/deduped | committed; 18.2M facts indexed |
+| [`bench/FINDINGS.md`](../bench/FINDINGS.md) | The register: what was measured, the number, what a fix would cost | S1–S3 entered |
 
 Three things are missing, and they are this phase:
 
@@ -89,14 +138,14 @@ of these is a *prediction* with the rung that settles it and the number that wou
 
 | # | Hypothesis | Where it comes from | Settled by |
 |---|---|---|---|
-| **F1** | **Stream tasks leak, per query.** `read_loop`'s `streams: HashMap<u32, StreamHandle>` (`session.rs:316`) has no removal path anywhere in the file; the client's `claim_stream` (`client/connection.rs:528`) never reuses an id. A connection issuing 10k queries leaves 10k parked tokio tasks, each holding `Arc<Session>`, `Arc<Outbound>`, a `CancellationToken` and an `mpsc(2)` buffer, until the *connection* closes | S7 — RSS and live-task count against **queries issued**, not connections open |
-| **F2** | **A mid-chunk cancel reports `ErrorCode::Internal`, not a clean end.** `CANCELLATION_STRIDE = 4096` counts rows *examined* (`iter.rs:389`); `CHUNK_ROWS = 256` counts rows *produced*. A selective query trips the stride inside a chunk → `ApertureError::Cancelled` → `ServerError::Execution` (`session.rs:859`) → an ERROR frame, where the design says *"a cancel is an early end, not a failure"*. Under load this is the common case, and no test covers the branch | S4 / S6 — cancel the `denial` workload and read the frame kind |
-| **F3** | **No plan cache.** Every query is parsed, typechecked, flattened and reordered afresh on the blocking pool (`session.rs:577`). At a ~211 µs floor on 4 cores that is a ceiling of roughly 19k q/s whatever the query does | S2 — compile µs as a fraction of the floor |
-| **F4** | **Per-row framing dominates above ~100k row/s.** One `DATA_ROW` frame per row: ~3 allocations, 2 outbound-mutex acquisitions and a `Notify` each (`session.rs:617`, `outbound.rs:90-122`, `rows.rs`) | S4 — row/s with framing against S1 row/s without |
-| **F5** | **A chunk has no byte budget.** `CHUNK_ROWS` is row-bounded only, so 256 wide rows materialise unbounded memory on a blocking thread (`session.rs:863`). The only byte cap in the system is `MAX_PAYLOAD` = 64 MiB, and it is per frame | S1 / S4 — a wide-row workload, RSS at the chunk boundary |
+| **F1** ✅ | **Stream tasks leak, per query.** `read_loop`'s `streams: HashMap<u32, StreamHandle>` (`session.rs:316`) has no removal path anywhere in the file; the client's `claim_stream` (`client/connection.rs:528`) never reuses an id. A connection issuing 10k queries leaves 10k parked tokio tasks, each holding `Arc<Session>`, `Arc<Outbound>`, a `CancellationToken` and an `mpsc(2)` buffer, until the *connection* closes — **true, and the mechanism is as described: ~3.5 kB retained per query, growth strictly proportional to queries issued on a connection, so 200k point lookups for one key took the server from 243 MB to 892 MB. It is *bounded*, though — a third such connection added 35 MB where the first added 649, and a realistic population reconnecting between queries retains 58 bytes/query. What it sets is a high-water mark for the busiest connection, not a restart schedule ([findings §7](../bench/FINDINGS.md))** | S7 — RSS and live-task count against **queries issued**, not connections open |
+| **F2** ⛔ | **A mid-chunk cancel reports `ErrorCode::Internal`, not a clean end.** `CANCELLATION_STRIDE = 4096` counts rows *examined* (`iter.rs:389`); `CHUNK_ROWS = 256` counts rows *produced*. A selective query trips the stride inside a chunk → `ApertureError::Cancelled` → `ServerError::Execution` (`session.rs:859`) → an ERROR frame, where the design says *"a cancel is an early end, not a failure"*. Under load this is the common case, and no test covers the branch — **refuted: cancelling the most stride-tripping query available (56,274 examined per row produced) returns a clean end, sends no error frame, and leaves the connection usable. Tested through the client API and through `query --limit`** | S4 / S6 — cancel the `denial` workload and read the frame kind |
+| **F3** ✅ | **No plan cache.** Every query is parsed, typechecked, flattened and reordered afresh on the blocking pool (`session.rs:577`). At a ~211 µs floor on 4 cores that is a ceiling of roughly 19k q/s whatever the query does — **true, and small: 4–14 µs, 2–7% of the floor, linear in query size ([findings §5](../bench/FINDINGS.md))** | S2 — compile µs as a fraction of the floor |
+| **F4** ✅ | **Per-row framing dominates above ~100k row/s.** One `DATA_ROW` frame per row: ~3 allocations, 2 outbound-mutex acquisitions and a `Notify` each (`session.rs:617`, `outbound.rs:90-122`, `rows.rs`) — **confirmed as significant but misattributed: the row *encoder* is 1.5× (2.1× where the projection builds a record), and the framing, socket and client decode above it are a further 3.6× ([findings §9](../bench/FINDINGS.md))** | S4 — row/s with framing against S1 row/s without |
+| **F5** ⛔ | **A chunk has no byte budget.** `CHUNK_ROWS` is row-bounded only, so 256 wide rows materialise unbounded memory on a blocking thread (`session.rs:863`). The only byte cap in the system is `MAX_PAYLOAD` = 64 MiB, and it is per frame — **not reachable from the query side: a fact's *value* cannot be read by a query at all, so the widest row buildable is three narrow key fields ([findings §4](../bench/FINDINGS.md))** | S1 / S4 — a wide-row workload, RSS at the chunk boundary |
 | **F6** | **The reader head-of-line blocks the whole connection.** `read_loop` *awaits* `handle.inbound.send(..)` on a channel of capacity **2** (`session.rs:353`); a third frame for a busy stream stalls the connection's reader — including the read that would pick up a CANCEL for a *different* stream. `write_blocks` fires every block then `COPY_DONE` without waiting (`client/connection.rs:242`) | S4 / S6 — a ≥3-block ingest against a slow funnel |
-| **F7** | **Paging is not free.** Per 256 rows: two clones, a `spawn_blocking` dispatch, a **fresh fjall snapshot**, and `Executor::resume` replaying **one seek per plan level** (`iter.rs:1116`) — deliberately uncounted by `Profile`. A 1M-row query is ~3,900 of each | S1 — the same plan straight through vs suspended every 256 rows |
-| **F8** | **No admission control of any kind.** No connection cap, no query timeout, no max rows, no concurrency limiter. tokio defaults apply: **4** worker threads (this box), **512** blocking threads, an **unbounded** submission queue. 1000 in-flight queries means 512 running and the rest queued invisibly — latency, never rejection | S6 — the latency distribution at the knee |
+| **F7** ✅ | **Paging is not free.** Per 256 rows: two clones, a `spawn_blocking` dispatch, a **fresh fjall snapshot**, and `Executor::resume` replaying **one seek per plan level** (`iter.rs:1116`) — deliberately uncounted by `Profile`. A 1M-row query is ~3,900 of each — **true; the snapshot is free (0.1 µs) and the replayed seek is all of it: 4–12 µs a page, ~10%. On an *uncompacted* store the same seek costs up to 790 µs, +729% ([findings §1](../bench/FINDINGS.md))** | S1 — the same plan straight through vs suspended every 256 rows |
+| **F8** ~ | **No admission control of any kind.** No connection cap, no query timeout, no max rows, no concurrency limiter. tokio defaults apply: **4** worker threads (this box), **512** blocking threads, an **unbounded** submission queue. 1000 in-flight queries means 512 running and the rest queued invisibly — latency, never rejection — **observed exactly so: 2048 connections accepted without complaint, nothing ever refused, zero errors, and the queue showed up as the expensive class's p50 rising from 43 s to 315 s while the cheap class stayed under 101 ms** | S6 — the latency distribution at the knee |
 
 Two more findings from reading that need no rung, recorded so nobody re-derives them:
 
@@ -139,8 +188,10 @@ at one shape and one skew. Every rung needs the same data, at a size it can affo
 
 **Real data is the primary corpus, and it is already dialable.**
 `clients/dotnet/index-repo.sh <checkout> [db] --max-files N` indexes a .NET checkout over
-the wire into the built-in six-predicate schema (`src.File`, `src.Module`, `src.Decl`,
-`src.SearchByName`, `src.Ref`, `src.Import` — `src/code_index.rs:53-120`). `--max-files`
+the wire into the built-in schema — six source predicates plus a line table, seven
+build-layer ones and eight over the declaration graph (`src/code_index.rs`), of which
+`src.Ref` and `src.Line` are the two that reach seven figures on a real checkout.
+`--max-files`
 is the dial, so the **scaling curve runs on real data** rather than on uniform synthetic
 rows, which flatter seeks and understate cache pressure. Index enough checkouts to reach
 each size band; the indexer already reports `created` / `deduped`, which is the interning
@@ -211,7 +262,8 @@ S2 to the scaling-with-query-size question breakdown does not ask.
 `examples/engine.rs --layer store`. Raw `FactStore::scan` / `point` throughput underneath
 S1, so an S1 regression is attributable to the engine rather than to fjall. Also LSM shape
 (freshly ingested vs compacted) and predicate-count effects — a keyspace pair costs ~30 ms
-to create (`store.rs:231`) and the built-in schema holds six.
+to create (`store.rs:231`) and the built-in schema holds twenty-two, so `aperture create`
+is a measured **1.4 s** before a fact is written.
 
 ### S4 — The session, in-process
 
@@ -297,9 +349,10 @@ Measurement, not features. Three sources, increasing intrusiveness.
 
 ## 5. Constraints, stated up front
 
-- **This box is 4 cores / 15 GB RAM / 5.8 GB free disk**, with `target/` at 8.6 GB. At
-  ~51 B/fact, 10M facts is ~500 MB; real indices plus synthetic bands need a disk budget
-  and probably a `cargo clean` first. `bench.sh` should check free space before seeding.
+- **This box is 8 cores / 32 GB RAM / 185 GB free disk.** (It was 4 / 15 / 5.8 when this
+  was drafted, and the disk constraint that shaped the plan is gone.) Measured at ~88
+  B/fact on real data — 18.2M facts is 1.6 GB as ingested, 728 MB compacted — so the
+  size bands are affordable, but `bench.sh` should still check free space before seeding.
 - **Numbers from this box are relative.** Report scaling shapes, ratios and fairness
   findings; withhold absolute capacity claims until real hardware exists. Every result file
   carries a **host fingerprint** (cores, RAM, kernel, rustc, git SHA) and baselines are
