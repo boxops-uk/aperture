@@ -112,6 +112,29 @@ loop), forbid or diagnose an array in a leading key field (a length-prefixed arr
 prefix-matched), and `set T` is separately deferrable. `bool` and `maybe T` remain sugar over a
 union once unions land.
 
+### A client never computes a fingerprint — settled while planning Phase 8
+
+Recorded because the first plan said the opposite, and because it is the kind of assumption
+that quietly costs every future client a port.
+
+A schema fingerprint is a hash over a canonical form ([chapter 6](06-types-and-schema.md)), and
+the .NET client computes one today — so the plan budgeted "both .NET schema statements have to
+compute the new fingerprint" as real work. **Glean does not ask that of a client.** Its
+`glean.thrift` says at the definition: *"The `SchemaId` for the current schema can be obtained
+at compile time from `schema_id` in the generated `builtin.thrift` file"*, its schema compiler
+emits the constant, and it generates client bindings for seven languages from the same schema.
+
+So: **a client carries the number rather than deriving it.** `aperture schema fingerprint`
+prints it, a client holds it as a constant, and a stale one fails the handshake loudly — which
+is what the assertion is for. What that constant is, precisely, is a *provenance* tag rather
+than a checksum of the shapes a hand-written client implements; the byte-identical golden is
+what guards those, and it is the stronger check.
+
+**Generating the client** — Glean's answer, which makes provenance and shapes agree by
+construction — is the proper end state and is deliberately not Phase 8's. It would also end the
+argument the two independent statements exist to make, so the golden's role has to be rethought
+in the same breath.
+
 ### Predicate ids — settled: they belong to the database, not to the schema text
 
 **Decided while planning [Phase 8](phase-8-schemas.md)**, and worth recording here because it was

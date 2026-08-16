@@ -154,16 +154,42 @@ says, because the .NET client implements the fingerprint too
 doc already anticipates being replaced). Changing *how* a fingerprint is computed silently
 rejects every artifact and every client already built.
 
-**Recommendation, three parts:**
+**Recommendation, and one part of it was wrong until Glean was read.**
 
 - **Version the algorithm** in `APERTURE_META`, and treat the **stored** fingerprint as
   authoritative — Glean's answer after it hit exactly this (`glean/if/internal.thrift:24-33`).
-- **Specify the canonical form as a byte string**, not as "a hash over the schema". A second
-  implementation needs something it can produce character by character; anything vaguer means
-  the C# client is guessing.
-- **Keep the provisional fingerprint alive for one release** so a client can claim either,
-  and retire it when the golden is regenerated. The handshake already carries a "do not
-  check" zero, so the mechanism exists.
+- **Specify the canonical form as a byte string**, not as "a hash over the schema" — done at
+  8.3, and asserted literally rather than by round-trip.
+- ~~Every client computes the fingerprint.~~ **A client should never compute one.** An
+  earlier draft budgeted "both .NET schema statements have to compute D2's fingerprint" as
+  real work. That is the wrong answer, and Glean says so plainly at the definition of the
+  type: *"The `SchemaId` for the current schema can be obtained at compile time from
+  `schema_id` in the generated `builtin.thrift` file."* Its schema compiler emits the
+  constant — `"const glean.SchemaId schema_id = " <> show (unSchemaId hash)`
+  (`glean/schema/gen/Glean/Schema/Gen/Thrift.hs`) — and it generates client bindings for
+  **seven** languages beside it (`Cpp, Haskell, Python, OCaml, Rust, HackJson, Thrift`). A
+  client neither hashes nor hand-writes shapes.
+
+#### What Aperture should do instead
+
+**Now (8.4): a client carries the number, it does not derive it.** `aperture schema
+fingerprint` prints it; the client holds it as a constant and asserts it at the handshake.
+The C# side deletes its FNV implementation and keeps one `ulong`. A stale constant then fails
+the handshake loudly, which is exactly what the assertion is for.
+
+Be honest about what that constant *is*, though: a **provenance** tag — "this client was
+built against that schema" — rather than a checksum of the shapes the client actually
+implements, because those are still hand-written. What guards the shapes is the
+byte-identical golden, which compares encodings for a fixed corpus and is the stronger check
+of the two. Glean gets provenance and shapes agreeing by construction because one codegen run
+produces both.
+
+**The proper answer, recorded rather than built: generate the client.** That is Glean's, it
+removes the hand-written shapes as well as the hash, and it is what makes the fingerprint
+mean what it says. It deserves its own step rather than being smuggled into 8.4, and it
+changes what `clients/dotnet` is *for* — the two independent statements exist to detect
+drift, and generating one of them ends that argument, so the golden's role would have to be
+rethought at the same time.
 
 ### D3 — How the canonical form spells a `Fact`-typed field — **settled**
 
@@ -330,9 +356,10 @@ before anything depends on it, and unions come last because they are the widest 
   keyspaces.
 - **Both .NET schema statements and the golden.** `Aperture.Indexer/CodeIndex.cs` and
   `Aperture.Demo/Program.cs` state the schema independently *on purpose* — that is what makes
-  the byte-identical golden meaningful. They do not have to parse the DSL, but they do have to
-  compute D2's fingerprint, so the canonical form has to be portable. Budget this as real
-  work, not a follow-up.
+  the byte-identical golden meaningful. What they must **not** do is reimplement the
+  fingerprint: they delete their FNV and carry the number `aperture schema fingerprint`
+  prints, per D2. So the work is one constant per client and the shapes they already have,
+  not a port of the canonical form.
 - **`schema_doc`** is explicitly provisional and safe to replace; nothing reads it to make a
   decision.
 - **The blast radius of `PredicateTy::Union`** is **29 files** that name the enum's variants —
