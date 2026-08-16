@@ -1,8 +1,12 @@
 # Phase 10 — Capacity: measure it
 
-> [Aperture design book](../README.md) · **proposed phase plan**, not yet folded into
-> [`PLAN.md`](../PLAN.md). Written on the per-phase template so it can be moved there
-> whole once accepted.
+> [Aperture design book](../README.md) · **folded into [`PLAN.md`](../PLAN.md)** as
+> Phase 10, which now owns the tasks and the acceptance. What is kept here is the part
+> that does not belong in a plan: §2's eight hypotheses, read out of the code *before*
+> anything was measured and recorded as predictions rather than findings, and the working
+> notes on each rung. The method and the target are
+> [`docs/performance.md`](performance.md); the register of what was measured is
+> [`bench/FINDINGS.md`](../bench/FINDINGS.md).
 
 > **Status — read this before the rest.** This was drafted against the tree at
 > `d57f45167` and two commits landed underneath it: `ce377eb81` (committing

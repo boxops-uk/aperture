@@ -1420,6 +1420,95 @@ here rather than found later.
 
 ---
 
+## Phase 10 — Capacity: measure it
+
+**Goal.** Find out whether Aperture holds up for a few hundred to ~1000 concurrent users
+issuing overlapping queries of mixed complexity — by building a ladder of measurement
+surfaces from the executor upward, recording what each costs, and writing the findings
+down. **Measurement, not optimisation.**
+
+**Depends on:** Phase 9a–9e for the server and client. S1–S3 depend on nothing further.
+
+**Design of record:** [`docs/performance.md`](docs/performance.md) — the method, and the
+**target** every number is reported against. The phase's own working notes, including the
+eight hypotheses read out of the code before any of it was measured, are
+[`docs/phase-10-capacity.md`](docs/phase-10-capacity.md); the register of what was
+measured is [`bench/FINDINGS.md`](../bench/FINDINGS.md). **Read those; don't restate them.**
+
+**Invariants in scope:** *makes green:* none. *upholds:* all of them — measurement adds no
+behaviour on any data path. The production edits this phase made are counters, a feature
+gate, two bug fixes and two key-order declarations, each carrying its own guards.
+
+**Why it is a phase at all.** Performance was a non-topic in this file: no phase, no
+target, no acceptance criteria, no cost model, and one sentence deferring file ingestion as
+"a throughput feature". Meanwhile a real apparatus had grown with no home — a load
+generator, a cost breakdown, a soak — none of it mentioned in `PLAN.md` or `CLAUDE.md`. The
+gap that mattered was not the instruments but the **target**: a number with nothing to be
+good or bad against is a number nobody can act on.
+
+**Tasks:**
+- **10a. Write the capacity target down.** ✅ [`docs/performance.md`](docs/performance.md) §1
+  — corpus size, population, mix, latency objective, and what is deliberately *not*
+  targeted. Stated as a proposal derived from measurement rather than from a requirement,
+  because [operations §1](docs/aperture-cli-design.md) is right that this repo cannot settle
+  a requirements question on its own; it is written to be argued with and replaced.
+- **10b. `docs/performance.md`** ✅ — the method beside [`docs/testing.md`](docs/testing.md):
+  the ladder, what each rung isolates, the four rules that make a number reportable, host
+  fingerprinting, and which findings are guardable exactly and which only as a budget.
+- **10c. S0** ✅ — `src/workload.rs`: the catalogue and the pivot sampling, stated once.
+  `engine`, `loadgen` and `soak` had three of each, which is how `loadgen` came to seek a
+  key computed as `files / 2` — real only in a corpus it seeded itself. Pivots are
+  **sampled**, so the same catalogue runs against somebody's checkout.
+- **10d. S1–S3** ✅ — `examples/engine.rs`, three layers, run against an 18.2M-fact index.
+- **10e. S4** — `examples/breakdown.rs` extended to a data query. **Not done**: finding 9
+  separates the row encoder from everything above it, and "everything above it" is still one
+  number covering the frame, the outbound mutex, the socket and the client's decode.
+- **10f. Server counters** ✅ — `ServerStats`, relaxed atomics on the `Registry`, gauges held
+  by a `Drop` guard. **Deliberately counted and not exposed**: an exporter is a separate
+  decision with an operational cost, and a `/metrics` port is the shape `ops-I10` refuses.
+- **10g. S5–S6** ✅ — the population sweep to 2048 clients: capacity plateaus and does not
+  collapse, zero errors, and the cheap query stays on the right side of the expensive one by
+  a factor of 7,400.
+- **10h. S7** ✅ — fifty minutes, 145,582 queries, no drift at any percentile; `FINDINGS.md`
+  ranked and costed.
+
+**Acceptance:**
+- [x] A capacity target is written down, and every later number is reported against it.
+- [x] Each rung has an instrument that runs from a clean directory; a second run reproduces
+      it within noise.
+- [x] **Every instrument is self-checking** — a workload's row count and per-step examined
+      counts are fixed by an unmeasured probe, and a timed run that fails to reproduce them
+      aborts with the discrepancy rather than printing a rate.
+- [x] **Vacuous-pass controls**: the zero-data baseline examines exactly 0 rows and still
+      costs something; a full scan reports `full_scan = true`.
+- [x] Cross-rung agreement: S1 row/s > S4 row/s > S5 row/s, with the differences accounted
+      for.
+- [ ] The scaling curve published for 10k → 10M facts on real data. **Not done** — what is
+      published is one 18M-fact database whose predicates span 142 → 8.58M rows, which is a
+      scan-size curve at fixed database size. The size bands are hours of indexing each.
+- [x] Cross-connection fairness answered with a number, at N = 1 … 2048.
+- [ ] F1–F8 each carry a verdict. **Seven of eight**: F1, F3, F4, F7 confirmed with numbers,
+      F2 and F5 refuted, F8 observed. **F6** — the reader head-of-line blocking on a ≥3-block
+      ingest — is untouched, and is the only one needing a *write* path: every database
+      measured here is `Complete`.
+- [ ] `bench/baselines/<host>.json` and a `--check` mode. **Not built**; the numbers live in
+      `FINDINGS.md` and are reproduced by re-running the instrument.
+- [x] `cargo test`, `cargo clippy --all-targets --workspace -- -D warnings`, `cargo fmt
+      --all` green; the coverage ledger unchanged in content — this phase adds no guard and
+      retires none.
+- [x] Release only.
+
+**Two findings were taken out of "measurement only", and both because leaving them would
+have made every later number a measurement of a bug.** Sealing now merges every tree —
+an unmerged one was seeking at up to 180× a merged one, and the artifact halves on disk —
+and a client that vanished mid-answer no longer strands the stream answering it, which was
+2.3 GB that never came back. A third change is not a bug fix but a one-way door taken while
+it was still cheap: the two key field orders that decide whether a join seeks are now
+**declared** rather than inherited from alphabetical naming, which is a re-index today and a
+migration once somebody's index is in production.
+
+---
+
 ## Cross-cutting — workspace extraction
 
 The design's target layout ([operations §10](docs/aperture-cli-design.md)) is a Cargo

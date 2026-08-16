@@ -34,14 +34,26 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aperture_cli::code_index;
+use aperture_cli::{
+    code_index,
+    workload::{self, Workload},
+};
 use aperture_client::{Connection, Mode, WireFact, WireRef, WireValue};
 use aperture_schema::schema::{PredicateId, Schema};
 
-/// `src.File`, `src.Module`, `src.Decl` — positions in the built-in schema.
+/// Positions in the built-in schema. An id **is** a position, so these are the schema's
+/// order and not a naming convention.
 const FILE: PredicateId = PredicateId(0);
 const MODULE: PredicateId = PredicateId(1);
 const DECL: PredicateId = PredicateId(2);
+const SEARCH: PredicateId = PredicateId(3);
+const REF: PredicateId = PredicateId(4);
+const IMPORT: PredicateId = PredicateId(5);
+const LINE: PredicateId = PredicateId(21);
+
+/// Lines written per file, for the one predicate that is large without being about a
+/// symbol.
+const LINES_PER_FILE: usize = 8;
 
 struct Options {
     socket: PathBuf,
@@ -198,6 +210,59 @@ fn decl(file_index: usize, n: usize) -> WireFact {
     }
 }
 
+/// The same declaration keyed by its short name — what a person searches for.
+fn search(file_index: usize, n: usize) -> WireFact {
+    WireFact {
+        predicate: SEARCH,
+        key: WireValue::Record(Box::from([
+            WireValue::Str(format!("symbol_{file_index:07}_{n:03}")),
+            WireValue::Ref(WireRef::Nested(Box::new(decl(file_index, n)))),
+        ])),
+        value: None,
+    }
+}
+
+/// A reference **from the next file** to this declaration, so a reference's file is not
+/// its target's — which is the whole reason `src.Ref` carries one.
+fn reference(file_index: usize, n: usize, files: usize) -> WireFact {
+    WireFact {
+        predicate: REF,
+        key: WireValue::Record(Box::from([
+            WireValue::Ref(WireRef::Nested(Box::new(decl(file_index, n)))),
+            WireValue::Ref(WireRef::Nested(Box::new(file((file_index + 1) % files)))),
+            WireValue::Record(Box::from([
+                WireValue::Int((n * 13 + 2) as i64),
+                WireValue::Int(4),
+            ])),
+        ])),
+        value: None,
+    }
+}
+
+/// module → module, to the next one round, so the import graph is a cycle rather than a
+/// star: a star would make every join fan out from one row.
+fn import(file_index: usize, files: usize) -> WireFact {
+    WireFact {
+        predicate: IMPORT,
+        key: WireValue::Record(Box::from([
+            WireValue::Ref(WireRef::Nested(Box::new(module(file_index)))),
+            WireValue::Ref(WireRef::Nested(Box::new(module((file_index + 1) % files)))),
+        ])),
+        value: None,
+    }
+}
+
+fn line(file_index: usize, n: usize) -> WireFact {
+    WireFact {
+        predicate: LINE,
+        key: WireValue::Record(Box::from([
+            WireValue::Ref(WireRef::Nested(Box::new(file(file_index)))),
+            WireValue::Int(n as i64),
+        ])),
+        value: Some(WireValue::Str(format!("    line {n} of f{file_index:07}"))),
+    }
+}
+
 // ---- seeding -----------------------------------------------------------------
 
 fn seed(options: &Options, schema: &Arc<Schema>) {
@@ -216,23 +281,79 @@ fn seed(options: &Options, schema: &Arc<Schema>) {
     let mut deduped = 0u64;
     let mut batch = Vec::with_capacity(options.block);
 
-    for index in 0..options.files {
-        for n in 0..options.decls_per_file {
-            batch.push(decl(index, n));
+    // **One predicate at a time**, because a block is a run of one predicate's facts.
+    // Every predicate the shared catalogue asks about is written: a bench whose corpus
+    // covered only what it happened to seed reported six workloads answering nothing and
+    // called them fast.
+    let flush = |connection: &mut Connection,
+                 predicate: PredicateId,
+                 batch: &mut Vec<WireFact>,
+                 created: &mut u64,
+                 deduped: &mut u64| {
+        if batch.is_empty() {
+            return;
+        }
+        let written = connection
+            .write(predicate, batch)
+            .expect("a block is written");
+        *created += written.created;
+        *deduped += written.deduped;
+        batch.clear();
+    };
 
+    for (predicate, facts) in [
+        (
+            DECL,
+            (0..options.files)
+                .flat_map(|index| (0..options.decls_per_file).map(move |n| decl(index, n)))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            SEARCH,
+            (0..options.files)
+                .flat_map(|index| (0..options.decls_per_file).map(move |n| search(index, n)))
+                .collect(),
+        ),
+        (REF, {
+            let files = options.files;
+            (0..options.files)
+                .flat_map(|index| {
+                    (0..options.decls_per_file).map(move |n| reference(index, n, files))
+                })
+                .collect()
+        }),
+        (IMPORT, {
+            let files = options.files;
+            (0..options.files)
+                .map(|index| import(index, files))
+                .collect()
+        }),
+        (
+            LINE,
+            (0..options.files)
+                .flat_map(|index| (0..LINES_PER_FILE).map(move |n| line(index, n)))
+                .collect(),
+        ),
+    ] {
+        for fact in facts {
+            batch.push(fact);
             if batch.len() >= options.block {
-                let written = connection.write(DECL, &batch).expect("a block is written");
-                created += written.created;
-                deduped += written.deduped;
-                batch.clear();
+                flush(
+                    &mut connection,
+                    predicate,
+                    &mut batch,
+                    &mut created,
+                    &mut deduped,
+                );
             }
         }
-    }
-
-    if !batch.is_empty() {
-        let written = connection.write(DECL, &batch).expect("a block is written");
-        created += written.created;
-        deduped += written.deduped;
+        flush(
+            &mut connection,
+            predicate,
+            &mut batch,
+            &mut created,
+            &mut deduped,
+        );
     }
 
     let elapsed = started.elapsed();
@@ -255,66 +376,6 @@ fn seed(options: &Options, schema: &Arc<Schema>) {
 
 // ---- measuring ---------------------------------------------------------------
 
-struct Workload {
-    name: &'static str,
-    focus: String,
-}
-
-fn workloads(options: &Options) -> Vec<Workload> {
-    // Chosen from the middle of the range so a seek has somewhere to seek past.
-    let middle = format!("src/f{:07}", options.files / 2);
-    let one_file = format!("symbol_{:07}", options.files / 2);
-
-    vec![
-        // **The baseline: a query that touches no data at all.** A constant bind folds,
-        // so this compiles to a plan with no steps and means exactly one row — no
-        // scan, no seek, no store read. Whatever it costs is what *every* query pays
-        // before it does anything: parse, typecheck, flatten, reorder, the hop to the
-        // blocking pool, and a round trip. Subtract it from the rest and what is left
-        // is the work.
-        Workload {
-            name: "no data (baseline)",
-            focus: "X where X = 42".to_owned(),
-        },
-        Workload {
-            name: "scan files",
-            focus: "F where src.File F".to_owned(),
-        },
-        Workload {
-            name: "scan decls",
-            focus: "N where src.Decl {name = N}".to_owned(),
-        },
-        // A **constant fold**, not a filter: `F = "…"` substitutes at every use, so
-        // `src.File F` becomes an exact key seek and the head is the constant. One
-        // point read, whatever the database holds — which is the number that says
-        // whether the index is doing its job.
-        Workload {
-            name: "seek one file",
-            focus: format!("F where src.File F; F = \"{middle}.py\""),
-        },
-        Workload {
-            name: "seek prefix",
-            focus: format!("F where src.File F; F = \"{middle}\".."),
-        },
-        Workload {
-            name: "project record",
-            focus: "{at = D.line, what = D.name} where D = src.Decl _".to_owned(),
-        },
-        Workload {
-            name: "follow reference",
-            focus: "{what = D.name, file = D.module.file} where D = src.Decl _".to_owned(),
-        },
-        // Deliberately denies almost nothing: paired against `scan decls`, the
-        // difference is what a residual costs per row rather than what skipping rows
-        // saves. A denial is never a seek — that is the point of the two polarities
-        // living in separate collections.
-        Workload {
-            name: "denial",
-            focus: format!("N where src.Decl {{name = N}}; N != \"{one_file}\".."),
-        },
-    ]
-}
-
 fn measure(options: &Options, schema: &Arc<Schema>) {
     println!(
         "measuring: {} connections, {} runs per workload",
@@ -324,7 +385,20 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
 
     let mut rows_out = vec![];
 
-    for workload in workloads(options) {
+    // **Pivots sampled from whatever is loaded, not computed from `--files`.** This
+    // file used to seek `files / 2`, which lands on a real key only in the corpus it
+    // seeded itself — point it at somebody's index and every seek workload measured a
+    // miss. Phase 10's S0: the questions and the sampling are `aperture_cli::workload`'s,
+    // so this bench and `engine` ask the same thing of the same data.
+    let pivots = {
+        let mut connection = connect(options, schema, Mode::ReadOnly);
+        workload::sample(&mut connection).unwrap_or_else(|error| {
+            eprintln!("loadgen: cannot sample pivots: {error}");
+            std::process::exit(1);
+        })
+    };
+
+    for workload in workload::catalogue(&pivots) {
         let Some(result) = run_workload(options, schema, &workload) else {
             rows_out.push(vec![
                 workload.name.to_owned(),

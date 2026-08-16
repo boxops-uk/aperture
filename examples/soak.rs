@@ -45,7 +45,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aperture_cli::code_index;
+use aperture_cli::{
+    code_index,
+    workload::{self, Pivots},
+};
 use aperture_client::{Connection, Mode};
 use aperture_schema::schema::Schema;
 
@@ -258,12 +261,12 @@ fn machine_busy_seconds() -> f64 {
 /// indexed checkout there is no arithmetic that lands on a key which exists, and a point
 /// lookup for a key that is not there measures a miss — which is a different, and
 /// cheaper, query than the one the mix is supposed to be weighted around.
-struct Pivots {
-    file: String,
-    directory: String,
-}
-
-/// One connection, two queries, before any load starts.
+/// One connection, three queries, before any load starts.
+///
+/// The sampling and the queries it feeds are `aperture_cli::workload`'s — Phase 10's S0 —
+/// so this soak, `loadgen` and `engine` seek for the same keys in the same corpus. What
+/// stays here is the *mix*: weights and think time are what a soak is, and no other
+/// instrument has an opinion about them.
 fn sample(options: &Options, schema: &Arc<Schema>) -> Pivots {
     let mut connection = Connection::connect(
         &options.socket,
@@ -274,39 +277,9 @@ fn sample(options: &Options, schema: &Arc<Schema>) -> Pivots {
     )
     .expect("the server is listening");
 
-    let mut rows = connection
-        .query("F where src.File F")
-        .expect("src.File compiles");
-
-    // Deep enough in that a seek has somewhere to seek past, and the last row taken
-    // rather than the first, so a short predicate still answers.
-    let page = connection
-        .take(&mut rows, 16_000)
-        .expect("the scan answers");
-    connection.cancel(&mut rows).ok();
-
-    let file = page
-        .iter()
-        .rev()
-        .find_map(|value| match value {
-            aperture_wire::WireValue::Str(text) => Some(text.clone()),
-            _ => None,
-        })
-        .expect("src.File holds at least one row");
-
-    let directory = match file.rfind('/') {
-        Some(cut) => file[..=cut].to_owned(),
-        None => file.clone(),
-    };
-
-    Pivots { file, directory }
+    workload::sample(&mut connection).expect("the corpus answers")
 }
 
-/// A weighted mix, lopsided on purpose.
-///
-/// Most of a population asks cheap questions; a few ask for everything. The expensive
-/// class is what makes the cheap class's p99 mean something — without it the test is
-/// "is one query fast", which is already known.
 fn mix(pivots: &Pivots) -> Vec<Class> {
     vec![
         Class {

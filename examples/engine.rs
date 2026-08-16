@@ -58,7 +58,10 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-use aperture_cli::code_index;
+use aperture_cli::{
+    code_index,
+    workload::{Pivots, Workload, catalogue},
+};
 use aperture_encoding::tuple::Value;
 use aperture_engine::{
     compile::Compilation,
@@ -116,16 +119,16 @@ fn main() {
 
     match options.layer {
         Layer::Executor => {
-            let pivots = Pivots::sample(&db, &schema);
-            println!("{pivots}");
+            let pivots = sample(&db, &schema);
+            println!("{}", describe(&pivots));
             executor(&db, &schema, &options, &pivots);
         }
         Layer::Compile => {
-            let pivots = Pivots::sample(&db, &schema);
+            let pivots = sample(&db, &schema);
             compile_layer(&schema, &options, &pivots);
         }
         Layer::Encode => {
-            let pivots = Pivots::sample(&db, &schema);
+            let pivots = sample(&db, &schema);
             encode_layer(&db, &schema, &options, &pivots);
         }
         Layer::Store => store_layer(&db, &schema, &options),
@@ -263,51 +266,37 @@ fn resolve_instance(path: &Path) -> Result<PathBuf, String> {
 // ---- the catalogue ------------------------------------------------------------------
 
 /// The values a workload seeks for, taken out of the corpus that is loaded.
-struct Pivots {
-    /// A file path from the middle of `src.File`.
-    file: String,
-    /// Its directory, so a prefix seek covers a real run of adjacent keys.
-    directory: String,
-    /// A declaration name, for a denial that denies almost nothing.
-    decl: String,
-    /// A name `src.SearchByName` actually holds.
-    search: String,
-}
+/// Sample rather than compute: against somebody's checkout there is no arithmetic that
+/// lands on a key which exists.
+///
+/// The shape and the queries live in [`aperture_cli::workload`] — S0 — so that this
+/// bench, the load generator and the soak ask the same questions of the same data.
+/// *Where the values come from* stays here, because an in-process bench has a `FjallDb`
+/// and a load generator has a socket, and those are not the same act.
+fn sample(db: &FjallDb, schema: &Schema) -> Pivots {
+    let file = sample_str(db, schema, "F where src.File F", 16_000);
+    let decl = sample_str(db, schema, "N where src.Decl {name = N}", 400_000);
+    let search = sample_str(db, schema, "N where src.SearchByName {name = N}", 400_000);
 
-impl Pivots {
-    /// Sample rather than compute: against somebody's checkout there is no arithmetic
-    /// that lands on a key which exists.
-    fn sample(db: &FjallDb, schema: &Schema) -> Pivots {
-        let file = sample_str(db, schema, "F where src.File F", 16_000)
-            .unwrap_or_else(|| "src".to_owned());
-
-        let directory = match file.rfind('/') {
-            Some(cut) => file[..=cut].to_owned(),
-            None => file.clone(),
-        };
-
-        let decl = sample_str(db, schema, "N where src.Decl {name = N}", 400_000)
-            .unwrap_or_else(|| "System".to_owned());
-
-        let search = sample_str(db, schema, "N where src.SearchByName {name = N}", 400_000)
-            .unwrap_or_else(|| decl.clone());
-
-        Pivots {
-            file,
-            directory,
-            decl,
-            search,
+    match (file, decl) {
+        // A corpus with neither a file nor a declaration is not one to measure, and
+        // pivots invented here would make every seek workload answer zero rows and look
+        // fast. `unsampled` makes that loud instead.
+        (None, None) => Pivots::unsampled(),
+        (file, decl) => {
+            let decl = decl.unwrap_or_else(|| "\u{0}none".to_owned());
+            let search = search.unwrap_or_else(|| decl.clone());
+            Pivots::new(file.unwrap_or_else(|| "\u{0}none".to_owned()), decl, search)
         }
     }
 }
 
-impl std::fmt::Display for Pivots {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "pivots   file      {}", self.file)?;
-        writeln!(f, "         directory {}", self.directory)?;
-        writeln!(f, "         decl      {}", self.decl)?;
-        write!(f, "         search    {}", self.search)
-    }
+/// What the run printed, so a reader can see which keys the numbers below are about.
+fn describe(pivots: &Pivots) -> String {
+    format!(
+        "pivots   file      {}\n         directory {}\n         decl      {}\n         search    {}",
+        pivots.file, pivots.directory, pivots.decl, pivots.search
+    )
 }
 
 /// Run `focus` and return the string at `index`, or the last row if the scan is shorter.
@@ -352,162 +341,6 @@ fn first_str(value: &Value) -> Option<String> {
         Value::Record(fields) => fields.iter().find_map(|(_, v)| first_str(v)),
         _ => None,
     }
-}
-
-struct Workload {
-    name: &'static str,
-    focus: String,
-    /// What it is here to exercise, printed beside the number so a table row says what
-    /// it means without the file open next to it.
-    about: &'static str,
-    /// Stop after this many rows.
-    ///
-    /// For the one workload that cannot be run to completion: a join whose key field
-    /// cannot be sought degenerates to a scan of the inner predicate *per outer row*,
-    /// which here is 36,192 × 888,177 rows. The point of it is the `examined` column,
-    /// and that is legible from a capped run — provided the cap is printed, which is
-    /// what this field is for.
-    stop_at: Option<u64>,
-}
-
-fn catalogue(pivots: &Pivots) -> Vec<Workload> {
-    let workload = |name, focus: String, about| Workload {
-        name,
-        focus,
-        about,
-        stop_at: None,
-    };
-
-    vec![
-        // The vacuous-pass control, and the executor's own floor. Every binding folds,
-        // so this is a plan with no steps: no scan, no seek, no store read, exactly one
-        // row, and exactly zero rows examined. If this one ever reports work, the
-        // instrument is lying about everything below it.
-        workload(
-            "no data (control)",
-            "X where X = 42".to_owned(),
-            "a folded plan — no steps",
-        ),
-        workload(
-            "seek one file",
-            format!("F where src.File F; F = \"{}\"", escape(&pivots.file)),
-            "constant fold → one point",
-        ),
-        workload(
-            "seek prefix",
-            format!(
-                "F where src.File F; F = \"{}\"..",
-                escape(&pivots.directory)
-            ),
-            "range seek, one directory",
-        ),
-        workload(
-            "search by name",
-            format!(
-                "D where src.SearchByName {{name = \"{}\", to = D}}",
-                escape(&pivots.search)
-            ),
-            "the query a person types",
-        ),
-        workload(
-            "scan files",
-            "F where src.File F".to_owned(),
-            "smallest full scan",
-        ),
-        workload(
-            "scan modules",
-            "N where src.Module {name = N}".to_owned(),
-            "a key field off a record",
-        ),
-        workload(
-            "scan decls",
-            "N where src.Decl {name = N}".to_owned(),
-            "the mid-sized scan",
-        ),
-        workload(
-            "project record",
-            "{at = D.line, what = D.name} where D = src.Decl _".to_owned(),
-            "two fields, one row",
-        ),
-        // Reading *through* a reference is a `Source::Fetch` — one point read per row of
-        // the level above. Both of these fetch, and that is the point of the pair:
-        // projecting the fetched fact's own reference field costs exactly what
-        // projecting its string costs, so the fetch is the whole price and what you take
-        // off it afterwards is free.
-        workload(
-            "fetch, project a ref",
-            "{what = D.name, file = D.module.file} where D = src.Decl _".to_owned(),
-            "fetch: a point read per row",
-        ),
-        workload(
-            "fetch, project a string",
-            "{what = D.name, module = D.module.name} where D = src.Decl _".to_owned(),
-            "the same fetch, read further",
-        ),
-        // **The pair that prices key field order.** A predicate's seekable prefix is its
-        // key's leading fields, in the order the schema *declares* them, and nothing about
-        // the query distinguishes a join that seeks from one that rescans the whole
-        // predicate per outer row. The two workloads below are the same join shape over
-        // two predicates, and the ratio between them is the price of the declaration.
-        //
-        // This pair is why `src.Decl` is now declared `{module, name, line}`. It used to be
-        // `{line, module, name}` — alphabetical, by a convention `code_index` imposed on
-        // itself — so the ordinary "declarations in this module" join was the *slow* arm
-        // here, at 56,274 rows examined per row produced. It is the fast arm now, and the
-        // slow one is a real query that still cannot narrow: `src.SearchByName` is keyed
-        // for lookup *by name*, so reaching it by `to` is the same trap on a predicate
-        // whose own order is right ([findings §2](../bench/FINDINGS.md)).
-        workload(
-            "join on a leading field",
-            "L where F = src.File _; src.Line {file = F, line = L}".to_owned(),
-            "seekable: the reference leads the key",
-        ),
-        workload(
-            "join on a leading reference",
-            "D where M = src.Module _; src.Decl {module = M, name = D}".to_owned(),
-            "seekable since the reorder: the module leads the key",
-        ),
-        Workload {
-            name: "join on a trailing field",
-            focus: "N where D = src.Decl _; src.SearchByName {to = D, name = N}".to_owned(),
-            about: "not seekable: `name` leads the key, and this joins on `to`",
-            stop_at: Some(2_000),
-        },
-        workload(
-            "denial",
-            format!(
-                "N where src.Decl {{name = N}}; N != \"{}\"..",
-                escape(&pivots.decl)
-            ),
-            "a residual per row, never a seek",
-        ),
-        workload(
-            "scan refs",
-            "F where src.Ref {file = F}".to_owned(),
-            "seven figures, nested key",
-        ),
-        workload(
-            "wide row",
-            "{f = R.file, l = R.at.line, c = R.at.col} where R = src.Ref _".to_owned(),
-            "three fields off a nested key",
-        ),
-        workload(
-            "join through two references",
-            "{from = I.from.name, to = I.to.name} where I = src.Import _".to_owned(),
-            "two fetches per row",
-        ),
-        workload(
-            "scan lines",
-            "L where src.Line {line = L}".to_owned(),
-            "the largest predicate",
-        ),
-    ]
-}
-
-/// `"` and `\` are the two characters a focus string literal cannot carry raw, and a
-/// sampled path is somebody else's data.
-fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 // ---- S1: the executor ---------------------------------------------------------------

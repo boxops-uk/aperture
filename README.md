@@ -74,6 +74,10 @@ about one subsystem.
   chapter that explains it. **The fastest way to check "what must I not break here."**
 - [**Testing methodology**](docs/testing.md) — property-first, generator-first testing;
   the three property tiers; the invariant coverage ledger.
+- [**Performance method & target**](docs/performance.md) — the measurement ladder, what
+  makes a number reportable, and the **capacity target** every number is read against.
+  Its companion is [`bench/FINDINGS.md`](bench/FINDINGS.md), which is what has actually
+  been measured, at what size, and what acting on it would cost.
 - [**Conventions & anti-patterns**](docs/conventions.md) — house style, and the things
   that look reasonable but are wrong here.
 - [**Open decisions**](docs/open-decisions.md) — what's not yet settled (and where the
