@@ -11,59 +11,16 @@ with a pointer to where they now live.
 ## Still open
 
 Every decision this file was *opened* for has settled — the record is below. What replaced them
-came from two passes over the whole design. The first two questions are what comparing it against
-Glean left ([the comparison](glean-comparison.md) is the analysis); the last is what an external
-audit of the repository found asserted but not decided. It **gates a phase** rather than the
-engine, and is cheapest to answer before that phase writes anything down. (The audit found two
+came from two passes over the whole design. The first is what comparing it against Glean left
+([the comparison](glean-comparison.md) is the analysis); the second is what an external audit of
+the repository found asserted but not decided. It **gates a phase** rather than the engine, and is
+cheapest to answer before that phase writes anything down. (**Multiplicity** was the third and is
+now [settled](#multiplicity--settled-one-fact-per-element-for-now-diagnosed-by-name), taken with
+the rest of Phase 8's one-way doors.) (The audit found two
 others: an on-disk format version, now [settled and
 built](#an-on-disk-format-version--settled-two-numbers-in-db-metadata), and what a reference is
 in a fact file, [settled when Phase 7 was
 sequenced](#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline).)
-
-### Multiplicity — arrays, or one fact per element?
-
-`PredicateTy` has no array type, so a one-to-many relationship is modelled as **one fact per
-element**. This was framed as a choice between the two spellings, and that framing was wrong:
-**Glean does both, deliberately, for the same data** — the indexer writes one compact
-array-bearing fact per container, and a `stored` derived predicate explodes it with `[..]` into
-one fact per element to get the seekable index. Arrays are the dominant representation in its
-shipped schemas (several hundred array-typed fields, ~150 uses of `[..]`, `stored` derivation
-used pervasively), and its docs call adding an index that way "common practice". The evidence and
-its citations are [in the ledger](glean-comparison.md); this file records the decision.
-
-**Still open** — and still a call about **how every schema is written**, not just about what a
-type can hold. What the comparison settled is the *shape* of any answer, three constraints deep:
-
-- **Prefer the value side.** [I6](invariants.md#i6) keeps values out of the scan loop, so an
-  array on the *value* side of a key→value predicate costs a scan nothing — it is decoded at
-  projection or not at all. This is a place Aperture **beats** Glean rather than copying it:
-  Glean recommends key→value for large values and then barely uses it (one array-valued
-  predicate in its whole corpus).
-- **Forbid or diagnose an array in a leading key field.** A length-prefixed array cannot be
-  prefix-matched — Glean says so outright, "MatchArrayPrefix doesn't actually look at a prefix
-  because arrays encode their length at the front"
-  (`glean/db/Glean/Query/Reorder.hs:794-796`) — so an array early in a key silently closes the
-  seek prefix for every field after it. A **fully determined** array can still join the prefix;
-  a partial one cannot. Silent is the problem: `:plan` shows the shape, but there is no cost
-  model to say it is the wrong one.
-- **It couples to [Phase 8b](../PLAN.md).** Glean's array story works *because* `stored`
-  derivation exists to build the exploded index. Arrays without it ship the storage win and none
-  of the query mitigation, and schema authors route around the gap — Glean's own schemas carry
-  two admissions of exactly that ("this is an example of where efficient set membership would be
-  useful"; "very hard at the moment to build set or list facts dynamically").
-
-One warning to carry either way, because it lands on
-[`ops-I4`](invariants.md#ops-i4) reproducibility: **order-free data
-in an array is non-deterministic** — the writer picks an order the data does not have. Glean's
-answer is `set T`, an array kept sorted and deduplicated. That is a separate and deferrable
-question (7 uses in all of Glean, which also treats array↔set as a *compatible* change), but it
-is the reason not to reach for `[T]` for a bag.
-
-The codec reserves marker bands, so adding `[T]` later is not a one-way door in the *encoding*.
-Writing every schema without it is the thing that gets expensive to undo. **Decide before the
-schema DSL fixes what can be written** ([`PLAN.md`](../PLAN.md) Phase 8), and record the answer
-here either way. Related, and easier: `bool` and `maybe T` are sugar over a union once unions
-land; `nat`/`byte` are a range question, not a shape one.
 
 ### Primitives in the query language
 
@@ -131,6 +88,55 @@ it.
 ---
 
 ## Settled — recorded so they aren't reopened
+
+### Multiplicity — settled: one fact per element for now, diagnosed by name
+
+**Decided while planning [Phase 8](phase-8-schemas.md), which is where this file said to decide
+it**: *"decide before the schema DSL fixes what can be written, and record the answer here either
+way."*
+
+`PredicateTy` gains no `[T]`. The schema DSL **parses** an array type and reports `nyi/array`, so
+the refusal names the decision rather than reading as a parse error — permissive-early, as
+[conventions](conventions.md) has it. One fact per element stays the way a one-to-many is written.
+
+The reasoning is the one this file already recorded, and the deciding weight was the third point:
+Glean's array story works *because* `stored` derivation exists to explode an array into a seekable
+index, and that is [Phase 8b](../PLAN.md). Adding arrays before it ships the storage win and none
+of the query mitigation, which is exactly the position Glean's own schemas carry two written
+admissions about. The codec reserves the marker band, so this is not a one-way door in the
+*encoding*; what it defers is a one-way door in how every schema is written, and that is the thing
+8b makes cheap rather than expensive.
+
+Unchanged and still true: prefer the value side ([I6](invariants.md#i6) keeps it out of the scan
+loop), forbid or diagnose an array in a leading key field (a length-prefixed array cannot be
+prefix-matched), and `set T` is separately deferrable. `bool` and `maybe T` remain sugar over a
+union once unions land.
+
+### Predicate ids — settled: they belong to the database, not to the schema text
+
+**Decided while planning [Phase 8](phase-8-schemas.md)**, and worth recording here because it was
+never an open question in this file — it was an unexamined assumption, and examining it changed
+the answer.
+
+A `PredicateId` is a position in the schema *and* the 24-bit tag inside every
+[`FactId`](03-storage-model.md), so three agreed requirements meet on it: reproducibility
+(`ops-I4`), layout-independent identity ([I13](invariants.md#i13)'s guard), and "adding a predicate
+is compatible" (subset containment). No assignment that is a function of the schema **text**
+satisfies all three — declaration order breaks the second, sorted-by-name breaks the third, and a
+24-bit hash of the name collides at ~3% by a thousand predicates.
+
+**The answer is that it need not be a function of the text at all.** Glean splits identity from the
+physical tag: `PredicateId` is a content hash with no number in it, while `Pid` is a small integer
+assigned by sorted name, **persisted in the stored schema**, and append-only afterwards
+(`nextPid = max + 1`), so a database keeps its numbering for life. Aperture takes the same split —
+no ids in the DSL, the map embedded in the database at create.
+
+One rule comes with it that Glean does not need in the same form: Aperture's block header carries a
+raw `predicate u32`, so **ingest checks that the id map agrees for the predicates present**, rather
+than only that the fingerprints are subset-contained. Two databases can be subset-compatible and
+still number differently, because each sorted its own predicate set. The consequence to know: a
+fact file is portable to a database whose schema it was **written against**, not to any database
+that happens to declare the same predicates.
 
 ### Intra-row repeated variables — **rejected in Phase 4**, by name
 
