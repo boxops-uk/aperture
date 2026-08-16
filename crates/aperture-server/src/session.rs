@@ -706,7 +706,16 @@ impl StreamTask {
             }
         }
 
-        if profiled {
+        // **A cancelled query reports no profile, and that is the design's rule rather
+        // than an oversight** ([operations §5](../../../docs/aperture-cli-design.md)):
+        // the tally is not final until the last chunk has run, so one taken here counts
+        // what a *different* query examined — the prefix the client was willing to wait
+        // for. Sent anyway, it lands beside a truncated row count and invites exactly
+        // the ratio it cannot support.
+        //
+        // The client is what makes this observable, since a `--limit` cancels in band
+        // and then reads the profile that follows.
+        if profiled && !self.cancel.is_cancelled() {
             self.outbound
                 .send(
                     kinds::PROFILE,

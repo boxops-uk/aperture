@@ -14,6 +14,8 @@ mod config;
 mod output;
 mod rows;
 mod shell;
+#[cfg(test)]
+mod testing;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -157,11 +159,31 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             name,
             query,
             format,
+            timeout,
             limit,
             timing,
             profile,
         } => {
-            let summary = commands::query::run(socket, name, query, *format, *limit, *profile)?;
+            let limits = commands::query::Limits {
+                rows: *limit,
+                timeout: timeout.map(std::time::Duration::from_secs_f64),
+            };
+
+            // **Ctrl-C asks the query to stop; it does not tear the connection down.**
+            // The handler only sets a flag, because a signal handler is not a place to
+            // speak a protocol from — the query loop notices between rows and sends a
+            // per-stream Cancel, which is the difference between the server finishing
+            // the stream tidily and discovering a dead socket.
+            let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            {
+                let interrupted = std::sync::Arc::clone(&interrupted);
+                let _ = ctrlc::set_handler(move || {
+                    interrupted.store(true, std::sync::atomic::Ordering::Relaxed);
+                });
+            }
+
+            let summary =
+                commands::query::run(socket, name, query, *format, limits, *profile, &interrupted)?;
 
             if let Some(measured) = &summary.profile {
                 eprint!(
@@ -170,11 +192,21 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
                 );
             }
 
-            if summary.truncated {
-                eprintln!(
+            match summary.stopped {
+                commands::query::Stopped::No => {}
+                commands::query::Stopped::Limit => eprintln!(
                     "aperture: stopped at {} rows; raise or drop --limit to see the rest",
                     summary.rows
-                );
+                ),
+                commands::query::Stopped::Timeout => eprintln!(
+                    "aperture: gave up after {} rows; raise or drop --timeout to see the rest",
+                    summary.rows
+                ),
+                // Nothing to suggest — they asked. What is worth saying is that the
+                // rows above are real and the query was stopped, not that it failed.
+                commands::query::Stopped::Interrupt => {
+                    eprintln!("aperture: cancelled at {} rows", summary.rows);
+                }
             }
 
             if *timing {

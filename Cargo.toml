@@ -95,6 +95,9 @@ serde_json = "1.0.150"
 thiserror = { workspace = true }
 tinyvec = { version = "1.11.0", features = ["alloc"] }
 tokio-util = "0.7.18"
+# Ctrl-C during `query`, so it cancels the stream rather than tearing the connection
+# down. The handler only sets a flag; the query loop is what speaks the protocol.
+ctrlc = "3.5.2"
 
 [dev-dependencies]
 # The codec's `arb_*` strategies and the I5 decode probe live behind that crate's

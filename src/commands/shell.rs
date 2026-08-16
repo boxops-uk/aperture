@@ -449,67 +449,8 @@ pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::Arc, thread};
-
-    use aperture_server::{Registry, server::Listener};
-    use aperture_store::catalog::Catalog;
-    use aperture_wire::{WireFact, WireValue, protocol::provisional_fingerprint};
-
     use super::{Control, Repl};
-    use crate::code_index;
-
-    /// A server on a socket, in this process, with `count` files in it.
-    struct Serving {
-        _dir: tempfile::TempDir,
-        socket: PathBuf,
-    }
-
-    fn serving(count: usize) -> Serving {
-        let dir = tempfile::tempdir().expect("a scratch directory");
-        let socket = dir.path().join("aperture.sock");
-
-        let schema = code_index::schema();
-        let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
-        catalog
-            .create("code", &schema, provisional_fingerprint(&schema))
-            .expect("a database");
-
-        let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");
-        let listener = Listener::bind(&socket).expect("a socket");
-
-        thread::spawn(move || {
-            let _ = listener.run_blocking(Arc::new(registry));
-        });
-
-        let serving = Serving {
-            _dir: dir,
-            socket: socket.clone(),
-        };
-
-        seed(&serving, count);
-        serving
-    }
-
-    fn seed(serving: &Serving, count: usize) {
-        let mut writer = aperture_client::Connection::connect(
-            &serving.socket,
-            "code",
-            Arc::new(code_index::schema()),
-            aperture_client::Mode::ReadWrite,
-            true,
-        )
-        .expect("a writer");
-
-        let facts: Vec<WireFact> = (0..count)
-            .map(|n| WireFact {
-                predicate: code_index::FILE,
-                key: WireValue::Str(format!("f{n:05}.py")),
-                value: None,
-            })
-            .collect();
-
-        writer.write(code_index::FILE, &facts).expect("written");
-    }
+    use crate::testing::{Serving, serving};
 
     fn repl(serving: &Serving) -> Repl {
         Repl::connect(&serving.socket, "code").expect("a session")

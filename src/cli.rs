@@ -78,6 +78,14 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = RowFormat::Table)]
         format: RowFormat,
 
+        /// Give up after this many seconds, cancelling in band.
+        ///
+        /// A deadline on the *client's* patience, not a promise about the server: the
+        /// cancel lands between rows, so a query stuck inside one chunk is stopped when
+        /// that chunk ends. What it bounds is how long this command waits.
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<f64>,
+
         /// Stop after this many rows, cancelling the rest in band.
         ///
         /// Not `LIMIT`: the query is unchanged and the server does the work up to the
