@@ -115,6 +115,12 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             name,
             allow_zero_facts,
         } => {
+            // Sealing merges every tree before it walks them, which on a large database
+            // is tens of seconds of rewriting with nothing to show for it yet. Said
+            // before the wait rather than explained after it, and on stderr because the
+            // line that matters is still the one on stdout.
+            eprintln!("sealing {name} — merging trees, then computing identity");
+
             let sealed = commands::finish::run(root, socket, name, *allow_zero_facts)?;
 
             if sealed.already_complete {

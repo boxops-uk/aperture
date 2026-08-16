@@ -123,6 +123,17 @@ const CONTENT: Content = &[
     ("store/codec.py", "codec", &[("encode_key", "def")]),
 ];
 
+/// Three further batches of *distinct* facts, for the one test that needs a tree
+/// spread across more than one table.
+///
+/// Distinct because re-offering a fact that is already there is `ops-I5`'s silent
+/// dedup — no write, so nothing to flush, so no second table.
+const BATCHES: &[Content] = &[
+    &[("engine/plan.py", "plan", &[("lower", "def")])],
+    &[("engine/iter.py", "iter", &[("enumerate", "def")])],
+    &[("engine/ty.py", "ty", &[("unify", "def")])],
+];
+
 /// Write `content` into `db`, in the order given.
 fn write(db: &FjallDb, schema: &Schema, content: Content) {
     for (path, module, decls) in content {
@@ -464,6 +475,91 @@ fn the_schema_fingerprint_reaches_the_identity() {
         identity::compute(&db, &schema(), entry.meta.schema_fingerprint ^ 1).expect("it computes");
 
     assert_ne!(as_recorded.fingerprint, as_if_other.fingerprint);
+}
+
+// ---- what sealing leaves on the disk ----------------------------------------
+
+/// **Sealing merges every tree.** A `Complete` database is immutable forever and is
+/// the thing copied per reader process ([operations §5]), so the shape ingestion
+/// happened to leave the LSM in is the shape every future reader pays for — and a
+/// re-seek into an unmerged tree was measured at up to 180× one into a merged tree
+/// (`bench/FINDINGS.md`). The server re-seeks once per level per 256-row page, so this
+/// is on the path of every paged query, forever.
+///
+/// The three flushed batches are the point of the test, not setup: at this size every
+/// fact would otherwise live in one memtable, and a compaction guard with nothing to
+/// merge passes without measuring anything. The precondition is asserted, so it cannot
+/// quietly stop being true.
+///
+/// [operations §5]: ../../../docs/aperture-cli-design.md
+#[test]
+fn sealing_merges_every_tree_into_one_table() {
+    let (_dir, catalog) = catalog();
+    let schema = schema();
+
+    catalog.create("code", &schema, 0xABCD).expect("it creates");
+    let (_entry, db) = catalog.open_write("code").expect("it opens");
+
+    write(&db, &schema, CONTENT);
+    db.flush_to_tables().expect("it flushes");
+    for batch in BATCHES {
+        write(&db, &schema, batch);
+        db.flush_to_tables().expect("it flushes");
+    }
+
+    let before = db.table_counts();
+    assert!(
+        before.iter().any(|count| *count > 1),
+        "nothing to merge: every tree is already one table ({before:?}), \
+         so this test would pass without compacting anything"
+    );
+    drop(db);
+
+    catalog.finish("code", &schema, false).expect("it seals");
+
+    let (_entry, db) = catalog.open_read("code").expect("it reopens");
+    let after = db.table_counts();
+
+    assert!(
+        after.iter().all(|count| *count <= 1),
+        "a sealed database still has a tree spread across tables: {after:?}"
+    );
+}
+
+/// **Merging changes what the bytes are, never what the database says.**
+///
+/// `ops-I4` is a promise about content, and compaction rewrites the files underneath
+/// it — dropping superseded versions, repacking blocks. The identity computed *before*
+/// any of that must be the identity sealing records, or the fingerprint is a property
+/// of a storage layout rather than of the facts.
+#[test]
+fn merging_does_not_change_the_identity() {
+    let (_dir, catalog) = catalog();
+    let schema = schema();
+
+    catalog.create("code", &schema, 0xABCD).expect("it creates");
+    let (entry, db) = catalog.open_write("code").expect("it opens");
+
+    write(&db, &schema, CONTENT);
+    db.flush_to_tables().expect("it flushes");
+
+    let unmerged =
+        identity::compute(&db, &schema, entry.meta.schema_fingerprint).expect("it computes");
+    drop(db);
+
+    let sealed = catalog.finish("code", &schema, false).expect("it seals");
+
+    assert_eq!(sealed.fingerprint, unmerged.fingerprint);
+    assert_eq!(sealed.facts, unmerged.facts);
+
+    // And the facts are still all there to be read, which a fingerprint over a walk
+    // that found nothing would also satisfy.
+    let (entry, db) = catalog.open_read("code").expect("it reopens");
+    let after =
+        identity::compute(&db, &schema, entry.meta.schema_fingerprint).expect("it recomputes");
+
+    assert_eq!(after.fingerprint, unmerged.fingerprint);
+    assert_eq!(after.facts, 7);
 }
 
 // ---- ops-I3 across a real crash ---------------------------------------------

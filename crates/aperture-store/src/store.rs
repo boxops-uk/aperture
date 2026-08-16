@@ -210,6 +210,54 @@ impl FjallDb {
             .map_err(StoreError::Backend)
     }
 
+    /// Merge every tree down to as few tables as the backend will make, discarding
+    /// everything superseded on the way.
+    ///
+    /// **What `finish` calls, and the only caller there should be.** A write leaves the
+    /// tree in whatever shape the write order produced; nothing reclaims that during
+    /// ingestion, and a database that is still being written may be written again in a
+    /// moment, so paying to merge it would be paying twice. Sealing is the one point
+    /// where the shape is final: `Complete` is immutable forever, and the artifact is
+    /// then copied per reader process ([operations §5]).
+    ///
+    /// It is worth doing because the cost lands on *reads*, per page, forever. A resume
+    /// replays one seek per plan level per 256-row chunk, and an unmerged tree was
+    /// measured seeking at up to 180× a merged one on an 18M-fact index — 790 µs
+    /// against 4.7 µs — with the whole store also halving on disk (`bench/FINDINGS.md`).
+    ///
+    /// **Not free, and it is the caller's second of two costs.** 23 s on that index,
+    /// single threaded, on top of the identity walk. Both are paid once, by the
+    /// operation whose whole job is to say "this is finished".
+    ///
+    /// The predicate map is cloned rather than held: merging is long, and a reader
+    /// asking which predicates exist should not wait behind it.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if a merge fails. A failure leaves the database
+    /// readable and unsealed — the trees are merged one at a time and each merge is
+    /// atomic, so what has happened is that some are tidier than others.
+    ///
+    /// [operations §5]: ../../docs/aperture-cli-design.md
+    pub fn compact(&self) -> Result<(), StoreError> {
+        let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
+
+        for predicate in predicates.values() {
+            predicate
+                .trees
+                .keys
+                .major_compact()
+                .map_err(StoreError::Backend)?;
+            predicate
+                .trees
+                .entities
+                .major_compact()
+                .map_err(StoreError::Backend)?;
+        }
+
+        Ok(())
+    }
+
     /// The predicates this database has trees for, in id order.
     ///
     /// Recovered from the keyspace listing at open, so it answers what is *on disk*
@@ -597,6 +645,52 @@ impl FjallDb {
     #[must_use]
     pub fn open_snapshots(&self) -> usize {
         self.db.supervisor.snapshot_tracker.open_snapshots()
+    }
+
+    /// How many tables each tree is spread across, keys and entities alike.
+    ///
+    /// The witness for [`compact`](Self::compact): a merged tree is one table, and
+    /// nothing else this crate exposes can tell one table from five.
+    #[cfg(any(test, feature = "proptest"))]
+    #[must_use]
+    pub fn table_counts(&self) -> Vec<usize> {
+        let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
+
+        predicates
+            .values()
+            .flat_map(|predicate| {
+                [
+                    predicate.trees.keys.table_count(),
+                    predicate.trees.entities.table_count(),
+                ]
+            })
+            .collect()
+    }
+
+    /// Turn whatever is in memory into a table, per tree.
+    ///
+    /// **A test fixture, and it exists to make a guard non-vacuous.** At the sizes a
+    /// test writes, every fact lives in one memtable and no tree ever has two tables
+    /// to merge — so a compaction guard would pass having compacted nothing. This is
+    /// how a test states "there were three tables here" as a fact rather than a hope.
+    #[cfg(any(test, feature = "proptest"))]
+    pub fn flush_to_tables(&self) -> Result<(), StoreError> {
+        let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
+
+        for predicate in predicates.values() {
+            predicate
+                .trees
+                .keys
+                .rotate_memtable_and_wait()
+                .map_err(StoreError::Backend)?;
+            predicate
+                .trees
+                .entities
+                .rotate_memtable_and_wait()
+                .map_err(StoreError::Backend)?;
+        }
+
+        Ok(())
     }
 
     /// A read view for one query: an immutable snapshot plus the keyspace handles

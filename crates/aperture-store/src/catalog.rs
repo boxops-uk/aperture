@@ -476,7 +476,7 @@ fn sealable(name: &str, entry: &Entry) -> Result<Option<Finished>, StoreError> {
     }
 }
 
-/// Steps 1 and 2 of `ops-I3`: make it durable, then work out what it is.
+/// Steps 1 and 2 of `ops-I3`: make it durable, **merge it**, then work out what it is.
 ///
 /// Everything here reads the disk, so the caller may hand over a handle it already
 /// holds — which is the whole difference between the two public paths.
@@ -490,6 +490,18 @@ fn seal(
     // Durable first. Everything after this reads what is already on the disk, so an
     // identity computed here describes bytes that survive a power loss.
     db.persist()?;
+
+    // Then merge, and merge *here* — before the walk, so the identity is computed over
+    // the tree that will actually be shipped, and before `record`, so the byte count it
+    // writes down is the artifact's rather than the ingest's. What this reclaims is
+    // read cost, paid per page by every future query
+    // ([`FjallDb::compact`](FjallDb::compact) says how much); a `Complete` database is
+    // immutable, so this is the last moment the shape can be chosen and the only one at
+    // which choosing it is not premature.
+    //
+    // Not conditional on `allow_zero_facts`: an empty database has nothing to merge and
+    // merging it costs nothing, so the check stays where it reads best.
+    db.compact()?;
 
     let identity = identity::compute(db, schema, entry.meta.schema_fingerprint)?;
 

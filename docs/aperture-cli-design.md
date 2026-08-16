@@ -50,6 +50,13 @@ These are the cross-cutting rules; individual commands reference them by number.
   `ops-I2` than a divergence framing implies; what it cannot do is call the status flip its last
   durable act. `ops-I8` is what buys that — hoisting the finalization work out of `finish` into
   an operator-visible phase leaves `finish` with nothing to do but sync and flip.
+  **Aperture does compact inside `finish`, and still needs no third state**, which is worth being
+  exact about now that the premise has changed: `finish` is long work here too (minutes on an
+  18M-fact index, most of it the identity walk). What `Finalizing` buys Glean is a *state machine
+  entry for long work*; what `ops-I3` requires is only that no observer sees Complete before the
+  data is durable. A merge before the flip cannot violate that — a crash during it leaves the
+  pre-merge tree and a Writable database, which is the same answer, and the same re-runnable
+  command, as a crash during the sync.
   (`unfinishDatabase` exists — `glean/db/Glean/Database/Finish.hs:87-110` — but is header-marked
   testing-only. Aperture cannot offer it at all: a recorded content hash cannot survive an
   append, so `ops-I2` is downstream of `ops-I4`, not an independent choice.)
@@ -396,9 +403,18 @@ Ingest facts from fact files or stdin.
 
 Seal a Writable DB.
 
-- Ordering per ops-I3: flush + `SyncAll` everything → compute content identity
-  `hash(canonical schema, base facts)` → record it in the sidecar → atomically flip status to
-  Complete as the final durable act.
+- Ordering per ops-I3: flush + `SyncAll` everything → **merge every tree** → compute content
+  identity `hash(canonical schema, base facts)` → record it in the sidecar → atomically flip
+  status to Complete as the final durable act.
+- **The merge is a major compaction, and `finish` is the only place it belongs.** Ingestion
+  leaves each tree in whatever shape the write order produced and nothing reclaims that
+  afterwards; a Writable database might be written again in a moment, so merging it then would
+  be merging it twice. Sealing is where the shape becomes final, and the shape is what every
+  future reader pays: the executor re-seeks once per plan level per 256-row page, and an
+  unmerged tree was measured seeking at up to 180× a merged one on an 18M-fact index, with the
+  artifact also halving on disk ([findings](../bench/FINDINGS.md)). Before the identity walk, so
+  the fingerprint is computed over the tree that ships; before the sidecar, so the byte count it
+  records is the artifact's rather than the ingest's.
 - Identity recording: the fingerprint lives in the sidecar; the directory keeps its provisional
   instance name (renaming under a live server is not worth it). DBs are addressable by name and
   by fingerprint. Identity is *always* the content hash (ops-I4) — there is no path by which a
