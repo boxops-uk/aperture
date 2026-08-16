@@ -562,3 +562,358 @@ mod over_tcp {
         }
     }
 }
+
+#[cfg(test)]
+mod mixed {
+    use std::sync::atomic::AtomicBool;
+
+    use super::{Limits, Stopped, run};
+    use crate::{cli::RowFormat, testing::serving};
+
+    /// Rows a query answers with, counted server-side.
+    fn count(serving: &crate::testing::Serving, query: &str) -> u64 {
+        let quiet = AtomicBool::new(false);
+
+        run(
+            &serving.socket,
+            "code",
+            query,
+            RowFormat::Count,
+            Limits::default(),
+            false,
+            &quiet,
+        )
+        .expect("the query runs")
+        .rows
+    }
+
+    /// **One plan, two stores.** A level whose rows come from the registry and a level
+    /// whose rows come from fjall, in the same query.
+    ///
+    /// This is what `Catalogued` actually claims: it dispatches on the predicate each
+    /// scan names, so being wrapped costs a stored predicate nothing and a virtual one
+    /// no special handling. A single-predicate test cannot see that — it would pass just
+    /// as well against a wrapper that answered *everything* from memory, or one that
+    /// only worked when the catalogue was the outermost level.
+    #[test]
+    fn a_query_joins_the_catalogue_to_a_stored_predicate() {
+        const FILES: usize = 20;
+        let serving = serving(FILES);
+
+        // No shared variable, so this is a cross product: one database × twenty files.
+        // Contrived as a question, and exactly right as an exercise — the two levels
+        // have to interleave, which means the outer one is re-entered and the inner one
+        // re-opened per outer row.
+        let rows = count(
+            &serving,
+            "{db = D.name, file = F} where D = aperture.db.List _; src.File F",
+        );
+        assert_eq!(rows, FILES as u64, "one database × {FILES} files");
+    }
+
+    /// The same join with the levels written the other way round.
+    ///
+    /// `reorder` chooses the loop order, so the written order is not the executed one —
+    /// but the *store* is asked in whichever order it picks, and a wrapper that only
+    /// handled the catalogue at one nesting depth would answer one of these two and not
+    /// the other.
+    #[test]
+    fn the_join_answers_the_same_written_either_way() {
+        const FILES: usize = 20;
+        let serving = serving(FILES);
+
+        let catalogue_first = count(
+            &serving,
+            "{db = D.name, file = F} where D = aperture.db.List _; src.File F",
+        );
+        let files_first = count(
+            &serving,
+            "{db = D.name, file = F} where src.File F; D = aperture.db.List _",
+        );
+
+        assert_eq!(catalogue_first, files_first);
+        assert_eq!(catalogue_first, FILES as u64);
+    }
+
+    /// **A negation over the catalogue**, which is the arm that decides whether the
+    /// listing gets built at all.
+    ///
+    /// The listing is materialised only when the plan is found to read it, and a
+    /// negation is a `Step::Test` rather than a level — a separate branch of that check.
+    /// If it were missed, the catalogue would not be built, the query would look for a
+    /// keyspace that does not exist, and the failure would be a fault rather than a
+    /// wrong answer. Both polarities are asserted because only the pair distinguishes
+    /// "the negation ran" from "the negation matched nothing, whatever it looked at".
+    #[test]
+    fn a_negation_over_the_catalogue_is_answered() {
+        const FILES: usize = 5;
+        let serving = serving(FILES);
+
+        let absent = count(
+            &serving,
+            "F where src.File F; !aperture.db.List {name = \"no-such-database\"}",
+        );
+        assert_eq!(
+            absent, FILES as u64,
+            "nothing is named that, so every row passes"
+        );
+
+        let present = count(
+            &serving,
+            "F where src.File F; !aperture.db.List {name = \"code\"}",
+        );
+        assert_eq!(
+            present, 0,
+            "`code` is there, so the negation fails every row"
+        );
+    }
+
+    /// **A fetch beside the catalogue** — the path that makes the wrapped store answer a
+    /// *point read* rather than a scan.
+    ///
+    /// `D.module.name` reads **through** a reference: one `point()` per row of the level
+    /// above, which is the second of `FactStore`'s two methods and the one no other test
+    /// here reaches — a file is a bare string, so a query over files alone never asks for
+    /// one. `Catalogued::point` has to delegate an id belonging to a stored predicate,
+    /// and the failure if it did not would be a fetch answering with catalogue bytes:
+    /// not an error, a wrong name.
+    #[test]
+    fn a_fetch_through_a_reference_works_beside_the_catalogue() {
+        const FILES: usize = 6;
+        let serving = serving(FILES);
+
+        // The fetch alone, first, so the count below has something to be compared with.
+        let alone = count(
+            &serving,
+            "{d = D.name, m = D.module.name} where D = src.Decl _",
+        );
+        assert_eq!(alone, FILES as u64);
+
+        let beside = count(
+            &serving,
+            "{db = C.name, d = D.name, m = D.module.name} \
+             where C = aperture.db.List _; D = src.Decl _",
+        );
+        assert_eq!(
+            beside, FILES as u64,
+            "one database × {FILES} declarations, each one fetching its module"
+        );
+    }
+
+    /// **Paging across a mixed plan**, which is [I4](../../docs/invariants.md#i4) over a
+    /// cursor whose levels came from two different row sources.
+    ///
+    /// The corpus is sized to cross the server's 256-row chunk several times, so the
+    /// result really is suspended and resumed rather than answered in one go — and the
+    /// comparison is against the same query taken whole, because a count would pass for
+    /// a resume that dropped one row and repeated another.
+    #[test]
+    fn a_mixed_plan_pages_to_the_same_answer() {
+        const FILES: usize = 1000;
+        const SERVER_CHUNK: usize = 256;
+        const _: () = assert!(FILES > 3 * SERVER_CHUNK);
+
+        let serving = serving(FILES);
+        let query = "{db = D.name, file = F} where D = aperture.db.List _; src.File F";
+
+        let whole = count(&serving, query);
+        assert_eq!(whole, FILES as u64);
+
+        // The same query, stopped early and resumed by the ordinary paging path: what
+        // `--limit` proves here is that the cursor is honoured mid-result over a plan
+        // one of whose levels is not backed by a keyspace at all.
+        let quiet = AtomicBool::new(false);
+        let paged = run(
+            &serving.socket,
+            "code",
+            query,
+            RowFormat::Count,
+            Limits {
+                rows: Some(600),
+                timeout: None,
+            },
+            false,
+            &quiet,
+        )
+        .expect("the query runs");
+
+        assert_eq!(paged.rows, 600, "it stopped where it was told");
+        assert_eq!(paged.stopped, Stopped::Limit);
+    }
+
+    /// A field of the catalogue used as an ordinary value: read, projected, and
+    /// compared against a stored row's.
+    ///
+    /// The point is that nothing downstream of the store knows the difference — the
+    /// residual comparing these two strings is the same `ResidualOp` it would be over
+    /// two stored predicates, decoding bytes that came from a `Vec`.
+    #[test]
+    fn a_catalogue_field_narrows_a_query_that_also_reads_a_keyspace() {
+        const FILES: usize = 4;
+        let serving = serving(FILES);
+
+        // A constant on the catalogue's **leading** key field, so it folds into a seek,
+        // beside a scan of a real keyspace. Both levels are asked of the same wrapped
+        // store, and the answer is a non-zero count — which is what makes the negative
+        // case below evidence rather than an absence.
+        let matched = count(
+            &serving,
+            "{db = N, file = F} where aperture.db.List {name = N}; src.File F; N = \"code\"",
+        );
+        assert_eq!(matched, FILES as u64, "the one database × every file");
+
+        // The same query with a name no database has. Zero, and it means something
+        // *because* the identical shape above is four: a store that had stopped serving
+        // either side would answer zero to both, and the pair separates them.
+        let unmatched = count(
+            &serving,
+            "{db = N, file = F} where aperture.db.List {name = N}; src.File F; N = \"nope\"",
+        );
+        assert_eq!(unmatched, 0, "no database is called `nope`");
+    }
+}
+
+#[cfg(test)]
+mod surface {
+    use std::sync::atomic::AtomicBool;
+
+    use super::{Limits, run};
+    use crate::{
+        cli::RowFormat,
+        testing::{create_database, serving},
+    };
+
+    const FILES: usize = 6;
+
+    fn count(serving: &crate::testing::Serving, query: &str) -> u64 {
+        let quiet = AtomicBool::new(false);
+
+        run(
+            &serving.socket,
+            "code",
+            query,
+            RowFormat::Count,
+            Limits::default(),
+            false,
+            &quiet,
+        )
+        .expect("the query runs")
+        .rows
+    }
+
+    /// **A disjunction with one branch in memory and one in fjall.**
+    ///
+    /// The sharpest of these, because a disjunction is *one level with several sources*
+    /// — the same frame, opened against a different store each time it moves to the next
+    /// alternative. Nothing else makes `Catalogued::scan` answer two ways inside one
+    /// loop, and a wrapper that decided per *query* rather than per *scan* would pass
+    /// every other test here and fail this one.
+    #[test]
+    fn a_disjunction_draws_one_branch_from_each_store() {
+        let serving = serving(FILES);
+
+        let both = count(&serving, "N where aperture.db.List {name = N} | src.File N");
+        assert_eq!(
+            both,
+            FILES as u64 + 1,
+            "every file, and the one database, concatenated"
+        );
+
+        // Each branch alone, so the sum above is a sum of two known things rather than a
+        // number that happens to be right.
+        assert_eq!(count(&serving, "N where aperture.db.List {name = N}"), 1);
+        assert_eq!(count(&serving, "N where src.File N"), FILES as u64);
+    }
+
+    /// A negation of a **stored** predicate, over a variable the **catalogue** bound.
+    ///
+    /// The direction matters: the negation's probe seeks a keyspace using bytes that
+    /// came out of the listing, so the register it reads was filled by the in-memory
+    /// side and spliced into a real seek.
+    #[test]
+    fn a_negation_of_a_keyspace_reads_a_catalogue_binding() {
+        let serving = serving(FILES);
+
+        // No file is named `code`, so the database survives the negation.
+        let survives = count(&serving, "N where aperture.db.List {name = N}; !src.File N");
+        assert_eq!(survives, 1, "no file is called `code`");
+
+        // The assertion's partner: with the negation the other way up, the same row is
+        // excluded — so the pair says the probe ran rather than that it matched nothing.
+        let excluded = count(&serving, "N where aperture.db.List {name = N}; src.File N");
+        assert_eq!(excluded, 0, "and asserting it instead answers nothing");
+    }
+
+    /// A negation of the **catalogue**, over a variable a *stored* level bound — the
+    /// reverse direction, where the probe is the one answered from memory.
+    #[test]
+    fn a_negation_of_the_catalogue_reads_a_stored_binding() {
+        let serving = serving(FILES);
+
+        let all = count(&serving, "F where src.File F; !aperture.db.List {name = F}");
+        assert_eq!(all, FILES as u64, "no file shares a name with a database");
+    }
+
+    /// **A denial on a catalogue field** — `!=`, which is a residual and never a seek.
+    ///
+    /// Worth its own test because a denial is decided by `apply_compares` over the row's
+    /// own bytes, so it is the plainest check that a listing row decodes exactly as a
+    /// stored one does.
+    #[test]
+    fn a_denial_filters_the_listing_by_its_own_bytes() {
+        let serving = serving(0);
+
+        let kept = count(
+            &serving,
+            "N where aperture.db.List {name = N}; N != \"zzz\"..",
+        );
+        assert_eq!(kept, 1, "`code` does not start with `zzz`");
+
+        let denied = count(
+            &serving,
+            "N where aperture.db.List {name = N}; N != \"co\"..",
+        );
+        assert_eq!(denied, 0, "and it does start with `co`");
+    }
+
+    /// **A prefix constraint on the catalogue's leading field**, which is the one thing
+    /// that makes `Catalogued::scan` answer a *bounded* range rather than everything.
+    ///
+    /// The `hi` bound is computed by this module by hand — fjall is given the same two
+    /// keys and does its own thing with them — so a range that is right for a keyspace
+    /// and wrong for a `Vec` is exactly the bug this catches.
+    #[test]
+    fn a_prefix_constraint_bounds_the_listing() {
+        let serving = serving(0);
+
+        assert_eq!(
+            count(
+                &serving,
+                "N where aperture.db.List {name = N}; N = \"co\".."
+            ),
+            1,
+            "`code` is in the range"
+        );
+        assert_eq!(
+            count(
+                &serving,
+                "N where aperture.db.List {name = N}; N = \"cp\".."
+            ),
+            0,
+            "and one letter later it is not"
+        );
+    }
+
+    /// A **subquery** over the catalogue, inlined into an enclosing query that also
+    /// reads a keyspace.
+    #[test]
+    fn a_subquery_over_the_catalogue_inlines() {
+        let serving = serving(FILES);
+
+        let rows = count(
+            &serving,
+            "{db = N, file = F} where N = (M where aperture.db.List {name = M}); src.File F",
+        );
+        assert_eq!(rows, FILES as u64, "the subquery's one row × every file");
+    }
+}

@@ -16,7 +16,7 @@ use std::{path::PathBuf, sync::Arc, thread};
 use aperture_client::{Connection, Mode};
 use aperture_server::{Registry, server::Listener};
 use aperture_store::catalog::Catalog;
-use aperture_wire::{WireFact, WireValue, protocol::provisional_fingerprint};
+use aperture_wire::{WireFact, WireRef, WireValue, protocol::provisional_fingerprint};
 
 use crate::code_index;
 
@@ -68,7 +68,51 @@ pub fn serving(files: usize) -> Serving {
     serving
 }
 
-/// `files` files, written over the wire like anything else.
+/// A file, by index — the same key the seeder writes, so a test can name one.
+fn file_fact(n: usize) -> WireFact {
+    WireFact {
+        predicate: code_index::FILE,
+        // Zero-padded, so the order rows come back in is the order they were written —
+        // which is what lets a paging test compare sequences rather than sets.
+        key: WireValue::Str(format!("f{n:05}.py")),
+        value: None,
+    }
+}
+
+/// A module in that file, nesting it — so something in this corpus holds a **reference**.
+fn module_fact(n: usize) -> WireFact {
+    WireFact {
+        predicate: code_index::MODULE,
+        key: WireValue::Record(Box::from([
+            WireValue::Ref(WireRef::Nested(Box::new(file_fact(n)))),
+            WireValue::Str(format!("m{n:05}")),
+        ])),
+        value: None,
+    }
+}
+
+/// A declaration in that module, nesting it — two levels deep, so a query can read
+/// *through* a reference and make the store answer a point read.
+fn decl_fact(n: usize) -> WireFact {
+    WireFact {
+        predicate: code_index::DECL,
+        key: WireValue::Record(Box::from([
+            WireValue::Ref(WireRef::Nested(Box::new(module_fact(n)))),
+            WireValue::Str(format!("d{n:05}")),
+            WireValue::Int(n as i64),
+        ])),
+        value: Some(WireValue::Str("def".to_owned())),
+    }
+}
+
+/// `files` files, each with a module and a declaration, written over the wire like
+/// anything else.
+///
+/// **The nesting is what makes the corpus worth having.** A file is a bare string, so a
+/// query over files alone never asks the store for a point read — and a fetch through a
+/// reference is exactly the path a wrapped store has to get right and can most easily
+/// get wrong. One module and one declaration per file gives every test a `D.module.name`
+/// to reach for, at the cost of two more facts per file.
 fn seed(serving: &Serving, files: usize) {
     let mut writer = Connection::connect(
         &serving.socket,
@@ -79,20 +123,24 @@ fn seed(serving: &Serving, files: usize) {
     )
     .expect("a writer");
 
-    let facts: Vec<WireFact> = (0..files)
-        .map(|n| WireFact {
-            predicate: code_index::FILE,
-            // Zero-padded, so the order rows come back in is the order they were
-            // written — which is what lets a paging test compare sequences rather
-            // than sets.
-            key: WireValue::Str(format!("f{n:05}.py")),
-            value: None,
-        })
-        .collect();
+    let facts: Vec<WireFact> = (0..files).map(file_fact).collect();
 
     writer
         .write(code_index::FILE, &facts)
-        .expect("the facts are written");
+        .expect("the files are written");
+
+    // One block per predicate, because a block is a run of one predicate's facts. The
+    // modules and declarations nest what came before them, so the server interns rather
+    // than creating — which is the write path a real producer takes.
+    let modules: Vec<WireFact> = (0..files).map(module_fact).collect();
+    writer
+        .write(code_index::MODULE, &modules)
+        .expect("the modules are written");
+
+    let decls: Vec<WireFact> = (0..files).map(decl_fact).collect();
+    writer
+        .write(code_index::DECL, &decls)
+        .expect("the declarations are written");
 }
 
 /// A server holding one database, `code`, listening on **both** doors.
@@ -157,4 +205,17 @@ pub fn serving_on_tcp(files: usize) -> (Serving, String) {
     }
 
     (serving, address)
+}
+
+/// Make another database on this server, over the wire.
+///
+/// **So a listing can have more than one row in it**, which is the difference between a
+/// test that exercises a range bound and one that cannot: with a single database, the
+/// lower bound of any seek excludes everything the upper bound would have, and a broken
+/// upper bound is invisible.
+pub fn create_database(serving: &Serving, name: &str) {
+    let mut control = Connection::control(&serving.socket, Arc::new(code_index::schema()))
+        .expect("a control session");
+
+    control.create(name).expect("the database is created");
 }

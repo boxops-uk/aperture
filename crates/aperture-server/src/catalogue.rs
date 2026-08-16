@@ -291,3 +291,224 @@ pub fn reads(plan: &aperture_engine::plan::Plan, predicate: PredicateId) -> bool
             .any(|source| source.predicate_id() == predicate)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use aperture_schema::schema::{Predicate, PredicateTy};
+    use aperture_store::{catalog::Entry, meta::Meta};
+    use lasso::Rodeo;
+
+    use super::*;
+
+    /// A schema declaring the catalogue and nothing else.
+    ///
+    /// Stated here rather than imported from the CLI: this crate cannot see
+    /// `code_index`, and that is the right way round — the server answers whatever
+    /// schema it is given, and a test that borrowed the real one would be checking that
+    /// two files agree rather than that this one works.
+    pub(super) fn catalogue_schema() -> Schema {
+        let mut rodeo = Rodeo::new();
+        let mut sym = |name: &str| rodeo.get_or_intern(name);
+
+        let predicate = Predicate {
+            name: sym(PREDICATE),
+            key: PredicateTy::Record(Arc::from([
+                (sym("name"), PredicateTy::Str),
+                (sym("instance"), PredicateTy::Str),
+                (sym("status"), PredicateTy::Str),
+                (sym("facts"), PredicateTy::Int),
+                (sym("bytes"), PredicateTy::Int),
+                (sym("created"), PredicateTy::Str),
+            ])),
+            value: None,
+        };
+
+        Schema::new(rodeo.into_reader(), Arc::from(vec![predicate]))
+    }
+
+    pub(super) fn listing_of(names: &[&str]) -> Listing {
+        Listing {
+            entries: names
+                .iter()
+                .map(|name| Entry {
+                    meta: Meta::new(*name, "01ABC", 0),
+                    path: std::path::PathBuf::from(name),
+                })
+                .collect(),
+            problems: vec![],
+        }
+    }
+
+    /// **`point` answers the key *without* its predicate prefix**, which is what
+    /// `entities` holds and what a fetch splices a prefix back onto.
+    ///
+    /// Unit-tested because no query can reach it: nothing references the catalogue and
+    /// it has no value side, so the arm exists for the day one of those changes. That
+    /// makes it exactly the code most likely to be wrong when it is first needed — and
+    /// the failure would not be an error but four bytes of predicate id read as the
+    /// first field of a key, answering with nothing.
+    #[test]
+    fn a_point_read_answers_the_key_a_fetch_expects() {
+        let schema = catalogue_schema();
+        let catalogue = Catalogue::materialise(&schema, &listing_of(&["alpha", "beta"]))
+            .expect("it encodes")
+            .expect("the schema declares it");
+
+        assert_eq!(catalogue.len(), 2);
+
+        let store = Catalogued::new(NoStore, Arc::new(catalogue));
+        let rows: Vec<_> = store
+            .scan(&PredicateId(0).0.to_be_bytes(), None)
+            .expect("a scan")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+
+        assert_eq!(rows.len(), 2, "both databases");
+
+        for (row, id) in rows {
+            let entity = store
+                .point(id)
+                .expect("a point read")
+                .expect("the id is one this listing handed out");
+
+            assert_eq!(
+                entity.key.as_ref(),
+                &row[PREDICATE_ID_SIZE..],
+                "the prefix belongs to the scan's row, never to the entity"
+            );
+            assert!(entity.value.is_empty(), "the catalogue has no value side");
+        }
+    }
+
+    /// A listing sorts by its encoded key, which is what every seek downstream assumes.
+    #[test]
+    fn rows_come_back_in_key_order() {
+        let schema = catalogue_schema();
+        let catalogue = Catalogue::materialise(&schema, &listing_of(&["zulu", "alpha", "mike"]))
+            .expect("it encodes")
+            .expect("the schema declares it");
+
+        let store = Catalogued::new(NoStore, Arc::new(catalogue));
+        let rows: Vec<_> = store
+            .scan(&PredicateId(0).0.to_be_bytes(), None)
+            .expect("a scan")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows");
+
+        let keys: Vec<&[u8]> = rows.iter().map(|(key, _)| key.as_ref()).collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+
+        assert_eq!(
+            keys, sorted,
+            "the listing is in key order, not listing order"
+        );
+    }
+
+    /// A schema that does not declare the catalogue simply has none.
+    #[test]
+    fn a_schema_without_the_predicate_has_no_catalogue() {
+        let mut rodeo = Rodeo::new();
+        let name = rodeo.get_or_intern("src.File");
+        let bare = Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name,
+                key: PredicateTy::Str,
+                value: None,
+            }]),
+        );
+
+        assert!(
+            Catalogue::materialise(&bare, &listing_of(&["alpha"]))
+                .expect("it does not fail")
+                .is_none()
+        );
+    }
+
+    /// A store that holds nothing, so a test can prove the wrapper answered rather than
+    /// delegated.
+    pub(super) struct NoStore;
+
+    impl FactStore for NoStore {
+        type Scan = std::vec::IntoIter<Result<(ByteView, FactId), StoreError>>;
+
+        fn scan(&self, _lo: &[u8], _hi: Option<&[u8]>) -> Result<Self::Scan, StoreError> {
+            panic!("the catalogue's own predicate must never reach the inner store")
+        }
+
+        fn point(&self, _id: FactId) -> Result<Option<Entity>, StoreError> {
+            panic!("the catalogue's own ids must never reach the inner store")
+        }
+    }
+}
+
+#[cfg(test)]
+mod ranges {
+    use aperture_schema::schema::PredicateTy;
+
+    use super::{tests::*, *};
+
+    /// **The half-open range, isolated** — `lo` inclusive, `hi` exclusive.
+    ///
+    /// Unit-tested because a query cannot reach it: a string prefix compiles to a seek
+    /// *and* a residual, so the residual re-checks whatever a broken range let through
+    /// and the end-to-end answer stays right. Deleting the upper bound here is caught in
+    /// one line; through a query it is caught nowhere.
+    ///
+    /// That makes this the one piece of `Catalogued` whose correctness rests entirely on
+    /// a unit test, which is worth saying out loud rather than leaving to be discovered
+    /// the first time something depends on the bound alone.
+    #[test]
+    fn a_scan_honours_both_ends_of_its_range() {
+        let schema = catalogue_schema();
+        let listing = listing_of(&["alpha", "code", "zulu"]);
+        let catalogue = Catalogue::materialise(&schema, &listing)
+            .expect("it encodes")
+            .expect("declared");
+
+        let store = Catalogued::new(NoStore, Arc::new(catalogue));
+
+        let key_of = |name: &str| {
+            let mut bytes = PredicateId(0).0.to_be_bytes().to_vec();
+            // The **leading key field alone**, encoded as the key holds it — which is
+            // exactly what a seek prefix is, and why this is the right thing to bound a
+            // range with.
+            bytes.extend_from_slice(
+                &aperture_encoding::tuple::encode_typed(
+                    &PredicateTy::Str,
+                    &Value::Str(name.into()),
+                )
+                .expect("a string encodes"),
+            );
+            bytes
+        };
+
+        let rows = |lo: Vec<u8>, hi: Option<Vec<u8>>| -> usize {
+            store.scan(&lo, hi.as_deref()).expect("a scan").count()
+        };
+
+        assert_eq!(rows(PredicateId(0).0.to_be_bytes().to_vec(), None), 3);
+
+        // `lo` is inclusive: the row it names is in.
+        assert!(rows(key_of("code"), None) >= 1, "lo includes its own key");
+
+        // `hi` is exclusive, and it is the end this exists to pin: `zulu` sorts after
+        // `code` and must be left out.
+        assert_eq!(
+            rows(key_of("alpha"), Some(key_of("zulu"))),
+            2,
+            "alpha and code, and never zulu"
+        );
+        assert_eq!(
+            rows(key_of("code"), Some(key_of("zulu"))),
+            1,
+            "code alone, bounded on both sides"
+        );
+        assert_eq!(
+            rows(key_of("alpha"), Some(key_of("alpha"))),
+            0,
+            "an empty range is empty, rather than one row wide"
+        );
+    }
+}
