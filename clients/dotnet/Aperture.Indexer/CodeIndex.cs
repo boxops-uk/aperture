@@ -72,21 +72,25 @@ internal static class CodeIndex
         // The value side is the declaration's kind. A value cannot be matched on (I6),
         // which is what makes it the right home for something a query reads but never
         // filters by.
+        // Declared {module, name, line}: the join is "the declarations in this module",
+        // and the line is what tells two of them apart rather than what finds them.
         new AperturePredicate("src.Decl", ApertureType.Rec(
-            ("line", ApertureType.Integer),
             ("module", ApertureType.Reference(Module)),
-            ("name", ApertureType.String)), ApertureType.String),
+            ("name", ApertureType.String),
+            ("line", ApertureType.Integer)), ApertureType.String),
 
         new AperturePredicate("src.SearchByName", ApertureType.Rec(
             ("name", ApertureType.String),
             ("to", ApertureType.Reference(Decl))), null),
 
+        // Declared {to, file, at}: find-references is the question, and it seeks only
+        // if the target leads.
         new AperturePredicate("src.Ref", ApertureType.Rec(
-            ("at", ApertureType.Rec(
-                ("col", ApertureType.Integer),
-                ("line", ApertureType.Integer))),
+            ("to", ApertureType.Reference(Decl)),
             ("file", ApertureType.Reference(File)),
-            ("to", ApertureType.Reference(Decl))), null),
+            ("at", ApertureType.Rec(
+                ("line", ApertureType.Integer),
+                ("col", ApertureType.Integer)))), null),
 
         new AperturePredicate("src.Import", ApertureType.Rec(
             ("from", ApertureType.Reference(Module)),
@@ -189,9 +193,9 @@ internal static class CodeIndex
     public static ApertureFact DeclFact(long line, ApertureFact module, string name, string kind) =>
         new(Decl,
             ApertureValue.Rec(
-                ApertureValue.Of(line),
                 ApertureValue.Of(ApertureRef.To(module)),
-                ApertureValue.Of(name)),
+                ApertureValue.Of(name),
+                ApertureValue.Of(line)),
             ApertureValue.Of(kind));
 
     public static ApertureFact SearchFact(string name, ApertureFact decl) =>
@@ -201,9 +205,9 @@ internal static class CodeIndex
 
     public static ApertureFact RefFact(long line, long col, ApertureFact file, ApertureFact decl) =>
         new(Ref, ApertureValue.Rec(
-            ApertureValue.Rec(ApertureValue.Of(col), ApertureValue.Of(line)),
+            ApertureValue.Of(ApertureRef.To(decl)),
             ApertureValue.Of(ApertureRef.To(file)),
-            ApertureValue.Of(ApertureRef.To(decl))));
+            ApertureValue.Rec(ApertureValue.Of(line), ApertureValue.Of(col))));
 
     public static ApertureFact ImportFact(ApertureFact from, ApertureFact to) =>
         new(Import, ApertureValue.Rec(

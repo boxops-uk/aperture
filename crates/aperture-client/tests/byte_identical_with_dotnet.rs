@@ -36,8 +36,10 @@ const DOC: PredicateId = PredicateId(19);
 /// The demo's schema, restated in Rust.
 ///
 /// Two rules here are load-bearing and are exactly what the fingerprint checks: a
-/// predicate's id **is** its position, and a record's fields are in declared order,
-/// sorted by name, because that order is part of the encoding.
+/// predicate's id **is** its position, and a record's fields are in the order the schema
+/// declares them, because that order is part of the encoding. It is *not* alphabetical —
+/// `src.Decl` and `src.Ref` are declared for the seeks they are asked to serve — which is
+/// the whole reason this file states the schema again instead of importing one.
 fn schema() -> Schema {
     let mut rodeo = Rodeo::new();
     let mut sym = |name: &str| rodeo.get_or_intern(name);
@@ -94,9 +96,9 @@ fn schema() -> Schema {
             Predicate {
                 name: decl,
                 key: PredicateTy::Record(Arc::from([
-                    (f_line, PredicateTy::Int),
                     (f_module, PredicateTy::Fact(MODULE)),
                     (f_name, PredicateTy::Str),
+                    (f_line, PredicateTy::Int),
                 ])),
                 value: Some(PredicateTy::Str),
             },
@@ -112,15 +114,15 @@ fn schema() -> Schema {
             Predicate {
                 name: reference,
                 key: PredicateTy::Record(Arc::from([
+                    (f_to, PredicateTy::Fact(DECL)),
+                    (f_file, PredicateTy::Fact(FILE)),
                     (
                         f_at,
                         PredicateTy::Record(Arc::from([
-                            (f_col, PredicateTy::Int),
                             (f_line, PredicateTy::Int),
+                            (f_col, PredicateTy::Int),
                         ])),
                     ),
-                    (f_file, PredicateTy::Fact(FILE)),
-                    (f_to, PredicateTy::Fact(DECL)),
                 ])),
                 value: None,
             },
@@ -280,14 +282,14 @@ fn module(path: &str, name: &str) -> WireFact {
     }
 }
 
-/// Fields in the schema's order — line, module, name — and the kind on the value side.
+/// Fields in the schema's order — module, name, line — and the kind on the value side.
 fn decl(path: &str, module_name: &str, kind: &str, line: i64, name: &str) -> WireFact {
     WireFact {
         predicate: DECL,
         key: WireValue::Record(Box::from([
-            WireValue::Int(line),
             WireValue::Ref(WireRef::Nested(Box::new(module(path, module_name)))),
             WireValue::Str(name.to_owned()),
+            WireValue::Int(line),
         ])),
         value: Some(WireValue::Str(kind.to_owned())),
     }
@@ -316,8 +318,6 @@ fn corpus() -> Vec<(&'static str, PredicateId, Vec<WireFact>)> {
             vec![WireFact {
                 predicate: REFERENCE,
                 key: WireValue::Record(Box::from([
-                    WireValue::Record(Box::from([WireValue::Int(4), WireValue::Int(19)])),
-                    WireValue::Ref(WireRef::Nested(Box::new(file("query/plan.py")))),
                     WireValue::Ref(WireRef::Nested(Box::new(decl(
                         "store/keys.py",
                         "keys",
@@ -325,6 +325,8 @@ fn corpus() -> Vec<(&'static str, PredicateId, Vec<WireFact>)> {
                         12,
                         "key_of",
                     )))),
+                    WireValue::Ref(WireRef::Nested(Box::new(file("query/plan.py")))),
+                    WireValue::Record(Box::from([WireValue::Int(19), WireValue::Int(4)])),
                 ])),
                 value: None,
             }],

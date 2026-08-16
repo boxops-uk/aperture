@@ -69,9 +69,9 @@ var schema = new ApertureSchema([
     // is what makes it the right home for something a query wants to *read* but never
     // to filter by.
     new AperturePredicate("src.Decl", ApertureType.Rec(
-        ("line", ApertureType.Integer),
         ("module", ApertureType.Reference(Module)),
-        ("name", ApertureType.String)), ApertureType.String),
+        ("name", ApertureType.String),
+        ("line", ApertureType.Integer)), ApertureType.String),
 
     new AperturePredicate("src.SearchByName", ApertureType.Rec(
         ("name", ApertureType.String),
@@ -79,11 +79,11 @@ var schema = new ApertureSchema([
 
     // A nested record inside a key, and two references to two different predicates.
     new AperturePredicate("src.Ref", ApertureType.Rec(
-        ("at", ApertureType.Rec(
-            ("col", ApertureType.Integer),
-            ("line", ApertureType.Integer))),
+        ("to", ApertureType.Reference(Decl)),
         ("file", ApertureType.Reference(File)),
-        ("to", ApertureType.Reference(Decl))), null),
+        ("at", ApertureType.Rec(
+            ("line", ApertureType.Integer),
+            ("col", ApertureType.Integer)))), null),
 
     new AperturePredicate("src.Import", ApertureType.Rec(
         ("from", ApertureType.Reference(Module)),
@@ -193,9 +193,9 @@ ApertureFact ModuleFact(string path, string name) =>
 ApertureFact DeclFact(string path, string module, string kind, long line, string name) =>
     new(Decl,
         ApertureValue.Rec(
-            ApertureValue.Of(line),
             ApertureValue.Of(ApertureRef.To(ModuleFact(path, module))),
-            ApertureValue.Of(name)),
+            ApertureValue.Of(name),
+            ApertureValue.Of(line)),
         ApertureValue.Of(kind));
 
 var declarations = new List<ApertureFact>
@@ -223,10 +223,10 @@ Console.WriteLine();
 var references = new List<ApertureFact>
 {
     new(Reference, ApertureValue.Rec(
-        ApertureValue.Rec(ApertureValue.Of(4L), ApertureValue.Of(19L)),
-        ApertureValue.Of(ApertureRef.To(FileFact("query/plan.py"))),
         ApertureValue.Of(ApertureRef.To(
-            DeclFact("store/keys.py", "keys", "def", 12, "key_of"))))),
+            DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
+        ApertureValue.Of(ApertureRef.To(FileFact("query/plan.py"))),
+        ApertureValue.Rec(ApertureValue.Of(19L), ApertureValue.Of(4L)))),
 };
 
 var refs = connection.Write(Reference, references);
@@ -324,10 +324,10 @@ void EmitGolden(string path)
         ("src.Ref", Reference,
         [
             new(Reference, ApertureValue.Rec(
-                ApertureValue.Rec(ApertureValue.Of(4L), ApertureValue.Of(19L)),
-                ApertureValue.Of(ApertureRef.To(FileFact("query/plan.py"))),
                 ApertureValue.Of(ApertureRef.To(
-                    DeclFact("store/keys.py", "keys", "def", 12, "key_of"))))),
+                    DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
+                ApertureValue.Of(ApertureRef.To(FileFact("query/plan.py"))),
+                ApertureValue.Rec(ApertureValue.Of(19L), ApertureValue.Of(4L)))),
         ]),
 
         // A reference in the *middle* of a key, an integer after it, and a value side

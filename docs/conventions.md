@@ -50,10 +50,13 @@ are wrong.
     cached encoded constants).
   - `ByteView` clones are refcount bumps, not copies — that's why a whole-row register is
     cheap to share ([I5](invariants.md#i5)/[I9](invariants.md#i9)).
-- **Record fields are sorted `[(Symbol, T)]` slices, everywhere** — `Box<[…]>` when owned,
+- **Record fields are ordered `[(Symbol, T)]` slices, everywhere** — `Box<[…]>` when owned,
   `Arc<[…]>` when shared in the schema. **Never `HashMap`.** Deterministic order is required
   by order-preservation ([I1](invariants.md#i1)) and schema fingerprinting; one allocation
-  and a linear scan beat hashing at record arities. ([chapter 6](06-types-and-schema.md).)
+  and a linear scan beat hashing at record arities. **Which** order is not one rule but two:
+  a *query's* fields are normalised to sorted-by-name at lowering, a *schema's* are in
+  declaration order, and the schema's is the physical key order — so it decides what seeks.
+  ([chapter 6](06-types-and-schema.md).)
 - **Permissive grammar, narrow later.** The grammar/parser stay uniform and permissive;
   meaningless constructs (wildcard in head, non-variable bind LHS, `.value` shadowing) are
   rejected at **typecheck/flatten** with clear diagnostics — not contorted into the grammar.

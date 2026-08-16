@@ -1170,8 +1170,8 @@ pub mod proptest {
     const PICKS: u8 = 4;
 
     /// One head record field per level, so the projected row shows every binding.
-    /// Listed in level order, which is also sorted order — record fields are
-    /// sorted slices everywhere (a codec requirement).
+    /// Listed in level order, which for these names is also sorted order — a head
+    /// record's fields are sorted by name, as every query-side record's are.
     const FIELD_NAMES: [&str; MAX_LEVELS] = ["r0", "r1", "r2"];
 
     /// A key field's type. Scalars only: nested records in keys are the codec's

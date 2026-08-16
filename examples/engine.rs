@@ -445,22 +445,32 @@ fn catalogue(pivots: &Pivots) -> Vec<Workload> {
             "the same fetch, read further",
         ),
         // **The pair that prices key field order.** A predicate's seekable prefix is its
-        // key's leading fields, in the order the schema *declares* them: `src.Line` is
-        // declared `{file, line}` and leads with the reference, so a join on it seeks;
-        // `src.Decl` is declared `{line, module, name}` and leads with the line number, so
-        // the same join shape on `module` cannot narrow and rescans the whole predicate
-        // per outer row. Nothing about the query distinguishes them, and nothing about the
-        // machine forces either order — `code_index` declares its records alphabetically
-        // by its own convention, and that convention is what put `line` in front.
+        // key's leading fields, in the order the schema *declares* them, and nothing about
+        // the query distinguishes a join that seeks from one that rescans the whole
+        // predicate per outer row. The two workloads below are the same join shape over
+        // two predicates, and the ratio between them is the price of the declaration.
+        //
+        // This pair is why `src.Decl` is now declared `{module, name, line}`. It used to be
+        // `{line, module, name}` — alphabetical, by a convention `code_index` imposed on
+        // itself — so the ordinary "declarations in this module" join was the *slow* arm
+        // here, at 56,274 rows examined per row produced. It is the fast arm now, and the
+        // slow one is a real query that still cannot narrow: `src.SearchByName` is keyed
+        // for lookup *by name*, so reaching it by `to` is the same trap on a predicate
+        // whose own order is right ([findings §2](../bench/FINDINGS.md)).
         workload(
             "join on a leading field",
             "L where F = src.File _; src.Line {file = F, line = L}".to_owned(),
-            "seekable: reference leads the key",
+            "seekable: the reference leads the key",
+        ),
+        workload(
+            "join on a leading reference",
+            "D where M = src.Module _; src.Decl {module = M, name = D}".to_owned(),
+            "seekable since the reorder: the module leads the key",
         ),
         Workload {
-            name: "join on a middle field",
-            focus: "D where M = src.Module _; src.Decl {module = M, name = D}".to_owned(),
-            about: "not seekable: `line` leads the key",
+            name: "join on a trailing field",
+            focus: "N where D = src.Decl _; src.SearchByName {to = D, name = N}".to_owned(),
+            about: "not seekable: `name` leads the key, and this joins on `to`",
             stop_at: Some(2_000),
         },
         workload(

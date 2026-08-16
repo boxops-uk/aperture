@@ -176,8 +176,9 @@ fn module(index: usize) -> WireFact {
     }
 }
 
-/// Fields in the schema's sorted order — line, module, name — and the kind on the
-/// value side.
+/// Fields in the schema's declared order — module, name, line — and the kind on the
+/// value side. A `WireFact`'s key is positional, so this list *is* the key order, and
+/// getting it wrong writes a fact nobody can find rather than an error.
 ///
 /// Every declaration nests its module, which nests its file, so the server is doing
 /// two levels of **interning** per fact: look the key up, write it if absent. That is
@@ -187,9 +188,9 @@ fn decl(file_index: usize, n: usize) -> WireFact {
     WireFact {
         predicate: DECL,
         key: WireValue::Record(Box::from([
-            WireValue::Int((n * 17 + 1) as i64),
             WireValue::Ref(WireRef::Nested(Box::new(module(file_index)))),
             WireValue::Str(format!("symbol_{file_index:07}_{n:03}")),
+            WireValue::Int((n * 17 + 1) as i64),
         ])),
         value: Some(WireValue::Str(
             if n.is_multiple_of(3) { "class" } else { "def" }.to_owned(),

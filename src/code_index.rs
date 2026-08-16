@@ -75,13 +75,26 @@ pub const PACKAGE: PredicateId = PredicateId(11);
 /// | `src.Attribute` | a string leading the key, so `[Obsolete]` everywhere is a seek rather than a scan |
 /// | `src.Line` | the **wide row**: a file's line table, one fact per line, the text on the value side |
 ///
-/// **Why the field names decide the seeks.** A record's fields are sorted by name and
-/// that order *is* the key order, so the only way to choose what a predicate narrows on
-/// is to choose what its fields are called. `{base, type}` puts the base type first and
-/// makes "everything deriving from this" a seek; `{iface, type}`, `{container, member}`
-/// and `{attribute, target}` are the same choice made three more times. It reads as
-/// arbitrary naming and is not: rename `base` to `super` in `src.Extends` and the
-/// predicate silently answers the other question, badly.
+/// **Why the field order decides the seeks, and why it is declared rather than derived.**
+/// A record's fields are stored in the order this file lists them, that order *is* the
+/// key order, and a query can only narrow on a leading run of it. So `src.Extends` is
+/// declared `{base, type}` because "everything deriving from this" is the question worth
+/// a seek; `{iface, type}`, `{container, member}` and `{attribute, target}` are the same
+/// choice made three more times.
+///
+/// This file used to keep every field list in **alphabetical** order and to say that the
+/// order followed from the names — that renaming `base` to `super` would silently change
+/// what `src.Extends` answers. Nothing sorts these slices: `flatten` walks the schema's
+/// own slice by index and looks each query field up by name, and
+/// `aperture_store::fact`'s `the_encoding_order_is_the_declared_order` has always pinned
+/// that. What the alphabetical habit did was make the physical key order a *consequence*
+/// of naming, which is how `src.Decl` came to lead with a line number and `src.Ref` with
+/// a column — the two most expensive keys in the index, both by accident.
+///
+/// The order is now chosen per predicate and stated in `tests::KEY_ORDER`, which is the
+/// guard: a field list that changes silently answers a different question, and asserting
+/// the intended order catches that where asserting sortedness only caught it when the
+/// intended order happened to be alphabetical.
 pub fn schema() -> Schema {
     let mut rodeo = Rodeo::new();
     let mut sym = |name: &str| rodeo.get_or_intern(name);
@@ -103,12 +116,20 @@ pub fn schema() -> Schema {
         // The value side is the declaration's *kind* — `def`, `class`, `method`,
         // `const` — because it is the one thing a query would want without matching on
         // it, and a value cannot be matched ([I6](../../docs/invariants.md#i6)).
+        //
+        // **Declared `{module, name, line}`, and the line goes last on purpose.** The
+        // join anybody writes is "the declarations in this module", often narrowed by
+        // name; the line number is what distinguishes two declarations that agree on
+        // both, which is the definition of a field that belongs at the end of a key.
+        // Alphabetical order put `line` first, and measured, that made the ordinary
+        // join read all 888,177 declarations once per module — 56,274 rows examined per
+        // row produced ([findings §2](../bench/FINDINGS.md)).
         Predicate {
             name: sym("src.Decl"),
             key: PredicateTy::Record(Arc::from([
-                (sym("line"), PredicateTy::Int),
                 (sym("module"), PredicateTy::Fact(MODULE)),
                 (sym("name"), PredicateTy::Str),
+                (sym("line"), PredicateTy::Int),
             ])),
             value: Some(PredicateTy::Str),
         },
@@ -116,10 +137,13 @@ pub fn schema() -> Schema {
         // exists for a reason about *keys* rather than about the code: a declaration's
         // key begins with its module, so `src.Decl {name = "encode"..}` reaches the name
         // only after the scan has opened, and the prefix can filter rows but not narrow
-        // to them. Keyed with `name` leading — which is also the encoding order, since
-        // field lists are sorted — the same prefix is a range, and `:plan` shows the
-        // difference as `seek[name = "encode".., to = _]` against a `scan` whose
-        // `where name starts with "encode"` is all it has.
+        // to them. Keyed with `name` leading, the same prefix is a range, and `:plan`
+        // shows the difference as `seek[name = "encode".., to = _]` against a `scan`
+        // whose `where name starts with "encode"` is all it has.
+        //
+        // A key can only lead with one field and `src.Decl`'s leads with its module, so
+        // choosing that order does not remove the need for this one — it is why both
+        // orders exist rather than why one of them is wrong.
         //
         // It is the same names twice over, which is what a *derived* predicate is: data
         // a query could compute, stored keyed the way the query wants to read it.
@@ -139,18 +163,26 @@ pub fn schema() -> Schema {
         // is in, which for most references is a different one — that being what a
         // reference is for. So the file is a key field of its own, and the row names
         // somewhere someone can go and look.
+        //
+        // **Declared `{to, file, at}`, because find-references is the question.** "Where
+        // is this used" is the second thing anyone asks a code index and the first one
+        // that has to be fast; it seeks only if the target leads. Alphabetical order led
+        // with `at.col`, so a lookup by target scanned every reference in the database —
+        // 4.9M rows for one declaration, 2.2 s, and unanswerable at all for a name many
+        // declarations share ([findings §11](../bench/FINDINGS.md)). The file comes
+        // second so "this declaration's uses in this file" narrows too.
         Predicate {
             name: sym("src.Ref"),
             key: PredicateTy::Record(Arc::from([
+                (sym("to"), PredicateTy::Fact(DECL)),
+                (sym("file"), PredicateTy::Fact(FILE)),
                 (
                     sym("at"),
                     PredicateTy::Record(Arc::from([
-                        (sym("col"), PredicateTy::Int),
                         (sym("line"), PredicateTy::Int),
+                        (sym("col"), PredicateTy::Int),
                     ])),
                 ),
-                (sym("file"), PredicateTy::Fact(FILE)),
-                (sym("to"), PredicateTy::Fact(DECL)),
             ])),
             value: None,
         },
@@ -374,38 +406,77 @@ mod tests {
         }
     }
 
-    /// **A record's fields are sorted by name, and that order is the encoding.**
+    /// **Every stored key, flat, in the order its bytes go down in.**
     ///
-    /// The convention is stated everywhere and checked nowhere, which was tolerable
-    /// while this file held six predicates written in one sitting. It holds twenty-two
-    /// now, and a field list that is one swap out of order encodes fine, stores fine,
-    /// and answers a different question — the seek it narrows on is whichever field
-    /// sorts first, so `{base, type}` typed the other way round is a predicate that
-    /// silently indexes the derived type instead of the base.
+    /// A nested record is spliced into its parent's key rather than framed, so this is
+    /// the physical key and `at.line` is a position in it exactly as `to` is. Read it as
+    /// the index design: a query narrows on a **leading run** of these fields and filters
+    /// on the rest, so the first name in each row is the question that predicate is fast
+    /// at, and everything after it is a tie-break.
+    ///
+    /// The build layer's four are alphabetical because they were written that way and
+    /// nothing has measured a reason to disagree — they are thousands of rows, not
+    /// millions. That is a different statement from the two that were changed, and it is
+    /// here so the next reader can tell a decision from an inheritance.
+    const KEY_ORDER: &[(&str, &[&str])] = &[
+        ("src.Module", &["file", "name"]),
+        ("src.Decl", &["module", "name", "line"]),
+        ("src.SearchByName", &["name", "to"]),
+        ("src.Ref", &["to", "file", "at.line", "at.col"]),
+        ("src.Import", &["from", "to"]),
+        ("src.Compilation", &["assembly", "framework", "project"]),
+        ("src.ProjectSource", &["file", "project"]),
+        ("src.ProjectRef", &["from", "to"]),
+        ("src.Package", &["name", "version"]),
+        ("src.PackageRef", &["package", "project"]),
+        ("src.Member", &["container", "member"]),
+        ("src.Extends", &["base", "type"]),
+        ("src.Implements", &["iface", "type"]),
+        ("src.Override", &["base", "member"]),
+        ("src.Param", &["decl", "index", "name"]),
+        ("src.TypeOf", &["decl"]),
+        ("src.Doc", &["decl"]),
+        ("src.Attribute", &["attribute", "target"]),
+        ("src.Line", &["file", "line"]),
+    ];
+
+    /// **A record's fields are stored in the order this file declares them.**
+    ///
+    /// A field list one swap out of order encodes fine, stores fine, and answers a
+    /// different question — a predicate narrows on its leading fields, so `{base, type}`
+    /// typed the other way round silently indexes the derived type instead of the base.
+    /// Nothing else in the tree would notice.
+    ///
+    /// **This used to assert the fields were *sorted*, and that guard was worse than it
+    /// looked.** It caught a swap only where the intended order happened to be
+    /// alphabetical, and everywhere else it enforced the accident: `src.Decl` led with a
+    /// line number and `src.Ref` with a column, which cost 56,274 rows examined per row
+    /// produced on an ordinary join and made find-references unanswerable
+    /// ([findings §2 and §11](../bench/FINDINGS.md)). A guard that pins the *intended*
+    /// order catches the same swap and cannot enforce an accident, because somebody has
+    /// to write the intention down.
     #[test]
-    fn every_record_lists_its_fields_in_sorted_order() {
+    fn every_record_lists_its_fields_in_the_intended_order() {
         let schema = schema();
 
-        fn walk(ty: &PredicateTy, schema: &Schema, name: &str) {
+        fn walk(ty: &PredicateTy, schema: &Schema, prefix: &str, into: &mut Vec<String>) {
             let PredicateTy::Record(fields) = ty else {
                 return;
             };
 
-            let resolved: Vec<&str> = fields
-                .iter()
-                .map(|(field, _)| schema.interner().resolve(*field).expect("a field name"))
-                .collect();
+            for (field, ty) in fields.iter() {
+                let name = schema.interner().resolve(*field).expect("a field name");
+                let path = if prefix.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{prefix}.{name}")
+                };
 
-            let mut sorted = resolved.clone();
-            sorted.sort_unstable();
-
-            assert_eq!(
-                resolved, sorted,
-                "`{name}`'s fields are out of order, which changes what it seeks on"
-            );
-
-            for (_, field) in fields.iter() {
-                walk(field, schema, name);
+                if matches!(ty, PredicateTy::Record(_)) {
+                    walk(ty, schema, &path, into);
+                } else {
+                    into.push(path);
+                }
             }
         }
 
@@ -413,11 +484,40 @@ mod tests {
             let predicate = schema.get(PredicateId(index as u32)).expect("in range");
             let name = predicate.name().expect("a name");
 
-            walk(&predicate.predicate().key, &schema, name);
+            let mut key = Vec::new();
+            walk(&predicate.predicate().key, &schema, "", &mut key);
 
-            if let Some(value) = predicate.predicate().value.as_ref() {
-                walk(value, &schema, name);
+            // A value side is not a key and never seeks, but a record in one would
+            // still be stored in declaration order — and there is none today, so this
+            // asserts that rather than leaving the next one unexamined.
+            assert!(
+                !matches!(predicate.predicate().value, Some(PredicateTy::Record(_))),
+                "`{name}` has a record value side, which needs a decision and an entry here"
+            );
+
+            let expected = KEY_ORDER.iter().find(|(p, _)| *p == name).map(|(_, k)| *k);
+
+            match expected {
+                Some(expected) => assert_eq!(
+                    key, expected,
+                    "`{name}`'s stored key is not the one KEY_ORDER declares, \
+                     which changes what it narrows on"
+                ),
+                None => assert!(
+                    key.is_empty(),
+                    "`{name}` has a record key and no entry in KEY_ORDER"
+                ),
             }
+        }
+
+        for (name, _) in KEY_ORDER {
+            assert!(
+                (0..schema.len()).any(|index| schema
+                    .get(PredicateId(index as u32))
+                    .and_then(|p| p.name())
+                    == Some(name)),
+                "KEY_ORDER names `{name}`, which is not in the schema"
+            );
         }
     }
 

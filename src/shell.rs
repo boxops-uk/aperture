@@ -850,11 +850,15 @@ fn print_plan(source: &str, schema: &Schema) {
 ///
 /// The last two are **negations**, and they are the query a code index is asked at
 /// review time: what is here that nothing uses. Both are a `Step::Test` — no
-/// register, no row of its own — and the pair shows the same sargeability the seek
-/// examples do, one loop deeper. `!src.Import {from = M}` narrows to
-/// `seek[from = r0#, to = _]`, because `from` leads that key; `!src.Ref {to = D}`
-/// cannot, `to` being last, so it scans and filters. Same shape of answer, and
-/// `:plan` says which one paid for it.
+/// register, no row of its own — and both narrow, one loop deeper:
+/// `!src.Import {from = M}` to `seek[from = r0#, to = _]` and `!src.Ref {to = D}` to
+/// `seek[to = r0#, file = _, at = _]`, because `from` and `to` lead their keys.
+///
+/// The second one did not, until the key was reordered. `src.Ref` was keyed
+/// `{at, file, to}` — the target last — so "what does nothing reference" read every
+/// reference in the database once per declaration, and `:plan` said `scan` where it
+/// now says `seek`. Same query, same rows, same data: what changed is the order the
+/// schema declares three fields in ([findings §11](../bench/FINDINGS.md)).
 ///
 /// The one before them is prefix search again, and the thing it shows is that **naming the
 /// answer costs nothing**. `F` is the file path, captured — ordinarily the thing that
@@ -1025,8 +1029,8 @@ fn scan_plan(
     }
 }
 
-/// Project a whole stored key: one field per declared key field, in declaration
-/// order — which is also encoding order, since field lists are sorted by name.
+/// Project a whole stored key: one field per declared key field, in declaration order —
+/// which *is* the encoding order, nothing having sorted it.
 fn key_projection(key_ty: &PredicateTy) -> Project {
     match key_ty {
         PredicateTy::Record(fields) => Project::Record(

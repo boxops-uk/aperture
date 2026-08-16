@@ -70,9 +70,9 @@ time, independently, because that is what the handshake fingerprint is for.
 |---|---|---|
 | `src.File` | a path, relative to `--root` | every syntax tree with a file behind it, minus `bin/` and `obj/` |
 | `src.Module` | `{file, name}` | the **namespace**, per file. A file declaring two namespaces is two modules; the C# analogue of a Python module is not the project, because a project spans namespaces and a namespace spans projects |
-| `src.Decl` | `{line, module, name}`, value = kind | every symbol with syntax of its own: types, methods, constructors, operators, properties, indexers, events, fields, enum members, delegates, local functions. The name is qualified by its containing *types* — `Store.Cursor.Next` — and the line is the identifier's, not the first attribute's |
+| `src.Decl` | `{module, name, line}`, value = kind | every symbol with syntax of its own: types, methods, constructors, operators, properties, indexers, events, fields, enum members, delegates, local functions. The name is qualified by its containing *types* — `Store.Cursor.Next` — and the line is the identifier's, not the first attribute's |
 | `src.SearchByName` | `{name, to}` | the same declaration keyed by its **short** name, which is what someone searching types |
-| `src.Ref` | `{at: {line, col}, file, to}` | every identifier that binds to a declaration this index holds |
+| `src.Ref` | `{to, file, at: {line, col}}` | every identifier that binds to a declaration this index holds |
 | `src.Import` | `{from, to}` | module → module, deduped, implied by where the references actually resolved |
 | `src.Line` | `{file, line}`, value = the text | every line of every file walked, blanks included |
 
@@ -181,7 +181,7 @@ What it still does not do, each for a reason:
   that resolved it and one that did not would be a same-key-different-value conflict for
   the first two, and two spellings of one key for the third.
 - **The extras are written once per declaration key.** Two symbols landing on one
-  (module, line, name) — overloads written on a single line — give the first one's kind,
+  (module, name, line) — overloads written on a single line — give the first one's kind,
   type, parameters and doc comment, and the run counts the collision.
 
 ## Two things that had to be got right
@@ -192,7 +192,7 @@ last build wrote and this one did not, and a design-time build writes nothing. P
 the default at a checkout empties every `bin` in it. It did that here, to this program's
 own output, while it was running out of it.
 
-**One declaration key, one kind.** A `src.Decl` key is (module, line, name) and its value
+**One declaration key, one kind.** A `src.Decl` key is (module, name, line) and its value
 is the kind, so two declarations agreeing on the key and differing on the kind are a
 same-key-different-value conflict — which the server rejects deterministically and by
 name (`ops-I5`), failing the stream carrying it. Right for a database, and the wrong way

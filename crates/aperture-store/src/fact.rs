@@ -9,12 +9,14 @@
 //!   two separate encodings, and only the schema says which predicate has a value at
 //!   all.
 //! - **A record's field order is its schema's, not its struct's.** The encoding order
-//!   is the order the *schema declares* the fields in — and schemas here list them
-//!   sorted by name ([chapter 6]), which a Rust struct has no reason to. So a
-//!   `struct Decl { module, name, line }` encoded field by field produces a key the
-//!   read path decodes as `(line, module, name)`: no error, just a fact nobody can
-//!   find. The positional encoder in [`tuple`](aperture_encoding::tuple) cannot catch that,
-//!   because a tuple has no field names to check.
+//!   is the order the *schema declares* the fields in ([chapter 6]), which a Rust
+//!   struct has no reason to match — and nothing sorts either of them, so there is no
+//!   normal form to fall back on. A struct whose fields read `(line, module, name)`
+//!   encoded field by field against a schema declaring `{module, name, line}` produces
+//!   a key the read path decodes as the wrong three values: no error, just a fact
+//!   nobody can find. The positional encoder in
+//!   [`tuple`](aperture_encoding::tuple) cannot catch that, because a tuple has no
+//!   field names to check.
 //! - **A key is flat and a value is not.** `encode_typed` is the obvious function to
 //!   reach for and is wrong for a key, which is its own silent-mismatch trap; see
 //!   [`encode_key`](aperture_encoding::tuple::encode_key).
@@ -527,11 +529,14 @@ mod tests {
     }
 
     /// **The encoding order is the order the schema *declares*, not alphabetical
-    /// order** — the schemas here happen to be sorted by name, and nothing in the
-    /// codec depends on it.
+    /// order** — the schemas in this crate happen to be sorted by name, and nothing in
+    /// the codec depends on it.
     ///
-    /// Worth pinning because the two are indistinguishable on every schema in the
-    /// repo, so a change that started sorting would pass the whole suite. This
+    /// It was worth pinning when the two were indistinguishable on every schema in the
+    /// repo, because a change that started sorting would have passed the whole suite.
+    /// They are distinguishable now — the built-in code index declares
+    /// `src.Decl {module, name, line}` on purpose — so this guard has a second job:
+    /// it is the statement that the reorder was legal in the first place. This
     /// predicate declares `z` before `a`, and if the encoder sorted, the *string*
     /// would lead and the ordering would go the other way.
     #[test]

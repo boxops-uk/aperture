@@ -76,8 +76,10 @@ const DEEP: PredicateId = PredicateId(11);
 
 /// The schema, hand-built.
 ///
-/// Field lists are sorted by name, as they are everywhere — a record's field order
-/// is part of its encoding ([chapter 6]).
+/// Field lists happen to be sorted by name here, which is this fixture's habit and not a
+/// rule — a record's field order is part of its encoding, and a schema's is whatever it
+/// declares ([chapter 6]). The built-in code index declares two of its keys otherwise, on
+/// purpose.
 ///
 /// [chapter 6]: ../../../docs/06-types-and-schema.md
 #[must_use]

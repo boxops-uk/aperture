@@ -4,11 +4,14 @@
 > asks for. One entry per thing measured: what was measured, the number, and what it costs
 > to act on.
 >
-> **The phase was scoped as measurement only, and two findings were taken out of that
-> scope** — both because leaving them would have made every later number a measurement of
-> a bug rather than of the system. Sealing now merges the storage it seals (§1), and a
-> connection dying mid-answer no longer strands the stream answering it (§10). Each carries
-> guard tests and is marked ✅ where it appears. Everything else here is measurement.
+> **The phase was scoped as measurement only, and three findings were taken out of that
+> scope** — because leaving them would have made every later number a measurement of a bug
+> rather than of the system, or would have frozen an accident into somebody's index.
+> Sealing now merges the storage it seals (§1), the two key orders that decided whether a
+> join seeks are declared rather than inherited from alphabetical order (§2, and the
+> find-references blocker in §11), and a connection dying mid-answer no longer strands the
+> stream answering it (§10). Each carries guard tests and is marked ✅ where it appears.
+> Everything else here is measurement.
 
 **The corpus.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree indexed by
 `clients/dotnet/Aperture.Indexer --syntax-only --jobs 8`: 32,710 files, **18,176,899
@@ -227,6 +230,20 @@ is served better by asserting the *intended* order per predicate than by asserti
 written, so this is a re-index rather than a migration — cheap now, at one index; not cheap
 later. Worth settling before [Phase 8](../PLAN.md)'s schema DSL fixes how a key is written
 down, since the DSL will have to say whether declaration order is load-bearing.
+
+### Fixed: the order is declared per predicate, and the guard says so  ✅
+
+`src.Decl` is `{module, name, line}` and `src.Ref` is `{to, file, at}`, with `at` itself
+`{line, col}`. The sorted-order test is replaced by `KEY_ORDER`, a table of every stored
+key as its **flat** field path list, asserted against the schema — so a swap still fails,
+and the guard can no longer enforce an accident. It also refuses a record value side,
+which nothing has yet and which would need the same decision.
+
+The claim that this is one line was optimistic by four files: the key order is stated
+independently by the C# indexer, the C# demo and the Rust golden test, and a `WireFact`'s
+key is **positional**, so every fact builder moved with the declaration. That the two
+clients then produced byte-identical blocks again, from schemas neither one shares, is the
+check that the reorder is consistent rather than merely compiling.
 
 **One stale comment made this harder to see, and may have caused it.** `src.SearchByName`
 exists, per its own comment, because *"a declaration's key begins with its module, so
@@ -726,6 +743,13 @@ This is finding 2 landing on the product's most valuable query. The fix is the s
 it is cheap **now**: declare `src.Ref`'s key `{to, file, at}` so the target leads. That is one
 line in `code_index.rs` plus a re-index — and it is a different, worse conversation once
 somebody's index is the one in production.
+
+**Done** — see finding 2's fix. `src.Ref` leads with its target, so the negation form of
+the same question (`!src.Ref {to = D}`, "what does nothing use") compiles to
+`seek[to = r0#, file = _, at = _]` where it read the whole predicate before. The number
+above is not re-measured: it needs a re-index of `dotnet/runtime`, which is hours and must
+not run while anything else is being measured. What is checked is the plan, which is where
+the 4.9M-row scan came from.
 
 ---
 

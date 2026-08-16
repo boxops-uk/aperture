@@ -176,8 +176,12 @@ one-write-funnel) are a **separate namespace** — always written `ops-Ix` — a
 - **Errors, not panics, on data paths.** Corrupt bytes surface as an `ApertureError` /
   `StoreCodecError` variant, never `unwrap`/`panic` (unwrap only where an invariant makes it
   impossible, with a comment).
-- **Record fields are sorted `[(Symbol, T)]` slices everywhere** (`Box<[…]>` owned,
-  `Arc<[…]>` shared) — never `HashMap`. Deterministic order is a codec requirement.
+- **Record fields are ordered `[(Symbol, T)]` slices everywhere** (`Box<[…]>` owned,
+  `Arc<[…]>` shared) — never `HashMap`. Deterministic order is a codec requirement. **Which
+  order differs by which record:** a query's fields are sorted by name at lowering; a
+  **schema's are in declaration order, and that is the physical key order** — it decides
+  what a query can seek on, so declaring a key alphabetically is a choice about the index,
+  not a formatting habit ([chapter 6](docs/06-types-and-schema.md), `bench/FINDINGS.md` §2).
 - **Ownership signals sharing:** `Box<[T]>` owned-once; `Arc` only at genuine sharing
   boundaries; `ByteView` clones are refcount bumps.
 - **Symbols interned; runtime is interner-free** (two-tier `SchemaInterner` + per-query

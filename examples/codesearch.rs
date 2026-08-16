@@ -52,12 +52,17 @@
 //!
 //! # What is deliberately missing
 //!
-//! **Find-references.** It is the second thing anyone wants from a code-search tool and it
-//! cannot be served: `src.Ref`'s key is `{at, file, to}`, so a lookup by `to` cannot seek
-//! and scans all 4,879,151 references — 2.21 s for a *single* declaration, multiplied by
-//! every declaration sharing the name. It is left out of the mix because including it would
-//! make this a benchmark of one unanswerable query; it is in `bench/FINDINGS.md` as the
-//! blocker it is.
+//! **Find-references**, and it is missing for a reason that has since been removed. It is
+//! the second thing anyone wants from a code-search tool, and when this mix was written it
+//! could not be served at all: `src.Ref` was keyed `{at, file, to}`, so a lookup by `to`
+//! could not seek and scanned all 4,879,151 references — 2.21 s for a *single* declaration,
+//! multiplied by every declaration sharing the name. Including it would have made this a
+//! benchmark of one unanswerable query.
+//!
+//! The key is `{to, file, at}` now (`bench/FINDINGS.md` §2), so the query compiles to a
+//! seek and belongs in this mix. Adding it needs a re-indexed corpus to measure against,
+//! which is hours of indexing and has not been done — so it is named here as the next
+//! thing this workload owes rather than quietly left out.
 
 use std::{
     path::PathBuf,
