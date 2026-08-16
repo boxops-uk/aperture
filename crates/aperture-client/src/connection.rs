@@ -122,6 +122,19 @@ pub struct Connection {
     /// Streams with work outstanding — what makes a bookmark from another connection,
     /// or one already finished, an error rather than a read that never returns.
     open: HashSet<u32>,
+    /// Ids whose stream ended **cleanly**, ready to be claimed again.
+    ///
+    /// A monotonic counter is what a client wants until it is long-lived: the server
+    /// keys a per-connection map by stream id, so ids that are never reused make that
+    /// map grow with the query count rather than with concurrency
+    /// (`bench/FINDINGS.md` §7). A pooled connection is exactly the shape that reaches
+    /// it, and reuse is the client's half of the fix.
+    ///
+    /// **Only clean ends come back here.** An id is recycled where a `COMPLETE` was
+    /// read and nothing is parked for it — anywhere the stream's fate is uncertain, the
+    /// id is retired instead, because reusing one the server might still be writing to
+    /// would splice two results together.
+    free: Vec<u32>,
 }
 
 impl Connection {
@@ -220,6 +233,7 @@ impl Connection {
             },
             next_stream: 1,
             parked: HashMap::new(),
+            free: Vec::new(),
             open: HashSet::new(),
         };
 
@@ -267,7 +281,17 @@ impl Connection {
         Ok(connection)
     }
 
+    /// How many distinct stream ids this connection has had to invent.
+    ///
+    /// Diagnostic, and the guard for id reuse: a connection that recycles the ids of
+    /// cleanly-ended streams stays at its high-water *concurrency* however many queries
+    /// it runs, where one that counts upwards grows with the query count and takes the
+    /// server's per-connection map with it (`bench/FINDINGS.md` §7).
     #[must_use]
+    pub fn stream_ids_issued(&self) -> u32 {
+        self.next_stream - 1
+    }
+
     pub fn hello(&self) -> &Hello {
         &self.hello
     }
@@ -328,7 +352,7 @@ impl Connection {
         self.send(FrameKind::COPY_DONE, stream, &[])?;
 
         let (kind, payload) = self.recv_on(stream)?;
-        self.open.remove(&stream.0);
+        self.release_stream(stream);
 
         if kind != kinds::COMPLETE {
             return Err(unexpected("a complete frame", kind));
@@ -418,7 +442,7 @@ impl Connection {
 
         if kind == kinds::COMPLETE {
             let (sent, _) = protocol::decode_complete(&payload)?;
-            self.open.remove(&rows.stream().0);
+            self.release_stream(rows.stream());
             rows.finish(sent)?;
             return Ok(None);
         }
@@ -509,7 +533,7 @@ impl Connection {
                 }
                 _ if kind == kinds::COMPLETE => {
                     let (sent, _) = protocol::decode_complete(&payload)?;
-                    self.open.remove(&rows.stream().0);
+                    self.release_stream(rows.stream());
                     rows.finish(sent)?;
                     return Ok(sent);
                 }
@@ -593,7 +617,7 @@ impl Connection {
         )?;
 
         let (kind, payload) = self.recv_on(stream)?;
-        self.open.remove(&stream.0);
+        self.release_stream(stream);
 
         if kind != kinds::CONTROL_REPLY {
             return Err(unexpected("a control reply", kind));
@@ -604,12 +628,36 @@ impl Connection {
 
     // ---- frames -------------------------------------------------------------
 
-    /// The next stream id, marked as having work outstanding.
+    /// A stream id, marked as having work outstanding.
+    ///
+    /// A recycled one first — see [`free`](Self::free) for why a long-lived connection
+    /// must not simply count upwards.
     fn claim_stream(&mut self) -> StreamId {
-        let stream = StreamId(self.next_stream);
-        self.next_stream += 1;
+        let stream = StreamId(match self.free.pop() {
+            Some(id) => id,
+            None => {
+                let id = self.next_stream;
+                self.next_stream += 1;
+                id
+            }
+        });
+
         self.open.insert(stream.0);
         stream
+    }
+
+    /// A stream that ended cleanly: no longer outstanding, and its id claimable again.
+    ///
+    /// The parked check is the guard. A queue with anything in it means a frame for
+    /// this id arrived that nobody read, so the id's story is not over and handing it
+    /// to the next query would deliver that frame to the wrong result.
+    fn release_stream(&mut self, stream: StreamId) {
+        self.open.remove(&stream.0);
+
+        if self.parked.get(&stream.0).is_none_or(VecDeque::is_empty) {
+            self.parked.remove(&stream.0);
+            self.free.push(stream.0);
+        }
     }
 
     fn check_open(&self, rows: &Rows) -> Result<(), ClientError> {

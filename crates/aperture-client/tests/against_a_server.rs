@@ -108,6 +108,8 @@ fn doc(path: &str, line: i64, name: &str, text: &str) -> WireFact {
 struct Serving {
     _dir: tempfile::TempDir,
     socket: PathBuf,
+    /// The registry the server is running, kept so a test can read its counters.
+    registry: Arc<Registry>,
 }
 
 impl Serving {
@@ -132,13 +134,19 @@ fn start() -> Serving {
         .expect("a database");
 
     let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");
+    let registry = Arc::new(registry);
     let listener = Listener::bind(&socket).expect("a socket");
 
+    let serving = Arc::clone(&registry);
     thread::spawn(move || {
-        let _ = listener.run_blocking(Arc::new(registry));
+        let _ = listener.run_blocking(serving);
     });
 
-    Serving { _dir: dir, socket }
+    Serving {
+        _dir: dir,
+        socket,
+        registry,
+    }
 }
 
 /// Write `count` files, so a result can be made as long as a test needs.
@@ -624,4 +632,111 @@ fn an_unprofiled_query_gets_no_profile_frame() {
     let mut rows = connection.query("F where src.File F").expect("it compiles");
     assert_eq!(connection.drain(&mut rows).expect("its rows").len(), 10);
     assert!(rows.profile().is_none());
+}
+
+/// **A connection that has answered a thousand queries holds no more than one that has
+/// answered one.**
+///
+/// The regression guard for `bench/FINDINGS.md` §7. A stream's task used to wait forever
+/// on a channel whose only `Sender` lived in a map with no removal path, so every query
+/// left a parked task behind: ~3.5 kB retained per query, for the life of the connection.
+/// A pooled connection is exactly the shape that reaches it, and a web tier is a pool by
+/// construction.
+///
+/// Two claims, and they are different halves of the same fix. The server's is that the
+/// task **ends** — `streams_live` is the gauge that was already counting them and that
+/// nothing was allowed to decrement. The client's is that it stops **inventing** ids, or
+/// the server's map grows with the query count even once every task in it is dead.
+///
+/// Polled rather than slept on: the task ends immediately once it may, so a fixed sleep
+/// would be either flaky or slow.
+#[test]
+fn a_long_lived_connection_does_not_accumulate_streams() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 4);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    const QUERIES: usize = 200;
+    for _ in 0..QUERIES {
+        let mut rows = connection.query("F where src.File F").expect("a query");
+        let all = connection.drain(&mut rows).expect("the rows");
+        assert_eq!(all.len(), 4, "the query is the same every time");
+    }
+
+    // The client's half: four concurrent streams were never open, so four ids were never
+    // needed. One is enough, and the writer above used one of its own before it closed.
+    assert!(
+        connection.stream_ids_issued() <= 2,
+        "the client invented {} stream ids for {QUERIES} sequential queries — it is not \
+         recycling them",
+        connection.stream_ids_issued()
+    );
+
+    // The server's half. The connection is still open, which is the whole point: this is
+    // not "they go when you hang up", it is "they go when the work is done".
+    let stats = Arc::clone(serving.registry.stats());
+    let settled = within(std::time::Duration::from_secs(5), || {
+        stats.streams_live() == 0
+    });
+
+    assert!(
+        settled,
+        "{} stream tasks are still live after {QUERIES} finished queries on an open \
+         connection",
+        stats.streams_live()
+    );
+
+    // The control: the gauge is capable of being non-zero, so a zero above is the tasks
+    // ending rather than the counter never having counted.
+    assert!(
+        stats.queries_completed() >= QUERIES as u64,
+        "the queries did not run"
+    );
+
+    // And the connection still works, which is what says the streams ended rather than
+    // broke.
+    let mut rows = connection.query("F where src.File F").expect("a query");
+    assert_eq!(connection.drain(&mut rows).expect("the rows").len(), 4);
+}
+
+/// A **write** stream spans frames by definition, and must not be ended between them.
+///
+/// The rule that ends a finished stream is "`handle` returned and this is not a write in
+/// progress". Getting that wrong in the other direction would end the stream at
+/// `OPEN_WRITE` and lose every block after it — which no other test here would notice,
+/// because they all write in one call.
+#[test]
+fn a_write_stream_survives_between_its_frames() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    // Two blocks on one stream, so the second arrives after `copy_data` has already
+    // returned once.
+    let first: Vec<WireFact> = (0..3).map(|n| file(&format!("a{n}.py"))).collect();
+    let second: Vec<WireFact> = (0..3).map(|n| file(&format!("b{n}.py"))).collect();
+
+    let written = connection
+        .write_blocks(&[(FILE, &first), (FILE, &second)])
+        .expect("both blocks are written");
+
+    assert_eq!(written.created, 6, "both blocks landed");
+
+    let mut rows = connection.query("F where src.File F").expect("a query");
+    assert_eq!(connection.drain(&mut rows).expect("the rows").len(), 6);
+}
+
+/// Wait for `f` to hold, or give up.
+fn within(limit: std::time::Duration, mut f: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if f() {
+            return true;
+        }
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    f()
 }

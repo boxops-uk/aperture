@@ -329,10 +329,28 @@ async fn read_loop<R: AsyncRead + Unpin>(
 ) -> Result<(), ServerError> {
     let mut streams: HashMap<u32, StreamHandle> = HashMap::new();
 
+    // **The map has to shed finished streams, or it is the leak on its own.** A stream's
+    // task now ends when its work does, which frees the task — but the entry naming it
+    // stays until something removes it, and a client that never reuses an id would leave
+    // one per query.
+    //
+    // Swept rather than signalled: a handle whose task has ended has a closed `Sender`,
+    // which is the fact already available without a second channel to carry it. The
+    // watermark is what keeps it amortised — a sweep costs one pass and then does not
+    // run again until the map has doubled, so a connection genuinely holding many live
+    // streams does not sweep on every frame.
+    const MIN_SWEEP_AT: usize = 32;
+    let mut sweep_at = MIN_SWEEP_AT;
+
     loop {
         let Some((header, payload)) = read_frame(reader).await? else {
             return Ok(());
         };
+
+        if streams.len() >= sweep_at {
+            streams.retain(|_, handle| !handle.inbound.is_closed());
+            sweep_at = streams.len().saturating_mul(2).max(MIN_SWEEP_AT);
+        }
 
         // Cancellation is handled *here* rather than in the stream, because a stream
         // busy inside a scan is exactly the one that cannot be listening.
@@ -442,6 +460,26 @@ impl StreamHandle {
 
                     // A stream-level fault ends the stream, not the connection. The
                     // reader starts a fresh task if the client uses the id again.
+                    return;
+                }
+
+                // **A stream that has finished its work ends here, and that is what
+                // stops a connection accumulating one parked task per query.**
+                //
+                // `handle` returning means the request is *done*: a query runs its
+                // whole result inside one call, chunk after chunk, and a control
+                // request answers in one. The single exception is a write stream
+                // between `OPEN_WRITE` and `COPY_DONE`, which spans frames by
+                // definition — and `copy_done` takes the `Writing`, so this same test
+                // ends the stream on the frame that closes it.
+                //
+                // Before this, the loop waited on a channel whose only `Sender` lived
+                // in a map with no removal path, so every task stayed parked for the
+                // life of the connection: `bench/FINDINGS.md` §7 measured ~3.5 kB
+                // retained per query, and a connection pool is exactly the shape that
+                // hits it. Ending here is what the gauge `streams_live` was already
+                // counting and nothing was yet allowed to decrement.
+                if task.writing.is_none() {
                     return;
                 }
             }

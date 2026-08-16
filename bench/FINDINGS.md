@@ -286,20 +286,51 @@ Two more from the same table:
 
 ---
 
-## 4. A fact's value cannot be read by a query
+## 4. ~~A fact's value cannot be read by a query~~ — **wrong, and withdrawn**
 
 Found while writing the catalogue, and it bounds what any of these numbers can cover.
 
-`src.Line` is `{ file, line } -> string` and holds 8,583,810 line texts — 133 MB, the
-largest predicate in the index. No focus query can read one. There is no `->` in the
-grammar, and every spelling tried is a parse error; a query binds *key fields* only, and a
-bare `X = src.Line _` binds the fact reference.
+> `src.Line` is `{ file, line } -> string` and holds 8,583,810 line texts — 133 MB, the
+> largest predicate in the index. No focus query can read one. There is no `->` in the
+> grammar, and every spelling tried is a parse error; a query binds *key fields* only,
+> and a bare `X = src.Line _` binds the fact reference.
+>
+> The immediate consequence for this phase: **F5 (a chunk has no byte budget) cannot be
+> exercised from the query side at all.** The widest row the catalogue can build is three
+> narrow fields off a nested key, which is nowhere near the 64 MiB `MAX_PAYLOAD` that F5
+> is about. F5 stays open, and needs either a value-reading query or a synthetic corpus
+> of very wide keys.
 
-The immediate consequence for this phase: **F5 (a chunk has no byte budget) cannot be
-exercised from the query side at all.** The widest row the catalogue can build is three
-narrow fields off a nested key, which is nowhere near the 64 MiB `MAX_PAYLOAD` that F5 is
-about. F5 stays open, and needs either a value-reading query or a synthetic corpus of very
-wide keys.
+**`.value` reads the value side, and always has.** It compiles to `Project::Value`, in
+process and over the wire:
+
+```
+focus> :plan L.value where L = src.Line _
+  r0 <- src.Line scan
+  head r0.value
+
+$ aperture query code '{n = D.name, k = D.value} where D = src.Decl _' --limit 5
+K      N
+def    key_of
+class  CodecError
+…
+```
+
+The corpus said so before this finding was written —
+`"X.value where X = test.Foo _"` is `Supported`, annotated *"`.value` is the fact's value
+side — Project::Value"*. What is deferred is **matching** on a value
+([I6](../docs/invariants.md#i6)), not reading one. The `->` spellings tried here are
+indeed parse errors; the mistake was generalising from them without trying the field
+access, and no plan was printed to check the conclusion against.
+
+Two consequences. **F5 is not blocked** — a query over `src.Line`'s value side builds
+rows as wide as the corpus has text, which is the wide-row generator this finding said
+did not exist. And serving a file's source text out of the database is a seek plus one
+value read per row, which is what makes a code-search file view possible at all
+([phase 11](../docs/phase-11-code-search.md)).
+
+*Kept rather than deleted, struck through: a findings file that quietly edits its
+mistakes is one nobody can calibrate against.*
 
 ---
 
