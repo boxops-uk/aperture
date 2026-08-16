@@ -46,6 +46,12 @@ pub enum Code {
     RejectRedeclaration,
     /// A name that resolves to nothing.
     RejectUnknownName,
+    /// A named type that expands into itself.
+    ///
+    /// Distinct from a *predicate* reference cycle, which is fine: a reference is an id
+    /// and may point anywhere, while a named type is substituted where it is used and a
+    /// cycle among those has no base case.
+    RejectTypeCycle,
 }
 
 impl Code {
@@ -61,6 +67,7 @@ impl Code {
         Code::RejectDiscriminantOnRecordField,
         Code::RejectRedeclaration,
         Code::RejectUnknownName,
+        Code::RejectTypeCycle,
     ];
 
     #[must_use]
@@ -76,6 +83,7 @@ impl Code {
             Code::RejectDiscriminantOnRecordField => "reject/discriminant-on-record-field",
             Code::RejectRedeclaration => "reject/redeclaration",
             Code::RejectUnknownName => "reject/unknown-name",
+            Code::RejectTypeCycle => "reject/type-cycle",
         }
     }
 

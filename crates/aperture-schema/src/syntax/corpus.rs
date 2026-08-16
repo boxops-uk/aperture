@@ -10,16 +10,17 @@
 //! Each entry carries the classification it should *end up* with, and the gate checks
 //! as much of that as the compiler can currently answer:
 //!
-//! | | at 8.2 (now) | at 8.3, when lowering lands |
-//! |---|---|---|
-//! | [`Verdict::Lowers`] | must parse | must lower with no diagnostics |
-//! | [`Verdict::Diagnosed`] | must **parse** | must draw exactly that code |
-//! | [`Verdict::SyntaxError`] | must not parse | unchanged |
+//! | | must |
+//! |---|---|
+//! | [`Verdict::Lowers`] | parse, and lower to a schema with no diagnostics |
+//! | [`Verdict::Diagnosed`] | **parse**, and then draw exactly that code |
+//! | [`Verdict::SyntaxError`] | not parse |
 //!
-//! So the deferred constructs are already pinned as *parsing* — which is the whole of
-//! permissive-early, and the half that is checkable before there is anything to defer
-//! them to. Writing the expected code down now is what stops 8.3 inventing a different
-//! one and calling it done.
+//! The middle row is the whole of permissive-early: a deferred construct is a thing the
+//! grammar accepts so that lowering can name it. A gate that only checked *some*
+//! diagnostic came out would pass for a compiler that reported the wrong one, which is
+//! exactly the drift a code exists to prevent — so the assertion is on the **set** of
+//! codes, and an entry that draws a second unexpected one fails too.
 
 use super::diag::Code;
 
@@ -61,22 +62,22 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "a record key, whose field order is the key order",
-        "schema src { predicate Module : { file : File, name : string } }",
+        "schema src { predicate File : string\n          predicate Module : { file : File, name : string } }",
         Verdict::Lowers,
     ),
     entry(
         "a value side",
-        "schema src { predicate Decl : { module : Module, name : string } -> string }",
+        "schema src { predicate Module : string\n          predicate Decl : { module : Module, name : string } -> string }",
         Verdict::Lowers,
     ),
     entry(
         "a reference to another namespace",
-        "schema a { predicate P : { d : src.Decl } }",
+        "schema src { predicate Decl : string }\n         schema a { predicate P : { d : src.Decl } }",
         Verdict::Lowers,
     ),
     entry(
         "a named type, which is sugar with no identity of its own",
-        "schema src { type Position = { line : int, col : int } }",
+        "schema src { type Position = { line : int, col : int }\n          predicate At : { where : Position } }",
         Verdict::Lowers,
     ),
     entry(
@@ -101,7 +102,7 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "a nested record inside a key",
-        "schema src { predicate Ref : { at : { line : int, col : int }, file : File } }",
+        "schema src { predicate File : string\n          predicate Ref : { at : { line : int, col : int }, file : File } }",
         Verdict::Lowers,
     ),
     // ---- deferred: parses now, refused by name ----------------------------------
@@ -157,6 +158,11 @@ pub const CORPUS: &[Entry] = &[
         Verdict::Diagnosed(Code::RejectRedeclaration),
     ),
     entry(
+        "a named type that expands into itself",
+        "schema src { type A = B\n type B = A\n predicate P : A }",
+        Verdict::Diagnosed(Code::RejectTypeCycle),
+    ),
+    entry(
         "a type that names nothing",
         "schema src { predicate P : Nowhere }",
         Verdict::Diagnosed(Code::RejectUnknownName),
@@ -186,13 +192,57 @@ pub const CORPUS: &[Entry] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{super::parse::parse, *};
+    use super::{
+        super::{lower::lower, parse::parse},
+        *,
+    };
 
-    /// **The gate**: every entry parses, or fails to, exactly as it says.
-    ///
-    /// The half of each verdict that is checkable before lowering exists — and the half
-    /// that matters most for permissive-early, since "it parses" is the claim that lets
-    /// a deferred construct be reported by name instead of by caret.
+    /// Every code a source draws, sorted and deduplicated.
+    fn codes(source: &str) -> Vec<String> {
+        let mut diags = vec![];
+
+        if let Some(cst) = parse(source, &mut diags) {
+            // The schema itself is not the question here — the diagnostics are.
+            let _ = lower(&cst, &mut diags);
+        }
+
+        let mut codes: Vec<String> = diags.into_iter().filter_map(|d| d.code).collect();
+        codes.sort();
+        codes.dedup();
+        codes
+    }
+
+    /// **The gate**: every entry comes to exactly what it says it does.
+    #[test]
+    fn every_entry_is_classified_as_the_table_says() {
+        for Entry {
+            about,
+            source,
+            verdict,
+        } in CORPUS
+        {
+            match verdict {
+                Verdict::Lowers => assert!(
+                    codes(source).is_empty(),
+                    "`{about}` should lower cleanly, and drew {:?}:\n  {source}",
+                    codes(source)
+                ),
+                Verdict::Diagnosed(code) => assert_eq!(
+                    codes(source),
+                    vec![code.as_str().to_owned()],
+                    "`{about}` should draw exactly `{}`:\n  {source}",
+                    code.as_str()
+                ),
+                // Its own gate below: a source that does not parse has no lowering to
+                // ask about, and the two claims fail for different reasons.
+                Verdict::SyntaxError => {}
+            }
+        }
+    }
+
+    /// The parse half, kept separate: "it parses" is the claim that lets a deferred
+    /// construct be reported by name instead of by caret, and it is worth failing on
+    /// its own rather than inside a diagnostic mismatch.
     #[test]
     fn every_entry_parses_as_classified() {
         for Entry {

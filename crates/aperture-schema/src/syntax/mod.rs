@@ -25,5 +25,6 @@
 pub mod corpus;
 pub mod diag;
 pub mod lexer;
+pub mod lower;
 pub mod parse;
 pub mod parser;
