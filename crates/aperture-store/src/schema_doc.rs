@@ -88,6 +88,15 @@ impl SchemaDoc {
         let predicates = (0..schema.len())
             .filter_map(|index| {
                 let id = PredicateId(index as u32);
+
+                // Virtual predicates are the server's, not the database's: nothing in
+                // this artifact holds one, so the copy embedded in it must not claim
+                // otherwise. It is the same rule the handshake fingerprint follows,
+                // and for the same reason.
+                if schema.is_virtual(id) {
+                    return None;
+                }
+
                 let predicate = schema.get(id)?;
 
                 Some(PredicateDoc {

@@ -672,6 +672,17 @@ pub fn provisional_fingerprint(schema: &aperture_schema::schema::Schema) -> u64 
             continue;
         };
 
+        // **A virtual predicate is not part of the schema two ends have to agree
+        // about.** It is answered by whoever runs the query rather than stored, so it
+        // is a property of the server, not of the database — a client that never heard
+        // of `aperture.db.List` is not a client with the wrong schema, and refusing it
+        // at the handshake would make every deployment choice a wire-compatibility
+        // event. It is also why the embedded schema copy leaves them out: nothing in
+        // the artifact holds one.
+        if schema.is_virtual(id) {
+            continue;
+        }
+
         // A predicate with no resolvable name still has to contribute *something*
         // distinct, or two of them would be indistinguishable in the hash.
         feed(&mut hash, predicate.name().unwrap_or("\u{0}?").as_bytes());

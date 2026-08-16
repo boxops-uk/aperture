@@ -55,6 +55,22 @@ use crate::{
 /// together would make a display choice into a protocol one.
 const PAGE: usize = 40;
 
+/// What `\l` runs.
+///
+/// Every column the design's listing names, and it is ordinary focus — a whole-row bind
+/// and six field reads, no different from anything a person types. `facts` and `bytes`
+/// read `-1` until a database is sealed, which is when they are counted.
+const LISTING: &str = "{name = D.name, status = D.status, facts = D.facts, \
+                       bytes = D.bytes, instance = D.instance} \
+                       where D = aperture.db.List _";
+
+/// The predicate the server answers and no client declares.
+const VIRTUAL: &str = "aperture.db.List";
+
+/// What `\d` says about it, since it cannot look it up.
+const VIRTUAL_NOTE: &str = "  aperture.db.List: {name, instance, status, facts, bytes, created} \
+(virtual — the server answers it; \\l is a query over it)";
+
 /// Whether the loop should keep going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
@@ -173,6 +189,17 @@ impl Repl {
 
             "d" => self.describe(argument, out)?,
 
+            // **`\l` is a query, and nothing here makes it a special case.** It is
+            // written out rather than hidden behind a control message precisely so that
+            // it can be edited: the text below is a starting point a person can paste,
+            // narrow with a `status =`, or page with `\more`, which is what
+            // [operations §5](../../docs/aperture-cli-design.md) means by putting
+            // enumeration through the normal machinery.
+            "l" | "list" => match self.query(LISTING, out) {
+                Ok(()) => {}
+                Err(error) => refused(error, out)?,
+            },
+
             "c" | "connect" => {
                 if argument.is_empty() {
                     writeln!(out, "  \\c needs a database name")?;
@@ -285,6 +312,18 @@ impl Repl {
             for index in 0..schema.len() {
                 writeln!(out, "{}", predicate_line(&schema, index))?;
             }
+            writeln!(out, "{VIRTUAL_NOTE}")?;
+            return Ok(());
+        }
+
+        // **The one predicate `\d` cannot look up, and saying so beats saying nothing.**
+        // `aperture.db.List` is answered by the server out of the store root, so it is
+        // deliberately absent from the schema a client declares — which is what lets a
+        // client that never heard of it connect at all. Without this, `\l` works and
+        // `\d aperture.` reports no such predicate, and the two together read like a
+        // bug rather than like a design.
+        if VIRTUAL.starts_with(name) || name == VIRTUAL {
+            writeln!(out, "{VIRTUAL_NOTE}")?;
             return Ok(());
         }
 
@@ -400,6 +439,7 @@ fn help(out: &mut impl Write) -> Result<(), CliError> {
         out,
         "  \\d [name]        the schema, one predicate, or a prefix"
     )?;
+    writeln!(out, "  \\l               the databases on this server")?;
     writeln!(out, "  \\c <db>          connect to another database")?;
     writeln!(out, "  \\timing          toggle how long a page took")?;
     writeln!(out, "  \\profile         toggle what a query examined")?;
@@ -620,6 +660,31 @@ mod tests {
         let after = typed(&mut repl, "F where src.File F");
         assert_eq!(paths(&after).len(), 3, "the old database still answers");
         assert_eq!(repl.database, "code", "and it is still the one named");
+    }
+
+    /// **`\l` is a query**, and the row that comes back is this server's own root.
+    ///
+    /// The point of the test is the last assertion: the same listing is *filterable*,
+    /// because it went through a plan rather than a bespoke frame. A `LIST` message
+    /// would have answered the first half and would have had to grow a where-clause of
+    /// its own for the second.
+    #[test]
+    fn the_listing_is_a_query_and_can_be_narrowed() {
+        let serving = serving(1);
+        let mut repl = repl(&serving);
+
+        let listed = typed(&mut repl, "\\l");
+        assert!(listed.contains("code"), "{listed}");
+        assert!(listed.contains("writable"), "{listed}");
+
+        let narrowed = typed(
+            &mut repl,
+            "N where aperture.db.List {name = N, status = \"complete\"}",
+        );
+        assert!(
+            narrowed.contains("0 row(s)"),
+            "nothing is sealed: {narrowed}"
+        );
     }
 
     /// `\q` is the one thing that stops the loop.

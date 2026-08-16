@@ -36,6 +36,16 @@ pub enum Command {
         #[arg(long, value_name = "PATH")]
         socket: Option<PathBuf>,
 
+        /// Also listen on TCP, at `host:port`.
+        ///
+        /// **Default-closed** (`ops-I10`): there is no config-file entry and no
+        /// environment variable for this, so a network port can only appear because
+        /// somebody typed one. It is an opt-in to *reachability*, not to access
+        /// control — the handshake accepts anonymous, so whoever passes this is taking
+        /// on the gateway in front of it.
+        #[arg(long, value_name = "HOST:PORT")]
+        listen_tcp: Option<String>,
+
         /// Written once the listener is accepting — a signal, not a race.
         #[arg(long, value_name = "PATH")]
         ready_file: Option<PathBuf>,

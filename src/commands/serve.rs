@@ -1,12 +1,17 @@
 //! `aperture serve`.
 //!
-//! Owns the store root (`ops-I1`) and serves every database under it. **Unix socket
-//! only** — `ops-I10` is default-closed, and a server that binds a network interface
-//! because nobody said not to is the failure that rule exists to prevent.
+//! Owns the store root (`ops-I1`) and serves every database under it.
+//!
+//! **A Unix socket, and TCP only when asked.** `ops-I10` is default-closed, and a server
+//! that binds a network interface because nobody said not to is the failure that rule
+//! exists to prevent — so `--listen-tcp` has no config-file entry and no environment
+//! variable, and a port can appear only because somebody typed one. It is an opt-in to
+//! reachability rather than to access control: the handshake accepts anonymous, and the
+//! gateway in front is the operator's.
 
 use std::{path::Path, sync::Arc};
 
-use aperture_server::{Registry, serve_unix};
+use aperture_server::{Registry, server::serve_on};
 use aperture_wire::protocol;
 
 use crate::{CliError, code_index, commands};
@@ -15,7 +20,12 @@ use crate::{CliError, code_index, commands};
 ///
 /// [`CliError::RootHeld`] if another server owns the root, or whatever binding or
 /// opening reports.
-pub fn run(root: &Path, socket: &Path, ready_file: Option<&Path>) -> Result<(), CliError> {
+pub fn run(
+    root: &Path,
+    socket: &Path,
+    listen: Option<&str>,
+    ready_file: Option<&Path>,
+) -> Result<(), CliError> {
     // **`--features console`, and a developer's build only.**
     //
     // Turns on `tokio-console`, which shows every task, where it is parked and how long
@@ -39,7 +49,12 @@ pub fn run(root: &Path, socket: &Path, ready_file: Option<&Path>) -> Result<(), 
     // anything is opened and released only when the server exits.
     let (catalog, _lock) = commands::exclusive(root, socket)?;
 
-    let schema = code_index::schema();
+    // **The served schema, not the stored one**: the same predicates a client declares,
+    // plus `aperture.db.List`, which this process can answer out of the root it owns.
+    // The fingerprint is unchanged by that — a virtual predicate is not part of what
+    // two ends have to agree about — so a client that has never heard of it still
+    // connects ([`code_index::with_catalogue`]).
+    let schema = code_index::with_catalogue();
     let fingerprint = protocol::provisional_fingerprint(&schema);
 
     // The registry takes the catalog with it, because owning the root and owning the
@@ -71,6 +86,13 @@ pub fn run(root: &Path, socket: &Path, ready_file: Option<&Path>) -> Result<(), 
         eprintln!("warning: {problem}");
     }
 
-    serve_unix(socket, ready_file, registry)?;
+    if let Some(address) = listen {
+        // Said out loud, every time, because `ops-I10`'s argument is that this never
+        // happens by accident — and a line in the startup banner is what makes an
+        // accident visible to whoever is looking at the logs.
+        println!("  tcp        {address}  (opted in — access control is the gateway's)");
+    }
+
+    serve_on(socket, listen, ready_file, registry)?;
     Ok(())
 }

@@ -108,6 +108,15 @@ impl Registry {
         ))
     }
 
+    /// The store root this server owns.
+    ///
+    /// Cheap to clone — it holds a path — and read rather than mutated: enumeration
+    /// needs no ownership at all, which is the whole of `ops-I7`.
+    #[must_use]
+    pub fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+
     /// This server's counters.
     ///
     /// Readable, and read by tests; not *reported* anywhere, which is

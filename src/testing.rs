@@ -36,13 +36,20 @@ pub fn serving(files: usize) -> Serving {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("aperture.sock");
 
-    let schema = code_index::schema();
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog
-        .create("code", &schema, provisional_fingerprint(&schema))
+        .create(
+            "code",
+            &code_index::schema(),
+            provisional_fingerprint(&code_index::schema()),
+        )
         .expect("a database");
 
-    let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");
+    // The **served** schema, as `serve` builds it: the stored predicates plus the
+    // catalogue. Created with the stored one, because a virtual predicate is not part
+    // of the artifact — which is the arrangement these tests exist to exercise.
+    let (registry, _listing) =
+        Registry::open(catalog, code_index::with_catalogue()).expect("a registry");
     let listener = Listener::bind(&socket).expect("a socket");
 
     thread::spawn(move || {
@@ -86,4 +93,68 @@ fn seed(serving: &Serving, files: usize) {
     writer
         .write(code_index::FILE, &facts)
         .expect("the facts are written");
+}
+
+/// A server holding one database, `code`, listening on **both** doors.
+///
+/// Returns the TCP address alongside the socket, so a test can ask the same question
+/// through each and compare the answers — which is the only claim `--listen-tcp` makes:
+/// the same protocol, over a different pipe.
+pub fn serving_on_tcp(files: usize) -> (Serving, String) {
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("aperture.sock");
+
+    let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
+    catalog
+        .create(
+            "code",
+            &code_index::schema(),
+            provisional_fingerprint(&code_index::schema()),
+        )
+        .expect("a database");
+
+    let (registry, _listing) =
+        Registry::open(catalog, code_index::with_catalogue()).expect("a registry");
+    let registry = Arc::new(registry);
+
+    // **A port the OS chose, taken and released.** `serve_on` takes an address rather
+    // than a bound listener, so there is no way to ask it what port 0 became; binding
+    // here first is how the test learns a free one. The window between drop and re-bind
+    // is a race in principle and has never been one in practice, and the alternative —
+    // a fixed port — fails whenever anything else on the machine wants it.
+    let address = {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        probe.local_addr().expect("its address").to_string()
+    };
+
+    let listener = aperture_server::Listener::bind(&socket).expect("a socket");
+
+    {
+        let address = address.clone();
+        let socket = socket.clone();
+        thread::spawn(move || {
+            drop(listener);
+            let _ = aperture_server::server::serve_on(&socket, Some(&address), None, registry);
+        });
+    }
+
+    // The listener is bound inside the thread, so wait for the door to open rather than
+    // racing it.
+    for _ in 0..200 {
+        if std::net::TcpStream::connect(&address).is_ok() {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let serving = Serving {
+        _dir: dir,
+        socket: socket.clone(),
+    };
+
+    if files > 0 {
+        seed(&serving, files);
+    }
+
+    (serving, address)
 }

@@ -78,6 +78,15 @@ pub enum CliError {
     )]
     RootHeld { root: PathBuf, socket: PathBuf },
 
+    /// An address that is not one — `aperture://` with nothing after it, or no
+    /// database on the end.
+    ///
+    /// Its own variant so the message can show the form rather than whatever the
+    /// resolver failed at: somebody who mistyped an address needs to be told the shape,
+    /// not told that a hostname did not resolve.
+    #[error("`{address}` is not an address — try aperture://host:port/database")]
+    Address { address: String },
+
     /// The terminal, rather than anything Aperture did.
     ///
     /// Its own variant because it is the one failure here that says nothing about the
@@ -110,10 +119,11 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
     match &cli.command {
         Command::Serve {
             socket: bind,
+            listen_tcp,
             ready_file,
         } => {
             let socket = config::socket_path(root, bind.clone());
-            commands::serve::run(root, &socket, ready_file.as_deref())
+            commands::serve::run(root, &socket, listen_tcp.as_deref(), ready_file.as_deref())
         }
 
         Command::Create { name } => {

@@ -248,7 +248,7 @@ Layered, .NET-style, using the figment pattern from the CLI groundwork
 | Key | Used by | Notes |
 |---|---|---|
 | `data_dir` | server, embedded | store root; also determines default socket path |
-| `listen` | server | **default-closed (ops-I10): Unix socket only.** TCP (`tcp = host:port`) is an explicit opt-in expected behind an authenticated gateway. Never binds a network interface by default. |
+| `listen` | server | **default-closed (ops-I10): Unix socket only.** TCP is an explicit opt-in expected behind an authenticated gateway, and is a **flag only** — `--listen-tcp host:port`, with no config-file or environment form, so that opening a port is always something somebody typed. Never binds a network interface by default. |
 | `cache_size` | server, embedded | fjall unified cache |
 | `max_connections` | server | |
 | `host` / `port` / `default_db` | client commands | assembled into an address when no explicit one given |
@@ -299,9 +299,12 @@ Run the server owning a store root.
 
 - Acquires exclusive ownership of `data_dir` (ops-I1): refuse to start if another server holds the
   root (detect via lock); create the Unix socket at the derived path. **Binds the socket only by
-  default (ops-I10);** TCP is an explicit opt-in (`--listen-tcp host:port` / `listen.tcp` config)
-  and the operator is responsible for putting it behind an authenticated gateway. Never binds a
-  network interface implicitly.
+  default (ops-I10);** TCP is an explicit opt-in (`--listen-tcp host:port`) and the operator is
+  responsible for putting it behind an authenticated gateway. Never binds a network interface
+  implicitly. **Built**, both halves: the flag has *no* config-file entry and no environment
+  variable, deliberately, so a port can only appear because somebody typed one — and the client
+  grew a `Transport` enum plus §2's `aperture://host:port/db` form, since a door nothing here
+  could knock on would be a door nothing here could test.
 - No authn/authz in the server (ops-I10): the handshake accepts the reserved credential slot as
   anonymous. Access control is entirely the transport's job (socket permissions, or the gateway
   in front of opted-in TCP).
@@ -454,6 +457,17 @@ Interactive psql-like REPL.
   fast-follow convenience, same executor library.)
 - Meta-commands mirroring psql: `\l` (list — issues `aperture.db.List`), `\d [pred]`
   (describe DB / predicate), `\c <db>` (reconnect), `\timing`, `\q`. Readline editing + history.
+- **Built, and `aperture.db.List` is answered at the `FactStore` seam** rather than by a new
+  kind of plan step. `Catalogued` wraps the store, answers the catalogue's keyspace from a
+  listing encoded through `fact::encode` — `predicate_id ++ key`, sorted, byte for byte what a
+  real scan produces — and delegates every other predicate to fjall. The executor is generic
+  over `FactStore`, so a listing seeks, joins, filters, pages and profiles exactly as stored
+  facts do, and the plan IR, the resume cursor and `enumerate` all learned nothing. Virtuality
+  is a property of the **server**, not the database: skipped by the handshake fingerprint,
+  skipped by the embedded schema copy, and given no keyspaces — which is why a client that
+  never heard of it still connects, and why no artifact claims to hold a kind of fact nothing
+  can write. The cost, stated: `:plan` shows a scan of a predicate id and says nothing about
+  where its rows come from.
 - Multiplexing means a long-running query doesn't block issuing another (`\cancel <n>` or
   Ctrl-C cancels the active stream in-band).
 - **`\more` — hold the cursor and resume it. This is the highest-value item on the page, by a
@@ -721,7 +735,8 @@ dedups against it. What a transaction would prevent here is a wasted row, not a 
 | | |
 |---|---|
 | **built** | the frame layer; the handshake, including the schema-fingerprint check and `ops-I2` at establishment; write streams (open → blocks → done → counts); query streams (descriptor → chunked rows → complete); in-band per-stream cancellation; a reader task per connection and one fair writer over bounded per-stream queues; control frames for `create`/`finish`/`remove`; stream-level failure that leaves the connection usable |
-| **deferred, named in §5** | per-stream flow-control windows; TCP (`ops-I10` default-closed) |
+| **deferred, named in §5** | per-stream flow-control windows |
+| **opt-in** | TCP (`ops-I10` stays default-closed; `--listen-tcp` is the only way to open one) |
 
 Three worth being precise about, because each is easy to mistake for something it is not:
 

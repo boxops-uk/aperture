@@ -8,7 +8,7 @@ use lasso::{Rodeo, RodeoReader, Spur};
 /// there is no invariant here to protect: an id *is* a position, so building one
 /// from an index is the ordinary thing to do. The check that matters — that the id
 /// fits the fact-id tag — belongs where the tag is composed, and lives there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PredicateId(pub u32);
 
 pub const PREDICATE_ID_SIZE: usize = std::mem::size_of::<u32>();
@@ -177,6 +177,16 @@ pub struct Schema {
     /// pattern in a query, and scanning every predicate in the schema for each one
     /// is the wrong shape for something built once and then queried repeatedly.
     by_name: Arc<BTreeMap<Spur, PredicateId>>,
+    /// Which predicates are **answered rather than stored** — see
+    /// [`is_virtual`](Schema::is_virtual).
+    ///
+    /// A sorted `Box<[…]>` rather than a flag on [`Predicate`], and that is a
+    /// deliberate trade rather than laziness: virtuality is a property of a
+    /// *deployment* — this server can answer its own catalogue — while a `Predicate`
+    /// is the type, which is what gets embedded in a database, fingerprinted, and
+    /// stated independently by every client. Putting it here keeps it out of all
+    /// three.
+    virtuals: Arc<[PredicateId]>,
 }
 
 impl Schema {
@@ -196,7 +206,39 @@ impl Schema {
             interner: SchemaInterner::new(reader),
             predicates,
             by_name: Arc::new(by_name),
+            virtuals: Arc::from(Vec::new()),
         }
+    }
+
+    /// Mark predicates as **virtual**: declared like any other, and answered by
+    /// whoever is running the query rather than read from a keyspace.
+    ///
+    /// Opt-in and additive, so a schema that says nothing has nothing virtual — which
+    /// is every schema in the tests and every one a client states.
+    #[must_use]
+    pub fn with_virtual(mut self, ids: impl IntoIterator<Item = PredicateId>) -> Schema {
+        let mut virtuals: Vec<PredicateId> = ids.into_iter().collect();
+        virtuals.sort_unstable();
+        virtuals.dedup();
+        self.virtuals = Arc::from(virtuals);
+        self
+    }
+
+    /// Whether this predicate is answered rather than stored.
+    ///
+    /// **What the answer changes, everywhere it is asked.** A virtual predicate has no
+    /// keyspaces, so `create` does not make it any and the identity walk does not read
+    /// it — which also keeps it out of `ops-I4`'s content hash, correctly: it is not
+    /// content, it is a view of the server that answered.
+    #[must_use]
+    pub fn is_virtual(&self, id: PredicateId) -> bool {
+        self.virtuals.binary_search(&id).is_ok()
+    }
+
+    /// Every virtual predicate, in id order.
+    #[must_use]
+    pub fn virtuals(&self) -> &[PredicateId] {
+        &self.virtuals
     }
 
     pub fn interner(&self) -> &SchemaInterner {

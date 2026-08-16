@@ -16,6 +16,9 @@ use aperture_client::{ClientError, Connection, Mode};
 
 use crate::{CliError, cli::RowFormat, code_index, rows::Sink};
 
+/// §2's remote address form: `aperture://host:port/database`.
+pub(crate) const ADDRESS_SCHEME: &str = "aperture://";
+
 /// Why a query stopped before the server said it was done.
 ///
 /// One enum rather than three flags, because the three are mutually exclusive and the
@@ -31,6 +34,7 @@ pub enum Stopped {
 }
 
 /// What a query came to.
+#[derive(Debug)]
 pub struct Summary {
     pub rows: u64,
     pub elapsed: std::time::Duration,
@@ -159,16 +163,40 @@ pub fn render_profile(profile: &aperture_client::QueryProfile, rows: u64) -> Str
 }
 
 /// Connect, turning "nothing is listening" into the error §2 asks for.
+///
+/// **§2's address resolution for readers, stated once.** A bare name means the local
+/// server on the derived socket; `aperture://host:port/db` means that server, over TCP.
+/// Both `query` and `shell` come through here, so neither can invent its own rule — and
+/// there is still no silent fallback to opening a directory, because a server may be
+/// holding it (`ops-I1`).
 pub(crate) fn connect(socket: &Path, database: &str, mode: Mode) -> Result<Connection, CliError> {
     use std::io::ErrorKind;
 
-    match Connection::connect(
-        socket,
-        database,
-        Arc::new(code_index::schema()),
-        mode,
-        false,
-    ) {
+    let opened = match database.strip_prefix(ADDRESS_SCHEME) {
+        Some(rest) => {
+            let (authority, name) = rest.split_once('/').ok_or_else(|| CliError::Address {
+                address: database.to_owned(),
+            })?;
+
+            if authority.is_empty() || name.is_empty() {
+                return Err(CliError::Address {
+                    address: database.to_owned(),
+                });
+            }
+
+            Connection::connect_tcp(authority, name, Arc::new(code_index::schema()), mode, false)
+        }
+
+        None => Connection::connect(
+            socket,
+            database,
+            Arc::new(code_index::schema()),
+            mode,
+            false,
+        ),
+    };
+
+    match opened {
         Ok(connection) => Ok(connection),
 
         Err(ClientError::Io(error))
@@ -299,6 +327,14 @@ mod tests {
 
     /// A stop of any kind means no profile, because the tally would describe a
     /// different query than the one asked.
+    ///
+    /// **The query is a three-way cross join, and that is what makes this
+    /// deterministic.** The first version asked for a plain scan of 600 files and was
+    /// racy under a loaded machine: a cancel is only *observed* if it reaches the
+    /// server's reader before the query finishes, and 600 rows can finish first — after
+    /// which a profile is correct and the assertion below is simply wrong. 600³ is
+    /// 216 million rows, so completion is not a thing that can happen while a test
+    /// waits, and the cancel wins by construction rather than by luck.
     #[test]
     fn a_cancelled_query_reports_no_profile() {
         let serving = serving(FILES);
@@ -307,7 +343,7 @@ mod tests {
         let summary = run(
             &serving.socket,
             "code",
-            "F where src.File F",
+            "X where src.File X; src.File _; src.File _",
             RowFormat::Count,
             Limits {
                 rows: Some(5),
@@ -319,6 +355,7 @@ mod tests {
         .expect("the query runs");
 
         assert_eq!(summary.stopped, Stopped::Limit);
+        assert_eq!(summary.rows, 5, "it stopped where it was told to");
         assert!(
             summary.profile.is_none(),
             "a cancelled tally is not this query's"
@@ -338,5 +375,190 @@ mod tests {
         .expect("the query runs");
 
         assert!(whole.profile.is_some(), "an uncancelled one does");
+    }
+}
+
+#[cfg(test)]
+mod catalogue {
+    use std::sync::atomic::AtomicBool;
+
+    use super::{Limits, Stopped, run};
+    use crate::{cli::RowFormat, testing::serving};
+
+    /// Run a query against the seeded server and capture what it printed.
+    ///
+    /// Through the real command, because what is being tested is that a virtual
+    /// predicate is *ordinary*: the same connect, the same compile on the server, the
+    /// same DESC and DATA_ROW frames, the same renderer.
+    fn ask(serving: &crate::testing::Serving, query: &str) -> (super::Summary, String) {
+        // `run` writes rows to stdout, which a test cannot capture per-thread — so the
+        // count is what is asserted on, and the shell's own tests cover the rendering.
+        let quiet = AtomicBool::new(false);
+        let summary = run(
+            &serving.socket,
+            "code",
+            query,
+            RowFormat::Count,
+            Limits::default(),
+            false,
+            &quiet,
+        )
+        .expect("the query runs");
+
+        (summary, query.to_owned())
+    }
+
+    /// **The catalogue answers as a predicate, not as a special case.**
+    ///
+    /// One database exists, so one row comes back — over the ordinary query path, with
+    /// no control message anywhere in it.
+    #[test]
+    fn the_catalogue_is_queryable() {
+        let serving = serving(0);
+
+        let (summary, _) = ask(&serving, "N where aperture.db.List {name = N}");
+
+        assert_eq!(summary.rows, 1, "the one database this server holds");
+        assert_eq!(summary.stopped, Stopped::No);
+    }
+
+    /// **The point of putting it behind the store seam**: it filters, and the filter is
+    /// the plan's rather than the client's.
+    ///
+    /// `writable` matches and `complete` does not, which is what says the row's own
+    /// bytes were read and compared rather than a listing being handed over whole.
+    #[test]
+    fn the_catalogue_filters_like_any_other_predicate() {
+        let serving = serving(0);
+
+        let (writable, _) = ask(
+            &serving,
+            "N where aperture.db.List {name = N, status = \"writable\"}",
+        );
+        assert_eq!(writable.rows, 1, "created, and not yet sealed");
+
+        let (complete, _) = ask(
+            &serving,
+            "N where aperture.db.List {name = N, status = \"complete\"}",
+        );
+        assert_eq!(complete.rows, 0, "nothing has been sealed");
+    }
+
+    /// A name that leads the key **seeks**, and the profile is what says so.
+    ///
+    /// This is the claim a bespoke `LIST` frame could not make: the listing is read
+    /// through a plan, so narrowing it costs what narrowing a keyspace costs, and
+    /// `--profile` reports it in the same table as everything else.
+    #[test]
+    fn a_lookup_by_name_narrows_rather_than_scanning() {
+        let serving = serving(0);
+        let quiet = AtomicBool::new(false);
+
+        let summary = run(
+            &serving.socket,
+            "code",
+            "I where aperture.db.List {name = \"code\", instance = I}",
+            RowFormat::Count,
+            Limits::default(),
+            true,
+            &quiet,
+        )
+        .expect("the query runs");
+
+        assert_eq!(summary.rows, 1);
+
+        let profile = summary
+            .profile
+            .expect("a profile, the query having finished");
+        assert!(
+            profile.steps.iter().any(|step| !step.full_scan),
+            "a leading-field lookup should not be a full scan: {:?}",
+            profile.steps
+        );
+    }
+
+    /// A query that never mentions the catalogue does not pay for one.
+    ///
+    /// Not a performance nicety: building it walks the store root and reads a sidecar
+    /// per database, and doing that on every query about `src.File` would make every
+    /// read cost a directory listing. The assertion is indirect — the query answers —
+    /// but the guard it protects is the `reads` check, and deleting that check makes
+    /// this test slower rather than red, so the comment is the guard's real home.
+    #[test]
+    fn an_ordinary_query_still_answers_with_the_catalogue_declared() {
+        let serving = serving(4);
+
+        let (summary, _) = ask(&serving, "F where src.File F");
+
+        assert_eq!(summary.rows, 4);
+    }
+}
+
+#[cfg(test)]
+mod over_tcp {
+    use std::sync::atomic::AtomicBool;
+
+    use super::{Limits, Stopped, run};
+    use crate::{CliError, cli::RowFormat, testing::serving_on_tcp};
+
+    /// **The same protocol, over a different pipe** — which is the whole claim
+    /// `--listen-tcp` makes, and the reason the client is one enum rather than a second
+    /// implementation.
+    ///
+    /// Asked through both doors of one server, so a difference would be the transport's
+    /// and could be nothing else.
+    #[test]
+    fn the_same_question_answers_the_same_over_either_door() {
+        let (serving, address) = serving_on_tcp(9);
+        let quiet = AtomicBool::new(false);
+
+        let ask = |name: &str| {
+            run(
+                &serving.socket,
+                name,
+                "F where src.File F",
+                RowFormat::Count,
+                Limits::default(),
+                false,
+                &quiet,
+            )
+            .expect("the query runs")
+        };
+
+        let unix = ask("code");
+        let tcp = ask(&format!("aperture://{address}/code"));
+
+        assert_eq!(unix.rows, 9);
+        assert_eq!(
+            tcp.rows, unix.rows,
+            "the transport is not part of the answer"
+        );
+        assert_eq!(tcp.stopped, Stopped::No);
+    }
+
+    /// An address that is not one is refused by shape, not by whatever failed to
+    /// resolve.
+    #[test]
+    fn a_malformed_address_says_what_an_address_looks_like() {
+        let (serving, _address) = serving_on_tcp(0);
+        let quiet = AtomicBool::new(false);
+
+        for bad in ["aperture://", "aperture://host:1234", "aperture:///code"] {
+            let error = run(
+                &serving.socket,
+                bad,
+                "F where src.File F",
+                RowFormat::Count,
+                Limits::default(),
+                false,
+                &quiet,
+            )
+            .expect_err("it cannot connect to that");
+
+            assert!(
+                matches!(error, CliError::Address { .. }),
+                "`{bad}` should be refused as an address: {error}"
+            );
+        }
     }
 }

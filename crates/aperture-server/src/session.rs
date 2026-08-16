@@ -69,6 +69,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     blocking,
+    catalogue::{self, Catalogue, Catalogued},
     error::ServerError,
     outbound::{Outbound, run as outbound_run},
     registry::Registry,
@@ -640,9 +641,10 @@ impl StreamTask {
             let stats = Arc::clone(stats);
             let database = Arc::clone(&database);
             let source = source.clone();
+            let catalog = self.session.registry.catalog().clone();
             blocking::run(move || {
                 stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
-                prepare(&database, &source)
+                prepare(&database, &catalog, &source)
             })
             .await?
         };
@@ -671,6 +673,12 @@ impl StreamTask {
             let resume = cursor.take();
             let mut counted = std::mem::take(&mut profile);
 
+            // The **same** listing every chunk, which is what makes a virtual predicate
+            // behave like a snapshot: cloning the `Arc` shares the rows rather than
+            // re-reading the store root, so a database created between two pages is
+            // invisible to the result in flight.
+            let listing = prepared.catalogue.clone();
+
             let chunk = {
                 // Timed from *here* rather than inside: what this measures is how long
                 // the hop waited before the pool had room for it, which is the only
@@ -679,7 +687,15 @@ impl StreamTask {
                 let stats = Arc::clone(stats);
                 blocking::run(move || {
                     stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
-                    let chunk = run_chunk(&database, &plan, &shape, resume, &token, &mut counted)?;
+                    let chunk = run_chunk(
+                        &database,
+                        listing.as_ref(),
+                        &plan,
+                        &shape,
+                        resume,
+                        &token,
+                        &mut counted,
+                    )?;
                     Ok((chunk, counted))
                 })
                 .await?
@@ -841,6 +857,14 @@ struct Prepared {
     descriptor: Vec<u8>,
     plan: Plan,
     shape: RowShape,
+    /// The listing this query reads, if it reads one.
+    ///
+    /// **Materialised once, here, and shared by every chunk** — which is what makes a
+    /// virtual predicate behave like a snapshot: a database created between two pages
+    /// of `\more` is invisible to the result in flight, exactly as a write to a
+    /// keyspace is. `None` for every query that does not name it, which is nearly all
+    /// of them, because building it walks the store root.
+    catalogue: Option<Arc<Catalogue>>,
 }
 
 /// The type rows are encoded against, and the interner that resolves its names.
@@ -860,7 +884,11 @@ struct Chunk {
 }
 
 /// Compile, and work out what the rows will look like. No execution.
-fn prepare(database: &Database, source: &str) -> Result<Prepared, ServerError> {
+fn prepare(
+    database: &Database,
+    catalog: &aperture_store::catalog::Catalog,
+    source: &str,
+) -> Result<Prepared, ServerError> {
     let schema = &database.schema;
 
     let mut compilation = Compilation::new(source, schema);
@@ -893,6 +921,22 @@ fn prepare(database: &Database, source: &str) -> Result<Prepared, ServerError> {
     let mut interner = compilation.into_interner();
     let ty = desc.to_ty(&mut interner);
 
+    // **Only if the query asks for it.** A plan names its predicates, so the cheap
+    // question is answered before the expensive work: building the listing walks the
+    // store root and reads a sidecar per database, which is `ops-I7` doing exactly what
+    // it is for and still far too much to do on every query about `src.File`.
+    let catalogue = match database
+        .schema
+        .find_position(catalogue::PREDICATE)
+        .map(|(id, _)| id)
+    {
+        Some(id) if catalogue::reads(&plan, id) => {
+            let listing = catalog.list()?;
+            Catalogue::materialise(&database.schema, &listing)?.map(Arc::new)
+        }
+        _ => None,
+    };
+
     Ok(Prepared {
         descriptor,
         plan,
@@ -900,11 +944,49 @@ fn prepare(database: &Database, source: &str) -> Result<Prepared, ServerError> {
             ty,
             interner: Arc::new(interner),
         },
+        catalogue,
     })
 }
 
 /// Run at most [`CHUNK_ROWS`] rows, from the start or from `resume`.
 fn run_chunk(
+    database: &Database,
+    catalogue: Option<&Arc<Catalogue>>,
+    plan: &Plan,
+    shape: &RowShape,
+    resume: Option<Cursor>,
+    cancel: &CancellationToken,
+    profile: &mut Profile,
+) -> Result<Chunk, ServerError> {
+    // **The one place a virtual predicate is visible**, and it is a *store*, not a plan
+    // and not a step: `Catalogued` answers the catalogue's keyspace from memory and
+    // delegates every other to fjall. The executor is generic over `FactStore`, so
+    // `over` below is running the same code either way — which is the whole reason a
+    // listing can be seeked into, joined against, paged and profiled without the
+    // machine learning anything (see [`catalogue`](crate::catalogue)).
+    //
+    // Two calls rather than one boxed store, because `FactStore::Scan` is an associated
+    // type: a `dyn FactStore` would have to erase the scan too, which costs an
+    // allocation and a virtual call **per row** on the hot path, to save one line here.
+    let store = database.db.reader();
+
+    match catalogue {
+        Some(catalogue) => over(
+            Catalogued::new(store, Arc::clone(catalogue)),
+            database,
+            plan,
+            shape,
+            resume,
+            cancel,
+            profile,
+        ),
+        None => over(store, database, plan, shape, resume, cancel, profile),
+    }
+}
+
+/// [`run_chunk`], once the store is known.
+fn over<S: aperture_store::fact_store::FactStore>(
+    store: S,
     database: &Database,
     plan: &Plan,
     shape: &RowShape,
@@ -912,8 +994,6 @@ fn run_chunk(
     cancel: &CancellationToken,
     profile: &mut Profile,
 ) -> Result<Chunk, ServerError> {
-    let store = database.db.reader();
-
     let executor = match resume {
         Some(cursor) => Executor::resume(store, plan.clone(), cursor),
         None => Ok(Executor::new(store, plan.clone())),

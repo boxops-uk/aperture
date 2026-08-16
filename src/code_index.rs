@@ -377,6 +377,102 @@ pub fn schema() -> Schema {
     Schema::new(rodeo.into_reader(), Arc::from(predicates))
 }
 
+/// The id `aperture.db.List` takes when [`with_catalogue`] appends it.
+///
+/// One past the stored schema, because appending is the only safe edit and a virtual
+/// predicate is no exception: an id is a position, and inserting one would renumber
+/// every `FactId` already written.
+pub const CATALOGUE: PredicateId = PredicateId(22);
+
+/// The schema a **server** answers queries against: the stored one, plus the catalogue.
+///
+/// **Virtual predicates belong to the server, not to the database**, and everything
+/// about how this is put together follows from that one sentence. `aperture.db.List` is
+/// not in [`schema`], so it is not in the handshake fingerprint, not in the copy
+/// embedded at create, and not a pair of keyspaces in any artifact — which is why a
+/// client that has never heard of it still connects, and why the .NET clients did not
+/// have to be told. What it *is* is a predicate the thing running the query can answer
+/// out of what it knows, which here is the registry.
+///
+/// [operations §5](../../docs/aperture-cli-design.md) asks for exactly this and says why
+/// it is not a control message: enumeration through the query machinery means `\l` is a
+/// query, with a plan, residuals and a profile, rather than a second way of asking
+/// things that has to grow its own filtering the first time somebody wants some.
+#[must_use]
+pub fn with_catalogue() -> Schema {
+    let mut rodeo = Rodeo::new();
+    let mut sym = |name: &str| rodeo.get_or_intern(name);
+
+    // Restated rather than extended, because `Schema` owns its interner: the stored
+    // schema's `Spur`s are minted in *its* reader, and a predicate carrying one of
+    // those into a different reader resolves to whatever happens to sit at that index.
+    // That is the same two-tier trap 9d-ii's row-matching bug came from.
+    let stored = schema();
+    let mut predicates: Vec<Predicate> = (0..stored.len())
+        .filter_map(|index| {
+            let predicate = stored.get(PredicateId(index as u32))?;
+            Some(Predicate {
+                name: sym(predicate.name()?),
+                key: retype(predicate.key().ty, &stored, &mut sym),
+                value: predicate
+                    .value()
+                    .map(|value| retype(value.ty, &stored, &mut sym)),
+            })
+        })
+        .collect();
+
+    assert_eq!(
+        predicates.len(),
+        stored.len(),
+        "every stored predicate has to survive being restated, or the ids move"
+    );
+
+    // **Everything is a key field, and no value side.** A value cannot be matched on
+    // ([I6](../../docs/invariants.md#i6)), and a listing exists to be filtered — by
+    // name, by status, by how big something got. There is no storage here for the
+    // distinction to buy anything back: a virtual predicate's key is simply the tuple
+    // a query can ask about, and the order is the order a lookup narrows in.
+    predicates.push(Predicate {
+        name: sym("aperture.db.List"),
+        key: PredicateTy::Record(Arc::from([
+            (sym("name"), PredicateTy::Str),
+            (sym("instance"), PredicateTy::Str),
+            (sym("status"), PredicateTy::Str),
+            (sym("facts"), PredicateTy::Int),
+            (sym("bytes"), PredicateTy::Int),
+            (sym("created"), PredicateTy::Str),
+        ])),
+        value: None,
+    });
+
+    Schema::new(rodeo.into_reader(), Arc::from(predicates)).with_virtual([CATALOGUE])
+}
+
+/// Copy a type into another schema's interner, resolving every name through the old one.
+fn retype(
+    ty: &PredicateTy,
+    from: &Schema,
+    sym: &mut impl FnMut(&str) -> lasso::Spur,
+) -> PredicateTy {
+    match ty {
+        PredicateTy::Int => PredicateTy::Int,
+        PredicateTy::Str => PredicateTy::Str,
+        PredicateTy::Fact(target) => PredicateTy::Fact(*target),
+        PredicateTy::Record(fields) => PredicateTy::Record(Arc::from(
+            fields
+                .iter()
+                .map(|(field, ty)| {
+                    let name = from
+                        .interner()
+                        .resolve(*field)
+                        .expect("a field name the stored schema interned");
+                    (sym(name), retype(ty, from, sym))
+                })
+                .collect::<Vec<_>>(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,5 +651,60 @@ mod tests {
                 walk(value, schema.len(), name);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod catalogue {
+    use super::*;
+
+    /// **The property the whole arrangement rests on**: appending a virtual predicate
+    /// does not change what a client has to agree with.
+    ///
+    /// If this ever fails, every .NET client stops connecting until it declares a
+    /// predicate it can never write to — which is the outcome the virtual/stored split
+    /// exists to avoid, and the reason `provisional_fingerprint` skips virtuals rather
+    /// than the server keeping two schemas and hoping they stay in step.
+    #[test]
+    fn the_catalogue_does_not_change_the_handshake() {
+        let stored = aperture_wire::protocol::provisional_fingerprint(&schema());
+        let served = aperture_wire::protocol::provisional_fingerprint(&with_catalogue());
+
+        assert_eq!(
+            stored, served,
+            "a virtual predicate must be invisible to the handshake"
+        );
+    }
+
+    /// Restating the stored schema must not move an id, because an id is a position
+    /// and is the tag in every `FactId` already written.
+    #[test]
+    fn restating_the_stored_schema_moves_no_id() {
+        let stored = schema();
+        let served = with_catalogue();
+
+        assert_eq!(served.len(), stored.len() + 1, "one appended, nothing else");
+
+        for index in 0..stored.len() {
+            let id = PredicateId(index as u32);
+            assert_eq!(
+                served.get(id).and_then(|p| p.name()),
+                stored.get(id).and_then(|p| p.name()),
+                "predicate {index} moved"
+            );
+        }
+    }
+
+    /// Only the catalogue is virtual, and it is.
+    #[test]
+    fn the_catalogue_is_the_only_virtual_predicate() {
+        let served = with_catalogue();
+
+        assert_eq!(served.virtuals(), [CATALOGUE]);
+        assert_eq!(
+            served.get(CATALOGUE).and_then(|p| p.name()),
+            Some("aperture.db.List")
+        );
+        assert!(schema().virtuals().is_empty(), "the stored schema has none");
     }
 }

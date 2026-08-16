@@ -10,6 +10,8 @@ edition = "2024"
 console = ["tokio/tracing"]
 
 [dependencies]
+# Row bytes, shared rather than copied — the same type the store hands back.
+byteview = { workspace = true }
 # The read path (engine), the write path (ingest), the store they meet over, and
 # the codec both directions speak.
 aperture-encoding = { path = "../aperture-encoding" }

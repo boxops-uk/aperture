@@ -41,6 +41,7 @@
 //!   permissions, or the gateway in front of opted-in TCP.
 
 pub(crate) mod blocking;
+pub mod catalogue;
 pub mod error;
 pub mod outbound;
 pub mod registry;

@@ -59,6 +59,43 @@ pub struct Sealed {
     pub already_complete: bool,
 }
 
+/// The socket underneath, whichever kind it is.
+///
+/// **One enum rather than a generic parameter**, and that is a deliberate trade: making
+/// [`Connection`] generic over `Read + Write` would put a type parameter into every
+/// signature that touches it — `Rows`, the CLI's command functions, the shell's `Repl` —
+/// to express a choice made once, at connect, and never again. The dispatch it costs is
+/// one branch per frame, against a syscall.
+enum Transport {
+    Unix(UnixStream),
+    Tcp(std::net::TcpStream),
+}
+
+impl Read for Transport {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Transport::Unix(socket) => socket.read(buffer),
+            Transport::Tcp(socket) => socket.read(buffer),
+        }
+    }
+}
+
+impl Write for Transport {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Transport::Unix(socket) => socket.write(buffer),
+            Transport::Tcp(socket) => socket.write(buffer),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Transport::Unix(socket) => socket.flush(),
+            Transport::Tcp(socket) => socket.flush(),
+        }
+    }
+}
+
 /// A connection to an Aperture server.
 ///
 /// # Several streams, one socket, and no runtime
@@ -76,7 +113,7 @@ pub struct Sealed {
 /// wire format should need nothing of the server's runtime, and this is where that
 /// claim is either true or not.
 pub struct Connection {
-    socket: UnixStream,
+    socket: Transport,
     schema: Arc<Schema>,
     hello: Hello,
     next_stream: u32,
@@ -108,7 +145,50 @@ impl Connection {
         assert_schema: bool,
     ) -> Result<Connection, ClientError> {
         let stream = UnixStream::connect(socket)?;
-        Connection::establish(stream, database, schema, mode, assert_schema)
+        Connection::establish(
+            Transport::Unix(stream),
+            database,
+            schema,
+            mode,
+            assert_schema,
+        )
+    }
+
+    /// The same handshake, over TCP.
+    ///
+    /// **What this is not is a different protocol.** The frames, the handshake and the
+    /// stream multiplexing are identical — the transport is the only thing that changes,
+    /// which is why it is one enum here rather than a second client. §2's
+    /// `aperture://host:port/db` address form is what reaches it.
+    ///
+    /// The server end is default-closed (`ops-I10`) and only listens when an operator
+    /// passed `--listen-tcp`, so a connection here means somebody opted in; nothing about
+    /// *this* end asserts anything about who may.
+    ///
+    /// # Errors
+    ///
+    /// As [`connect`](Connection::connect), plus [`ClientError::Io`] if the address does
+    /// not resolve.
+    pub fn connect_tcp(
+        address: &str,
+        database: &str,
+        schema: Arc<Schema>,
+        mode: Mode,
+        assert_schema: bool,
+    ) -> Result<Connection, ClientError> {
+        let stream = std::net::TcpStream::connect(address)?;
+
+        // Small frames, answered one at a time: Nagle would hold a handshake back
+        // waiting for company that is not coming.
+        stream.set_nodelay(true)?;
+
+        Connection::establish(
+            Transport::Tcp(stream),
+            database,
+            schema,
+            mode,
+            assert_schema,
+        )
     }
 
     /// Open a **control session**: bound to no database, for lifecycle requests.
@@ -124,7 +204,7 @@ impl Connection {
     }
 
     fn establish(
-        socket: UnixStream,
+        socket: Transport,
         database: &str,
         schema: Arc<Schema>,
         mode: Mode,

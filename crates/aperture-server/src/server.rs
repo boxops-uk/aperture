@@ -164,3 +164,84 @@ pub fn serve_unix(
 
     listener.run_blocking(registry)
 }
+
+/// Bind, announce, and serve — over the socket, and over TCP as well when asked.
+///
+/// # `ops-I10`, and what an address argument does and does not buy
+///
+/// Binding a network interface is **default-closed**, and stays that way: `listen` is
+/// `None` unless somebody passed an address, and there is no configuration file entry,
+/// no environment variable and no "listen on localhost by default" that could turn it on
+/// while nobody was looking. That is the whole of the invariant's mechanism, and it is
+/// deliberately this crude.
+///
+/// What it is *not* is access control. The handshake accepts anonymous and has a
+/// reserved credential slot nothing fills, so an opted-in TCP port is reachable by
+/// anyone who can route to it. The design's answer is that access control belongs to the
+/// transport — a Unix socket has file permissions, and a TCP port has whatever gateway
+/// the operator puts in front of it — and the honest statement of that is here rather
+/// than in a comment nobody reads: **an operator who passes this flag is taking that
+/// responsibility on.**
+///
+/// # Errors
+///
+/// [`ServerError::Io`] if either listener cannot be bound, or the readiness file cannot
+/// be written.
+pub fn serve_on(
+    socket: impl AsRef<Path>,
+    listen: Option<&str>,
+    ready_file: Option<&Path>,
+    registry: Arc<Registry>,
+) -> Result<(), ServerError> {
+    let listener = Listener::bind(socket)?;
+
+    if let Some(at) = ready_file {
+        listener.announce(at)?;
+    }
+
+    let Some(address) = listen else {
+        return listener.run_blocking(registry);
+    };
+
+    let address = address.to_owned();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async move {
+        // Bound before either is served, so a bad address fails the command rather than
+        // leaving a half-open server that answers on one door and not the other.
+        let tcp = tokio::net::TcpListener::bind(&address).await?;
+
+        let unix = {
+            let registry = Arc::clone(&registry);
+            tokio::spawn(async move { listener.run(registry).await })
+        };
+
+        let tcp = tokio::spawn(async move {
+            loop {
+                let (stream, _peer) = tcp.accept().await?;
+                let registry = Arc::clone(&registry);
+
+                tokio::spawn(async move {
+                    let (reader, writer) = stream.into_split();
+                    if let Err(error) = crate::session::serve(reader, writer, &registry).await {
+                        eprintln!("connection ended: {error}");
+                    }
+                });
+            }
+
+            // Unreachable, and typed so the task's error is the accept loop's.
+            #[allow(unreachable_code)]
+            Ok::<(), ServerError>(())
+        });
+
+        // Whichever stops first stops the server: an accept loop only ends by failing,
+        // and a server still answering on one door while the other has fallen over is a
+        // worse state than one that has stopped.
+        tokio::select! {
+            result = unix => result.map_err(|error| ServerError::Io(std::io::Error::other(error)))?,
+            result = tcp => result.map_err(|error| ServerError::Io(std::io::Error::other(error)))?,
+        }
+    })
+}

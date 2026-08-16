@@ -261,7 +261,17 @@ impl Catalog {
         // reasons — a format this build cannot read, a directory it cannot own.
         {
             let db = FjallDb::open(&built)?;
-            db.create_predicates((0..schema.len()).map(|index| PredicateId(index as u32)))?;
+
+            // **Every predicate but the virtual ones.** A virtual predicate is
+            // answered by whoever runs the query rather than read from a keyspace, so
+            // making it a pair of trees would cost the ~30 ms a keyspace costs and
+            // leave two empty ones in the artifact forever, saying that a database
+            // holds a kind of fact that nothing can ever write to it.
+            db.create_predicates(
+                (0..schema.len())
+                    .map(|index| PredicateId(index as u32))
+                    .filter(|id| !schema.is_virtual(*id)),
+            )?;
         }
 
         crate::schema_doc::write(&built, schema)?;

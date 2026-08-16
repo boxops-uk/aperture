@@ -1335,7 +1335,7 @@ interleaves, so frames arrive in whatever order the work finishes; a client that
 order would silently discard another stream's answers. Breaking the parking fails the
 two-results-open test and nothing else.
 
-### 9f — `query`, `shell`, and the cursor
+### 9f — `query`, `shell`, and the cursor ✅
 
 - `query`: streams incrementally, `--timeout`, Ctrl-C → a per-stream Cancel rather than a
   connection teardown.
@@ -1361,19 +1361,53 @@ two-results-open test and nothing else.
 - **TCP opt-in**: `--listen-tcp host:port`, default-closed (`ops-I10`), operator responsible for
   the gateway in front of it.
 
-*Acceptance:* `\more` returns the next page and the concatenation equals an uninterrupted run —
-[I4](docs/invariants.md#i4), interactively, for the first time.
+*Acceptance:* **done.** `\more` returns the next page and the concatenation equals an
+uninterrupted run — [I4](docs/invariants.md#i4), interactively, for the first time. A
+thousand rows over four server chunks, read forty at a time, compared against the same query
+taken in one go, *in order*: a count would pass for a resume that dropped one row and
+repeated another. Mutation-checked by dropping one row per page.
+
+**Two shells, not one re-pointed.** This step's plan said 9f would re-point the Phase 5 REPL
+at the wire client. It added a second one instead, and the reason is worth keeping: `:plan`
+and `:type` need a compiler in the same process as the question, and a client holds a query's
+text and never its plan. `aperture shell <db>` is the wire shell; `aperture shell` is still
+the embedded demo over its own scratch database.
+
+**`aperture.db.List` is a virtual predicate, and it is answered at the `FactStore` seam.**
+The obvious home for one is the executor — a `Source::Virtual` beside `Seek` and `Fetch` —
+and that is the wrong place: `FactStore` is already the answer to "where do rows come from",
+and the executor is generic over it, so answering a predicate from memory is a different
+answer to the same question rather than a new question. `Catalogued` wraps the store,
+encodes the listing through `aperture_store::fact::encode` so every row is `predicate_id ++
+key` byte for byte, and sorts it — after which nothing above it can tell the difference. The
+plan IR gains no variant, the cursor gains no case, `enumerate` is untouched, and I4 needs no
+re-proving, because the resume battery is already written over an arbitrary `FactStore`. What
+it costs is that `:plan` shows a scan of predicate 22 and says nothing about where its rows
+live.
+
+Virtuality is a property of the **server**, not of the database, and three things follow that
+nothing had to be told twice: it is skipped by the handshake fingerprint, skipped by the
+schema copy embedded at create, and given no keyspaces. So a client that has never heard of
+`aperture.db.List` still connects — the .NET clients were not touched — and no artifact
+claims to hold a kind of fact nothing can write.
+
+**`--listen-tcp` needed both halves.** The server binding a port is untestable while the
+client speaks only Unix sockets, so `Connection` grew a `Transport` enum and the CLI grew
+§2's `aperture://host:port/db` form, resolved in the one place `query` and `shell` share. The
+test asks one server the same question through both doors. `ops-I10` stays default-closed:
+no config-file entry, no environment variable, and the startup banner says so when a port is
+open.
 
 **Acceptance — the phase:**
-- [ ] The command sequence at the top of this phase works, over the wire, against a running server.
-      *The lifecycle half does, as of 9d — `create`/`list`/`describe`/`finish`/`db rm` against a
-      server that is up throughout. `query` and `shell` are the remainder, and are 9f's.*
+- [x] The command sequence at the top of this phase works, over the wire, against a running server.
+      *The lifecycle half since 9d; `query` and `shell` complete it in 9f.*
 - [ ] `ops-I1`–`ops-I10` enforced and tested end-to-end (`assert_cmd`/`trycmd`).
-      *`ops-I1`–`ops-I7` are, over a socket and through the binary. `ops-I8` (the hoisted
-      finalization phase) and `ops-I9` (cross-DB) are unbuilt; `ops-I10` is default-closed and
-      has no opt-in to test until 9f's `--listen-tcp`.*
+      *`ops-I1`–`ops-I7` are, over a socket and through the binary. `ops-I10` is now tested at
+      the only thing it claims — a port opens **only** when `--listen-tcp` names one, and the
+      same question answers identically through either door. `ops-I8` (the hoisted finalization
+      phase) and `ops-I9` (cross-DB) are unbuilt, and are the reason this box is not ticked.*
 - [x] A long query does not delay a short one on the same connection.
-- [ ] `\more` is an interactive [I4](docs/invariants.md#i4) exerciser, and the pages concatenate to an uninterrupted run.
+- [x] `\more` is an interactive [I4](docs/invariants.md#i4) exerciser, and the pages concatenate to an uninterrupted run.
 - [x] The same inputs built twice produce the same content fingerprint (`ops-I4`) — including
       when one of them was sealed through a handle the server already held.
 - [x] The workspace matches [operations §10](docs/aperture-cli-design.md) (see the cross-cutting note),
