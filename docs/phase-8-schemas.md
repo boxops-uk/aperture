@@ -106,20 +106,45 @@ it — which is what makes requirement (2) hold by construction. The physical id
 **append-only** when predicates are added — which is what makes (3) hold. Sorted assignment is
 deterministic, so (1) holds.
 
-One rule has to come with it, and it is the part Aperture must add rather than copy: **ingest
-must check the id map agrees for the predicates present, not merely that the fingerprints are
-subset-contained.** A block header carries a raw `predicate u32`, so a fact file written
-against a database whose map assigned `src.Ref = 4` is nonsense against one that assigned it
-`5` — and two databases created independently from *different* schemas can be
-subset-compatible and still disagree, because each sorted its own predicate set. The map is
-embedded already, so the check is a lookup; what it is not is free to forget.
+#### And then the cost went away: the wire carries **names**
 
-The cost, accepted knowingly: a fact file is portable to a database **whose schema it was
-written against**, not to any database that happens to declare those predicates. The rejected
-alternative — explicit ids written by hand in the DSL — would have bought that stronger
-portability at the price of every schema carrying numbers a person maintains. If fact files
-ever need to travel between independently-created databases, this is the decision to reopen,
-and the id-map check is where the failure would announce itself.
+The paragraph that used to sit here added a rule — *ingest must check the id map agrees, not
+merely that the fingerprints are subset-contained* — and accepted a cost: a fact file portable
+only to a database whose schema it was written against. Both were consequences of the block
+header carrying a raw number, and **neither survives sending the name instead.**
+
+What makes this cheap is a property of the format that is easy to miss: a predicate id crosses
+the write path in **exactly one place**. `WireFact::predicate` is *not encoded* — a top-level
+fact takes its predicate from the block header framing it, and a nested one from the
+`PredicateTy::Fact(p)` of the field it sits in, "so writing it into the fact as well would be
+a second source of truth" (`aperture-wire::value`). `block` already says the id is "paid
+once" per run of facts. So the change is 4 bytes to roughly 10, once per block, against
+payloads of hundreds to thousands of facts.
+
+**Settled: the block header carries a fully-qualified predicate name, and the descriptor does
+too.** Consequences, all of them simplifications:
+
+- **A client never learns a database's numbering**, in either direction. The .NET clients drop
+  their ordered predicate constants and write `"src.File"`.
+- **A fact file is portable to any database whose schema declares those names**, whatever it
+  numbered them — so the id-map check is not needed and the portability caveat is gone.
+- **A database's ids become purely internal**, which is what makes D1's "the id belongs to the
+  database" answer unambiguous rather than a trade.
+- **The golden's claim improves.** It stops asserting that two implementations number
+  identically and asserts only that they *encode* identically, which is the claim worth having.
+
+One constraint to respect when it is built: the block header's fields are fixed-width because a
+splitter must read `length` before it can trust anything else, so the name goes after the fixed
+fields or behind its own `u16` length — it must not push `length` to a variable offset.
+
+`WireRef::Id(FactId)` still carries a database-scoped token, and that stays right: it is an
+opaque identity a producer was given by that database and is handing back.
+
+*The alternative considered and rejected*: keep the `u32` and have the client declare its own
+predicate names at startup, making the number an index into its own table. Zero format change,
+golden untouched — but it keeps a numbering the client must maintain, and a block stops being
+self-describing, which matters because the sync marker exists so blocks can be recovered from a
+fragment or a split without reading a header first.
 
 ### D2 — The fingerprint algorithm is a cross-language, unversioned dependency
 
@@ -318,7 +343,7 @@ before anything depends on it, and unions come last because they are the widest 
 
 | | Frozen the moment | Recovered by |
 |---|---|---|
-| A database's predicate id map (D1) | that database is created | nothing, for that database — it is the tag in every `FactId` it holds. A *new* database is free to assign afresh, which is the whole reason the map belongs to the artifact rather than to the schema text |
+| A database's predicate id map (D1) | that database is created | nothing, for that database — it is the tag in every `FactId` it holds. But it is now **internal**: with names on the wire, nothing outside the database ever sees it, so a new database assigning afresh costs nobody anything |
 | Union discriminants (D5) | the first union fact is written | an on-disk migration |
 | The union marker (D5) | the same moment | I3 forbids renumbering |
 | The fingerprint algorithm (D2) | the first artifact ships | a version field, if there is one |

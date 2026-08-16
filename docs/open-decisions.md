@@ -131,12 +131,14 @@ assigned by sorted name, **persisted in the stored schema**, and append-only aft
 (`nextPid = max + 1`), so a database keeps its numbering for life. Aperture takes the same split —
 no ids in the DSL, the map embedded in the database at create.
 
-One rule comes with it that Glean does not need in the same form: Aperture's block header carries a
-raw `predicate u32`, so **ingest checks that the id map agrees for the predicates present**, rather
-than only that the fingerprints are subset-contained. Two databases can be subset-compatible and
-still number differently, because each sorted its own predicate set. The consequence to know: a
-fact file is portable to a database whose schema it was **written against**, not to any database
-that happens to declare the same predicates.
+**And the wire carries names, so the database's numbering never leaves it.** A predicate id is
+encoded in exactly one place — the block header, once per run of facts; `WireFact::predicate` is
+not encoded at all, and a nested fact takes its predicate from the declared field type. Sending a
+fully-qualified name there instead costs about six bytes per block and removes the whole problem:
+a client never learns the database's numbering, a fact file is portable to any database whose
+schema declares those names, and the id map needs no cross-checking at ingest because there is no
+id to disagree about. The database's ids become purely internal, which is what makes "the id
+belongs to the database" the plain answer rather than a trade.
 
 ### Intra-row repeated variables — **rejected in Phase 4**, by name
 
