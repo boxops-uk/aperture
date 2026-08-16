@@ -1,0 +1,92 @@
+// The **schema DSL** — permissive-early, exactly as `focus`'s grammar is.
+//
+// Everything this file accepts and the type model cannot yet hold — arrays, sums,
+// `maybe`, `set`, `enum`, `evolves`, a `stored` derivation — parses here and draws a
+// specific `nyi/…` diagnostic downstream. That is the Phase 2 discipline applied a
+// second time, and for the same reason: a construct rejected by the *grammar* reports
+// as a syntax error pointing between two tokens, which tells a reader nothing about
+// why the thing they wrote is not available yet.
+//
+// The shape follows Angle's (`glean/angle/Glean/Angle/Parser.y`), because a schema
+// language that reads unlike the one this project is measured against would be a
+// gratuitous difference. Four deliberate divergences, each with a reason:
+//
+//   * **no version in a schema name.** Angle's `schema all.N` is a name-resolution
+//     scope rather than a version axis, and its own docs call per-schema `.N` "a
+//     somewhat legacy feature". Aperture has no `evolves` in P0, so there is nothing
+//     for a version to select between.
+//   * **no `inherit`** (`schema a : b`) — deprecated in Angle.
+//   * **an alternative carries an explicit discriminant** — `{ a : t = 0 | b : t = 1 }`.
+//     Angle numbers alternatives by position, so inserting one renumbers the rest;
+//     [I10](../../../docs/invariants.md#i10) requires the opposite, and the syntax has
+//     to give somewhere to write the number down.
+//   * **an import names a namespace, never a path.** See `import_item`.
+
+token Whitespace; token Comment;
+
+token Schema='schema' Import='import' Predicate='predicate' Type='type'
+      Derive='derive' Stored='stored' Evolves='evolves'
+      Enum='enum' Maybe='maybe' Set='set';
+
+token UId='<uid>' LId='<lid>' NsId='<nsid>' QId='<qid>' Nat='<nat>';
+
+token Arrow='->' Colon=':' Comma=',' Eq='=' Pipe='|'
+      LBrace='{' RBrace='}' LBrack='[' RBrack=']' LPar='(' RPar=')';
+
+skip Whitespace Comment;
+start schema_file;
+
+// A file is a sequence of blocks. Namespaces are **open across files** and a file may
+// hold several blocks (operations §7), so nothing here ties a namespace to a file.
+schema_file: decl*;
+
+// `schema a evolves b` shares its first two tokens with a block, so the two are one
+// rule factored after the name — which is what keeps this LL(1).
+decl: 'schema' ns ('evolves' ns @evolves_decl | '{' item* '}' @schema_decl);
+
+// A namespace is a dotted lowercase name. One segment lexes as `LId` and several as
+// `NsId`; both are namespaces, and the parser does not care which.
+ns: NsId | LId;
+
+item:
+// **An import names a namespace, not a file.** `import lang.rust`, never
+// `import "lang/rust.aps"`. How a namespace is found is a *resolver's* business —
+// a manifest, a search path, or something else — and keeping the language free of
+// paths is what leaves that replaceable. It is also the divergence from Glean this
+// project wanted: Angle's importer resolves against a directory tree slurped whole.
+  'import' ns @import_item
+| 'type' UId '=' ty @type_item
+// A predicate's value side is `-> T`, and `stored` marks a derivation. The
+// derivation *body* is deliberately absent — see the module docs for why that is a
+// recorded decision rather than an oversight.
+| 'predicate' UId ':' ty ['->' ty] ['stored'] @predicate_item
+| 'derive' name ['stored'] @derive_item
+;
+
+name: UId | QId;
+
+ty:
+  'maybe' ty @maybe_ty
+| 'set' ty @set_ty
+| 'enum' '{' LId ('|' LId)* '}' @enum_ty
+| '[' ty ']' @array_ty
+| '(' ty ')' @group_ty
+| '{' [field_list] '}' @braced_ty
+// A bare lowercase name is a builtin — `int`, `string`. Resolved at lowering rather
+// than lexed as a keyword, so `predicate P : bananas` is an unknown *type* with a
+// span to point at, not a parse error.
+| LId @builtin_ty
+| UId @ref_ty
+| QId @qref_ty
+;
+
+// **A record and a sum share their braces**, as they do in Angle, and are told apart
+// by the separator after the first field. Factored so the decision is one token of
+// lookahead: `,` continues a record, `|` starts a sum, `}` ends a record of one.
+field_list: field ((',' field)* @record_fields | ('|' field)+ @sum_fields);
+
+// `= <nat>` is the alternative's **discriminant**, and it is a sum's business rather
+// than a record's — accepted on both here, rejected on a record downstream, because
+// "a discriminant on a record field" is worth a sentence rather than a caret between
+// two tokens.
+field: LId [':' ty] ['=' Nat];

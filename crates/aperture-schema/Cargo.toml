@@ -4,6 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# The schema DSL's front end. [Operations §10](../../docs/aperture-cli-design.md)
+# puts "parse → AST → canonical model; imports/resolution; fingerprints" in this
+# crate, which is why the bottom of the stack has a lexer in it — the dependency
+# *direction* is unchanged, and everything above still reads the type model without
+# knowing a schema was ever text.
+codespan-reporting = "0.13.1"
 lasso = { workspace = true }
+logos = "0.16.1"
 serde = { workspace = true }
 thiserror = { workspace = true }
+
+[build-dependencies]
+lelwel = "0.10"

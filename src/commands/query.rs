@@ -862,29 +862,46 @@ mod surface {
     #[test]
     fn a_denial_filters_the_listing_by_its_own_bytes() {
         let serving = serving(0);
+        create_database(&serving, "alpha");
+        create_database(&serving, "zulu");
 
+        // Denying a prefix one of the three carries: the other two survive. A filter
+        // picking rows apart says more than an all-or-nothing answer, which would hold
+        // just as well for a listing that was never read.
         let kept = count(
-            &serving,
-            "N where aperture.db.List {name = N}; N != \"zzz\"..",
-        );
-        assert_eq!(kept, 1, "`code` does not start with `zzz`");
-
-        let denied = count(
             &serving,
             "N where aperture.db.List {name = N}; N != \"co\"..",
         );
-        assert_eq!(denied, 0, "and it does start with `co`");
+        assert_eq!(kept, 2, "alpha and zulu, but not code");
+
+        let all = count(
+            &serving,
+            "N where aperture.db.List {name = N}; N != \"q\"..",
+        );
+        assert_eq!(all, 3, "nothing starts with q");
     }
 
-    /// **A prefix constraint on the catalogue's leading field**, which is the one thing
-    /// that makes `Catalogued::scan` answer a *bounded* range rather than everything.
+    /// **A prefix constraint on the catalogue's leading field**, answered over three
+    /// databases so the range has one below it, one inside it and one above.
     ///
-    /// The `hi` bound is computed by this module by hand — fjall is given the same two
-    /// keys and does its own thing with them — so a range that is right for a keyspace
-    /// and wrong for a `Vec` is exactly the bug this catches.
+    /// **What this does not do**, stated because the obvious reading is wrong and I
+    /// believed it for a while: it does not pin `Catalogued::scan`'s upper bound.
+    /// Deleting that bound outright leaves this test green — sargeability compiles a
+    /// string prefix into a seek **and** a residual, and the residual re-checks every
+    /// row the range let through. The bound is defence in depth and no query can
+    /// isolate it, which is why it has a unit test of its own next to the code
+    /// (`aperture_server::catalogue`).
     #[test]
     fn a_prefix_constraint_bounds_the_listing() {
         let serving = serving(0);
+        create_database(&serving, "alpha");
+        create_database(&serving, "zulu");
+
+        assert_eq!(
+            count(&serving, "N where aperture.db.List {name = N}"),
+            3,
+            "alpha, code, zulu"
+        );
 
         assert_eq!(
             count(
@@ -892,7 +909,7 @@ mod surface {
                 "N where aperture.db.List {name = N}; N = \"co\".."
             ),
             1,
-            "`code` is in the range"
+            "`code` is in the range; `alpha` is below it and `zulu` above"
         );
         assert_eq!(
             count(

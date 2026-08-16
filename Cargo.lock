@@ -193,7 +193,10 @@ dependencies = [
 name = "aperture-schema"
 version = "0.1.0"
 dependencies = [
+ "codespan-reporting",
  "lasso",
+ "lelwel",
+ "logos",
  "serde",
  "thiserror",
 ]

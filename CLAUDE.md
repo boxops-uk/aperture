@@ -23,7 +23,7 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 
 | Crate | Holds |
 |---|---|
-| `aperture-schema` | the type model (`schema`) and the physical row id (`id`) — depends on nothing |
+| `aperture-schema` | the type model (`schema`), the physical row id (`id`), and — since Phase 8.2 — the schema DSL's front end (`syntax`: lexer, `lelwel` grammar, parse, the executable corpus). Depends on no Aperture crate, which is the direction that matters; [operations §10](docs/aperture-cli-design.md) puts "parse → AST → canonical model; imports/resolution; fingerprints" here, so the bottom of the stack has a grammar in it and nothing above needs to know a schema was ever text |
 | `aperture-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
 | `aperture-wire` | the **transport** codec, its framing, and the protocol's message vocabulary — `varint`, the schema-driven `value`/fact encoding, `crc`, `block` (a run of one predicate's facts behind a sync marker), `frame` (`[kind][stream][length]`), and `protocol` (what a startup frame carries, what a stream's life looks like — shared by server and client, **no I/O policy**). A sibling of `aperture-encoding`, not a layer on it: it depends on `aperture-schema` alone and shares no bytes with the storage codec |
 | `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, the errors the storage layer raises — and the **lifecycle**: `catalog` (the store root, `ops-I1`'s lock, `ops-I7`'s filesystem-as-catalog), `meta` (the `APERTURE_META` sidecar), `schema_doc` (the embedded schema copy), `identity` (`ops-I4`'s content hash), `ulid` |

@@ -246,13 +246,13 @@ drawing a specific `nyi/…` diagnostic rather than a parse error, and an execut
 the audit table cannot drift from what the compiler does.
 
 ```
-schema src;                                  -- namespace, open across files
-import lang.rust;                            -- explicit Go-style edge
+schema src;                                  # namespace, open across files
+import lang.rust;                            # explicit Go-style edge
 
 predicate File = 0 : string
 predicate Module = 1 : { file : File, name : string }
 predicate Decl = 2 : { module : Module, name : string, line : int } -> string
-type Position = { line : int, col : int }    -- a named record, no id, not a predicate
+type Position = { line : int, col : int }    # a named record, no id, not a predicate
 ```
 
 Points the grammar has to make legible rather than merely accept:
@@ -269,7 +269,7 @@ Points the grammar has to make legible rather than merely accept:
   four times — and it costs the type model nothing.
 
 Deferred with a code, not a parse error: `[T]` (D4), `set T`, `nat`/`byte`, `evolves`, and —
-until 8d — `union`.
+until 8.6 — `union`.
 
 ---
 
@@ -290,27 +290,31 @@ Operations §7 settles this; the build is a transcription:
 
 ## 4. Sequence
 
+**Numbered `8.1`–`8.6`, not `8a`–`8f`**, because [`PLAN.md`](../PLAN.md) already has a *separate*
+**Phase 8b — Stored derivation**, and two things called 8b in one plan is the kind of collision
+that gets discovered by someone building the wrong one.
+
 Each step ends green, and the order is chosen so the riskiest thing — identity — is settled
 before anything depends on it, and unions come last because they are the widest blast radius.
 
-- **8a — Decisions.** ✅ D1, D3 and D4 settled above and recorded in
+- **8.1 — Decisions.** ✅ D1, D3 and D4 settled above and recorded in
   [`open-decisions.md`](open-decisions.md) — multiplicity has moved out of "still open", and
   predicate ids are recorded there as a decision that was never an open *question*, only an
-  unexamined assumption. D2 and D5 are recommendations this file carries into 8c and 8f; D6
+  unexamined assumption. D2 and D5 are recommendations this file carries into 8.3 and 8.6; D6
   and D7 are one paragraph each to write into [chapter 6](06-types-and-schema.md).
-- **8b — Lexer, grammar, corpus.** Parse the surface, including what is deferred, each with
+- **8.2 — Lexer, grammar, corpus.** Parse the surface, including what is deferred, each with
   its code. *Done when* the schema corpus parses as classified, the way
   `aperture_engine::corpus` gates the query one.
-- **8c — Lower to `Schema`, and identity.** The canonical form as a specified byte string,
+- **8.3 — Lower to `Schema`, and identity.** The canonical form as a specified byte string,
   per-predicate and whole-schema fingerprints, D1's id validation, D3's cycle answer. *Done
   when* `fingerprint_is_order_independent` is un-ignored and green, **with its negative
   control**: a field permutation must move the fingerprint.
-- **8d — Load a database from a schema file.** `create` takes a schema path; the embedded copy
+- **8.4 — Load a database from a schema file.** `create` takes a schema path; the embedded copy
   becomes the canonical form; `code_index` is deleted. *Done when* a parsed schema runs a query
   end to end, and when `ingest_rejects_incompatible_schema` is green.
-- **8e — `schema check` / `fingerprint` / `diff`.** The three commands §5 specifies, `diff`
+- **8.5 — `schema check` / `fingerprint` / `diff`.** The three commands §5 specifies, `diff`
   answering `Identical | Compatible (n added) | Breaking` with per-predicate reasons.
-- **8f — Unions.** `PredicateTy::Union`, marker `0x52`, the discriminant freeze, `X.alt?`
+- **8.6 — Unions.** `PredicateTy::Union`, marker `0x52`, the discriminant freeze, `X.alt?`
   lowering to `DiscriminantEq` plus a payload bind. *Done when* `discriminants_append_only` is
   green and the `nyi/union-select` corpus entry is reclassified `Supported` with its rows and
   the code retired from `Code::ALL`.
@@ -334,7 +338,7 @@ before anything depends on it, and unions come last because they are the widest 
 - **The blast radius of `PredicateTy::Union`** is **29 files** that name the enum's variants —
   about half of them tests, but the other half is the codec, the wire value encoder,
   `flatten`, `iter`, `intern`, `desc` and `print`, each of which has to answer what a union
-  means before it compiles again. That is the reason unions are 8f and not 8c: everything
+  means before it compiles again. That is the reason unions are 8.6 and not 8.3: everything
   before them stays a schema-crate change, and 8f is the one step that reaches the machine.
 
 ---
