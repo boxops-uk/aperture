@@ -57,17 +57,16 @@
 //! Phase 9 re-points the interactive front at the wire client, and everything here
 //! survives that except which store it opens.
 
-use std::{borrow::Cow, io::IsTerminal, path::Path, sync::OnceLock};
+use std::path::Path;
 
 use aperture_encoding::tuple::{Value, decode_key};
 use aperture_engine::{
     compile::Compilation,
     error::ApertureError,
     iter::{Executor, Iteratee, Stream},
-    lexer::{Token, tokenize},
+    lexer::Token,
     plan::{Access, Address, FieldPath, Level, Plan, Project, SeekKey, Step},
     print,
-    syntax::Ty,
 };
 use aperture_schema::{
     id::FactId,
@@ -85,15 +84,9 @@ use codespan_reporting::term::{
 };
 use serde::Deserialize;
 
-use rustyline::{
-    Context, Editor, Helper,
-    completion::Completer,
-    error::ReadlineError,
-    highlight::{CmdKind, Highlighter},
-    hint::Hinter,
-    history::DefaultHistory,
-    validate::Validator,
-};
+use rustyline::{Editor, error::ReadlineError, history::DefaultHistory};
+
+use crate::prompt::{Command, FocusHelper};
 use tokio_util::sync::CancellationToken;
 
 const PROMPT: &str = "focus> ";
@@ -458,177 +451,7 @@ impl Loader<'_> {
     }
 }
 
-// ---- highlighting ----------------------------------------------------------
-
-/// ANSI colours, chosen by what a token *means* rather than what it is: someone
-/// scanning a query wants predicates, variables and literals to separate.
-fn colour(token: Token) -> &'static str {
-    match token {
-        // A lexer error, marked as it is typed — the earliest diagnostic there is.
-        Token::Error => "1;31",
-        Token::Where | Token::Never => "1;35",
-        Token::QId => "33",
-        Token::UId => "1;36",
-        Token::LId => "34",
-        Token::Nat | Token::String | Token::Minus | Token::DotDot => "32",
-        Token::Wildcard | Token::Pipe | Token::Bang | Token::Question => "1;90",
-        _ => "90",
-    }
-}
-
-pub(crate) struct FocusHelper;
-
-impl FocusHelper {
-    /// Where this line's **focus source** begins, if any.
-    ///
-    /// A query is source from the first byte. A command word is not — but the
-    /// *argument* of a command that takes one is, so `:plan X where …` and
-    /// `:facts src.Decl` colour everything past the word. `None` means there is no
-    /// source in the line at all: a bare command, a command that takes no
-    /// argument, or one the shell does not know.
-    ///
-    /// Keyed on [`COMMANDS`] rather than on "everything after the first word",
-    /// which is the point rather than an implementation detail: colour appearing
-    /// as you type the argument is also the shell saying it **recognised the
-    /// command**. A typo stays grey.
-    fn source_offset(line: &str) -> Option<usize> {
-        let trimmed = line.trim_start();
-
-        if !trimmed.starts_with(':') {
-            return Some(0);
-        }
-
-        // No whitespace yet ⇒ the command word is still being typed, and there is
-        // no argument to colour.
-        let word_end = trimmed.find(char::is_whitespace)?;
-        let indent = line.len() - trimmed.len();
-
-        COMMANDS
-            .iter()
-            .any(|command| command.name == &trimmed[..word_end] && command.argument.is_some())
-            .then_some(indent + word_end)
-    }
-
-    /// Paint `source` onto `out`, one colour per token.
-    ///
-    /// Pushes only slices of `source` and fixed colour codes, which is what keeps
-    /// highlighting byte-preserving — it runs on every keystroke over half-typed
-    /// input, so losing a byte would show the wrong text under the cursor.
-    fn paint(source: &str, out: &mut String) {
-        // Diagnostics discarded: they belong to submitting a line, not to typing
-        // one. What is live here is the colour — an invalid token turns red under
-        // the cursor.
-        let (tokens, spans) = tokenize(source, &mut Vec::new());
-        let mut last = 0;
-
-        for (token, span) in tokens.iter().zip(spans.iter()) {
-            if span.start > last {
-                out.push_str(&source[last..span.start]);
-            }
-
-            // Whitespace carries no colour: painting it would colour the gaps
-            // between tokens as well as the tokens.
-            if matches!(token, Token::Whitespace) {
-                out.push_str(&source[span.clone()]);
-            } else {
-                out.push_str("\x1b[");
-                out.push_str(colour(*token));
-                out.push('m');
-                out.push_str(&source[span.clone()]);
-                out.push_str("\x1b[0m");
-            }
-
-            last = span.end;
-        }
-
-        if last < source.len() {
-            out.push_str(&source[last..]);
-        }
-    }
-}
-
-impl Highlighter for FocusHelper {
-    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        let Some(at) = Self::source_offset(line) else {
-            return Cow::Borrowed(line);
-        };
-
-        let (command, source) = line.split_at(at);
-        if source.trim().is_empty() {
-            return Cow::Borrowed(line);
-        }
-
-        let mut out = String::with_capacity(line.len() * 2);
-        out.push_str(command);
-        Self::paint(source, &mut out);
-        Cow::Owned(out)
-    }
-
-    fn highlight_char(&self, _line: &str, _pos: usize, _kind: CmdKind) -> bool {
-        true
-    }
-}
-
-impl Hinter for FocusHelper {
-    type Hint = String;
-
-    /// A live hint for the one fault that is unambiguous mid-typing.
-    ///
-    /// Lexical only. Half-written input is a *parse* error almost continuously —
-    /// `X where` is incomplete rather than wrong — so hinting those would be
-    /// noise. An invalid token stays wrong however much more is typed.
-    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
-        if pos < line.len() {
-            return None;
-        }
-
-        // The same span the highlighter paints, for the same reason: an invalid
-        // token in `:plan …`'s argument is as wrong as one at the bare prompt.
-        let source = &line[Self::source_offset(line)?..];
-
-        let (tokens, _) = tokenize(source, &mut Vec::new());
-        tokens
-            .iter()
-            .any(|token| matches!(token, Token::Error))
-            .then(|| "   invalid token".to_owned())
-    }
-}
-
-impl Completer for FocusHelper {
-    type Candidate = String;
-}
-
-impl Validator for FocusHelper {}
-impl Helper for FocusHelper {}
-
 // ---- rendering types -------------------------------------------------------
-
-fn render_ty(ty: &Ty, schema: &Schema, interner: &LocalInterner) -> String {
-    match ty {
-        Ty::Int => "int".to_owned(),
-        Ty::String => "str".to_owned(),
-        Ty::Error => "?error".to_owned(),
-        Ty::Var(_) => "?".to_owned(),
-        Ty::Fact(predicate) => schema
-            .get(*predicate)
-            .and_then(|p| p.name())
-            .map_or_else(|| "fact".to_owned(), str::to_owned),
-        Ty::Record(fields) => {
-            let rendered = fields
-                .iter()
-                .map(|(name, field)| {
-                    format!(
-                        "{}: {}",
-                        interner.try_resolve(*name).unwrap_or("?"),
-                        render_ty(field, schema, interner)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{{{rendered}}}")
-        }
-    }
-}
 
 /// How far [`render_value`] follows references before it stops and names the row
 /// instead.
@@ -715,12 +538,6 @@ fn render_ref(
 /// Mirrors what `ColorChoice::Auto` decides for the diagnostics, so a rendered
 /// schema and a rendered error agree about whether a person or a pipe is reading.
 /// Resolved once — it cannot change under a running shell.
-fn colours_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED
-        .get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
-}
-
 /// What a fragment of a rendered schema *is*, for colouring.
 ///
 /// **The schema has no lexer** — the DSL is Phase 8 — so `:schema` is coloured by
@@ -759,10 +576,7 @@ impl Role {
     }
 
     pub(crate) fn paint(self, text: &str) -> String {
-        if !colours_enabled() {
-            return text.to_owned();
-        }
-        format!("\x1b[{}m{text}\x1b[0m", colour(self.token()))
+        crate::prompt::painted(crate::prompt::colour(self.token()), text)
     }
 }
 
@@ -828,7 +642,10 @@ fn run(source: &str, db: &FjallDb, schema: &Schema) {
     }
 
     if let Some(head) = compilation.head_ty() {
-        println!("  : {}", render_ty(head, schema, compilation.interner()));
+        println!(
+            "  : {}",
+            crate::prompt::render_ty(head, schema, compilation.interner())
+        );
     }
 
     let Some(plan) = plan else {
@@ -887,7 +704,10 @@ fn print_type(source: &str, schema: &Schema) {
     }
 
     match compilation.head_ty() {
-        Some(ty) => println!("  : {}", render_ty(ty, schema, compilation.interner())),
+        Some(ty) => println!(
+            "  : {}",
+            crate::prompt::render_ty(ty, schema, compilation.interner())
+        ),
         None => println!("  (no type, and no diagnostic saying why — that is a compiler bug)"),
     }
 }
@@ -976,55 +796,48 @@ const EXAMPLES: [&str; 10] = [
     "D.name where D = src.Decl _; !src.Ref {to = D}",
 ];
 
-/// One shell command.
-///
-/// `argument` is `Some` when the command takes **focus source** — a query, or a
-/// predicate name. That is the field the highlighter reads, and it is why this is
-/// a table rather than three lists: the help text, the highlighter and the hinter all
-/// need to know the same thing. The dispatch in [`shell`] is the fourth reader and the
-/// one that can drift — a command added here without an arm there is advertised and
-/// highlighted but does nothing.
-struct Command {
-    name: &'static str,
-    argument: Option<&'static str>,
-    help: &'static str,
-}
-
 /// The commands, in the order `:help` lists them: what a query *is*, then what it
 /// costs, then what is stored, then the shell itself.
 const COMMANDS: [Command; 7] = [
     Command {
         name: ":type",
+        aliases: &[],
         argument: Some("<query>"),
         help: "the type of its head, without planning or running it",
     },
     Command {
         name: ":plan",
+        aliases: &[],
         argument: Some("<query>"),
         help: "the plan it compiles to, without running it",
     },
     Command {
         name: ":facts",
+        aliases: &[],
         argument: Some("<name>"),
         help: "rows stored for a predicate, read through the executor",
     },
     Command {
         name: ":schema",
+        aliases: &[],
         argument: None,
         help: "the predicates this shell knows",
     },
     Command {
         name: ":clear",
+        aliases: &[],
         argument: None,
         help: "clear the screen",
     },
     Command {
         name: ":help",
+        aliases: &[],
         argument: None,
         help: "this, and some queries to try",
     },
     Command {
         name: ":quit",
+        aliases: &[],
         argument: None,
         help: "leave (or Ctrl-D)",
     },
@@ -1040,6 +853,7 @@ fn print_help() {
         name,
         argument,
         help,
+        ..
     } in &COMMANDS
     {
         let invocation = match argument {
@@ -1231,7 +1045,7 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
 
     let mut editor: Editor<FocusHelper, DefaultHistory> =
         Editor::new().map_err(|error| readline_failure(&error))?;
-    editor.set_helper(Some(FocusHelper));
+    editor.set_helper(Some(FocusHelper::new(&COMMANDS)));
 
     loop {
         match editor.readline(PROMPT) {

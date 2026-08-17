@@ -6,56 +6,84 @@
 //! real stream and a real page of `DATA_ROW` frames, so a format change that the tests
 //! happen not to cover still cannot survive somebody using the tool. `aperture shell`
 //! with no database is the *other* shell — [`crate::shell`], Phase 5's embedded demo
-//! over a scratch database it seeds itself, which is where `:plan` and `:type` live
-//! because a plan is a thing a client never holds.
+//! over a scratch database it seeds itself.
 //!
-//! # `\more` is what this was built for
+//! # It compiles what you type, and that is why the errors look like the demo's
 //!
-//! A result here is a **bookmark**, not a buffer. `\more` reads the next page and stops;
-//! nothing is held at either end, because the place is kept by the *stream* staying open
-//! — server-side, parked on a full outbound queue with a bytes-only cursor whose
-//! snapshot was released at the chunk boundary ([I8](../../docs/invariants.md#i8)). A
-//! pause of a millisecond and a pause of an hour cost the server the same thing.
+//! This shell used to hand every line to the server and print whatever came back:
+//! plain text, no colour, no caret, and a round trip to be told about a typo. It
+//! compiles the line **here** now, against the schema the server said it serves
+//! ([`Connection::served_schema`]) — so a mistake is a caret under the word, in colour,
+//! before anything crosses the socket, and `:plan` and `:type` are answerable at all.
+//!
+//! Fetching the schema is what makes that honest rather than hopeful. A database
+//! carries the schema it was created against ([I13](../../docs/invariants.md#i13)), so
+//! compiling against this tool's *built-in* one would be checking a query against a
+//! schema nobody is using. The one assumption left is that the server's compiler is
+//! this compiler: against a server of a different build the local answer can differ,
+//! and the rule is that the **server** decides what runs — a query it refuses is
+//! refused with its own message, whatever this one thought.
+//!
+//! # `:more` is what this was built for
+//!
+//! A result here is a **bookmark**, not a buffer. `:more` reads the next page and
+//! stops; nothing is held at either end, because the place is kept by the *stream*
+//! staying open — server-side, parked on a full outbound queue with a bytes-only cursor
+//! whose snapshot was released at the chunk boundary
+//! ([I8](../../docs/invariants.md#i8)). A pause of a millisecond and a pause of an hour
+//! cost the server the same thing.
 //!
 //! Until this existed, [I4](../../docs/invariants.md#i4) — resume equals an
 //! uninterrupted run, the most heavily tested machinery in this project — had **no
 //! interactive exerciser at all**: Phase 5's REPL discards the resume token at both of
-//! its call sites. `\more` is a person holding a cursor across a round trip, and
+//! its call sites. `:more` is a person holding a cursor across a round trip, and
 //! [`pages_concatenate_to_an_uninterrupted_run`](tests) is that claim as a test.
 //!
 //! # Errors do not end the session, and which ones do is a rule
 //!
-//! A [`ClientError::Server`] is the server refusing one *stream* — a query that does not
-//! compile, a database that has gone — and psql's answer is right: print it and keep the
+//! A [`ClientError::Server`] is the server refusing one *stream* — a query it will not
+//! run, a database that has gone — and psql's answer is right: print it and keep the
 //! prompt. Anything else (`Io`, `Wire`, `Protocol`) means the conversation itself is
-//! broken, and continuing would be pretending otherwise.
+//! broken; the loop says so and opens a new one, because a server restarted under a
+//! shell is a hiccup rather than the end of an afternoon.
 
 use std::{
     io::Write,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
 use aperture_client::{ClientError, Connection, Mode, Rows};
-use aperture_schema::schema::{PredicateId, Schema};
+use aperture_engine::{compile::Compilation, print};
+use aperture_schema::{
+    schema::{PredicateId, Schema},
+    syntax::print as schema_print,
+};
+use codespan_reporting::term::{
+    self,
+    termcolor::{Ansi, NoColor},
+};
 
 use crate::{
     CliError,
     cli::RowFormat,
     commands::query::{connect, render_profile},
+    prompt::{self, Command, FocusHelper},
     rows::Sink,
-    shell::{Role, render_predicate_ty},
 };
 
-/// Rows delivered per page, and what `\more` continues.
+/// Rows delivered per page, and what `:more` continues.
 ///
 /// Deliberately unrelated to the server's `CHUNK_ROWS`: a page is what a person can
 /// read, a chunk is what the executor computes between suspends, and tying them
-/// together would make a display choice into a protocol one.
+/// together would make a display choice into a protocol one. `:limit` moves it.
 const PAGE: usize = 40;
 
-/// What `\l` runs.
+/// What `:list` runs.
 ///
 /// Every column the design's listing names, and it is ordinary focus — a whole-row bind
 /// and six field reads, no different from anything a person types. `facts` and `bytes`
@@ -64,12 +92,103 @@ const LISTING: &str = "{name = D.name, status = D.status, facts = D.facts, \
                        bytes = D.bytes, instance = D.instance} \
                        where D = aperture.db.List _";
 
-/// The predicate the server answers and no client declares.
-const VIRTUAL: &str = "aperture.db.List";
+/// The commands, in the order `:help` lists them: what a query *is*, then what it
+/// costs, then what is stored, then the session, then the shell itself.
+///
+/// **Two prefixes, one meaning.** `:` is this tool's, and the `\` spellings are what a
+/// hand trained on psql types without thinking; neither can begin a focus query, so
+/// accepting both costs nothing. Aliases are not advertised — a help screen that lists
+/// every spelling twice is one nobody reads to the end.
+pub const COMMANDS: [Command; 14] = [
+    Command {
+        name: ":type",
+        aliases: &[],
+        argument: Some("<query>"),
+        help: "the type of its head, without planning or running it",
+    },
+    Command {
+        name: ":plan",
+        aliases: &[],
+        argument: Some("<query>"),
+        help: "the plan it compiles to, without running it",
+    },
+    Command {
+        name: ":facts",
+        aliases: &[],
+        argument: Some("<predicate>"),
+        help: "every row of one predicate — sugar for `X where <predicate> X`",
+    },
+    Command {
+        name: ":schema",
+        aliases: &["\\d", ":d"],
+        argument: Some("[name]"),
+        help: "the schema this database is served with, or one predicate, or a prefix",
+    },
+    Command {
+        name: ":more",
+        aliases: &["\\more", ":m"],
+        argument: None,
+        help: "the next page of the last result",
+    },
+    Command {
+        name: ":limit",
+        aliases: &[],
+        argument: None,
+        help: "rows per page (bare, it says what the page is)",
+    },
+    Command {
+        name: ":format",
+        aliases: &[],
+        argument: None,
+        help: "how a row prints: jsonl, json, table, raw",
+    },
+    Command {
+        name: ":cancel",
+        aliases: &["\\cancel"],
+        argument: None,
+        help: "stop the last result early",
+    },
+    Command {
+        name: ":timing",
+        aliases: &["\\timing"],
+        argument: None,
+        help: "toggle how long a page took",
+    },
+    Command {
+        name: ":profile",
+        aliases: &["\\profile"],
+        argument: None,
+        help: "toggle what a query examined, per step of its plan",
+    },
+    Command {
+        name: ":list",
+        aliases: &["\\l", ":l"],
+        argument: None,
+        help: "the databases on this server — a query over aperture.db.List",
+    },
+    Command {
+        name: ":connect",
+        aliases: &["\\c", ":c"],
+        argument: Some("<database>"),
+        help: "the same session against another database",
+    },
+    Command {
+        name: ":clear",
+        aliases: &[],
+        argument: None,
+        help: "clear the screen",
+    },
+    Command {
+        name: ":help",
+        aliases: &["\\?", ":?", ":h"],
+        argument: None,
+        help: "this",
+    },
+];
 
-/// What `\d` says about it, since it cannot look it up.
-const VIRTUAL_NOTE: &str = "  aperture.db.List: {name, instance, status, facts, bytes, created} \
-(virtual — the server answers it; \\l is a query over it)";
+/// `:quit` is not in the table, because the table is what the *shell* answers and this
+/// is what ends it — it is handled before dispatch, beside Ctrl-D.
+const QUIT: [&str; 4] = [":quit", ":q", "\\q", "\\quit"];
 
 /// Whether the loop should keep going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +197,7 @@ pub enum Control {
     Quit,
 }
 
-/// The result `\more` would continue.
+/// The result `:more` would continue.
 struct Held {
     rows: Rows,
     /// Rows handed to the person so far, across every page of this result.
@@ -94,10 +213,23 @@ pub struct Repl {
     connection: Connection,
     database: String,
     socket: PathBuf,
+    /// **The schema the server said it serves**, not the one this tool was built with.
+    ///
+    /// Everything local is compiled and described against it: a query before it is
+    /// sent, `:plan`, `:type`, `:schema`, and the names tab-completion offers.
+    schema: Arc<Schema>,
     held: Option<Held>,
     timing: bool,
     profiling: bool,
     page: usize,
+    format: RowFormat,
+    /// Set by Ctrl-C while a page is being read, and cleared before every line.
+    ///
+    /// A page is read a row at a time so this can be *noticed*: the alternative is a
+    /// shell that ignores Ctrl-C until the page it is midway through has finished
+    /// arriving, which on a scan of a large predicate is exactly when somebody presses
+    /// it.
+    interrupt: Arc<AtomicBool>,
 }
 
 impl Repl {
@@ -109,16 +241,24 @@ impl Repl {
     pub fn connect(socket: &Path, database: &str) -> Result<Repl, CliError> {
         // Read-only, for the reason `query` is: a reader has no claim to make about the
         // schema, and the database's is the one that counts.
-        let connection = connect(socket, database, Mode::ReadOnly)?;
+        let mut connection = connect(socket, database, Mode::ReadOnly)?;
+
+        // **Asked, not assumed.** Everything this shell does locally is against this
+        // schema, and a database created with `--schema` has one this tool has never
+        // seen.
+        let schema = Arc::new(connection.served_schema()?);
 
         Ok(Repl {
             connection,
             database: database.to_owned(),
             socket: socket.to_path_buf(),
+            schema,
             held: None,
             timing: false,
             profiling: false,
             page: PAGE,
+            format: RowFormat::Jsonl,
+            interrupt: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -126,6 +266,14 @@ impl Repl {
     #[must_use]
     pub fn prompt(&self) -> String {
         format!("{}=> ", self.database)
+    }
+
+    /// The predicate names tab-completion should offer.
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        (0..self.schema.len())
+            .filter_map(|index| named(&self.schema, index).map(str::to_owned))
+            .collect()
     }
 
     /// One line from the person.
@@ -141,8 +289,10 @@ impl Repl {
             return Ok(Control::Continue);
         }
 
-        if let Some(meta) = line.strip_prefix('\\') {
-            return self.meta(meta.trim(), out);
+        self.interrupt.store(false, Ordering::Relaxed);
+
+        if prompt::starts_a_command(line) {
+            return self.meta(line, out);
         }
 
         match self.query(line, out) {
@@ -151,32 +301,66 @@ impl Repl {
         }
     }
 
-    fn meta(&mut self, meta: &str, out: &mut impl Write) -> Result<Control, CliError> {
-        let (command, argument) = match meta.split_once(char::is_whitespace) {
-            Some((command, argument)) => (command, argument.trim()),
-            None => (meta, ""),
+    fn meta(&mut self, line: &str, out: &mut impl Write) -> Result<Control, CliError> {
+        let (word, argument) = prompt::split_command(line);
+
+        if QUIT.contains(&word) {
+            return Ok(Control::Quit);
+        }
+
+        let Some(command) = COMMANDS.iter().find(|command| command.answers_to(word)) else {
+            writeln!(out, "  no such command: {word} — :help lists what there is")?;
+            return Ok(Control::Continue);
         };
 
-        match command {
-            "q" | "quit" => return Ok(Control::Quit),
+        match command.name {
+            ":help" => help(out)?,
 
-            "more" | "m" => match self.query_error(|repl| repl.more(out)) {
+            ":clear" => {
+                // The escape a terminal understands, and nothing at all when this is
+                // not one: a `Vec<u8>` in a test should not collect a screen-clear.
+                if prompt::colours_enabled() {
+                    write!(out, "\x1b[2J\x1b[H")?;
+                }
+            }
+
+            ":schema" => self.describe(argument, out)?,
+
+            ":type" => self.explain(argument, out, Explain::Type)?,
+            ":plan" => self.explain(argument, out, Explain::Plan)?,
+
+            ":facts" => {
+                if argument.is_empty() {
+                    writeln!(out, "  :facts needs a predicate — :schema lists them")?;
+                } else {
+                    // Shown rather than hidden, because it is the query somebody would
+                    // have written and the shell is also a way to learn the language.
+                    let query = format!("X where {argument} X");
+                    writeln!(out, "  {query}")?;
+                    self.run_or_report(&query, out)?;
+                }
+            }
+
+            ":more" => match self.more(out) {
                 Ok(()) => {}
                 Err(error) => refused(error, out)?,
             },
 
-            "cancel" => match self.query_error(Repl::cancel) {
+            ":limit" => self.limit(argument, out)?,
+            ":format" => self.set_format(argument, out)?,
+
+            ":cancel" => match self.cancel() {
                 Ok(Some(sent)) => writeln!(out, "  cancelled after {sent} row(s)")?,
                 Ok(None) => writeln!(out, "  nothing to cancel")?,
                 Err(error) => refused(error, out)?,
             },
 
-            "timing" => {
+            ":timing" => {
                 self.timing = !self.timing;
                 writeln!(out, "  timing is {}", on_off(self.timing))?;
             }
 
-            "profile" => {
+            ":profile" => {
                 self.profiling = !self.profiling;
                 writeln!(out, "  profile is {}", on_off(self.profiling))?;
                 if self.profiling {
@@ -187,40 +371,70 @@ impl Repl {
                 }
             }
 
-            "d" => self.describe(argument, out)?,
-
-            // **`\l` is a query, and nothing here makes it a special case.** It is
+            // **`:list` is a query, and nothing here makes it a special case.** It is
             // written out rather than hidden behind a control message precisely so that
-            // it can be edited: the text below is a starting point a person can paste,
-            // narrow with a `status =`, or page with `\more`, which is what
+            // it can be edited: the text is a starting point a person can paste, narrow
+            // with a `status =`, or page with `:more`, which is what
             // [operations §5](../../docs/aperture-cli-design.md) means by putting
             // enumeration through the normal machinery.
-            "l" | "list" => match self.query(LISTING, out) {
-                Ok(()) => {}
-                Err(error) => refused(error, out)?,
-            },
+            ":list" => self.run_or_report(LISTING, out)?,
 
-            "c" | "connect" => {
+            ":connect" => {
                 if argument.is_empty() {
-                    writeln!(out, "  \\c needs a database name")?;
+                    writeln!(out, "  :connect needs a database name")?;
                 } else {
                     self.reconnect(argument, out)?;
                 }
             }
 
-            "?" | "h" | "help" => help(out)?,
-
-            other => writeln!(
-                out,
-                "  no such command: \\{other} — \\? lists what there is"
-            )?,
+            other => writeln!(out, "  {other} is in the table and has no arm — a bug")?,
         }
 
         Ok(Control::Continue)
     }
 
-    /// Run a query and show its first page.
+    /// Run a query and show its first page, reporting a refusal rather than raising it.
+    fn run_or_report(&mut self, source: &str, out: &mut impl Write) -> Result<(), CliError> {
+        match self.query(source, out) {
+            Ok(()) => Ok(()),
+            Err(error) => refused(error, out),
+        }
+    }
+
+    /// Compile a line here, and run it there.
+    ///
+    /// The compile is not a formality: it is where a person's mistake is answered, in
+    /// colour and under a caret, without a round trip. What it must not do is decide
+    /// more than it knows — so a query that compiles is sent as typed, and the server's
+    /// answer is the one that counts.
     fn query(&mut self, source: &str, out: &mut impl Write) -> Result<(), ClientError> {
+        let mut compilation = Compilation::new(source, &self.schema);
+        let plan = compilation.plan();
+
+        render_diagnostics(&compilation, out).map_err(ClientError::Io)?;
+
+        if compilation.diagnostics().has_errors() {
+            return Ok(());
+        }
+
+        if let Some(head) = compilation.head_ty() {
+            writeln!(
+                out,
+                "  : {}",
+                prompt::render_ty(head, &self.schema, compilation.interner())
+            )
+            .map_err(ClientError::Io)?;
+        }
+
+        if plan.is_none() {
+            writeln!(
+                out,
+                "  (no plan, and no diagnostic saying why — that is a compiler bug)"
+            )
+            .map_err(ClientError::Io)?;
+            return Ok(());
+        }
+
         // A new query ends the old result. Cancelling rather than dropping is what
         // keeps the server's side tidy in band: the stream completes with what it
         // sent, instead of being abandoned for the connection to clean up later.
@@ -255,35 +469,64 @@ impl Repl {
             return Ok(());
         };
 
-        let page = self.connection.take(&mut held.rows, self.page)?;
-
         // A page at a time through the same renderer `query` uses, so the shell cannot
         // drift from the non-interactive tool in how a row reads.
         let mut sink =
-            Sink::new(&mut *out, RowFormat::Table, held.rows.desc()).map_err(ClientError::Io)?;
-        for row in &page {
-            sink.row(row).map_err(ClientError::Io)?;
+            Sink::new(&mut *out, self.format, held.rows.desc()).map_err(ClientError::Io)?;
+
+        // **A row at a time, so Ctrl-C is noticed.** `take(page)` would block until the
+        // whole page had arrived, which on a scan that produces few rows is precisely
+        // where somebody reaches for it.
+        let mut shown = 0;
+        let mut stopped = false;
+
+        while shown < self.page {
+            if self.interrupt.load(Ordering::Relaxed) {
+                stopped = true;
+                break;
+            }
+
+            let row = self.connection.take(&mut held.rows, 1)?;
+            if row.is_empty() {
+                break;
+            }
+
+            for value in &row {
+                sink.row(value).map_err(ClientError::Io)?;
+            }
+            shown += row.len();
         }
-        let shown = sink.end().map_err(ClientError::Io)?;
 
-        held.delivered += shown;
+        let written = sink.end().map_err(ClientError::Io)?;
+        held.delivered += written;
 
-        let finished = held.rows.finished();
         let delivered = held.delivered;
         let profile = held.rows.profile().cloned();
         let elapsed = started.elapsed();
 
-        if finished {
+        if stopped {
+            let sent = self.cancel()?.unwrap_or(delivered);
+            writeln!(out, "  interrupted after {sent} row(s)").map_err(ClientError::Io)?;
+        } else if held.rows.finished() {
             // Only now, and only if asked: the tally is not final until the last chunk
             // has run, which is why the server sends it once, just before the end.
             if let Some(profile) = profile.as_ref() {
                 write!(out, "{}", render_profile(profile, delivered)).map_err(ClientError::Io)?;
             }
+
+            // **Not twice.** A table counts its own rows as it closes, and a shell that
+            // added a total underneath would print two numbers that agree, which reads
+            // as a bug in whichever one you did not expect. The shapes that count
+            // nothing get the total here, where it is the only one.
+            if !matches!(self.format, RowFormat::Table | RowFormat::Count) {
+                writeln!(out, "  {delivered} row(s)").map_err(ClientError::Io)?;
+            }
+
             self.held = None;
         } else {
             writeln!(
                 out,
-                "  \\more for the next {} — {delivered} so far",
+                "  :more for the next {} — {delivered} so far",
                 self.page
             )
             .map_err(ClientError::Io)?;
@@ -304,68 +547,172 @@ impl Repl {
         }
     }
 
-    /// `\d` — the schema, or one predicate, or a namespace.
-    fn describe(&mut self, name: &str, out: &mut impl Write) -> Result<(), CliError> {
-        let schema = Arc::clone(self.connection.schema());
+    /// `:limit` — how many rows a page is.
+    fn limit(&mut self, argument: &str, out: &mut impl Write) -> Result<(), CliError> {
+        if argument.is_empty() {
+            writeln!(out, "  {} row(s) per page", self.page)?;
+            return Ok(());
+        }
 
-        if name.is_empty() {
-            for index in 0..schema.len() {
-                writeln!(out, "{}", predicate_line(&schema, index))?;
+        match argument.parse::<usize>() {
+            Ok(rows) if rows > 0 => {
+                self.page = rows;
+                writeln!(out, "  {rows} row(s) per page")?;
             }
-            writeln!(out, "{VIRTUAL_NOTE}")?;
+            // Zero is refused rather than read as "no limit": a page of nothing would
+            // hand back an empty result and a `:more` that never ends, and "all of it"
+            // is a number somebody can type.
+            _ => writeln!(out, "  :limit takes a row count — `:limit 100`")?,
+        }
+
+        Ok(())
+    }
+
+    /// `:format` — how a row prints.
+    fn set_format(&mut self, argument: &str, out: &mut impl Write) -> Result<(), CliError> {
+        if argument.is_empty() {
+            writeln!(out, "  rows print as {}", format_name(self.format))?;
             return Ok(());
         }
 
-        // **The one predicate `\d` cannot look up, and saying so beats saying nothing.**
-        // `aperture.db.List` is answered by the server out of the store root, so it is
-        // deliberately absent from the schema a client declares — which is what lets a
-        // client that never heard of it connect at all. Without this, `\l` works and
-        // `\d aperture.` reports no such predicate, and the two together read like a
-        // bug rather than like a design.
-        if VIRTUAL.starts_with(name) || name == VIRTUAL {
-            writeln!(out, "{VIRTUAL_NOTE}")?;
+        let chosen = match argument {
+            "jsonl" => Some(RowFormat::Jsonl),
+            "json" => Some(RowFormat::Json),
+            "table" => Some(RowFormat::Table),
+            "raw" => Some(RowFormat::Raw),
+            _ => None,
+        };
+
+        match chosen {
+            Some(format) => {
+                self.format = format;
+                writeln!(out, "  rows print as {}", format_name(format))?;
+            }
+            None => writeln!(out, "  :format takes jsonl, json, table or raw")?,
+        }
+
+        Ok(())
+    }
+
+    /// `:type` and `:plan` — the two questions answered without running anything.
+    fn explain(
+        &mut self,
+        source: &str,
+        out: &mut impl Write,
+        what: Explain,
+    ) -> Result<(), CliError> {
+        if source.is_empty() {
+            writeln!(out, "  {} needs a query — :help", what.name())?;
             return Ok(());
         }
 
-        let exact = (0..schema.len()).find(|index| named(&schema, *index) == Some(name));
+        let mut compilation = Compilation::new(source, &self.schema);
+
+        // `:type` stops at typecheck on purpose: a query can have a perfectly good head
+        // type and no plan (a variable nothing binds), and being told the type is the
+        // more useful of the two answers when that happens.
+        let plan = match what {
+            Explain::Type => {
+                compilation.check();
+                None
+            }
+            Explain::Plan => compilation.plan(),
+        };
+
+        render_diagnostics(&compilation, out)?;
+
+        if compilation.diagnostics().has_errors() {
+            return Ok(());
+        }
+
+        match what {
+            Explain::Type => match compilation.head_ty() {
+                Some(ty) => writeln!(
+                    out,
+                    "  : {}",
+                    prompt::render_ty(ty, &self.schema, compilation.interner())
+                )?,
+                None => writeln!(
+                    out,
+                    "  (no type, and no diagnostic saying why — that is a compiler bug)"
+                )?,
+            },
+
+            Explain::Plan => match plan {
+                Some(plan) => writeln!(
+                    out,
+                    "{}",
+                    print::plan(&plan, &self.schema, compilation.interner())
+                )?,
+                None => writeln!(
+                    out,
+                    "  (no plan, and no diagnostic saying why — that is a compiler bug)"
+                )?,
+            },
+        }
+
+        Ok(())
+    }
+
+    /// `:schema` — the whole thing, one predicate, or a namespace.
+    ///
+    /// **The source the server sent**, painted by the schema language's own lexer.
+    /// Printing the text rather than a rendering of the type model is what makes it
+    /// something a person can copy into a file and hand back to `create --schema`.
+    fn describe(&mut self, name: &str, out: &mut impl Write) -> Result<(), CliError> {
+        if name.is_empty() {
+            let source = schema_print::served(&self.schema);
+            write!(out, "{}", prompt::paint_schema(&source))?;
+            writeln!(out, "  {} predicate(s)", self.schema.len())?;
+            return Ok(());
+        }
+
+        let exact = (0..self.schema.len()).find(|index| named(&self.schema, *index) == Some(name));
 
         if let Some(index) = exact {
-            writeln!(out, "{}", predicate_line(&schema, index))?;
+            writeln!(out, "{}", predicate_line(&self.schema, index))?;
             return Ok(());
         }
 
-        // **Prefix fallback, so `\d src.` dumps a namespace rather than failing.** A
-        // name that does not resolve is much more often a namespace someone is
+        // **Prefix fallback, so `:schema src.` dumps a namespace rather than failing.**
+        // A name that does not resolve is much more often a namespace someone is
         // exploring than a typo, and psql and Glean's shell both read it that way.
-        let matching: Vec<usize> = (0..schema.len())
-            .filter(|index| named(&schema, *index).is_some_and(|it| it.starts_with(name)))
+        let matching: Vec<usize> = (0..self.schema.len())
+            .filter(|index| named(&self.schema, *index).is_some_and(|it| it.starts_with(name)))
             .collect();
 
         if matching.is_empty() {
             writeln!(out, "  no predicate matches `{name}`")?;
         } else {
             for index in matching {
-                writeln!(out, "{}", predicate_line(&schema, index))?;
+                writeln!(out, "{}", predicate_line(&self.schema, index))?;
             }
         }
 
         Ok(())
     }
 
-    /// `\c` — the same session against another database.
+    /// `:connect` — the same session against another database.
     fn reconnect(&mut self, database: &str, out: &mut impl Write) -> Result<(), CliError> {
         // The old result goes with the old connection, and saying so is better than
-        // leaving a `\more` that would silently continue a result from a database the
+        // leaving a `:more` that would silently continue a result from a database the
         // person has stopped looking at.
         let had = self.held.is_some();
 
         match Repl::connect(&self.socket, database) {
             Ok(fresh) => {
-                let (timing, profiling, page) = (self.timing, self.profiling, self.page);
+                let (timing, profiling, page, format) =
+                    (self.timing, self.profiling, self.page, self.format);
+                let interrupt = Arc::clone(&self.interrupt);
+
                 *self = fresh;
                 self.timing = timing;
                 self.profiling = profiling;
                 self.page = page;
+                self.format = format;
+                // The Ctrl-C handler holds this one: a fresh flag would be a flag
+                // nothing sets.
+                self.interrupt = interrupt;
 
                 writeln!(out, "  now connected to `{database}`")?;
                 if had {
@@ -380,14 +727,40 @@ impl Repl {
 
         Ok(())
     }
+}
 
-    /// Run something that may be refused, keeping the borrow checker out of the way.
-    fn query_error<T>(
-        &mut self,
-        f: impl FnOnce(&mut Repl) -> Result<T, ClientError>,
-    ) -> Result<T, ClientError> {
-        f(self)
+/// Which of the two no-run questions is being asked.
+#[derive(Debug, Clone, Copy)]
+enum Explain {
+    Type,
+    Plan,
+}
+
+impl Explain {
+    fn name(self) -> &'static str {
+        match self {
+            Explain::Type => ":type",
+            Explain::Plan => ":plan",
+        }
     }
+}
+
+/// Render whatever the compiler found, **in colour when there is a terminal**.
+///
+/// The reason this is worth the two arms: a diagnostic's value is the caret and the
+/// span, and codespan draws both — but it draws them through a style-aware writer, so a
+/// shell that renders to a string first gets the text and loses the emphasis. Off a
+/// terminal it is plain, which is what a test asserts on and what a pipe wants.
+fn render_diagnostics(compilation: &Compilation, out: &mut impl Write) -> std::io::Result<()> {
+    let config = term::Config::default();
+
+    if prompt::colours_enabled() {
+        let _ = compilation.render(&mut Ansi::new(&mut *out), &config);
+    } else {
+        let _ = compilation.render(&mut NoColor::new(&mut *out), &config);
+    }
+
+    Ok(())
 }
 
 /// A refusal is the server declining one stream, and the session survives it.
@@ -405,86 +778,163 @@ fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
 
+fn format_name(format: RowFormat) -> &'static str {
+    match format {
+        RowFormat::Table => "table",
+        RowFormat::Json => "json",
+        RowFormat::Jsonl => "jsonl",
+        RowFormat::Raw => "raw",
+        RowFormat::Count => "count",
+    }
+}
+
 fn named(schema: &Schema, index: usize) -> Option<&str> {
     schema.get(PredicateId(index as u32))?.name()
 }
 
-/// One predicate, as `\d` prints it: name, key, and a value side when there is one.
+/// One predicate, as `:schema <name>` prints it — in the schema's own syntax, painted
+/// by the schema's own lexer.
 fn predicate_line(schema: &Schema, index: usize) -> String {
-    let Some(predicate) = schema.get(PredicateId(index as u32)) else {
+    let id = PredicateId(index as u32);
+
+    let Some(name) = named(schema, index) else {
+        return String::new();
+    };
+    let Some(signature) = schema_print::signature(schema, id) else {
         return String::new();
     };
 
-    let key = render_predicate_ty(predicate.key().ty, schema, schema.interner());
-    let value = predicate.value().map_or_else(String::new, |value| {
-        format!(
-            "{}{}",
-            Role::Punctuation.paint(" -> "),
-            render_predicate_ty(value.ty, schema, schema.interner())
-        )
-    });
+    let virtual_note = if schema.is_virtual(id) {
+        "   (virtual — the server answers it)"
+    } else {
+        ""
+    };
 
     format!(
-        "  {}{} {key}{value}",
-        Role::Predicate.paint(predicate.name().unwrap_or("?")),
-        Role::Punctuation.paint(":"),
+        "  {}{virtual_note}",
+        prompt::paint_schema(&format!("predicate {name} : {signature}"))
     )
 }
 
 fn help(out: &mut impl Write) -> Result<(), CliError> {
-    writeln!(out, "  <query>          run a focus query")?;
-    writeln!(out, "  \\more            the next page of the last result")?;
-    writeln!(out, "  \\cancel          stop the last result early")?;
+    writeln!(out, "  <query>          run a focus query, e.g.")?;
+    writeln!(out, "                     X where src.File X")?;
+    writeln!(out, "                     {{file = F, line = L}} where …")?;
+
+    for command in &COMMANDS {
+        let spelling = match command.argument {
+            Some(argument) => format!("{} {argument}", command.name),
+            None => command.name.to_owned(),
+        };
+
+        writeln!(out, "  {spelling:<16} {}", command.help)?;
+    }
+
+    writeln!(out, "  :quit            leave (or Ctrl-D)")?;
     writeln!(
         out,
-        "  \\d [name]        the schema, one predicate, or a prefix"
+        "  a line with an unclosed {{ or ( continues on the next one"
     )?;
-    writeln!(out, "  \\l               the databases on this server")?;
-    writeln!(out, "  \\c <db>          connect to another database")?;
-    writeln!(out, "  \\timing          toggle how long a page took")?;
-    writeln!(out, "  \\profile         toggle what a query examined")?;
-    writeln!(out, "  \\q               leave (or Ctrl-D)")?;
+
     Ok(())
 }
 
 /// The readline loop.
 ///
 /// Thin on purpose: everything worth testing is in [`Repl::handle`], and what is left
-/// here is a terminal.
+/// here is a terminal — plus the two things only a terminal has, a Ctrl-C that means
+/// "stop reading rows" and a history that outlives the process.
 ///
 /// # Errors
 ///
-/// Whatever ends the session — a broken connection, or a readline failure that is not
-/// an interrupt.
+/// Whatever ends the session and cannot be reconnected around, or a readline failure
+/// that is not an interrupt.
 pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
     use rustyline::{Editor, error::ReadlineError, history::DefaultHistory};
 
     let mut repl = Repl::connect(socket, database)?;
-    let mut editor: Editor<crate::shell::FocusHelper, DefaultHistory> =
+
+    let mut editor: Editor<FocusHelper, DefaultHistory> =
         Editor::new().map_err(|error| CliError::Shell(error.to_string()))?;
-    editor.set_helper(Some(crate::shell::FocusHelper));
+    editor.set_helper(Some(FocusHelper::new(&COMMANDS)));
+
+    if let Some(helper) = editor.helper() {
+        helper.knows(repl.names());
+    }
+
+    // History is a person's, not a database's: it survives the session, and a shell
+    // that forgets what was typed a minute ago is one nobody explores with.
+    let history = prompt::history_path();
+    if let Some(path) = history.as_ref() {
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+        let _ = editor.load_history(path);
+    }
+
+    // **Ctrl-C stops the rows, not the shell.** Set here and read a row at a time by
+    // the pager; rustyline handles the keystroke itself while a *line* is being typed,
+    // so the two never contend for it.
+    {
+        let interrupt = Arc::clone(&repl.interrupt);
+        let _ = ctrlc::set_handler(move || interrupt.store(true, Ordering::Relaxed));
+    }
 
     let stdout = std::io::stdout();
 
     loop {
-        match editor.readline(&repl.prompt()) {
-            Ok(line) => {
-                let _ = editor.add_history_entry(&line);
+        let line = match editor.readline(&repl.prompt()) {
+            Ok(line) => line,
 
-                let mut out = stdout.lock();
-                if repl.handle(&line, &mut out)? == Control::Quit {
-                    return Ok(());
+            // Ctrl-C abandons the line, as it does everywhere; Ctrl-D leaves. A held
+            // result goes with the session either way, and the server notices the
+            // socket closing.
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
+            Err(error) => return Err(CliError::Shell(error.to_string())),
+        };
+
+        let _ = editor.add_history_entry(&line);
+
+        let outcome = {
+            let mut out = stdout.lock();
+            repl.handle(&line, &mut out)
+        };
+
+        match outcome {
+            Ok(Control::Quit) => break,
+            Ok(Control::Continue) => {}
+
+            // The conversation is broken rather than the request refused — see the
+            // module docs for which is which. One attempt to open a new one, because a
+            // server restarted under a shell should cost a line rather than a session;
+            // if that fails too, there is nothing left to talk to.
+            Err(error) => {
+                eprintln!("aperture: {error}");
+
+                match Repl::connect(&repl.socket.clone(), &repl.database.clone()) {
+                    Ok(fresh) => {
+                        eprintln!("aperture: reconnected to `{}`", fresh.database);
+                        let interrupt = Arc::clone(&repl.interrupt);
+                        repl = fresh;
+                        repl.interrupt = interrupt;
+
+                        if let Some(helper) = editor.helper() {
+                            helper.knows(repl.names());
+                        }
+                    }
+                    Err(again) => {
+                        eprintln!("aperture: {again}");
+                        return Err(error);
+                    }
                 }
             }
-
-            // Ctrl-C abandons the line, as it does everywhere; Ctrl-D leaves. A
-            // held result goes with the session either way, and the server notices
-            // the socket closing.
-            Err(ReadlineError::Interrupted) => continue,
-            Err(ReadlineError::Eof) => return Ok(()),
-            Err(error) => return Err(CliError::Shell(error.to_string())),
         }
     }
+
+    if let Some(path) = history.as_ref() {
+        let _ = editor.save_history(path);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -512,7 +962,7 @@ mod tests {
 
     /// **The acceptance criterion of Phase 9f, and of this whole shell.**
     ///
-    /// `\more` holds a bytes-only cursor across a round trip and resumes it, which is
+    /// `:more` holds a bytes-only cursor across a round trip and resumes it, which is
     /// [I4](../../docs/invariants.md#i4) — resume equals an uninterrupted run —
     /// exercised interactively for the first time. The battery has proved this over
     /// generated plans since Phase 0; what it has never had is a person's hand on it.
@@ -550,7 +1000,7 @@ mod tests {
             let mut pages = 1;
 
             while repl.held.is_some() {
-                all.extend(paths(&typed(&mut repl, "\\more")));
+                all.extend(paths(&typed(&mut repl, ":more")));
                 pages += 1;
             }
 
@@ -583,52 +1033,137 @@ mod tests {
         let mut repl = repl(&serving);
 
         let first = typed(&mut repl, "F where src.File F");
-        assert!(first.contains("\\more"), "{first}");
+        assert!(first.contains(":more"), "{first}");
 
         while repl.held.is_some() {
-            let page = typed(&mut repl, "\\more");
+            let page = typed(&mut repl, ":more");
             if repl.held.is_none() {
-                assert!(!page.contains("\\more"), "the last page invites nothing");
+                assert!(!page.contains(":more"), "the last page invites nothing");
             }
         }
 
-        let after = typed(&mut repl, "\\more");
+        let after = typed(&mut repl, ":more");
         assert!(after.contains("no result to continue"), "{after}");
     }
 
-    /// A query that does not compile is the server refusing one stream, and the
-    /// session goes on answering.
+    /// **A query that does not compile never leaves the machine**, and what is printed
+    /// is the compiler's own diagnostic — code, message and the span it points at.
     #[test]
-    fn a_bad_query_does_not_end_the_session() {
+    fn a_bad_query_is_answered_here_and_the_session_goes_on() {
         let serving = serving(3);
         let mut repl = repl(&serving);
 
-        let refused = typed(&mut repl, "this is not focus");
-        assert!(!refused.is_empty(), "it says something");
+        let refused = typed(&mut repl, "F where src.Nope F");
+        assert!(refused.contains("src.Nope"), "{refused}");
+        assert!(
+            refused.contains("reject/unknown-predicate"),
+            "the code, not a paraphrase: {refused}"
+        );
+        assert!(refused.contains('^'), "and the caret: {refused}");
 
         let after = typed(&mut repl, "F where src.File F");
         assert_eq!(paths(&after).len(), 3, "and the next query still runs");
     }
 
-    /// `\d` resolves a name exactly, falls back to a prefix, and says so when neither
-    /// answers.
+    /// `:schema` resolves a name exactly, falls back to a prefix, and says so when
+    /// neither answers — and with no argument prints the schema the *server* serves.
     #[test]
-    fn describe_resolves_a_name_then_a_prefix() {
+    fn schema_resolves_a_name_then_a_prefix() {
         let serving = serving(1);
         let mut repl = repl(&serving);
 
-        let one = typed(&mut repl, "\\d src.File");
+        let all = typed(&mut repl, ":schema");
+        assert!(all.contains("schema src {"), "it is source: {all}");
+        assert!(
+            all.contains("aperture.db"),
+            "including what the server answers itself: {all}"
+        );
+
+        let one = typed(&mut repl, ":schema src.File");
         assert!(one.contains("src.File"), "{one}");
         assert!(!one.contains("src.Decl"), "an exact name is not a prefix");
 
-        let namespace = typed(&mut repl, "\\d src.");
+        let namespace = typed(&mut repl, ":schema src.");
         assert!(namespace.contains("src.File") && namespace.contains("src.Decl"));
 
-        let nothing = typed(&mut repl, "\\d nope.");
+        let nothing = typed(&mut repl, ":schema nope.");
         assert!(nothing.contains("no predicate matches"), "{nothing}");
+
+        // The psql spelling reaches the same place.
+        assert_eq!(typed(&mut repl, "\\d src.File"), one);
     }
 
-    /// A new query ends the old result rather than leaving `\more` pointed at it.
+    /// **`:plan` and `:type` answer without running anything**, which is what a client
+    /// could not do at all until it could ask the server for the schema.
+    #[test]
+    fn plan_and_type_are_answered_locally() {
+        let serving = serving(3);
+        let mut repl = repl(&serving);
+
+        let plan = typed(&mut repl, ":plan F where src.File F");
+        assert!(plan.contains("src.File"), "{plan}");
+        assert!(plan.contains("scan") || plan.contains("seek"), "{plan}");
+
+        let ty = typed(&mut repl, ":type F where src.File F");
+        assert!(ty.contains(": str"), "{ty}");
+
+        // Neither ran: the result the pager holds is still nothing.
+        assert!(repl.held.is_none());
+
+        // And a bad one is diagnosed rather than sent.
+        let bad = typed(&mut repl, ":plan F where src.Nope F");
+        assert!(bad.contains("src.Nope"), "{bad}");
+
+        assert!(typed(&mut repl, ":plan").contains("needs a query"));
+    }
+
+    /// The page size is a knob, and it takes effect on the next query.
+    #[test]
+    fn limit_sets_the_page_size() {
+        let serving = serving(10);
+        let mut repl = repl(&serving);
+
+        assert!(typed(&mut repl, ":limit").contains("40 row(s) per page"));
+        assert!(typed(&mut repl, ":limit 3").contains("3 row(s) per page"));
+        assert!(typed(&mut repl, ":limit 0").contains("takes a row count"));
+        assert!(typed(&mut repl, ":limit lots").contains("takes a row count"));
+
+        let first = typed(&mut repl, "F where src.File F");
+        assert_eq!(paths(&first).len(), 3, "three rows, then an invitation");
+        assert!(first.contains(":more for the next 3"), "{first}");
+    }
+
+    /// **Rows are JSON**, one value per line, and the shape follows the head.
+    #[test]
+    fn rows_are_json_by_default() {
+        let serving = serving(2);
+        let mut repl = repl(&serving);
+
+        let rows = typed(&mut repl, "{path = F} where src.File F");
+
+        let objects: Vec<serde_json::Value> = rows
+            .lines()
+            .filter(|line| line.starts_with('{'))
+            .map(|line| serde_json::from_str(line).expect("valid JSON"))
+            .collect();
+
+        assert_eq!(objects.len(), 2, "{rows}");
+        assert!(
+            objects[0]["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with(".py"))
+        );
+
+        // And the table is still a command away, for a person reading rather than
+        // piping.
+        assert!(typed(&mut repl, ":format table").contains("table"));
+        let table = typed(&mut repl, "{path = F} where src.File F");
+        assert!(table.contains("PATH"), "{table}");
+
+        assert!(typed(&mut repl, ":format sideways").contains("takes jsonl"));
+    }
+
+    /// A new query ends the old result rather than leaving `:more` pointed at it.
     #[test]
     fn a_second_query_replaces_the_first_result() {
         let serving = serving(220);
@@ -638,14 +1173,14 @@ mod tests {
         assert!(repl.held.is_some());
 
         let second = typed(&mut repl, "F where src.File F");
-        assert!(second.contains("\\more"), "the new result is the held one");
+        assert!(second.contains(":more"), "the new result is the held one");
 
-        let cancelled = typed(&mut repl, "\\cancel");
+        let cancelled = typed(&mut repl, ":cancel");
         assert!(cancelled.contains("cancelled"), "{cancelled}");
         assert!(repl.held.is_none());
     }
 
-    /// `\c` to a database that is not there keeps the one that is.
+    /// `:connect` to a database that is not there keeps the one that is.
     ///
     /// The old connection is still open and still answering, so losing the session
     /// over a typo would be throwing away a working thing to report a broken one.
@@ -654,7 +1189,7 @@ mod tests {
         let serving = serving(3);
         let mut repl = repl(&serving);
 
-        let refused = typed(&mut repl, "\\c nope");
+        let refused = typed(&mut repl, ":connect nope");
         assert!(!refused.contains("now connected"), "{refused}");
 
         let after = typed(&mut repl, "F where src.File F");
@@ -662,7 +1197,7 @@ mod tests {
         assert_eq!(repl.database, "code", "and it is still the one named");
     }
 
-    /// **`\l` is a query**, and the row that comes back is this server's own root.
+    /// **`:list` is a query**, and the row that comes back is this server's own root.
     ///
     /// The point of the test is the last assertion: the same listing is *filterable*,
     /// because it went through a plan rather than a bespoke frame. A `LIST` message
@@ -673,7 +1208,7 @@ mod tests {
         let serving = serving(1);
         let mut repl = repl(&serving);
 
-        let listed = typed(&mut repl, "\\l");
+        let listed = typed(&mut repl, ":list");
         assert!(listed.contains("code"), "{listed}");
         assert!(listed.contains("writable"), "{listed}");
 
@@ -687,7 +1222,34 @@ mod tests {
         );
     }
 
-    /// `\q` is the one thing that stops the loop.
+    /// `:facts` is sugar, and it shows the query it is sugar for.
+    #[test]
+    fn facts_runs_a_scan_and_says_what_it_ran() {
+        let serving = serving(2);
+        let mut repl = repl(&serving);
+
+        let rows = typed(&mut repl, ":facts src.File");
+        assert!(rows.contains("X where src.File X"), "{rows}");
+        assert_eq!(paths(&rows).len(), 2, "{rows}");
+
+        assert!(typed(&mut repl, ":facts").contains("needs a predicate"));
+    }
+
+    /// `:help` lists every command in the table, so one added without help text is
+    /// visible rather than silent.
+    #[test]
+    fn help_lists_the_table() {
+        let serving = serving(1);
+        let mut repl = repl(&serving);
+
+        let help = typed(&mut repl, ":help");
+        for command in &super::COMMANDS {
+            assert!(help.contains(command.name), "{} is missing", command.name);
+        }
+        assert!(help.contains(":quit"), "and the one that is not in it");
+    }
+
+    /// `:quit` is the one thing that stops the loop.
     #[test]
     fn quit_is_the_only_way_the_loop_ends() {
         let serving = serving(1);
@@ -695,12 +1257,27 @@ mod tests {
         let mut out = Vec::new();
 
         assert_eq!(
-            repl.handle("\\timing", &mut out).expect("handled"),
+            repl.handle(":timing", &mut out).expect("handled"),
             Control::Continue
+        );
+        assert_eq!(
+            repl.handle(":quit", &mut out).expect("handled"),
+            Control::Quit
         );
         assert_eq!(
             repl.handle("\\q", &mut out).expect("handled"),
             Control::Quit
         );
+    }
+
+    /// An unknown command says so and points at the one that lists them.
+    #[test]
+    fn an_unknown_command_points_at_help() {
+        let serving = serving(1);
+        let mut repl = repl(&serving);
+
+        let nope = typed(&mut repl, ":nonesuch");
+        assert!(nope.contains("no such command"), "{nope}");
+        assert!(nope.contains(":help"), "{nope}");
     }
 }
