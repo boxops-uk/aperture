@@ -1545,6 +1545,17 @@ impl Flattener<'_> {
                 }
             }
 
+            // **An operand can be a read through a reference too.** `E = S.endLine -
+            // D.line` where `D` is a reference field needs `src.Decl` fetched before
+            // `.line` names anything, exactly as the head does — and missing this arm
+            // was invisible until a query wrote one, because a derived bind over
+            // fields of rows already in registers needs no fetch at all.
+            ExprKind::Arith(operands, _) => {
+                for operand in operands.clone().iter() {
+                    self.fetch_within(*operand, body);
+                }
+            }
+
             ExprKind::Access(_, base) | ExprKind::Select(_, base) => {
                 // Innermost first: `X.via.of.name` reads through `X.via` to reach
                 // `of`, and through *that* to reach `name`, so each hop has to be a

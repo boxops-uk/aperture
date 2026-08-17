@@ -262,6 +262,14 @@ pub const CORPUS: &[Entry] = &[
          which is the shape the syntax has",
     ),
     entry(
+        "Y where test.Ref {of = F}; Y = F.id + 100",
+        Supported("101; 102"),
+        "an operand read **through a reference**, which needs the target fetched \
+         before `.id` names anything. Missing that was invisible until a query \
+         wrote one, because arithmetic over fields of rows already in registers \
+         needs no fetch at all — found against a 25M-fact index, not here",
+    ),
+    entry(
         "Z where test.Count X; Y = X + 1; Z = Y + 1",
         Supported("-9223372036854775806; -40; 9; 1002"),
         "a **chain** — the second derive reads the first's register rather than \
