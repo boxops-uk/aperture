@@ -598,6 +598,17 @@ impl Repl {
             Some(format) => {
                 self.format = format;
                 writeln!(out, "  rows print as {}", format_name(format))?;
+
+                // Said once, when it is chosen, because it is the one shape whose
+                // meaning changes under paging: `json` closes its array at the end of
+                // every page, so a paged result is a document per page rather than one
+                // document. `jsonl` is what does not have that problem.
+                if format == RowFormat::Json {
+                    writeln!(
+                        out,
+                        "  each page is its own document — :format jsonl if you are piping"
+                    )?;
+                }
             }
             None => writeln!(out, "  :format takes jsonl, json, table or raw")?,
         }
