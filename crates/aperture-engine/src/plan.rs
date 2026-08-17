@@ -162,6 +162,109 @@ pub enum ResidualOp {
     },
     /// The [`SeekKeyPart::RegisterFactId`] compare, once the seek prefix has closed.
     EqRegisterFactId(Address),
+
+    /// `field < constant` and its three siblings.
+    ///
+    /// **A byte comparison, and that is not a shortcut.** The key encoding is
+    /// order-preserving ([I1](../../docs/invariants.md#i1)), so the lexicographic
+    /// order of two encoded fields of the same type *is* their value order — which is
+    /// the property the whole storage model rests on, used here for the first time
+    /// somewhere other than a seek. No decode, no allocation, no value read.
+    ///
+    /// Filters rather than seeks, for now. An order comparison on a *leading* key
+    /// field denotes one contiguous run and could narrow the scan, unlike a denial —
+    /// so unlike `NotPrefix` there is a sargeable form to look for later. It is not
+    /// built, and this comment is the note that it is possible rather than a claim
+    /// that it exists.
+    CmpConst {
+        op: Compare,
+        value: Box<[u8]>,
+    },
+
+    /// `field < register.field` — the same comparison against another bound row.
+    ///
+    /// Which side is which is decided at flatten: whichever operand's level runs
+    /// *later* carries the residual, and the operator is flipped if that turned out
+    /// to be the right-hand side. So one arm covers `A.x < B.y` and `B.y > A.x`.
+    CmpRegisterField {
+        op: Compare,
+        address: Address,
+        path: FieldPath,
+    },
+
+    /// `field < field`, **both of this row** — `test.Edge {from = X, to = Y}; X < Y`.
+    ///
+    /// Its own arm rather than [`CmpRegisterField`](ResidualOp::CmpRegisterField)
+    /// pointing at the level's own address, and that is not tidiness: a residual runs
+    /// *while* its level is choosing whether to keep the row, so the register does
+    /// not hold it yet and reading it back raises "read before anything was bound".
+    /// The row is right there as the bytes being filtered, which is what this reads.
+    CmpSelfField {
+        op: Compare,
+        path: FieldPath,
+    },
+}
+
+/// The four order comparisons, as a residual applies them.
+///
+/// Separate from [`syntax::CompareOp`](crate::syntax::CompareOp), which is what the
+/// source said: by the time a residual is built, the operands may have been swapped,
+/// so the two are deliberately different types rather than one shared between the
+/// front end and the IR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compare {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl Compare {
+    /// Whether `ordering` — the left operand compared to the right — satisfies this.
+    #[must_use]
+    pub const fn holds(self, ordering: std::cmp::Ordering) -> bool {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+
+        matches!(
+            (self, ordering),
+            (Compare::Lt, Less)
+                | (Compare::Gt, Greater)
+                | (Compare::Le, Less | Equal)
+                | (Compare::Ge, Greater | Equal)
+        )
+    }
+
+    /// The same relation with its operands swapped — `a < b` is `b > a`.
+    #[must_use]
+    pub const fn flipped(self) -> Compare {
+        match self {
+            Compare::Lt => Compare::Gt,
+            Compare::Le => Compare::Ge,
+            Compare::Gt => Compare::Lt,
+            Compare::Ge => Compare::Le,
+        }
+    }
+
+    #[must_use]
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Compare::Lt => "<",
+            Compare::Le => "<=",
+            Compare::Gt => ">",
+            Compare::Ge => ">=",
+        }
+    }
+
+    /// The tag this contributes to a plan fingerprint.
+    #[must_use]
+    const fn tag(self) -> u8 {
+        match self {
+            Compare::Lt => 0,
+            Compare::Le => 1,
+            Compare::Gt => 2,
+            Compare::Ge => 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -746,6 +849,26 @@ impl Fingerprint {
                     self.byte(5);
                     self.bytes(bytes);
                 }
+                // Distinct tags again, and the operator inside the tag rather than
+                // beside it: two plans differing only in `<` against `<=` must not
+                // accept each other's cursors, and folding the relation into the
+                // fingerprint is what says so.
+                ResidualOp::CmpConst { op, value } => {
+                    self.byte(6);
+                    self.byte(op.tag());
+                    self.bytes(value);
+                }
+                ResidualOp::CmpRegisterField { op, address, path } => {
+                    self.byte(7);
+                    self.byte(op.tag());
+                    self.address(*address);
+                    self.path(path);
+                }
+                ResidualOp::CmpSelfField { op, path } => {
+                    self.byte(8);
+                    self.byte(op.tag());
+                    self.path(path);
+                }
             }
         }
     }
@@ -990,6 +1113,96 @@ mod tests {
                     *l.sources[0].residuals_mut() = Box::new([Residual {
                         path: FieldPath::field(0),
                         op: ResidualOp::NotPrefix(i64_field(7).into_boxed_slice()),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            // **The four order comparisons, all against one another and against the
+            // equalities.** Two plans differing only in `<` against `<=` answer
+            // different rows, so a cursor from one must not resume into the other —
+            // which is why the relation is folded into the tag rather than left
+            // beside it.
+            (
+                "the same constant compared with <",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::CmpConst {
+                            op: Compare::Lt,
+                            value: i64_field(7).into_boxed_slice(),
+                        },
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "the same constant compared with <=",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::CmpConst {
+                            op: Compare::Le,
+                            value: i64_field(7).into_boxed_slice(),
+                        },
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "the same constant compared with >",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::CmpConst {
+                            op: Compare::Gt,
+                            value: i64_field(7).into_boxed_slice(),
+                        },
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "the same constant compared with >=",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::CmpConst {
+                            op: Compare::Ge,
+                            value: i64_field(7).into_boxed_slice(),
+                        },
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "a comparison against another register's field",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::CmpRegisterField {
+                            op: Compare::Lt,
+                            address: Address::new(0),
+                            path: FieldPath::field(1),
+                        },
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "a comparison against this row's own other field",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::CmpSelfField {
+                            op: Compare::Lt,
+                            path: FieldPath::field(1),
+                        },
                     }]);
                     body[0] = Step::Level(l);
                 }),

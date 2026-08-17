@@ -153,6 +153,91 @@ pub const CORPUS: &[Entry] = &[
         Supported("1; 1; 2"),
         "two-level join through a shared variable",
     ),
+    // ---- order comparisons -------------------------------------------------
+    //
+    // Four operators, three shapes: a field against a constant either way round, and
+    // a field against another register's field. All of them **filter** — an order
+    // comparison on a leading key field denotes one contiguous run and could narrow
+    // a seek, unlike a denial, but the sargeable form is not built.
+    entry(
+        "X where test.Count X; X < 7",
+        Supported("-9223372036854775808; -42"),
+        "a **comparison** against a constant, applied as a residual by the level \
+         that captures the variable — the same place a constraint lands",
+    ),
+    entry(
+        "X where test.Count X; X <= 7",
+        Supported("-9223372036854775808; -42; 7"),
+        "`<=` includes the bound, which is the whole of what distinguishes it — and \
+         a distinct fingerprint tag, or two plans differing only here would accept \
+         each other's resume cursors",
+    ),
+    entry(
+        "X where test.Count X; X > -42",
+        Supported("7; 1000"),
+        "a **negative** bound: the int encoding flips the sign bit, so the byte \
+         order is the numeric order and this compares bytes ([I1](invariants.md))",
+    ),
+    entry(
+        "X where test.Count X; 7 <= X",
+        Supported("7; 1000"),
+        "the constant on the **left**. The field carries the residual whichever side \
+         it was written, so the relation is flipped rather than a second arm added",
+    ),
+    entry(
+        "X where test.Count X; X >= 7",
+        Supported("7; 1000"),
+        "and the same query written the other way round answers the same rows — \
+         which is what the flip means",
+    ),
+    entry(
+        "N where test.Name N; N > \"ann\"",
+        Supported("anna; bob"),
+        "**strings compare too**, and for the same reason integers do: the encoding \
+         is order-preserving, so `\"ann\" < \"anna\"` falls out of the bytes",
+    ),
+    entry(
+        "{a = X, b = Y} where test.Edge {from = X, to = Y}; X < Y",
+        Supported("{a = 1, b = 2}; {a = 1, b = 3}; {a = 2, b = 3}"),
+        "two fields of one row, compared against each other — the level carries a \
+         residual naming its own key twice",
+    ),
+    entry(
+        "{a = X, b = Y} where test.Edge {from = X, to = Y}; X > Y",
+        Supported(""),
+        "the negative control: the same rows, the opposite relation, nothing",
+    ),
+    entry(
+        "Y where test.Edge {from = X, to = Y}; test.Bar {id = Z}; Z < X",
+        Supported("3"),
+        "**two registers**, and which one filters is decided by address rather than \
+         by syntax: the later level carries the residual and the relation is flipped \
+         if that turned out to be the right-hand side",
+    ),
+    entry(
+        "N where test.Name N; N < 3",
+        Diagnosed(Code::RejectTypeMismatch),
+        "the two sides of a comparison unify, so comparing a string against an \
+         integer is the ordinary type error rather than a special rule",
+    ),
+    entry(
+        "X where X = test.Foo _; X < 3",
+        Diagnosed(Code::RejectTypeMismatch),
+        "a whole **row** has no order. An id is an allocation sequence, and exposing \
+         it as an order would be a trap rather than a feature",
+    ),
+    entry(
+        "N where test.Name N; N < \"a\"..",
+        Diagnosed(Code::RejectTypeMismatch),
+        "a **prefix range** has no order either — it is a set of values, not one",
+    ),
+    entry(
+        "X where X = test.Foo _; X.value < \"b\"",
+        Diagnosed(Code::NyiValueMatch),
+        "a fact's **value** has no residual: the bytes are in `entities`, which \
+         [I6](invariants.md) keeps out of the scan loop. The same deferral matching \
+         on a value draws, reached through the comparison",
+    ),
     entry(
         "X where test.Nested {outer = {inner = X}}",
         Supported("1; 7"),

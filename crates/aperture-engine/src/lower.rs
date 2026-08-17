@@ -23,7 +23,8 @@ use crate::{
     lexer::{self, LiteralError, Token},
     parser::{Rule, Span},
     syntax::{
-        Ast, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, SyntaxTree, narrow_offset,
+        ArithOp, Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, SyntaxTree,
+        narrow_offset,
     },
 };
 use aperture_schema::schema::{LocalInterner, Schema, Symbol};
@@ -162,6 +163,36 @@ impl Lowering<'_> {
             // for half of one; only what the statement *means* differs.
             Rule::DenyStmt => Out::Stmt(self.bind_stmt(children, &span, QueryStmt::Deny)),
 
+            // The four order comparisons, which are the deny's two sides again with a
+            // relation attached. Four rules rather than one with a token to inspect,
+            // because that is the shape that stayed LL(1).
+            Rule::LtStmt => Out::Stmt(self.compare_stmt(children, &span, CompareOp::Lt)),
+            Rule::LeStmt => Out::Stmt(self.compare_stmt(children, &span, CompareOp::Le)),
+            Rule::GtStmt => Out::Stmt(self.compare_stmt(children, &span, CompareOp::Gt)),
+            Rule::GeStmt => Out::Stmt(self.compare_stmt(children, &span, CompareOp::Ge)),
+
+            // `a + b - c`. The operators are read back off the tokens rather than
+            // carried by the rule, since one node holds a run of them.
+            Rule::Arith => {
+                let ops: Box<[ArithOp]> = children
+                    .iter()
+                    .filter_map(|(node, _)| match node.kind() {
+                        CstKind::Token {
+                            token: Token::Plus, ..
+                        } => Some(ArithOp::Add),
+                        CstKind::Token {
+                            token: Token::Minus,
+                            ..
+                        } => Some(ArithOp::Sub),
+                        _ => None,
+                    })
+                    .collect();
+
+                let operands: Box<[NodeId]> = patterns(children).into();
+                let id = self.push(ExprKind::Arith(operands, ops), &span);
+                Out::Pattern(id)
+            }
+
             // `Rule::Stmt` and `Rule::Primary` never appear in a well-formed tree —
             // every alternative of those rules renames its node — but a parse that
             // failed before reaching the rename leaves the bare rule behind. They
@@ -178,7 +209,12 @@ impl Lowering<'_> {
 
             // Pass-throughs: a `pattern` with no `|`, a `branch` with no access
             // chain, and a parenthesised group are all their single child.
-            Rule::Pattern | Rule::Branch | Rule::Fact | Rule::ParenPrimary | Rule::Primary => {
+            Rule::Pattern
+            | Rule::Sum
+            | Rule::Branch
+            | Rule::Fact
+            | Rule::ParenPrimary
+            | Rule::Primary => {
                 let id = self.one_pattern(children, &span);
                 Out::Pattern(id)
             }
@@ -346,6 +382,28 @@ impl Lowering<'_> {
             (Some(only), _) => {
                 let hole = self.hole(span);
                 build(only, hole)
+            }
+            (None, _) => {
+                let hole = self.hole(span);
+                QueryStmt::Implicit(hole)
+            }
+        }
+    }
+
+    /// `pattern OP pattern`, with the relation the rule named.
+    fn compare_stmt(
+        &mut self,
+        children: Box<[(CstNode<'_>, Out)]>,
+        span: &Span,
+        op: CompareOp,
+    ) -> QueryStmt<NodeId> {
+        let mut ids = patterns(children).into_iter();
+
+        match (ids.next(), ids.next()) {
+            (Some(lhs), Some(rhs)) => QueryStmt::Compare(lhs, rhs, op),
+            (Some(only), _) => {
+                let hole = self.hole(span);
+                QueryStmt::Compare(only, hole, op)
             }
             (None, _) => {
                 let hole = self.hole(span);
@@ -631,6 +689,23 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            ExprKind::Arith(operands, ops) => {
+                let mut parts: Vec<String> = vec![];
+                for (at, operand) in operands.iter().enumerate() {
+                    if at > 0 {
+                        parts.push(
+                            ops.get(at - 1)
+                                .map_or("+", |op| match op {
+                                    ArithOp::Add => "+",
+                                    ArithOp::Sub => "-",
+                                })
+                                .to_owned(),
+                        );
+                    }
+                    parts.push(std::string::ToString::to_string(operand));
+                }
+                format!("({})", parts.join(" "))
+            }
             ExprKind::Access(FieldRef::Key(f), base) => format!("{base}.{}", name(f)),
             ExprKind::Access(FieldRef::Value, base) => format!("{base}.value!"),
             ExprKind::Select(alt, base) => format!("{base}.{}?", name(alt)),
@@ -652,7 +727,9 @@ mod tests {
         let (ast, diags, interner) = lower_source(source);
         assert!(codes(&diags).is_empty(), "{source:?}: {:?}", codes(&diags));
         let id = match &ast.query().body()[0] {
-            QueryStmt::Bind(_, rhs) | QueryStmt::Deny(_, rhs) => *rhs,
+            QueryStmt::Bind(_, rhs) | QueryStmt::Deny(_, rhs) | QueryStmt::Compare(_, rhs, _) => {
+                *rhs
+            }
             QueryStmt::Implicit(id) | QueryStmt::Negation(id) => *id,
         };
         shape(&ast, &interner, id)

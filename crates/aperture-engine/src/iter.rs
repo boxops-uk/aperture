@@ -821,6 +821,32 @@ impl<S: FactStore> StackFrame<S> {
                 ResidualOp::EqRegisterFactId(var_address) => {
                     field == fact_ref_bytes(state.fact(*var_address)?.fact_id)
                 }
+
+                // **The order comparisons, as a byte compare.** The key encoding is
+                // order-preserving ([I1]), so the lexicographic order of two encoded
+                // fields of one type is their value order — which makes this the same
+                // borrowed-span, no-decode, no-allocation shape as every arm above it.
+                //
+                // [I1]: ../../docs/invariants.md#i1
+                ResidualOp::CmpConst { op, value } => op.holds(field.cmp(value.as_ref())),
+                ResidualOp::CmpRegisterField {
+                    op,
+                    address: var_address,
+                    path,
+                } => {
+                    let other = state.fact(*var_address)?;
+                    let other_key = other.key();
+                    let other_span =
+                        get_field_span(frame_field_offsets, &other_key, *var_address, path)?;
+                    op.holds(field.cmp(&other_key[other_span]))
+                }
+                // Both sides of *this* row. The offsets cache is the row's own, which
+                // is what makes the second span free after the first.
+                ResidualOp::CmpSelfField { op, path } => {
+                    let other = field_span(&mut row_field_offsets, &key, path)?;
+                    let other: &&[u8] = &&key[other];
+                    op.holds(field.cmp(other))
+                }
             };
             if !ok {
                 return Ok(false);

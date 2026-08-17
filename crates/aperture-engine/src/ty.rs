@@ -161,6 +161,53 @@ impl Checker<'_> {
             }
             QueryStmt::Bind(lhs, rhs) => self.bind(ast, *lhs, *rhs),
             QueryStmt::Deny(lhs, rhs) => self.deny(ast, *lhs, *rhs),
+            QueryStmt::Compare(lhs, rhs, _) => self.compare(ast, *lhs, *rhs),
+        }
+    }
+
+    /// `lhs < rhs` and its three siblings.
+    ///
+    /// **Symmetric, unlike a bind or a denial.** Neither side is the one being said
+    /// something about, so neither has a shape requirement: both are inferred as
+    /// values and unified with each other, and a variable fresh on either side is
+    /// introduced exactly as `deny` introduces one on the left.
+    ///
+    /// The result of that unification must be **ordered**, which here means a scalar.
+    /// A record has no order, and two references have one only in the sense that
+    /// their ids were allocated in some sequence — which says nothing about the facts
+    /// and would be a trap to expose. Both are refused by name.
+    fn compare(&mut self, ast: &Ast, lhs: NodeId, rhs: NodeId) {
+        // Introduced before inference so that `X < 3` names `X` even where nothing
+        // has bound it yet — flatten reports the unbound case, as it does for a
+        // constraint and a denial.
+        for side in [lhs, rhs] {
+            if let ExprKind::Var(symbol) = ast.store().kind(side)
+                && self.lookup(*symbol).is_none()
+            {
+                let var = self.fresh_var_id();
+                self.env.push((*symbol, var));
+            }
+        }
+
+        let left = self.infer(ast, lhs);
+        let right = self.infer(ast, rhs);
+
+        if let Err(err) = self.unify(&left, &right) {
+            self.report(ast, rhs, err);
+            return;
+        }
+
+        match self.zonk(&left) {
+            Ty::Int | Ty::String | Ty::Var(_) | Ty::Error => {}
+            other => {
+                let rendered = self.render(&other);
+                self.reject(
+                    ast,
+                    lhs,
+                    Code::RejectTypeMismatch,
+                    format!("{rendered} has no order — compare integers or strings"),
+                );
+            }
         }
     }
 
@@ -396,6 +443,21 @@ impl Checker<'_> {
                         Ty::Var(var)
                     }
                 }
+            }
+
+            // **Arithmetic is integers, both ways.** Every operand unifies with
+            // `Int` and the result is `Int` — there is no string concatenation
+            // hiding behind `+`, and a schema is free to add one later without this
+            // having guessed at its spelling.
+            ExprKind::Arith(operands, _) => {
+                let operands = operands.clone();
+                for operand in operands.iter() {
+                    let ty = self.infer(ast, *operand);
+                    if let Err(err) = self.unify(&Ty::Int, &ty) {
+                        self.report(ast, *operand, err);
+                    }
+                }
+                Ty::Int
             }
 
             ExprKind::Record(fields) => Ty::Record(

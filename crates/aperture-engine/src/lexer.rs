@@ -56,6 +56,28 @@ pub enum Token {
     /// match, so `!=` is never seen as a negation of something starting with `=`.
     #[token("!=")]
     BangEq,
+    /// The four **order comparisons**, and the reason they are four tokens rather
+    /// than two plus a suffix is the same as `!=`'s: logos takes the longer match,
+    /// so `<=` is never `<` followed by `=`, and `X <= 3` cannot be read as a
+    /// comparison against a bind.
+    ///
+    /// Until Phase 11 there was no token here at all, and `X < 3` was a *lex* error
+    /// — the one place this grammar broke its own "permissive early, narrow later"
+    /// rule, and the one thing the corpus could not describe because it could not
+    /// tokenise it.
+    #[token("<")]
+    Lt,
+    #[token("<=")]
+    Le,
+    #[token(">")]
+    Gt,
+    #[token(">=")]
+    Ge,
+    /// Addition. Subtraction is [`Minus`](Token::Minus), which also prefixes a
+    /// negative literal — the parser tells them apart by position, since an infix
+    /// `-` can only follow a complete operand.
+    #[token("+")]
+    Plus,
     #[token(";")]
     Semi,
     #[token(",")]

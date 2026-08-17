@@ -69,11 +69,11 @@
 use crate::{
     diag::{Code, Diagnostics},
     plan::{
-        Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
-        SeekKeyPart, Source, Step, Test,
+        Access, Address, Compare as CompareRel, FieldPath, Level, Plan, Project, Residual,
+        ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
-    syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, QueryStmt},
+    syntax::{Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, NodeSpan, QueryStmt},
 };
 use aperture_encoding::tuple::{MARK_RECORD, MARK_TERM, Value, put_i64, put_str};
 use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
@@ -168,7 +168,7 @@ impl Stmt {
     fn placement(&self) -> Placement {
         match self {
             Stmt::Scan(generator) | Stmt::Negate(generator) => generator.placement,
-            Stmt::Alias(_) | Stmt::Constrain(_) => Placement::Floating,
+            Stmt::Alias(_) | Stmt::Constrain(_) | Stmt::Compare(_) => Placement::Floating,
         }
     }
 }
@@ -213,6 +213,20 @@ struct Alias {
 /// [`constraints`](Flattener::constraints) is collected from the whole body before
 /// any statement is lowered, exactly as the constant fold is, so the level that
 /// captures `X` sees it whenever that level runs.
+/// `left OP right` — an order comparison, before an order has been chosen.
+///
+/// Both sides are kept as written. Which one ends up carrying the residual is a
+/// question about the *plan* — the level that runs later has to be the one filtering,
+/// since the other's register must already hold a row — and that is not known until
+/// the order is.
+#[derive(Debug, Clone)]
+struct Comparison {
+    left: NodeId,
+    right: NodeId,
+    op: CompareOp,
+    span: NodeSpan,
+}
+
 #[derive(Debug, Clone)]
 struct Constraint {
     /// The variable being constrained — the only thing the *order* has to know,
@@ -248,6 +262,13 @@ enum Stmt {
     Negate(Gen),
     Alias(Alias),
     Constrain(Constraint),
+    /// `A < B` and its three siblings — a pure **read** of both sides.
+    ///
+    /// Not a [`Constrain`](Stmt::Constrain), even though it is also a filter that
+    /// binds nothing, because a constraint reads *one* variable and a comparison
+    /// reads two — and `reorder` needs both, or it is free to run the comparison
+    /// before the level binding its right-hand side.
+    Compare(Comparison),
 }
 
 impl Stmt {
@@ -256,6 +277,7 @@ impl Stmt {
             Stmt::Scan(generator) | Stmt::Negate(generator) => generator.span.clone(),
             Stmt::Alias(alias) => alias.span.clone(),
             Stmt::Constrain(constraint) => constraint.span.clone(),
+            Stmt::Compare(compare) => compare.span.clone(),
         }
     }
 }
@@ -526,6 +548,7 @@ pub fn dependencies(
         constraints: vec![],
         constrained: vec![],
         denials: vec![],
+        comparisons: vec![],
     };
 
     Some(flattener.collect()?.deps)
@@ -575,6 +598,7 @@ fn flatten_reporting(
         constraints: vec![],
         constrained: vec![],
         denials: vec![],
+        comparisons: vec![],
     };
 
     let collected = flattener.collect()?;
@@ -651,6 +675,12 @@ struct Flattener<'a> {
     /// binds, and a denial has nothing to offer it, so the collection a capture
     /// reads should not contain any.
     denials: Vec<(Symbol, NodeId)>,
+    /// Every order comparison in the body, collected before an order is chosen.
+    ///
+    /// Not keyed by variable as [`constraints`](Flattener::constraints) and
+    /// [`denials`](Flattener::denials) are, because a comparison has two sides and
+    /// neither is privileged: what it needs at application time is both, resolved.
+    comparisons: Vec<Comparison>,
 }
 
 impl Flattener<'_> {
@@ -694,6 +724,7 @@ impl Flattener<'_> {
                             QueryStmt::Bind(lhs, rhs) => QueryStmt::Bind(*lhs, *rhs),
                             QueryStmt::Negation(node) => QueryStmt::Negation(*node),
                             QueryStmt::Deny(lhs, rhs) => QueryStmt::Deny(*lhs, *rhs),
+                            QueryStmt::Compare(lhs, rhs, op) => QueryStmt::Compare(*lhs, *rhs, *op),
                         })
                         .collect();
 
@@ -798,6 +829,10 @@ impl Flattener<'_> {
                 }
 
                 QueryStmt::Deny(lhs, rhs) => self.deny(*lhs, *rhs, &mut stmts),
+
+                QueryStmt::Compare(lhs, rhs, op) => {
+                    self.compare(*lhs, *rhs, *op, &mut stmts);
+                }
             }
         }
 
@@ -910,6 +945,15 @@ impl Flattener<'_> {
                 // has to run first — which costs nothing, since the constraint is
                 // applied by that statement rather than by this one.
                 Stmt::Constrain(constraint) => self.scan_read(constraint.var, &mut occurrences),
+
+                // **Both sides are reads.** A comparison binds nothing and offers
+                // nothing, so it runs after whatever binds each side — which is the
+                // whole of the rule, and needed no new kind of constraint, exactly
+                // as a negation did not.
+                Stmt::Compare(compare) => {
+                    self.scan_read(compare.left, &mut occurrences);
+                    self.scan_read(compare.right, &mut occurrences);
+                }
             }
 
             deps.push(StmtDeps {
@@ -1036,7 +1080,7 @@ impl Flattener<'_> {
                 // Nor does a negation, and for a stronger reason: it binds nothing
                 // at all, so every variable it names belongs to whatever else in
                 // the query does bind it.
-                Stmt::Constrain(_) | Stmt::Negate(_) => continue,
+                Stmt::Constrain(_) | Stmt::Negate(_) | Stmt::Compare(_) => continue,
             };
 
             for name in claimed {
@@ -1233,6 +1277,11 @@ impl Flattener<'_> {
                 // whole body is collected either way. So the subquery's denial is
                 // the outer query's, exactly as its scans are.
                 QueryStmt::Deny(lhs, rhs) => self.deny(*lhs, *rhs, stmts),
+
+                // And a comparison inlines for the same reason a denial does: it
+                // opens no sources, so lifting it out of a subquery asks nothing
+                // about where anything runs.
+                QueryStmt::Compare(lhs, rhs, op) => self.compare(*lhs, *rhs, *op, stmts),
             }
         }
     }
@@ -1261,6 +1310,31 @@ impl Flattener<'_> {
     /// recorded as the body is walked, so `Z = 1; X != Z` and `X != Z; Z = 1` would
     /// compile differently for one query. That is the decision `reorder` took away
     /// from typecheck, and it does not get to come back in as a gate.
+    /// Record `lhs OP rhs` — an **order comparison** — and the statement reading it.
+    ///
+    /// Twice, as [`deny`](Self::deny) records a denial twice: once in
+    /// [`comparisons`](Flattener::comparisons), which is what
+    /// [`apply_comparisons`](Self::apply_comparisons) walks once the whole body has
+    /// been placed, and once as a statement so that `reorder` knows both sides are
+    /// read and runs it after whatever binds them.
+    ///
+    /// A fact pattern on either side is hoisted first, so `test.Foo {id = X}.name <
+    /// 3` is a level and a read of it rather than something this has to understand.
+    fn compare(&mut self, lhs: NodeId, rhs: NodeId, op: CompareOp, stmts: &mut Vec<Stmt>) {
+        self.hoist_within(lhs, stmts);
+        self.hoist_within(rhs, stmts);
+
+        let comparison = Comparison {
+            left: lhs,
+            right: rhs,
+            op,
+            span: self.ast.store().span(rhs),
+        };
+
+        self.comparisons.push(comparison.clone());
+        stmts.push(Stmt::Compare(comparison));
+    }
+
     fn deny(&mut self, lhs: NodeId, rhs: NodeId, stmts: &mut Vec<Stmt>) {
         if !matches!(self.ast.store().kind(rhs), ExprKind::Prefix(_)) && !self.is_foldable(rhs) {
             self.report(
@@ -1734,6 +1808,17 @@ impl Flattener<'_> {
             // it became.
             ExprKind::Fact(..) => self.read_hoisted(node, occurrences),
 
+            // **Arithmetic in a key**, which is matching on a computed value: the
+            // residual machinery compares a row's bytes against bytes known at
+            // compile time, and this is neither. Reported here rather than left to
+            // fail later, because a key is exactly where somebody would try it.
+            ExprKind::Arith(..) => self.report(
+                node,
+                Code::NyiValueMatch,
+                "matching a key field against an arithmetic expression is not \
+                 implemented yet; bind it first and compare",
+            ),
+
             // Deferred constructs, all of which typecheck has already reported.
             ExprKind::Never
             | ExprKind::Disjunction(_)
@@ -2029,6 +2114,10 @@ impl Flattener<'_> {
                 // because where a constraint belongs has nothing to do with where
                 // the statement stating it was written.
                 Stmt::Constrain(_) => {}
+
+                // Applied after the body, by whichever level runs later — see
+                // `apply_comparisons`. Nothing to emit from here.
+                Stmt::Compare(_) => {}
             }
         }
 
@@ -2039,6 +2128,7 @@ impl Flattener<'_> {
         self.apply_compares(&mut body);
         self.apply_constraints(&mut body);
         self.apply_denials(&mut body);
+        self.apply_comparisons(&mut body);
 
         let head = self.project(*self.ast.query().head());
 
@@ -2842,6 +2932,269 @@ impl Flattener<'_> {
     /// That is the asymmetry worth keeping in view when reading a `:plan`:
     /// `test.Name X; X = "a".."` seeks, and `test.Name X; X != "a".."` scans the
     /// predicate. The cost is negation's, not this design's.
+    /// Turn each **order comparison** into a residual on whichever side runs later.
+    ///
+    /// A comparison is the denial's shape with two ordered sides instead of one, and
+    /// like a denial it always filters: `A.x < B.y` reads rows and drops them. Unlike
+    /// a denial there *is* a sargeable form to look for later — an order comparison
+    /// on a leading key field denotes one contiguous run of the key order, where a
+    /// denial denotes the two runs either side of one. That form is not built; this
+    /// comment is the note that it is possible rather than a claim that it exists.
+    ///
+    /// **Which side carries the residual is decided by address, not by syntax.** A
+    /// residual runs while one level's register holds a row and reads another's, so
+    /// the *later* level must be the one filtering. When that turns out to be the
+    /// right-hand side, the relation is flipped — which is why one residual arm
+    /// covers `A.x < B.y` and `B.y > A.x` alike.
+    ///
+    /// Run **after** `apply_constraints`, so a variable a constraint folded is
+    /// already what it is by the time this looks it up.
+    fn apply_comparisons(&mut self, body: &mut Body) {
+        for comparison in std::mem::take(&mut self.comparisons) {
+            self.apply_comparison(body, &comparison);
+        }
+    }
+
+    fn apply_comparison(&mut self, body: &mut Body, comparison: &Comparison) {
+        let Comparison {
+            left,
+            right,
+            op,
+            span,
+        } = comparison;
+
+        // `resolve` answers `None` without reporting — the caller says what it
+        // wanted. A **prefix** is the one worth naming: `N < "a".."` reads as if a
+        // range had an order, and silently dropping the comparison would answer the
+        // unfiltered rows, which is the worst of the three outcomes available.
+        let (Some(lhs), Some(rhs)) = (self.resolve(*left), self.resolve(*right)) else {
+            let at = if self.resolve(*left).is_none() {
+                *left
+            } else {
+                *right
+            };
+
+            let code = if matches!(self.ast.store().kind(at), ExprKind::Prefix(_)) {
+                Code::RejectTypeMismatch
+            } else {
+                Code::NyiValueBind
+            };
+
+            self.report(
+                at,
+                code,
+                "this side of the comparison is in no register — compare a bound \
+                 field against a value",
+            );
+            return;
+        };
+
+        let op = match op {
+            CompareOp::Lt => CompareRel::Lt,
+            CompareOp::Le => CompareRel::Le,
+            CompareOp::Gt => CompareRel::Gt,
+            CompareOp::Ge => CompareRel::Ge,
+        };
+
+        match (lhs, rhs) {
+            // **Both constant** — decided here, once, rather than per row. A
+            // comparison that holds is a tautology and emits nothing; one that does
+            // not is the empty relation, which is the level with no sources the
+            // denial arm builds for the same reason.
+            (Slot::Const(a), Slot::Const(b)) => {
+                let Some(ty) = self.scalar_ty(*left).or_else(|| self.scalar_ty(*right)) else {
+                    self.report(
+                        *left,
+                        Code::NyiBindUnification,
+                        "comparing two whole records is not implemented yet",
+                    );
+                    return;
+                };
+
+                let (Some(Const::Bytes(a)), Some(Const::Bytes(b))) =
+                    (self.constant(a, &ty), self.constant(b, &ty))
+                else {
+                    self.report(
+                        *right,
+                        Code::RejectTypeMismatch,
+                        "these two do not compare — a range is not a value",
+                    );
+                    return;
+                };
+
+                if !op.holds(a.cmp(&b)) {
+                    body.push_level(Level {
+                        sources: Box::new([]),
+                        binds: Box::new([body.next_address()]),
+                    });
+                }
+            }
+
+            // A field against a constant, either way round. The constant's type comes
+            // from the *field*, which is what typecheck already unified them to.
+            (Slot::Field { address, path, ty }, Slot::Const(folded)) => {
+                let Some(value) = self.compare_constant(folded, &ty, *right) else {
+                    return;
+                };
+                self.push_residual(body, address, path, ResidualOp::CmpConst { op, value });
+            }
+            (Slot::Const(folded), Slot::Field { address, path, ty }) => {
+                let Some(value) = self.compare_constant(folded, &ty, *left) else {
+                    return;
+                };
+                // The *field* carries the residual, so the relation is read from its
+                // side: `3 < X` is `X > 3`.
+                self.push_residual(
+                    body,
+                    address,
+                    path,
+                    ResidualOp::CmpConst {
+                        op: op.flipped(),
+                        value,
+                    },
+                );
+            }
+
+            // Two fields. Whichever level runs later filters, because the other's
+            // register has to already hold a row when it does.
+            (
+                Slot::Field {
+                    address: a,
+                    path: a_path,
+                    ..
+                },
+                Slot::Field {
+                    address: b,
+                    path: b_path,
+                    ..
+                },
+            ) => {
+                if a == b {
+                    // **The same row twice.** A residual runs while its level is
+                    // deciding whether to keep the row, so the register does not hold
+                    // it yet — reading it back would raise "read before anything was
+                    // bound". The bytes being filtered are the answer, which is what
+                    // `CmpSelfField` reads.
+                    self.push_residual(
+                        body,
+                        a,
+                        a_path,
+                        ResidualOp::CmpSelfField { op, path: b_path },
+                    );
+                } else if a.0 > b.0 {
+                    self.push_residual(
+                        body,
+                        a,
+                        a_path,
+                        ResidualOp::CmpRegisterField {
+                            op,
+                            address: b,
+                            path: b_path,
+                        },
+                    );
+                } else {
+                    self.push_residual(
+                        body,
+                        b,
+                        b_path,
+                        ResidualOp::CmpRegisterField {
+                            op: op.flipped(),
+                            address: a,
+                            path: a_path,
+                        },
+                    );
+                }
+            }
+
+            // A fact's **value**: the bytes are in `entities`, and [I6] keeps
+            // `entities` out of the scan loop. The same deferral matching on a value
+            // draws, for the same reason.
+            //
+            // [I6]: ../../../docs/invariants.md#i6
+            (Slot::Value { .. }, _) | (_, Slot::Value { .. }) => {
+                self.report(
+                    *left,
+                    Code::NyiValueMatch,
+                    "comparing a fact's value is not implemented yet",
+                );
+            }
+
+            // A whole row or a whole key on one side. There is no order on an
+            // identity, and asking for one is a confusion rather than a gap — a
+            // reference's id is an allocation order, not anything about the fact.
+            (Slot::Key { .. } | Slot::Row { .. }, _) | (_, Slot::Key { .. } | Slot::Row { .. }) => {
+                let _ = span;
+                self.report(
+                    *left,
+                    Code::RejectTypeMismatch,
+                    "a whole row has no order — compare one of its fields",
+                );
+            }
+        }
+    }
+
+    /// The constant bytes for one side of a comparison, or the fault of it not
+    /// being a value at all.
+    ///
+    /// A **prefix** is turned away by name: `X < "a".."` reads as if a range had an
+    /// order, and the answer is that a range is a set of values rather than one.
+    fn compare_constant(
+        &mut self,
+        folded: NodeId,
+        ty: &PredicateTy,
+        at: NodeId,
+    ) -> Option<Box<[u8]>> {
+        match self.constant(folded, ty) {
+            Some(Const::Bytes(bytes)) => Some(bytes.into()),
+            Some(Const::Prefix(_)) => {
+                self.report(
+                    at,
+                    Code::RejectTypeMismatch,
+                    "a prefix range has no order — compare against a value",
+                );
+                None
+            }
+            None => {
+                self.report(
+                    at,
+                    Code::RejectTypeMismatch,
+                    "this is not a value of that field's type",
+                );
+                None
+            }
+        }
+    }
+
+    /// Add one residual to every alternative of the level binding `address`.
+    ///
+    /// Every alternative, exactly as a constraint and a denial do: a variable a
+    /// disjunction binds is in the same place in each branch, and a row surviving
+    /// one branch's filter while another would have dropped it is the bug that
+    /// reading only the first would be.
+    fn push_residual(
+        &mut self,
+        body: &mut Body,
+        address: Address,
+        path: FieldPath,
+        op: ResidualOp,
+    ) {
+        let Some(level) = body.level_mut(address) else {
+            return;
+        };
+
+        for source in level.sources.iter_mut() {
+            let residuals = source.residuals_mut();
+            let mut extended = residuals.to_vec();
+
+            extended.push(Residual {
+                path: path.clone(),
+                op: op.clone(),
+            });
+
+            *residuals = extended.into();
+        }
+    }
+
     fn apply_denials(&mut self, body: &mut Body) {
         for (symbol, pattern) in std::mem::take(&mut self.denials) {
             match self.lookup(symbol) {
@@ -3588,6 +3941,19 @@ mod tests {
                             ResidualOp::NotPrefix(_) => format!("{path} !^= k"),
                             ResidualOp::EqRegisterField { address, path: at } => {
                                 format!("{path} == {address}.{at}")
+                            }
+                            ResidualOp::CmpConst { op, .. } => {
+                                format!("{path} {} k", op.symbol())
+                            }
+                            ResidualOp::CmpRegisterField {
+                                op,
+                                address,
+                                path: at,
+                            } => {
+                                format!("{path} {} {address}.{at}", op.symbol())
+                            }
+                            ResidualOp::CmpSelfField { op, path: at } => {
+                                format!("{path} {} {at}", op.symbol())
                             }
                             ResidualOp::EqRegisterFactId(address) => {
                                 format!("{path} == {address}#")
@@ -8493,7 +8859,11 @@ mod battery {
                                 self.nested_path |= !path.is_flat();
                             }
                             ResidualOp::EqRegisterFactId(_) => self.fact_id_residual = true,
-                            ResidualOp::EqConst(_) => {}
+                            ResidualOp::CmpRegisterField { path, .. }
+                            | ResidualOp::CmpSelfField { path, .. } => {
+                                self.nested_path |= !path.is_flat();
+                            }
+                            ResidualOp::EqConst(_) | ResidualOp::CmpConst { .. } => {}
                         }
                     }
                 }

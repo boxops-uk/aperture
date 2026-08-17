@@ -117,7 +117,72 @@ pub enum ExprKind<T> {
     Disjunction(Box<[T]>),
     Subquery(Query<T>),
     Fact(PredicateId, T),
+    /// `a + b - c` — **flat**, N operands and N-1 operators, for the same reason
+    /// [`Disjunction`](ExprKind::Disjunction) is flat: nothing wants the tree.
+    ///
+    /// An arithmetic expression is a **value**, and the only thing a value can be is
+    /// what a bind names or what a comparison reads. It has no place in a fact's key
+    /// — matching on a computed value is `nyi/value-match` — and flatten says so
+    /// rather than the grammar, which is the usual division here.
+    Arith(Box<[T]>, Box<[ArithOp]>),
     Error,
+}
+
+/// The two arithmetic operators, in the order the operands are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithOp {
+    Add,
+    Sub,
+}
+
+impl ArithOp {
+    #[must_use]
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            ArithOp::Add => "+",
+            ArithOp::Sub => "-",
+        }
+    }
+}
+
+/// The four order comparisons, as written.
+///
+/// All four are kept rather than normalised to two by flipping the operands, because
+/// a diagnostic that says `>` where the source says `>` is worth the two extra arms —
+/// and because flatten decides *which side* is the field and which the bound value
+/// from the shapes, not from the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl CompareOp {
+    #[must_use]
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            CompareOp::Lt => "<",
+            CompareOp::Le => "<=",
+            CompareOp::Gt => ">",
+            CompareOp::Ge => ">=",
+        }
+    }
+
+    /// The same relation with its operands swapped — `a < b` is `b > a`.
+    ///
+    /// Flatten uses it when the *constant* turns out to be on the left, so that one
+    /// residual shape covers both spellings.
+    #[must_use]
+    pub const fn flipped(self) -> CompareOp {
+        match self {
+            CompareOp::Lt => CompareOp::Gt,
+            CompareOp::Le => CompareOp::Ge,
+            CompareOp::Gt => CompareOp::Lt,
+            CompareOp::Ge => CompareOp::Le,
+        }
+    }
 }
 
 pub enum QueryStmt<T> {
@@ -137,6 +202,15 @@ pub enum QueryStmt<T> {
     /// them apart in the tree is what keeps that difference from having to be
     /// rediscovered in flatten.
     Deny(T, T),
+    /// `pattern < pattern` and its three siblings — an **order comparison**.
+    ///
+    /// A statement rather than an operator inside a pattern, and a third relational
+    /// statement rather than a flag on [`Deny`](Self::Deny), for the reason the
+    /// denial is separate from the bind: what flatten can do with it differs. A
+    /// comparison binds nothing, reads whatever is already bound, and always filters
+    /// — like a denial. Unlike a denial it has two *ordered* sides, so which side
+    /// holds the field decides the residual's operator.
+    Compare(T, T, CompareOp),
 }
 
 pub struct Query<T> {
@@ -315,6 +389,9 @@ impl Recursive for ExprKind<NodeId> {
             }
             ExprKind::Subquery(query) => ExprKind::Subquery(query.map(&mut f)),
             ExprKind::Fact(pred_id, node_id) => ExprKind::Fact(*pred_id, f(*node_id)),
+            ExprKind::Arith(operands, ops) => {
+                ExprKind::Arith(operands.iter().map(|id| f(*id)).collect(), ops.clone())
+            }
             ExprKind::Never => ExprKind::Never,
             ExprKind::Error => ExprKind::Error,
         }
@@ -330,6 +407,7 @@ impl Recursive for QueryStmt<NodeId> {
             QueryStmt::Implicit(node_id) => QueryStmt::Implicit(f(*node_id)),
             QueryStmt::Negation(node_id) => QueryStmt::Negation(f(*node_id)),
             QueryStmt::Deny(lhs, rhs) => QueryStmt::Deny(f(*lhs), f(*rhs)),
+            QueryStmt::Compare(lhs, rhs, op) => QueryStmt::Compare(f(*lhs), f(*rhs), *op),
         }
     }
 }

@@ -46,6 +46,9 @@ enum Prec {
     Primary,
     Chain,
     Application,
+    /// `a + b` — tighter than `|`, looser than a fact application, exactly as the
+    /// grammar's `sum` rule sits between `pattern` and `branch`.
+    Arith,
     Disjunction,
 }
 
@@ -202,6 +205,25 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
                     }
                     ResidualOp::EqRegisterFactId(address) => {
                         write!(out, "\n       where {at} == {address}#")
+                    }
+                    ResidualOp::CmpConst { op, value } => {
+                        write!(
+                            out,
+                            "\n       where {at} {} {}",
+                            op.symbol(),
+                            constant(schema, interner, ty, value)
+                        )
+                    }
+                    ResidualOp::CmpRegisterField { op, address, path } => {
+                        write!(
+                            out,
+                            "\n       where {at} {} {}",
+                            op.symbol(),
+                            register_field(plan, schema, address, path)
+                        )
+                    }
+                    ResidualOp::CmpSelfField { op, path } => {
+                        write!(out, "\n       where {at} {} {path}", op.symbol())
                     }
                 };
             }
@@ -705,6 +727,13 @@ impl Printer<'_> {
                 out.push(" != ");
                 self.pattern(out, *rhs, Prec::Disjunction);
             }
+            QueryStmt::Compare(lhs, rhs, op) => {
+                self.pattern(out, *lhs, Prec::Disjunction);
+                out.push(" ");
+                out.push(op.symbol());
+                out.push(" ");
+                self.pattern(out, *rhs, Prec::Disjunction);
+            }
         }
     }
 
@@ -726,6 +755,7 @@ impl Printer<'_> {
     fn level(&self, id: NodeId) -> Prec {
         match self.ast.store().kind(id) {
             ExprKind::Disjunction(_) => Prec::Disjunction,
+            ExprKind::Arith(..) => Prec::Arith,
             ExprKind::Fact(..) => Prec::Application,
             ExprKind::Access(..) | ExprKind::Select(..) => Prec::Chain,
             _ => Prec::Primary,
@@ -799,8 +829,22 @@ impl Printer<'_> {
 
             ExprKind::Disjunction(branches) => {
                 out.join(" | ", branches.iter(), |out, branch| {
-                    self.pattern(out, *branch, Prec::Application)
+                    self.pattern(out, *branch, Prec::Arith)
                 });
+            }
+
+            // One operator fewer than operands, interleaved — the flat shape read
+            // back out. Each operand prints at `Application`, which is what puts the
+            // parentheses back around a disjunction inside a sum.
+            ExprKind::Arith(operands, ops) => {
+                for (at, operand) in operands.iter().enumerate() {
+                    if at > 0 {
+                        out.push(" ");
+                        out.push(ops.get(at - 1).map_or("+", |op| op.symbol()));
+                        out.push(" ");
+                    }
+                    self.pattern(out, *operand, Prec::Application);
+                }
             }
 
             // Unlike a precedence paren, these belong to the subquery's own rule, so
@@ -855,6 +899,15 @@ impl Printer<'_> {
                 }
                 QueryStmt::Deny(lhs, rhs) => {
                     out.push_str("(deny ");
+                    self.canonical_pattern(out, *lhs);
+                    out.push(' ');
+                    self.canonical_pattern(out, *rhs);
+                    out.push(')');
+                }
+                QueryStmt::Compare(lhs, rhs, op) => {
+                    out.push_str("(cmp ");
+                    out.push_str(op.symbol());
+                    out.push(' ');
                     self.canonical_pattern(out, *lhs);
                     out.push(' ');
                     self.canonical_pattern(out, *rhs);
@@ -935,6 +988,19 @@ impl Printer<'_> {
                         out.push(' ');
                     }
                     self.canonical_pattern(out, *branch);
+                }
+                out.push(')');
+            }
+
+            ExprKind::Arith(operands, ops) => {
+                out.push_str("(arith");
+                for (index, operand) in operands.iter().enumerate() {
+                    if index > 0 {
+                        out.push(' ');
+                        out.push_str(ops.get(index - 1).map_or("+", |op| op.symbol()));
+                    }
+                    out.push(' ');
+                    self.canonical_pattern(out, *operand);
                 }
                 out.push(')');
             }

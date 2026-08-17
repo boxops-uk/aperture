@@ -7,7 +7,8 @@ token Nat='<nat>';
 token String='<string>';
 token DotDot='..';
 token Dot='.' Eq='=' BangEq='!=' Semi=';' Comma=',' Minus='-' LBrace='{' RBrace='}'
-      LPar='(' RPar=')' Pipe='|' Question='?' Bang='!';
+      LPar='(' RPar=')' Pipe='|' Question='?' Bang='!'
+      Lt='<' Le='<=' Gt='>' Ge='>=' Plus='+';
 
 skip Whitespace;
 start root;
@@ -22,15 +23,36 @@ stmt_list: stmt (';' [stmt])*;
 // denies a *value*. They are different questions — "no such row exists" against
 // "this row's field does not look like that" — so they are different syntax rather
 // than one form flatten disambiguates.
+// The four order comparisons sit beside `=` and `!=` as sibling alternatives, which
+// is what keeps them one token of lookahead. They are **statements**, not operators
+// inside a pattern: a comparison binds nothing, and reading `X < 3` as an expression
+// would need a boolean type the model does not have.
 stmt:
   '!' pattern @negation_stmt
-| pattern ('=' pattern @bind_stmt | '!=' pattern @deny_stmt | @implicit_bind_stmt)
+| pattern ('=' pattern @bind_stmt | '!=' pattern @deny_stmt
+          | '<' pattern @lt_stmt | '<=' pattern @le_stmt
+          | '>' pattern @gt_stmt | '>=' pattern @ge_stmt
+          | @implicit_bind_stmt)
 ;
 
 // Disjunction is the loosest level and stays flat: a list of branches, never a
 // right-leaning tree. Flatten keeps it as one node with N branches
 // (`FlatDisjunction`) and must never DNF-expand it across sibling conjuncts.
-pattern: branch ('|' branch @disjunction)*;
+pattern: sum ('|' sum @disjunction)*;
+
+// **Arithmetic binds tighter than `|` and looser than access.** Left-associative and
+// flat, like the disjunction above it, because `a + b + c` is one node with three
+// operands rather than a tree nobody has a reason to shape.
+//
+// The `-` here is infix and the one in `primary` is a sign, and the parser tells them
+// apart by position alone: an infix `-` can only follow a complete operand, and a
+// signed literal only appears where an operand is expected. Nothing is ambiguous, and
+// nothing needed a second token.
+//
+// Accepted everywhere a pattern is, and narrowed later: an arithmetic expression is
+// only a *value* a bind can name, so one in a fact's key draws `nyi/value-match` and
+// one whose operands are not integers is a type error.
+sum: branch (('+' | '-') branch @arith)*;
 
 branch:
   fact_pattern @fact
