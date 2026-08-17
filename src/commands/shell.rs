@@ -211,6 +211,15 @@ struct Held {
 /// real session against a real server without a terminal anywhere in it.
 pub struct Repl {
     connection: Connection,
+    /// The address this session was opened with — a bare name, or §2's
+    /// `aperture://host:port/database`.
+    ///
+    /// Kept whole because it is what a *reconnect* needs: a shell started against a
+    /// remote server and then told `:connect other` means the other database on that
+    /// server, and remembering only the name would quietly answer with the local one.
+    address: String,
+    /// The database's own name, which is what the prompt says. For a bare address the
+    /// two are the same string.
     database: String,
     socket: PathBuf,
     /// **The schema the server said it serves**, not the one this tool was built with.
@@ -238,10 +247,10 @@ impl Repl {
     /// # Errors
     ///
     /// [`CliError::NoServer`] if nothing is listening, or whatever the handshake says.
-    pub fn connect(socket: &Path, database: &str) -> Result<Repl, CliError> {
+    pub fn connect(socket: &Path, address: &str) -> Result<Repl, CliError> {
         // Read-only, for the reason `query` is: a reader has no claim to make about the
         // schema, and the database's is the one that counts.
-        let mut connection = connect(socket, database, Mode::ReadOnly)?;
+        let mut connection = connect(socket, address, Mode::ReadOnly)?;
 
         // **Asked, not assumed.** Everything this shell does locally is against this
         // schema, and a database created with `--schema` has one this tool has never
@@ -250,7 +259,8 @@ impl Repl {
 
         Ok(Repl {
             connection,
-            database: database.to_owned(),
+            address: address.to_owned(),
+            database: named(address).to_owned(),
             socket: socket.to_path_buf(),
             schema,
             held: None,
@@ -272,7 +282,7 @@ impl Repl {
     #[must_use]
     pub fn names(&self) -> Vec<String> {
         (0..self.schema.len())
-            .filter_map(|index| named(&self.schema, index).map(str::to_owned))
+            .filter_map(|index| predicate_named(&self.schema, index).map(str::to_owned))
             .collect()
     }
 
@@ -383,7 +393,8 @@ impl Repl {
                 if argument.is_empty() {
                     writeln!(out, "  :connect needs a database name")?;
                 } else {
-                    self.reconnect(argument, out)?;
+                    let wanted = sibling(&self.address, argument);
+                    self.reconnect(&wanted, out)?;
                 }
             }
 
@@ -667,7 +678,8 @@ impl Repl {
             return Ok(());
         }
 
-        let exact = (0..self.schema.len()).find(|index| named(&self.schema, *index) == Some(name));
+        let exact = (0..self.schema.len())
+            .find(|index| predicate_named(&self.schema, *index) == Some(name));
 
         if let Some(index) = exact {
             writeln!(out, "{}", predicate_line(&self.schema, index))?;
@@ -678,7 +690,9 @@ impl Repl {
         // A name that does not resolve is much more often a namespace someone is
         // exploring than a typo, and psql and Glean's shell both read it that way.
         let matching: Vec<usize> = (0..self.schema.len())
-            .filter(|index| named(&self.schema, *index).is_some_and(|it| it.starts_with(name)))
+            .filter(|index| {
+                predicate_named(&self.schema, *index).is_some_and(|it| it.starts_with(name))
+            })
             .collect();
 
         if matching.is_empty() {
@@ -714,7 +728,7 @@ impl Repl {
                 // nothing sets.
                 self.interrupt = interrupt;
 
-                writeln!(out, "  now connected to `{database}`")?;
+                writeln!(out, "  now connected to `{}`", self.database)?;
                 if had {
                     writeln!(out, "  the previous result is gone")?;
                 }
@@ -788,7 +802,27 @@ fn format_name(format: RowFormat) -> &'static str {
     }
 }
 
-fn named(schema: &Schema, index: usize) -> Option<&str> {
+/// The address of another database **on the same server** as `address`.
+///
+/// A bare name stays a bare name; a remote address keeps its host and swaps the
+/// database, because `:connect` means "the one next to this" and somebody who reached a
+/// server over TCP did not stop meaning that server.
+fn sibling(address: &str, database: &str) -> String {
+    match address.rsplit_once('/') {
+        Some((prefix, _)) if address.starts_with(crate::commands::query::ADDRESS_SCHEME) => {
+            format!("{prefix}/{database}")
+        }
+        _ => database.to_owned(),
+    }
+}
+
+/// The database an address names — everything after the last `/`, or the whole of a
+/// bare name.
+fn named(address: &str) -> &str {
+    address.rsplit_once('/').map_or(address, |(_, name)| name)
+}
+
+fn predicate_named(schema: &Schema, index: usize) -> Option<&str> {
     schema.get(PredicateId(index as u32))?.name()
 }
 
@@ -797,7 +831,7 @@ fn named(schema: &Schema, index: usize) -> Option<&str> {
 fn predicate_line(schema: &Schema, index: usize) -> String {
     let id = PredicateId(index as u32);
 
-    let Some(name) = named(schema, index) else {
+    let Some(name) = predicate_named(schema, index) else {
         return String::new();
     };
     let Some(signature) = schema_print::signature(schema, id) else {
@@ -853,6 +887,20 @@ pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
     use rustyline::{Editor, error::ReadlineError, history::DefaultHistory};
 
     let mut repl = Repl::connect(socket, database)?;
+
+    // **Two lines, and the second one is the only reason for the first.** A shell that
+    // says nothing leaves a person to guess whether `\?` or `:help` or `help` is the
+    // one — and this shell has commands the last one did not, prints rows in a shape
+    // the last one did not, and pages. Each of those is a sentence long.
+    println!(
+        "aperture shell — `{}` on {}",
+        repl.database,
+        socket.display()
+    );
+    println!(
+        "  {} predicate(s) · rows print as jsonl · :help for commands",
+        repl.schema.len()
+    );
 
     let mut editor: Editor<FocusHelper, DefaultHistory> =
         Editor::new().map_err(|error| CliError::Shell(error.to_string()))?;
@@ -910,7 +958,7 @@ pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
             Err(error) => {
                 eprintln!("aperture: {error}");
 
-                match Repl::connect(&repl.socket.clone(), &repl.database.clone()) {
+                match Repl::connect(&repl.socket.clone(), &repl.address.clone()) {
                     Ok(fresh) => {
                         eprintln!("aperture: reconnected to `{}`", fresh.database);
                         let interrupt = Arc::clone(&repl.interrupt);
@@ -1268,6 +1316,22 @@ mod tests {
             repl.handle("\\q", &mut out).expect("handled"),
             Control::Quit
         );
+    }
+
+    /// **`:connect` means the database next to this one**, which for a session opened
+    /// over TCP is on that server rather than on this machine.
+    #[test]
+    fn a_sibling_keeps_the_server_it_was_reached_through() {
+        use super::{named, sibling};
+
+        assert_eq!(sibling("code", "other"), "other");
+        assert_eq!(
+            sibling("aperture://box:7000/code", "other"),
+            "aperture://box:7000/other"
+        );
+
+        assert_eq!(named("code"), "code");
+        assert_eq!(named("aperture://box:7000/code"), "code");
     }
 
     /// An unknown command says so and points at the one that lists them.

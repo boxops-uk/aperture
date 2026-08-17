@@ -88,6 +88,14 @@ pub enum CliError {
     #[error("`{address}` is not an address — try aperture://host:port/database")]
     Address { address: String },
 
+    /// A refusal that has **already been rendered**, spans and all.
+    ///
+    /// Its own variant so that [`main`] can print it alone: everything else here is a
+    /// sentence and reads as `aperture: <sentence>`, while this is a codespan block
+    /// whose first line a prefix would push out of alignment with its own caret.
+    #[error("{0}")]
+    Diagnosed(String),
+
     /// A schema that does not resolve, does not parse, or does not lower.
     ///
     /// Carries the reason **already rendered against its source**, spans and all,
@@ -118,6 +126,14 @@ fn main() -> ExitCode {
 
     match dispatch(&cli, &root, &socket) {
         Ok(()) => ExitCode::SUCCESS,
+
+        // A diagnostic is printed as it was rendered. Everything else is a sentence,
+        // and a sentence about a tool should say which tool.
+        Err(CliError::Diagnosed(rendered)) => {
+            eprint!("{rendered}");
+            ExitCode::FAILURE
+        }
+
         Err(error) => {
             eprintln!("aperture: {error}");
             ExitCode::FAILURE

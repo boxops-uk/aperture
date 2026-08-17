@@ -87,10 +87,15 @@ pub fn run(
     let mut connection = connect(socket, name, Mode::ReadOnly)?;
 
     let started = Instant::now();
-    let mut result = if profile {
-        connection.query_profiled(query)?
+    let opened = if profile {
+        connection.query_profiled(query)
     } else {
-        connection.query(query)?
+        connection.query(query)
+    };
+
+    let mut result = match opened {
+        Ok(result) => result,
+        Err(refusal) => return Err(diagnosed(&mut connection, query, refusal)),
     };
 
     let stdout = std::io::stdout();
@@ -142,6 +147,59 @@ pub fn run(
         // query than the one asked.
         profile: result.profile().cloned(),
     })
+}
+
+/// A refusal the *compiler* can put a caret under, rendered here rather than read as a
+/// sentence.
+///
+/// The server sends its diagnostics as text, which is right — it is the thing that
+/// knows what happened, and paraphrasing would be one more place for two answers to
+/// drift. What it cannot know is whether this end has a terminal, so what comes back is
+/// plain. Given the schema the server serves (one request, on the failure path only,
+/// where a round trip costs nothing), the same query compiles here and the same
+/// diagnostics render **in colour, under a caret**.
+///
+/// Anything that is not the query's fault, or any schema this cannot fetch, falls
+/// straight through as the server's own words.
+fn diagnosed(connection: &mut Connection, query: &str, refusal: ClientError) -> CliError {
+    use aperture_engine::compile::Compilation;
+
+    if refusal.code() != Some(aperture_client::ErrorCode::BadQuery) {
+        return refusal.into();
+    }
+
+    let Ok(schema) = connection.served_schema() else {
+        return refusal.into();
+    };
+
+    let mut compilation = Compilation::new(query, &schema);
+    let _ = compilation.plan();
+
+    if !compilation.diagnostics().has_errors() {
+        // The server refused something this compiler accepts, which is a disagreement
+        // worth seeing as the server stated it rather than as a local guess.
+        return refusal.into();
+    }
+
+    let mut rendered = Vec::new();
+    let config = codespan_reporting::term::Config::default();
+
+    if crate::prompt::colours_enabled_on_stderr() {
+        let _ = compilation.render(
+            &mut codespan_reporting::term::termcolor::Ansi::new(&mut rendered),
+            &config,
+        );
+    } else {
+        let _ = compilation.render(
+            &mut codespan_reporting::term::termcolor::NoColor::new(&mut rendered),
+            &config,
+        );
+    }
+
+    match String::from_utf8(rendered) {
+        Ok(text) => CliError::Diagnosed(text),
+        Err(_) => refusal.into(),
+    }
 }
 
 /// The profile, as a person reads it.

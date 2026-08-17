@@ -74,6 +74,19 @@ pub fn colours_enabled() -> bool {
         .get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
 }
 
+/// The same question for **stderr**, which is where a diagnostic goes when it is not
+/// the answer to anything.
+///
+/// Two answers rather than one because the two streams are redirected separately, and
+/// a tool that painted its errors because its *rows* were going to a terminal would put
+/// escape codes in the file somebody was collecting them in.
+#[must_use]
+pub fn colours_enabled_on_stderr() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED
+        .get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal())
+}
+
 /// Wrap `text` in an ANSI code, or hand it back untouched.
 #[must_use]
 pub fn painted(code: &str, text: &str) -> String {
