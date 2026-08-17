@@ -1,147 +1,51 @@
 //! The **embedded schema copy** — `schema/` beside the sidecar.
 //!
-//! [Operations §9](../../../docs/aperture-cli-design.md) calls it "belt & suspenders
-//! vs lost sidecar", and that is exactly its standing: the sidecar's
-//! `schema_fingerprint` is authoritative, and this is a readable copy of what that
-//! fingerprint is *of*. Nothing reads it to make a decision.
+//! [I13](../../../docs/invariants.md#i13): a database carries its own schema, embedded
+//! at create and frozen for its lifetime. This is that copy, and since Phase 8.4 it is
+//! **load-bearing** rather than belt-and-braces: it is what a server reads to learn what
+//! a database holds, so a store root can hold databases built from different schemas
+//! without anything having to be told which.
 //!
-//! It also makes a database self-describing, which is the point
-//! [I13](../../../docs/invariants.md#i13) is aiming at — a client can read it to
-//! learn the shape it must encode against, rather than having the schema written into
-//! it by hand.
+//! # It is source, in the language `create --schema` takes
 //!
-//! # Provisional, and safe to be
+//! Not JSON, which is what it was until 8.4, and not
+//! [the canonical form](aperture_schema::fingerprint) either. The canonical form's job
+//! is to be *hashed* — embedding it would need a second parser for a second grammar,
+//! whose only reader would be this crate. Source needs no new reader at all, and it is
+//! the one form a person can read, diff, and hand back to `create`.
 //!
-//! This is **not** the canonical form [chapter 6](../../../docs/06-types-and-schema.md)
-//! specifies. That needs schema *syntax* to canonicalise, which arrives with
-//! [Phase 8](../../../PLAN.md), and it is what the real fingerprint will be computed
-//! over. Replacing this document later is not a migration, because nothing depends on
-//! it: it is a derived artifact, rewritten by whoever creates the next database.
+//! # Written in id order, and read back with [`syntax::recover`]
+//!
+//! A predicate's id is a *position*, and it is the tag in every
+//! [`FactId`](aperture_schema::id::FactId) the database holds. Ordinary lowering assigns
+//! ids by sorted name ([D1](../../../docs/phase-8-schemas.md)) — right for a schema
+//! being declared, and wrong here, where the numbering is already frozen on disk. So the
+//! copy is printed in id order and read back in declaration order, and `create` proves
+//! the round trip before the database exists at all.
 
 use std::{fs, path::Path};
 
-use aperture_schema::schema::{PredicateId, PredicateTy, Schema};
-use serde::{Deserialize, Serialize};
+use aperture_schema::{
+    schema::Schema,
+    syntax::{self, print},
+};
 
 /// The directory holding the copy, inside a database.
 pub const SCHEMA_DIR: &str = "schema";
 
 /// The document's file name.
-pub const SCHEMA_FILE: &str = "schema.json";
+pub const SCHEMA_FILE: &str = "schema.aps";
 
-/// A type, with its field names resolved — a schema holds interned symbols, and a
-/// reader of this file has no interner.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum TypeDoc {
-    Int,
-    Str,
-    /// A reference. Both the id and the name are written: the id is what the wire
-    /// carries, and the name is what a person reads.
-    Fact {
-        predicate: u32,
-        name: String,
-    },
-    Record {
-        fields: Vec<FieldDoc>,
-    },
-}
+/// What is written above the schema, so the file says what it is.
+const HEADER: &str = "\
+# The schema this database was created against, embedded at create and frozen for its
+# lifetime (I13). Written by `aperture create`; read back when the database is served.
+#
+# Predicates are listed in **id order**, which is the order their keyspaces are named
+# in and the order every stored FactId's tag refers to. Editing this file does not
+# change the database — it makes it unreadable.
 
-/// A record field.
-///
-/// The type is **nested rather than flattened**, which reads more verbosely and is
-/// the only correct choice: `TypeDoc::Fact` carries a `name` of its own, so
-/// flattening puts two `name` keys in one object — JSON that serialises happily and
-/// then refuses to parse.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FieldDoc {
-    pub name: String,
-    pub ty: TypeDoc,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PredicateDoc {
-    /// A predicate's id **is** its position, so this is written out to make the
-    /// document readable on its own rather than by counting.
-    pub id: u32,
-    pub name: String,
-    pub key: TypeDoc,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub value: Option<TypeDoc>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchemaDoc {
-    /// This document's own format version, so a reader knows what it is looking at.
-    pub version: u32,
-    /// Says plainly that this is not chapter 6's canonical form.
-    pub provisional: bool,
-    pub predicates: Vec<PredicateDoc>,
-}
-
-impl SchemaDoc {
-    pub const VERSION: u32 = 1;
-
-    /// Render `schema` as a document.
-    #[must_use]
-    pub fn of(schema: &Schema) -> SchemaDoc {
-        let predicates = (0..schema.len())
-            .filter_map(|index| {
-                let id = PredicateId(index as u32);
-
-                // Virtual predicates are the server's, not the database's: nothing in
-                // this artifact holds one, so the copy embedded in it must not claim
-                // otherwise. It is the same rule the handshake fingerprint follows,
-                // and for the same reason.
-                if schema.is_virtual(id) {
-                    return None;
-                }
-
-                let predicate = schema.get(id)?;
-
-                Some(PredicateDoc {
-                    id: id.0,
-                    name: predicate.name().unwrap_or("?").to_owned(),
-                    key: TypeDoc::of(schema, predicate.key().ty),
-                    value: predicate.value().map(|value| TypeDoc::of(schema, value.ty)),
-                })
-            })
-            .collect();
-
-        SchemaDoc {
-            version: SchemaDoc::VERSION,
-            provisional: true,
-            predicates,
-        }
-    }
-}
-
-impl TypeDoc {
-    #[must_use]
-    pub fn of(schema: &Schema, ty: &PredicateTy) -> TypeDoc {
-        match ty {
-            PredicateTy::Int => TypeDoc::Int,
-            PredicateTy::Str => TypeDoc::Str,
-            PredicateTy::Fact(target) => TypeDoc::Fact {
-                predicate: target.0,
-                name: schema
-                    .get(*target)
-                    .and_then(|predicate| predicate.name())
-                    .unwrap_or("?")
-                    .to_owned(),
-            },
-            PredicateTy::Record(fields) => TypeDoc::Record {
-                fields: fields
-                    .iter()
-                    .map(|(name, field)| FieldDoc {
-                        name: schema.interner().resolve(*name).unwrap_or("?").to_owned(),
-                        ty: TypeDoc::of(schema, field),
-                    })
-                    .collect(),
-            },
-        }
-    }
-}
+";
 
 /// Write the copy into `directory/schema/`.
 ///
@@ -159,30 +63,113 @@ pub fn write(directory: &Path, schema: &Schema) -> Result<(), crate::error::Stor
 
     fs::create_dir_all(&dir).map_err(|source| fail(format!("cannot create: {source}")))?;
 
-    let mut json = serde_json::to_string_pretty(&SchemaDoc::of(schema))
-        .map_err(|source| fail(format!("cannot serialise: {source}")))?;
-    json.push('\n');
+    let mut text = String::from(HEADER);
+    text.push_str(&print::print(schema));
 
-    fs::write(&path, json).map_err(|source| fail(format!("cannot write: {source}")))?;
+    fs::write(&path, &text).map_err(|source| fail(format!("cannot write: {source}")))?;
 
     Ok(())
 }
 
-/// Read the copy back.
+/// The source a database embedded, or `None` if it embedded none.
+///
+/// `None` is a real answer rather than a hole: a database created before 8.4 carries a
+/// copy in the older format, and a server reading one is looking at an artifact that
+/// predates the copy being load-bearing. What it must not do is *guess*, which is why
+/// this says "there is none" instead of returning something empty.
 ///
 /// # Errors
 ///
-/// [`StoreError::Meta`](crate::error::StoreError::Meta) if it is missing or malformed.
-pub fn read(directory: &Path) -> Result<SchemaDoc, crate::error::StoreError> {
+/// [`StoreError::Meta`](crate::error::StoreError::Meta) if the file is there and cannot
+/// be read.
+pub fn source(directory: &Path) -> Result<Option<String>, crate::error::StoreError> {
     let path = directory.join(SCHEMA_DIR).join(SCHEMA_FILE);
 
-    let fail = |detail: String| crate::error::StoreError::Meta {
-        path: path.clone(),
-        detail,
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(crate::error::StoreError::Meta {
+            path,
+            detail: format!("cannot read: {source}"),
+        }),
+    }
+}
+
+/// The schema a database embedded, with the numbering it was created with.
+///
+/// # Errors
+///
+/// [`StoreError::Meta`](crate::error::StoreError::Meta) if the copy is unreadable or no
+/// longer a schema — which is a corrupt artifact, not a bad query, and says so with the
+/// diagnostics against the text it read.
+pub fn read(directory: &Path) -> Result<Option<Schema>, crate::error::StoreError> {
+    let Some(text) = source(directory)? else {
+        return Ok(None);
     };
 
-    let text =
-        fs::read_to_string(&path).map_err(|source| fail(format!("cannot read: {source}")))?;
+    syntax::recover(SCHEMA_FILE, &text)
+        .map(Some)
+        .map_err(|detail| crate::error::StoreError::Meta {
+            path: directory.join(SCHEMA_DIR).join(SCHEMA_FILE),
+            detail,
+        })
+}
 
-    serde_json::from_str(&text).map_err(|source| fail(format!("malformed: {source}")))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn schema(source: &str) -> Schema {
+        syntax::read("test", source).expect("it lowers")
+    }
+
+    /// The copy comes back as the schema that was written, at the same positions.
+    #[test]
+    fn a_copy_reads_back_as_the_schema_it_was_written_from() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+
+        let written = schema(
+            "schema src { predicate File : string\n\
+             predicate Decl : { file : File, name : string } -> string }",
+        );
+
+        write(dir.path(), &written).expect("it writes");
+
+        let back = read(dir.path()).expect("it reads").expect("there is one");
+        assert!(print::equivalent(&written, &back));
+    }
+
+    /// A database that embedded no copy says so, rather than answering with an empty
+    /// schema — which would read as "this database holds nothing".
+    #[test]
+    fn a_database_with_no_copy_says_there_is_none() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        assert!(read(dir.path()).expect("it reads").is_none());
+    }
+
+    /// A copy somebody edited into nonsense is a corrupt artifact, and is refused with
+    /// the reason rather than half-read.
+    #[test]
+    fn a_broken_copy_is_refused_by_name() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        write(
+            dir.path(),
+            &schema("schema src { predicate File : string }"),
+        )
+        .expect("it writes");
+
+        fs::write(
+            dir.path().join(SCHEMA_DIR).join(SCHEMA_FILE),
+            "schema src { predicate File : bananas }",
+        )
+        .expect("it writes");
+
+        let Err(failed) = read(dir.path()) else {
+            panic!("a schema this is not");
+        };
+        assert!(
+            failed.to_string().contains("bananas"),
+            "the reason should name what it could not read: {failed}"
+        );
+    }
 }

@@ -78,6 +78,10 @@ pub enum Command {
 
         #[arg(long, value_enum, default_value_t = Format::Table)]
         format: Format,
+
+        /// Dump the embedded schema itself — the text `create --schema` would take.
+        #[arg(long)]
+        schema: bool,
     },
 
     /// Run a query and print its rows.

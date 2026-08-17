@@ -89,6 +89,25 @@ pub fn print(schema: &Schema) -> String {
     out
 }
 
+/// One predicate's type, as `key` or `key -> value`.
+///
+/// The same renderer the file form uses, so what `describe` shows and what a database
+/// embeds cannot drift into two spellings of one type.
+#[must_use]
+pub fn signature(schema: &Schema, id: PredicateId) -> Option<String> {
+    let predicate = schema.get(id)?;
+
+    let mut out = String::new();
+    ty(&mut out, schema, &predicate.predicate().key);
+
+    if let Some(value) = predicate.predicate().value.as_ref() {
+        out.push_str(" -> ");
+        ty(&mut out, schema, value);
+    }
+
+    Some(out)
+}
+
 /// Whether two schemas hold the same predicates, **at the same positions**.
 ///
 /// Not `PartialEq`: a `Schema` holds interned symbols, so two built from the same text

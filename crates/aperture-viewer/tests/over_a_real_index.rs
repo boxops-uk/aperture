@@ -14,7 +14,7 @@ use std::{net::SocketAddr, sync::Arc, thread, time::Duration};
 
 use aperture_client::{Connection, Mode, WireFact, WireRef, WireValue};
 use aperture_schema::schema::{PredicateId, Schema};
-use aperture_server::{Registry, server::Listener};
+use aperture_server::{Registry, registry::Schemas, server::Listener};
 use aperture_store::catalog::Catalog;
 
 /// The built-in schema, parsed from the file the server reads.
@@ -85,7 +85,8 @@ fn start() -> Serving {
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog.create("code", &schema).expect("a database");
 
-    let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");
+    let (registry, _listing) =
+        Registry::open(catalog, Schemas::new("", schema)).expect("a registry");
     let listener = Listener::bind(&socket).expect("a socket");
 
     thread::spawn(move || {

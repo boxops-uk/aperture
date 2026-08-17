@@ -23,7 +23,7 @@ use std::{
 };
 
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
-use aperture_server::{Registry, server::Listener};
+use aperture_server::{Registry, registry::Schemas, server::Listener};
 use aperture_store::catalog::Catalog;
 use aperture_wire::{
     Control, ControlOp, ControlReply, ErrorCode, FrameHeader, FrameKind, Mode, Startup, StreamId,
@@ -96,7 +96,8 @@ fn start() -> Serving {
     let fingerprint = aperture_schema::fingerprint::of(&schema);
 
     let catalog = Catalog::open(&root).expect("a store root");
-    let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");
+    let (registry, _listing) =
+        Registry::open(catalog, Schemas::new("", schema)).expect("a registry");
 
     let listener = Listener::bind(&socket).expect("a socket");
     thread::spawn(move || {

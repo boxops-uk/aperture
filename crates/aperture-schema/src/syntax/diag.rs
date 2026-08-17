@@ -97,6 +97,40 @@ impl Code {
     }
 }
 
+/// Every diagnostic rendered against the source it points into, in file order.
+///
+/// Here rather than in each caller because a `SimpleFile` built somewhere else could
+/// be built over *different* text, and a diagnostic rendered against the wrong source
+/// points a caret at a line nobody wrote. Both callers — a `schema check` reporting to
+/// a person, and a store refusing an embedded copy it cannot read — want the same
+/// thing.
+#[must_use]
+pub fn render(name: &str, source: &str, diags: &[Diagnostic]) -> String {
+    use codespan_reporting::{files::SimpleFile, term};
+
+    let file = SimpleFile::new(name, source);
+    let config = term::Config::default();
+    let mut out = String::new();
+
+    let mut ordered: Vec<&Diagnostic> = diags.iter().collect();
+    ordered.sort_by_key(|diagnostic| {
+        diagnostic
+            .labels
+            .iter()
+            .map(|label| label.range.start)
+            .min()
+            .unwrap_or(usize::MAX)
+    });
+
+    for diagnostic in ordered {
+        // A `String` sink cannot fail to be written to; a diagnostic naming a file
+        // this one does not have would, and there is exactly one file.
+        let _ = term::emit_to_string(&mut out, &config, &file, diagnostic);
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

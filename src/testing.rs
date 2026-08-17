@@ -14,7 +14,7 @@
 use std::{path::PathBuf, sync::Arc, thread};
 
 use aperture_client::{Connection, Mode};
-use aperture_server::{Registry, server::Listener};
+use aperture_server::{Registry, registry::Schemas, server::Listener};
 use aperture_store::catalog::Catalog;
 use aperture_wire::{WireFact, WireRef, WireValue};
 
@@ -44,8 +44,11 @@ pub fn serving(files: usize) -> Serving {
     // The **served** schema, as `serve` builds it: the stored predicates plus the
     // catalogue. Created with the stored one, because a virtual predicate is not part
     // of the artifact — which is the arrangement these tests exist to exercise.
-    let (registry, _listing) =
-        Registry::open(catalog, code_index::with_catalogue()).expect("a registry");
+    let (registry, _listing) = Registry::open(
+        catalog,
+        Schemas::new(code_index::CATALOGUE_SOURCE, code_index::with_catalogue()),
+    )
+    .expect("a registry");
     let listener = Listener::bind(&socket).expect("a socket");
 
     thread::spawn(move || {
@@ -153,8 +156,11 @@ pub fn serving_on_tcp(files: usize) -> (Serving, String) {
         .create("code", &code_index::schema())
         .expect("a database");
 
-    let (registry, _listing) =
-        Registry::open(catalog, code_index::with_catalogue()).expect("a registry");
+    let (registry, _listing) = Registry::open(
+        catalog,
+        Schemas::new(code_index::CATALOGUE_SOURCE, code_index::with_catalogue()),
+    )
+    .expect("a registry");
     let registry = Arc::new(registry);
 
     // **A port the OS chose, taken and released.** `serve_on` takes an address rather

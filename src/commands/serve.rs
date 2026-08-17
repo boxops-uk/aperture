@@ -11,7 +11,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use aperture_server::{Registry, server::serve_on};
+use aperture_server::{Registry, registry::Schemas, server::serve_on};
 use aperture_wire::protocol;
 
 use crate::{CliError, code_index, commands};
@@ -61,14 +61,17 @@ pub fn run(
     // databases under it are the same ownership: `create` and `remove` arriving over
     // the wire need both, and a server that held only the open handles is exactly the
     // server that had to be stopped before a lifecycle command could run.
-    let (registry, listing) = Registry::open(catalog, schema)?;
+    let (registry, listing) =
+        Registry::open(catalog, Schemas::new(code_index::CATALOGUE_SOURCE, schema))?;
     let registry = Arc::new(registry);
 
     println!("aperture serve");
     println!("  data dir   {}", root.display());
     println!("  socket     {}", socket.display());
     println!("  protocol   {}", protocol::VERSION);
-    println!("  schema     {fingerprint:#018x}  (provisional — see PLAN Phase 8)");
+    println!(
+        "  schema     {fingerprint:#018x}  (the built-in one; each database is served with its own)"
+    );
 
     if listing.entries.is_empty() {
         // Said plainly rather than served silently: a server with nothing to serve is

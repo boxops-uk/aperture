@@ -159,6 +159,17 @@ pub enum StoreError {
     #[error("`{name}` is not a usable database name: {detail}")]
     BadDatabaseName { name: String, detail: &'static str },
 
+    /// A schema that cannot be written down and read back as itself.
+    ///
+    /// A database embeds its schema as source and is served from that copy
+    /// ([I13](../../../docs/invariants.md#i13)), so a schema that does not survive the
+    /// round trip is one no database could be opened with. Refused at `create`, where
+    /// nothing has been written yet — the alternative is an artifact whose predicates
+    /// come back at different positions, which reads every stored row through the wrong
+    /// type and reports nothing.
+    #[error("the schema for `{name}` cannot be embedded: {detail}")]
+    UnwritableSchema { name: String, detail: String },
+
     /// A database that already exists under this name.
     #[error("a database named `{0}` already exists")]
     DatabaseExists(String),

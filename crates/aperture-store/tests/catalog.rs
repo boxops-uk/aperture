@@ -75,12 +75,22 @@ fn a_created_database_has_the_layout_the_design_specifies() {
     assert!(entry.path.join(META_FILE).is_file());
     assert!(entry.path.join(schema_doc::SCHEMA_DIR).is_dir());
 
-    // The schema copy describes what was created.
-    let doc = schema_doc::read(&entry.path).expect("the schema copy");
-    assert!(doc.provisional, "it is not chapter 6's canonical form");
-    assert_eq!(doc.predicates.len(), 2);
-    assert_eq!(doc.predicates[0].name, "src.File");
-    assert_eq!(doc.predicates[1].name, "src.Decl");
+    // **The schema copy is the schema**, at the same positions — which is what makes a
+    // database self-describing rather than merely annotated. Positions matter: they are
+    // the tag in every FactId it will hold.
+    let embedded = schema_doc::read(&entry.path)
+        .expect("the schema copy")
+        .expect("there is one");
+
+    assert!(aperture_schema::syntax::print::equivalent(
+        &schema(),
+        &embedded
+    ));
+    assert_eq!(
+        aperture_schema::fingerprint::of(&embedded),
+        entry.meta.schema_fingerprint,
+        "the copy and the number the sidecar records are of the same schema"
+    );
 }
 
 /// **Every predicate's trees exist before a single fact is written.** A keyspace

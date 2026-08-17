@@ -160,8 +160,12 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             Ok(())
         }
 
-        Command::Describe { name, format } => {
-            print!("{}", commands::describe::run(root, name, *format)?);
+        Command::Describe {
+            name,
+            format,
+            schema,
+        } => {
+            print!("{}", commands::describe::run(root, name, *format, *schema)?);
             Ok(())
         }
 

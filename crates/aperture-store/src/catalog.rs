@@ -248,6 +248,18 @@ impl Catalog {
         // downstream trusts.
         let schema_fingerprint = fingerprint::of(schema);
 
+        // **Before anything exists on disk: can this schema be written down and read
+        // back?** The copy under `schema/` is what the database will be served with, so
+        // a schema that does not survive the round trip is a database that cannot be
+        // opened — or worse, one opened with its predicates at different positions,
+        // which reads every stored row through the wrong type. Checking here costs one
+        // parse of a file that is about to be written anyway, and turns a silent
+        // corruption into a refusal with nothing left behind.
+        recoverable(schema).map_err(|detail| StoreError::UnwritableSchema {
+            name: name.to_owned(),
+            detail,
+        })?;
+
         let destination = self.root.join(name);
         if destination.exists() {
             return Err(StoreError::DatabaseExists(name.to_owned()));
@@ -548,6 +560,28 @@ fn record(entry: &Entry, identity: identity::Identity) -> Result<Finished, Store
         bytes,
         already_complete: false,
     })
+}
+
+/// Whether `schema` survives being written down and read back at the same positions.
+///
+/// The check `create` makes before anything exists. Two ways to fail, and both are
+/// about a schema that was **built rather than parsed**: a name the language cannot
+/// spell (a predicate with no namespace, a field that is not a field name), and a
+/// numbering that is not the one lowering would recover. Everything that came from a
+/// `.aps` file passes by construction, which is why this reads as paranoia and is not:
+/// `Schema` is a public type, and the failure it prevents is silent.
+fn recoverable(schema: &Schema) -> Result<(), String> {
+    let text = aperture_schema::syntax::print::print(schema);
+    let back = aperture_schema::syntax::recover(crate::schema_doc::SCHEMA_FILE, &text)?;
+
+    if aperture_schema::syntax::print::equivalent(schema, &back) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "written back, it is a different schema — this one holds predicates that \
+         cannot be spelled, or is numbered in an order lowering does not recover:\n{text}"
+    ))
 }
 
 /// Whether `name` can be a database.

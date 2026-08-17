@@ -54,7 +54,11 @@ use aperture_schema::{
 const SOURCE: &str = include_str!("../schemas/code.aps");
 
 /// The catalogue, declared in the same language as everything else.
-const CATALOGUE_SOURCE: &str = include_str!("../schemas/catalogue.aps");
+///
+/// Public because it is what a **server** appends to every database's own schema: a
+/// virtual predicate belongs to whoever answers it, so it travels with the process
+/// rather than with the artifact ([`aperture_server::registry::Schemas`]).
+pub const CATALOGUE_SOURCE: &str = include_str!("../schemas/catalogue.aps");
 
 /// The one virtual predicate, by name.
 pub const CATALOGUE_NAME: &str = "aperture.db.List";

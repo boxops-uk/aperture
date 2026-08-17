@@ -28,9 +28,15 @@ use std::{
     sync::{Arc, PoisonError, RwLock},
 };
 
-use aperture_schema::schema::Schema;
+use aperture_schema::{
+    fingerprint,
+    schema::{PredicateId, Schema},
+    syntax,
+};
 use aperture_store::{
     catalog::{Catalog, Finished, Listing},
+    error::StoreError,
+    schema_doc,
     store::FjallDb,
 };
 
@@ -38,16 +44,105 @@ use aperture_wire::protocol::{Control, ControlOp, ControlReply};
 
 use crate::{blocking, error::ServerError, session::Database, stats::ServerStats};
 
-/// The store root, the databases open under it, and the schema they share.
+/// How a database's schema is arrived at.
+///
+/// **A schema belongs to a database, not to a server** ([I13](../../../docs/invariants.md#i13)):
+/// each one embedded its own at create, and this is what reads it back. Two pieces are
+/// the server's rather than the database's, and both are here because they are the same
+/// two every time:
+///
+/// - the **virtual** predicates — `aperture.db.List` and anything joining it — which
+///   the server answers out of the root it owns and no artifact holds;
+/// - a **fallback**, for a database that embedded no copy at all.
+///
+/// The virtual half is carried as *source* rather than as a `Schema`, because composing
+/// two schemas means composing two interners, and the language already has an operator
+/// for it: concatenation. Reserved names sort last
+/// ([`RESERVED_NAMESPACE`](aperture_schema::syntax::lower::RESERVED_NAMESPACE)), so
+/// appending them moves no stored id.
+pub struct Schemas {
+    virtual_source: String,
+    fallback: Arc<Schema>,
+}
+
+impl Schemas {
+    /// `virtual_source` is appended to every database's own schema; `fallback` is what
+    /// a database with no embedded copy is served with, already composed.
+    #[must_use]
+    pub fn new(virtual_source: impl Into<String>, fallback: Schema) -> Schemas {
+        Schemas {
+            virtual_source: virtual_source.into(),
+            fallback: Arc::new(fallback),
+        }
+    }
+
+    /// The schema to serve the database at `path` with.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Meta`] if the copy is unreadable, does not lower, or is not the
+    /// schema the sidecar says this database was created against. Each leaves the
+    /// database **unserved** rather than served through a schema it does not hold: a
+    /// schema that disagrees reads stored rows through the wrong types and reports
+    /// nothing.
+    pub fn of(&self, path: &std::path::Path, recorded: u64) -> Result<Arc<Schema>, StoreError> {
+        let Some(source) = schema_doc::source(path)? else {
+            return Ok(Arc::clone(&self.fallback));
+        };
+
+        let fault = |detail: String| StoreError::Meta {
+            path: path
+                .join(schema_doc::SCHEMA_DIR)
+                .join(schema_doc::SCHEMA_FILE),
+            detail,
+        };
+
+        let composed = format!("{source}\n{}", self.virtual_source);
+        let schema = syntax::recover(schema_doc::SCHEMA_FILE, &composed).map_err(fault)?;
+
+        // Virtual by **namespace**, not by name: the reserved namespace is what makes
+        // "the server answers this one" a property of the schema text rather than a
+        // list kept somewhere else and forgotten when a second one is added.
+        let served = schema
+            .clone()
+            .with_virtual((0..schema.len()).filter_map(|index| {
+                let id = PredicateId(index as u32);
+                schema
+                    .get(id)?
+                    .name()?
+                    .starts_with(syntax::lower::RESERVED_NAMESPACE)
+                    .then_some(id)
+            }));
+
+        let embedded = fingerprint::of(&served);
+        if embedded != recorded {
+            return Err(fault(format!(
+                "the copy is {embedded:#018x} and the sidecar records {recorded:#018x} — \
+                 one of the two was edited"
+            )));
+        }
+
+        Ok(Arc::new(served))
+    }
+
+    /// The schema of a database named in the root but not open here.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NoSuchDatabase`] if the root does not hold one, or whatever
+    /// [`of`](Schemas::of) reports.
+    pub fn of_entry(&self, catalog: &Catalog, name: &str) -> Result<Arc<Schema>, StoreError> {
+        let entry = catalog.get(name)?;
+        self.of(&entry.path, entry.meta.schema_fingerprint)
+    }
+}
+
+/// The store root, and the databases open under it.
 pub struct Registry {
     catalog: Catalog,
-    /// One built-in schema for every database — since Phase 8.4 *parsed* from
-    /// `schemas/code.aps` rather than written in Rust, but still one schema the whole
-    /// root shares. What is left to do is per-database: this becomes the schema each
-    /// database was *created* against, read from its own embedded copy — which is
-    /// [I13](../../../docs/invariants.md#i13), and is why nothing below assumes the
-    /// schema and the registry have the same lifetime.
-    schema: Arc<Schema>,
+    /// How each database's schema is arrived at, and what a session bound to *no*
+    /// database sees.
+    schemas: Schemas,
     fingerprint: u64,
     /// Sorted, so a listing derived from it is stable; behind a lock, so a `create`
     /// can add to it while connections are being served.
@@ -70,28 +165,28 @@ impl Registry {
     /// are served. A server that refuses to start because one directory is corrupt is
     /// a server that cannot be used to find out which one.
     ///
+    /// A schema this server could not read is the same kind of problem as a store it
+    /// could not open, and is treated the same way — the database is listed and not
+    /// served, which is the only honest answer when what it holds cannot be described.
+    ///
     /// # Errors
     ///
     /// [`ServerError::Store`] only if the root itself cannot be read.
-    pub fn open(catalog: Catalog, schema: Schema) -> Result<(Registry, Listing), ServerError> {
-        let schema = Arc::new(schema);
-        let fingerprint = aperture_schema::fingerprint::of(&schema);
+    pub fn open(catalog: Catalog, schemas: Schemas) -> Result<(Registry, Listing), ServerError> {
+        let fingerprint = fingerprint::of(&schemas.fallback);
 
         let mut listing = catalog.list()?;
         let mut open = BTreeMap::new();
 
         for entry in &listing.entries {
-            match FjallDb::open(&entry.path) {
-                Ok(db) => {
-                    open.insert(
-                        entry.name().to_owned(),
-                        Arc::new(Database::new(
-                            entry.name(),
-                            db,
-                            Arc::clone(&schema),
-                            entry.status(),
-                        )),
-                    );
+            let opened = FjallDb::open(&entry.path).and_then(|db| {
+                let schema = schemas.of(&entry.path, entry.meta.schema_fingerprint)?;
+                Ok(Database::new(entry.name(), db, schema, entry.status()))
+            });
+
+            match opened {
+                Ok(database) => {
+                    open.insert(entry.name().to_owned(), Arc::new(database));
                 }
                 Err(problem) => listing.problems.push(problem),
             }
@@ -100,7 +195,7 @@ impl Registry {
         Ok((
             Registry {
                 catalog,
-                schema,
+                schemas,
                 fingerprint,
                 open: RwLock::new(open),
                 stats: Arc::new(ServerStats::default()),
@@ -133,9 +228,11 @@ impl Registry {
         self.fingerprint
     }
 
+    /// The schema a session that names **no database** sees: the fallback, which is
+    /// this server's built-in one. A session bound to a database sees that database's.
     #[must_use]
     pub fn schema(&self) -> &Arc<Schema> {
-        &self.schema
+        &self.schemas.fallback
     }
 
     /// The database called `name`, if this server is serving one.
@@ -180,7 +277,7 @@ impl Registry {
     /// all-or-nothing rule [`Catalog::create`] follows on the disk, one level up.
     async fn create(&self, name: &str) -> Result<ControlReply, ServerError> {
         let catalog = self.catalog.clone();
-        let schema = Arc::clone(&self.schema);
+        let schema = Arc::clone(&self.schemas.fallback);
         let wanted = name.to_owned();
 
         let (entry, db) = blocking::run(move || {
@@ -190,12 +287,15 @@ impl Registry {
         })
         .await?;
 
-        let database = Arc::new(Database::new(
-            entry.name(),
-            db,
-            Arc::clone(&self.schema),
-            entry.status(),
-        ));
+        // **Served from its own embedded copy, immediately.** Not from the schema it
+        // was created with, which would be the same thing on the happy path and would
+        // let a database be served — once, until the next restart — through a copy
+        // nothing had ever read back.
+        let schema = self
+            .schemas
+            .of(&entry.path, entry.meta.schema_fingerprint)?;
+
+        let database = Arc::new(Database::new(entry.name(), db, schema, entry.status()));
 
         self.write().insert(entry.name().to_owned(), database);
 
@@ -211,15 +311,17 @@ impl Registry {
         allow_zero_facts: bool,
     ) -> Result<ControlReply, ServerError> {
         let Some(database) = self.find(name) else {
-            // A database the root holds but this server never opened. There is no
-            // handle to pass, so the offline path is not merely allowed here — it is
-            // the only correct one.
+            // A database the root holds but this server never opened — one whose store
+            // or whose schema copy could not be read at startup. There is no handle to
+            // pass, so the offline path is not merely allowed here; it is the only
+            // correct one, and it reads that database's own schema rather than this
+            // server's, since the content fingerprint is over the facts *it* holds.
             let catalog = self.catalog.clone();
-            let schema = Arc::clone(&self.schema);
+            let schemas = self.schemas.of_entry(&catalog, name)?;
             let wanted = name.to_owned();
 
             let sealed =
-                blocking::run(move || Ok(catalog.finish(&wanted, &schema, allow_zero_facts)?))
+                blocking::run(move || Ok(catalog.finish(&wanted, &schemas, allow_zero_facts)?))
                     .await?;
 
             return Ok(finished(&sealed));
@@ -233,7 +335,7 @@ impl Registry {
         let _writing = database.writer.lock().await;
 
         let catalog = self.catalog.clone();
-        let schema = Arc::clone(&self.schema);
+        let schema = Arc::clone(&database.schema);
         let wanted = name.to_owned();
         let held = Arc::clone(&database);
 

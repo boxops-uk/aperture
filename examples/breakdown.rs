@@ -49,7 +49,7 @@ use aperture_engine::{
     plan::Plan,
 };
 use aperture_schema::schema::Schema;
-use aperture_server::{Registry, server::Listener};
+use aperture_server::{Registry, registry::Schemas, server::Listener};
 use aperture_store::{catalog::Catalog, store::FjallDb};
 use aperture_wire::{FrameKind, StreamId, encode_desc, encode_frame, frame};
 
@@ -84,7 +84,11 @@ fn main() {
         .expect("a database nobody serves");
     let store_path = bare.get("solo").expect("it is there").path.clone();
 
-    let (registry, _listing) = Registry::open(catalog, (*schema).clone()).expect("a registry");
+    let (registry, _listing) = Registry::open(
+        catalog,
+        Schemas::new(code_index::CATALOGUE_SOURCE, code_index::with_catalogue()),
+    )
+    .expect("a registry");
     let listener = Listener::bind(&socket).expect("a socket");
     thread::spawn(move || {
         let _ = listener.run_blocking(Arc::new(registry));

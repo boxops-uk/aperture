@@ -7,7 +7,12 @@
 
 use std::fmt::Write as _;
 
-use aperture_store::{catalog::Entry, schema_doc::SchemaDoc};
+use aperture_schema::{
+    fingerprint,
+    schema::{PredicateId, Schema},
+    syntax::print,
+};
+use aperture_store::catalog::Entry;
 
 /// A table with a header, aligned to its widest cell.
 ///
@@ -112,38 +117,61 @@ pub fn entry_json(entry: &Entry) -> serde_json::Value {
     value
 }
 
-/// A schema as a person reads it: one predicate per line, in id order.
+/// A schema as a person reads it: one predicate per line, in id order, with the
+/// fingerprint each one contributes to the schema's identity.
+///
+/// **Id order rather than name order**, because an id is what a keyspace is named after
+/// and what a stored fact's tag refers to — the question this answers is "what does
+/// this database hold", not "what is in the file".
 #[must_use]
-pub fn schema_table(doc: &SchemaDoc) -> String {
-    use aperture_store::schema_doc::TypeDoc;
+pub fn schema_table(schema: &Schema) -> String {
+    let identity = fingerprint::identity(schema);
 
-    fn render(ty: &TypeDoc) -> String {
-        match ty {
-            TypeDoc::Int => "int".to_owned(),
-            TypeDoc::Str => "string".to_owned(),
-            TypeDoc::Fact { name, .. } => name.clone(),
-            TypeDoc::Record { fields } => format!(
-                "{{ {} }}",
-                fields
-                    .iter()
-                    .map(|field| format!("{} : {}", field.name, render(&field.ty)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        }
-    }
+    let rows: Vec<Vec<String>> = predicates(schema)
+        .map(|(id, name, signature)| {
+            let own = identity
+                .of(&name)
+                .map_or_else(|| "-".to_owned(), |f| format!("{f:016x}")[..12].to_owned());
 
-    let rows: Vec<Vec<String>> = doc
-        .predicates
-        .iter()
-        .map(|predicate| {
-            let signature = match &predicate.value {
-                Some(value) => format!("{} -> {}", render(&predicate.key), render(value)),
-                None => render(&predicate.key),
-            };
-            vec![predicate.id.to_string(), predicate.name.clone(), signature]
+            vec![id.0.to_string(), name, signature, own]
         })
         .collect();
 
-    table(&["id", "predicate", "type"], &rows)
+    table(&["id", "predicate", "type", "fingerprint"], &rows)
+}
+
+/// The same, as JSON.
+#[must_use]
+pub fn schema_json(schema: &Schema) -> serde_json::Value {
+    let identity = fingerprint::identity(schema);
+
+    let predicates: Vec<serde_json::Value> = predicates(schema)
+        .map(|(id, name, signature)| {
+            serde_json::json!({
+                "id": id.0,
+                "name": name,
+                "type": signature,
+                "fingerprint": identity.of(&name).map(|f| format!("{f:#018x}")),
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "fingerprint": format!("{:#018x}", identity.schema()),
+        "predicates": predicates,
+    })
+}
+
+/// Every stored predicate, in id order, as (id, name, rendered type).
+fn predicates(schema: &Schema) -> impl Iterator<Item = (PredicateId, String, String)> + '_ {
+    (0..schema.len())
+        .map(|index| PredicateId(index as u32))
+        .filter(|id| !schema.is_virtual(*id))
+        .filter_map(|id| {
+            Some((
+                id,
+                schema.get(id)?.name()?.to_owned(),
+                print::signature(schema, id)?,
+            ))
+        })
 }
