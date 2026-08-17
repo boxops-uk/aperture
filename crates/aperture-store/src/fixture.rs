@@ -29,6 +29,7 @@
 //! predicate test.Link   : { at : int, of : test.Foo }  // ...not in the leading field
 //! predicate test.Deep   : { via : test.Ref }           // ...and a chain of two hops
 //! predicate test.Boxed  : { id : int } -> { lo : int, hi : int }   // a record *value*
+//! predicate test.Named  : { name : string, of : test.Foo }  // a *string* before a ref
 //! ```
 //!
 //! Four of those are deliberate awkward cases rather than data: `test.Shadow` has a
@@ -75,6 +76,7 @@ const REF: PredicateId = PredicateId(9);
 const LINK: PredicateId = PredicateId(10);
 const DEEP: PredicateId = PredicateId(11);
 const BOXED: PredicateId = PredicateId(12);
+const NAMED: PredicateId = PredicateId(13);
 
 /// The schema, hand-built.
 ///
@@ -194,6 +196,19 @@ pub fn schema() -> Schema {
                 (sym("hi"), PredicateTy::Int),
             ]))),
         },
+        // **A string before a fact-typed field**, which no other predicate here has
+        // and which lookup-chasing's second condition turns on: a *prefix* at `name`
+        // narrows the seek without closing the field, so nothing after it can extend
+        // the prefix — where a literal at `name` leaves `of` spliceable. `test.Link`
+        // cannot express the distinction because its leading field is an `int`.
+        Predicate {
+            name: sym("test.Named"),
+            key: PredicateTy::Record(Arc::from([
+                (sym("name"), PredicateTy::Str),
+                (sym("of"), PredicateTy::Fact(FOO)),
+            ])),
+            value: None,
+        },
     ];
 
     // Field and predicate names queries use but that no declaration interns, so
@@ -286,6 +301,15 @@ pub fn facts() -> Vec<Fact> {
             sequence: sequence as u64 + 1,
         });
     }
+
+    // Two of `test.Named`, so a prefix at `name` matches one of them and a literal
+    // matches the other — which is what makes the chasing pair below distinguishable
+    // by rows as well as by plan.
+    push(
+        &mut out,
+        NAMED,
+        [("a", 1u64), ("ab", 2)].map(|(name, of)| [string(name), a_foo(of)].concat()),
+    );
 
     out
 }
