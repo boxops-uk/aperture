@@ -19,8 +19,9 @@
 
 use std::sync::Arc;
 
+use aperture_schema::fingerprint;
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
-use aperture_wire::{WireFact, WireRef, WireValue, encode_block, provisional_fingerprint};
+use aperture_wire::{WireFact, WireRef, WireValue, encode_block};
 use lasso::Rodeo;
 
 const FILE: PredicateId = PredicateId(0);
@@ -517,7 +518,7 @@ fn byte_identical_with_the_dotnet_client() {
     // about the schema are not two clients that disagree about the codec, and being
     // told which one it is saves reading a hex diff to find out.
     assert_eq!(
-        provisional_fingerprint(&schema),
+        fingerprint::of(&schema),
         golden.fingerprint,
         "the two clients' schemas disagree, so their blocks were never going to match"
     );

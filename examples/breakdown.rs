@@ -51,9 +51,7 @@ use aperture_engine::{
 use aperture_schema::schema::Schema;
 use aperture_server::{Registry, server::Listener};
 use aperture_store::{catalog::Catalog, store::FjallDb};
-use aperture_wire::{
-    FrameKind, StreamId, encode_desc, encode_frame, frame, provisional_fingerprint,
-};
+use aperture_wire::{FrameKind, StreamId, encode_desc, encode_frame, frame};
 
 /// The query whose cost is being taken apart: every binding folds, so it compiles to
 /// no steps and means exactly one row.
@@ -75,16 +73,14 @@ fn main() {
     let root = dir.join("store");
 
     let catalog = Catalog::open(&root).expect("a store root");
-    catalog
-        .create("code", &schema, provisional_fingerprint(&schema))
-        .expect("a database");
+    catalog.create("code", &schema).expect("a database");
 
     // A **second store root**, which no server touches: `ops-I1` gives the running
     // server every database under its own, so the direct-to-the-store measurements
     // below cannot share one with it. That is the invariant working, not an obstacle
     // to route around — the alternative would be a second handle on a held directory.
     let bare = Catalog::open(dir.join("bare")).expect("a second store root");
-    bare.create("solo", &schema, provisional_fingerprint(&schema))
+    bare.create("solo", &schema)
         .expect("a database nobody serves");
     let store_path = bare.get("solo").expect("it is there").path.clone();
 

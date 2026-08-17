@@ -66,7 +66,14 @@ use crate::{WireError, varint};
 /// Bumped when the *meaning* of a frame changes. The schema fingerprint below is a
 /// separate axis: one says "we disagree about the protocol", the other "we agree
 /// about the protocol and disagree about the data".
-pub const VERSION: u32 = 1;
+///
+/// **2 is Phase 8's.** A startup frame's `schema_fingerprint` used to carry a
+/// provisional hash this crate computed; it now carries
+/// [chapter 6](../../../docs/06-types-and-schema.md)'s schema identity, computed in
+/// `aperture-schema` over the canonical form. Every number changed, so a client pinned
+/// to the old one is told it speaks a different protocol rather than left to fail a
+/// comparison it cannot interpret.
+pub const VERSION: u32 = 2;
 
 /// Frame kinds this protocol assigns, beyond the ones the codec already names.
 pub mod kinds {
@@ -720,114 +727,6 @@ pub fn decode_page(bytes: &[u8]) -> Result<Page, WireError> {
     })
 }
 
-/// A **provisional** schema fingerprint.
-///
-/// Chapter 6 specifies the real one — canonical form, per-predicate fingerprints,
-/// then a whole-schema fingerprint — and it is
-/// [Phase 8](../../../PLAN.md)'s, because there is no schema *syntax* to canonicalise
-/// until schemas are parsed. This is not that. It is a stable hash over the predicate
-/// names and types a `Schema` holds, so that a client and a server disagreeing about
-/// the schema find out at the handshake instead of by writing facts nobody can read.
-///
-/// **Delete this when Phase 8 lands**, and bump [`VERSION`] when you do: the number
-/// will change, which is the whole point of a fingerprint, and a client pinned to the
-/// old one should be told rather than left to mismatch.
-#[must_use]
-pub fn provisional_fingerprint(schema: &aperture_schema::schema::Schema) -> u64 {
-    use aperture_schema::schema::PredicateTy;
-
-    // FNV-1a, 64-bit: small, dependency-free, and adequate for "did we mean the same
-    // schema" — this is not a security boundary and not the identity of a database.
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01B3;
-
-    fn feed(hash: &mut u64, bytes: &[u8]) {
-        for &byte in bytes {
-            *hash ^= u64::from(byte);
-            *hash = hash.wrapping_mul(PRIME);
-        }
-    }
-
-    fn feed_ty(hash: &mut u64, schema: &aperture_schema::schema::Schema, shape: &PredicateTy) {
-        match shape {
-            PredicateTy::Int => feed(hash, b"int"),
-            PredicateTy::Str => feed(hash, b"str"),
-            // **By name, not by id.** An id is a *position*, and since Phase 8 that
-            // position comes from sorting a schema's names — so two ends that agree
-            // about every predicate can still number them differently, and hashing the
-            // number would make them disagree about a schema they share. The name is
-            // the thing both ends actually have.
-            PredicateTy::Fact(id) => {
-                feed(hash, b"fact");
-                feed(
-                    hash,
-                    schema
-                        .get(*id)
-                        .and_then(|p| p.name())
-                        .unwrap_or("?")
-                        .as_bytes(),
-                );
-            }
-            PredicateTy::Record(fields) => {
-                feed(hash, b"record");
-                feed(hash, &(fields.len() as u64).to_le_bytes());
-                for (name, field) in fields.iter() {
-                    feed(
-                        hash,
-                        schema.interner().resolve(*name).unwrap_or("?").as_bytes(),
-                    );
-                    feed_ty(hash, schema, field);
-                }
-            }
-        }
-    }
-
-    // **By name, in name order — not in the order the schema was written.** Position is
-    // not part of what two ends agree about: the server's schema comes from parsing a
-    // `.aps` file, whose predicates lowering sorts, and a hand-written client's comes
-    // from a list somebody typed in whatever order read well. Hashing the traversal
-    // order made those two disagree about a schema they shared, which is the failure
-    // this ordering exists to prevent — and it is the same rule the real canonical form
-    // uses ([chapter 6](../../../docs/06-types-and-schema.md)), so nothing here has to
-    // be unlearned when that replaces this.
-    let mut named: Vec<_> = (0..schema.len())
-        .map(|index| aperture_schema::schema::PredicateId(index as u32))
-        // **A virtual predicate is not part of the schema two ends have to agree
-        // about.** It is answered by whoever runs the query rather than stored, so it
-        // is a property of the server, not of the database — a client that never heard
-        // of `aperture.db.List` is not a client with the wrong schema, and refusing it
-        // at the handshake would make every deployment choice a wire-compatibility
-        // event. It is also why the embedded schema copy leaves them out: nothing in
-        // the artifact holds one.
-        .filter(|id| !schema.is_virtual(*id))
-        .filter_map(|id| schema.get(id))
-        // A predicate with no resolvable name still has to contribute *something*
-        // distinct, or two of them would be indistinguishable in the hash.
-        .map(|predicate| (predicate.name().unwrap_or("\u{0}?"), predicate))
-        .collect();
-
-    named.sort_by_key(|(name, _)| *name);
-
-    let mut hash = OFFSET;
-
-    for (name, predicate) in named {
-        feed(&mut hash, name.as_bytes());
-        feed_ty(&mut hash, schema, predicate.key().ty);
-
-        match predicate.value() {
-            Some(value) => {
-                feed(&mut hash, b"+value");
-                feed_ty(&mut hash, schema, value.ty);
-            }
-            None => feed(&mut hash, b"-value"),
-        }
-    }
-
-    // Never zero: zero is the client's "do not check", so a schema that happened to
-    // hash to it would silently disable the check for everyone.
-    if hash == 0 { 1 } else { hash }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,80 +893,5 @@ mod tests {
             decode_ready(&bytes),
             Err(WireError::TrailingBytes(1))
         ));
-    }
-
-    /// **Declaration order is not part of a schema.** The server's comes from parsing a
-    /// `.aps` file, whose predicates lowering sorts by name; a hand-written client's
-    /// comes from a list somebody typed. This is not hypothetical — the two disagreed
-    /// exactly here, and the .NET demo failed its handshake against a schema it agreed
-    /// with predicate for predicate.
-    ///
-    /// The reference through `Fact` is the half that could still hide a position: a
-    /// referent is fed **by name**, so the two schemas below point at the same
-    /// predicate through two different ids and must still hash alike.
-    #[test]
-    fn the_fingerprint_does_not_depend_on_declaration_order() {
-        use std::sync::Arc;
-
-        use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
-        use lasso::Rodeo;
-
-        /// `order` names the position each of the two predicates takes, so one call
-        /// builds the schema and the other builds it back to front.
-        fn built(swapped: bool) -> Schema {
-            let mut rodeo = Rodeo::new();
-            let (a, b, field) = (
-                rodeo.get_or_intern("t.A"),
-                rodeo.get_or_intern("t.B"),
-                rodeo.get_or_intern("a"),
-            );
-
-            let at = u32::from(swapped);
-
-            let first = Predicate {
-                name: a,
-                key: PredicateTy::Str,
-                value: None,
-            };
-            let second = Predicate {
-                name: b,
-                key: PredicateTy::Record(Arc::from([(
-                    field,
-                    PredicateTy::Fact(PredicateId(1 - at)),
-                )])),
-                value: None,
-            };
-
-            let predicates = if swapped {
-                vec![second, first]
-            } else {
-                vec![first, second]
-            };
-
-            Schema::new(rodeo.into_reader(), Arc::from(predicates))
-        }
-
-        assert_eq!(
-            provisional_fingerprint(&built(false)),
-            provisional_fingerprint(&built(true)),
-            "the same schema written in two orders is the same schema"
-        );
-
-        // The control: order not mattering must not have made *content* stop mattering.
-        let mut rodeo = Rodeo::new();
-        let name = rodeo.get_or_intern("t.A");
-        let different = Schema::new(
-            rodeo.into_reader(),
-            Arc::from(vec![Predicate {
-                name,
-                key: PredicateTy::Int,
-                value: None,
-            }]),
-        );
-
-        assert_ne!(
-            provisional_fingerprint(&built(false)),
-            provisional_fingerprint(&different)
-        );
     }
 }

@@ -41,7 +41,7 @@ internal static class Program
 
         Console.WriteLine($"indexing {options.Source}");
         Console.WriteLine($"  paths relative to {root}");
-        Console.WriteLine($"  schema fingerprint {CodeIndex.Schema.Fingerprint():x16}");
+        Console.WriteLine($"  schema fingerprint {CodeIndex.Schema.Fingerprint:x16}");
 
         var loading = Stopwatch.StartNew();
         LoadedSolution solution;

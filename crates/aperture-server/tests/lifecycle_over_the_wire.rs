@@ -93,7 +93,7 @@ fn start() -> Serving {
     let root = dir.path().join("store");
 
     let schema = schema();
-    let fingerprint = protocol::provisional_fingerprint(&schema);
+    let fingerprint = aperture_schema::fingerprint::of(&schema);
 
     let catalog = Catalog::open(&root).expect("a store root");
     let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");

@@ -160,7 +160,7 @@ fn write(db: &FjallDb, schema: &Schema, content: Content) {
 /// it the offline way: nothing holds the store open by the time it is sealed.
 fn build(catalog: &Catalog, name: &str, content: Content) -> u64 {
     let schema = schema();
-    catalog.create(name, &schema, 0xABCD).expect("it creates");
+    catalog.create(name, &schema).expect("it creates");
     let (_entry, db) = catalog.open_write(name).expect("it opens");
 
     write(&db, &schema, content);
@@ -209,7 +209,7 @@ fn sealing_through_a_held_handle_is_the_same_artifact() {
 
     let offline = build(&catalog, "offline", CONTENT);
 
-    catalog.create("held", &schema, 0xABCD).expect("it creates");
+    catalog.create("held", &schema).expect("it creates");
     let (_entry, db) = catalog.open_write("held").expect("it opens");
     write(&db, &schema, CONTENT);
 
@@ -248,7 +248,7 @@ fn finishing_a_held_database_twice_is_a_no_op() {
     let (_dir, catalog) = catalog();
     let schema = schema();
 
-    catalog.create("code", &schema, 0xABCD).expect("it creates");
+    catalog.create("code", &schema).expect("it creates");
     let (_entry, db) = catalog.open_write("code").expect("it opens");
     write(&db, &schema, CONTENT);
 
@@ -307,7 +307,7 @@ fn finishing_twice_is_a_no_op() {
 fn an_empty_database_will_not_seal_without_being_told_to() {
     let (_dir, catalog) = catalog();
     let schema = schema();
-    catalog.create("empty", &schema, 1).expect("it creates");
+    catalog.create("empty", &schema).expect("it creates");
 
     assert!(matches!(
         catalog.finish("empty", &schema, false),
@@ -497,7 +497,7 @@ fn sealing_merges_every_tree_into_one_table() {
     let (_dir, catalog) = catalog();
     let schema = schema();
 
-    catalog.create("code", &schema, 0xABCD).expect("it creates");
+    catalog.create("code", &schema).expect("it creates");
     let (_entry, db) = catalog.open_write("code").expect("it opens");
 
     write(&db, &schema, CONTENT);
@@ -537,7 +537,7 @@ fn merging_does_not_change_the_identity() {
     let (_dir, catalog) = catalog();
     let schema = schema();
 
-    catalog.create("code", &schema, 0xABCD).expect("it creates");
+    catalog.create("code", &schema).expect("it creates");
     let (entry, db) = catalog.open_write("code").expect("it opens");
 
     write(&db, &schema, CONTENT);
@@ -658,7 +658,7 @@ fn crashing_finisher_child_process() {
 
     // Built and populated before the watchdog is armed, so the kill lands inside
     // `finish` rather than inside `create`.
-    catalog.create("code", &schema, 0xABCD).expect("it creates");
+    catalog.create("code", &schema).expect("it creates");
     {
         let (_entry, db) = catalog.open_write("code").expect("it opens");
 

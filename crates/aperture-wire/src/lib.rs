@@ -106,6 +106,6 @@ pub use error::WireError;
 pub use frame::{FrameHeader, FrameKind, StreamId, decode_frame, encode_frame};
 pub use protocol::{
     Control, ControlOp, ControlReply, ErrorCode, Mode, ProfileStep, QueryProfile, Ready, Startup,
-    kinds, provisional_fingerprint,
+    kinds,
 };
 pub use value::{WireFact, WireRef, WireValue, decode_fact, encode_fact, from_bytes, to_bytes};

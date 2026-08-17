@@ -25,11 +25,7 @@ pub fn run(root: &Path, socket: &Path, name: &str) -> Result<Created, CliError> 
     let instance = match commands::route(root, socket)? {
         Route::Server(mut server) => server.create(name)?,
 
-        Route::Local(catalog, _lock) => {
-            let schema = code_index::schema();
-            let fingerprint = aperture_wire::provisional_fingerprint(&schema);
-            catalog.create(name, &schema, fingerprint)?.meta.instance
-        }
+        Route::Local(catalog, _lock) => catalog.create(name, &code_index::schema())?.meta.instance,
     };
 
     Ok(Created {

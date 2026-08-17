@@ -35,7 +35,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use aperture_schema::schema::{PredicateId, Schema};
+use aperture_schema::{
+    fingerprint,
+    schema::{PredicateId, Schema},
+};
 
 use crate::{
     error::StoreError,
@@ -235,13 +238,15 @@ impl Catalog {
     ///
     /// [`StoreError::BadDatabaseName`], [`StoreError::DatabaseExists`], or whatever
     /// the store or the sidecar reports. On any of them nothing is left behind.
-    pub fn create(
-        &self,
-        name: &str,
-        schema: &Schema,
-        schema_fingerprint: u64,
-    ) -> Result<Entry, StoreError> {
+    pub fn create(&self, name: &str, schema: &Schema) -> Result<Entry, StoreError> {
         check_name(name)?;
+
+        // **Derived here rather than passed in.** A caller handing over both a schema
+        // and a number could hand over two that disagree, and the sidecar would then
+        // record an identity for a schema this database does not hold — which nothing
+        // downstream could detect, since a fingerprint is exactly what everything
+        // downstream trusts.
+        let schema_fingerprint = fingerprint::of(schema);
 
         let destination = self.root.join(name);
         if destination.exists() {

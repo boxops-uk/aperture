@@ -273,7 +273,7 @@ mod tests {
             .expect("the golden names a schema fingerprint");
 
         assert_eq!(
-            aperture_wire::protocol::provisional_fingerprint(&schema()),
+            aperture_schema::fingerprint::of(&schema()),
             recorded,
             "`schemas/code.aps` and the .NET client's declaration have drifted — \
              the demo would be refused at the handshake"
@@ -449,12 +449,12 @@ mod catalogue {
     ///
     /// If this ever fails, every .NET client stops connecting until it declares a
     /// predicate it can never write to — which is the outcome the virtual/stored split
-    /// exists to avoid, and the reason `provisional_fingerprint` skips virtuals rather
-    /// than the server keeping two schemas and hoping they stay in step.
+    /// exists to avoid, and the reason identity skips virtuals rather than the server
+    /// keeping two schemas and hoping they stay in step.
     #[test]
     fn the_catalogue_does_not_change_the_handshake() {
-        let stored = aperture_wire::protocol::provisional_fingerprint(&schema());
-        let served = aperture_wire::protocol::provisional_fingerprint(&with_catalogue());
+        let stored = aperture_schema::fingerprint::of(&schema());
+        let served = aperture_schema::fingerprint::of(&with_catalogue());
 
         assert_eq!(
             stored, served,

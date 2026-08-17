@@ -58,6 +58,11 @@ const uint Package = 11;
 const uint Param = 17;
 const uint Doc = 19;
 
+// The schema fingerprint, as `aperture schema fingerprint` prints it — carried rather
+// than computed (see ApertureSchema), so this client states the shapes independently
+// and the number only says which schema it was written against.
+const ulong SchemaFingerprint = 0x08b4c4306f2ea1b0;
+
 var schema = new ApertureSchema([
     new AperturePredicate("src.File", ApertureType.String, null),
 
@@ -187,7 +192,7 @@ var schema = new ApertureSchema([
     new AperturePredicate("src.AttributeOf", ApertureType.Rec(
         ("target", ApertureType.Reference(Decl)),
         ("attribute", ApertureType.String)), null),
-]);
+], SchemaFingerprint);
 
 if (goldenPath is not null)
 {
@@ -196,7 +201,7 @@ if (goldenPath is not null)
 }
 
 Console.WriteLine($"connecting to {socket} ({database})");
-Console.WriteLine($"  our schema fingerprint {schema.Fingerprint():x16}");
+Console.WriteLine($"  our schema fingerprint {schema.Fingerprint:x16}");
 
 using var connection = ApertureConnection.Connect(
     socket,
@@ -413,7 +418,7 @@ void EmitGolden(string path)
         "# Regenerate with ./clients/dotnet/emit-golden.sh. A diff here is either a",
         "# deliberate format change — in which case both clients move together — or a",
         "# divergence, which is the thing this file exists to catch.",
-        $"schema-fingerprint {schema.Fingerprint():x16}",
+        $"schema-fingerprint {schema.Fingerprint:x16}",
     ];
 
     foreach (var (name, predicate, facts) in blocks)

@@ -85,7 +85,8 @@ pub struct Database {
     pub name: String,
     pub db: Arc<FjallDb>,
     pub schema: Arc<Schema>,
-    /// See [`protocol::provisional_fingerprint`] — replaced when Phase 8 lands.
+    /// This database's schema identity — what a handshake compares against
+    /// ([chapter 6](../../../docs/06-types-and-schema.md)).
     pub fingerprint: u64,
     /// **The per-database single writer** (`ops-I1`, `ops-I5`).
     ///
@@ -120,7 +121,7 @@ impl Database {
         schema: Arc<Schema>,
         status: Status,
     ) -> Database {
-        let fingerprint = protocol::provisional_fingerprint(&schema);
+        let fingerprint = aperture_schema::fingerprint::of(&schema);
         Database {
             name: name.into(),
             db: Arc::new(db),

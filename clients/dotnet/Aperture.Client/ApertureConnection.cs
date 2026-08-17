@@ -49,7 +49,13 @@ public sealed record QueryResult(ApertureType Shape, IReadOnlyList<ApertureValue
 public sealed class ApertureConnection : IDisposable
 {
     /// <summary>The protocol version this client speaks.</summary>
-    public const uint ProtocolVersion = 1;
+    /// <remarks>
+    /// 2 is Phase 8's: a startup frame's schema fingerprint carries chapter 6's schema
+    /// identity, where 1 carried a provisional hash each end computed for itself. Every
+    /// number changed, so a client pinned to the old one is told it speaks a different
+    /// protocol rather than left to fail a comparison it cannot interpret.
+    /// </remarks>
+    public const uint ProtocolVersion = 2;
 
     private readonly Socket _socket;
     private readonly NetworkStream _stream;
@@ -95,7 +101,7 @@ public sealed class ApertureConnection : IDisposable
         Varint.Write(startup, ProtocolVersion);
         WriteString(startup, database);
         startup.WriteByte((byte)mode);
-        Varint.Write(startup, assertSchema ? schema.Fingerprint() : 0);
+        Varint.Write(startup, assertSchema ? schema.Fingerprint : 0);
 
         FrameIo.Write(stream, FrameKind.Startup, 0, startup.Span);
 

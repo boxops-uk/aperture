@@ -8,10 +8,10 @@
 use std::{path::PathBuf, sync::Arc, thread};
 
 use aperture_client::{ClientError, Connection, ErrorCode, Mode, WireFact, WireRef, WireValue};
+use aperture_schema::fingerprint;
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use aperture_server::{Registry, server::Listener};
 use aperture_store::catalog::Catalog;
-use aperture_wire::provisional_fingerprint;
 use lasso::Rodeo;
 
 const FILE: PredicateId = PredicateId(0);
@@ -129,9 +129,7 @@ fn start() -> Serving {
 
     let schema = schema();
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
-    catalog
-        .create("code", &schema, provisional_fingerprint(&schema))
-        .expect("a database");
+    catalog.create("code", &schema).expect("a database");
 
     let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");
     let registry = Arc::new(registry);
@@ -172,11 +170,11 @@ fn facts_written_by_this_client_are_queried_back_by_it() {
     let serving = start();
     let mut connection = serving.open(Mode::ReadWrite);
 
-    assert_eq!(connection.hello().version, 1);
+    assert_eq!(connection.hello().version, aperture_wire::protocol::VERSION);
     assert_eq!(connection.hello().predicates, 3);
     assert_eq!(
         connection.hello().schema_fingerprint,
-        provisional_fingerprint(&schema()),
+        fingerprint::of(&schema()),
         "the handshake asserted our schema and the server agreed"
     );
 

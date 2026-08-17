@@ -94,15 +94,13 @@ fn start() -> Serving {
     let socket = dir.path().join("aperture.sock");
 
     let schema = schema();
-    let fingerprint = protocol::provisional_fingerprint(&schema);
+    let fingerprint = aperture_schema::fingerprint::of(&schema);
 
     // Through the catalog rather than by opening a directory: the server owns a store
     // root and serves what is under it, so a test that handed it a bare `FjallDb`
     // would be testing a shape the server no longer has.
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
-    catalog
-        .create("code", &schema, fingerprint)
-        .expect("a database");
+    catalog.create("code", &schema).expect("a database");
 
     let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");
 

@@ -16,7 +16,7 @@ use std::{path::PathBuf, sync::Arc, thread};
 use aperture_client::{Connection, Mode};
 use aperture_server::{Registry, server::Listener};
 use aperture_store::catalog::Catalog;
-use aperture_wire::{WireFact, WireRef, WireValue, protocol::provisional_fingerprint};
+use aperture_wire::{WireFact, WireRef, WireValue};
 
 use crate::code_index;
 
@@ -38,11 +38,7 @@ pub fn serving(files: usize) -> Serving {
 
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog
-        .create(
-            "code",
-            &code_index::schema(),
-            provisional_fingerprint(&code_index::schema()),
-        )
+        .create("code", &code_index::schema())
         .expect("a database");
 
     // The **served** schema, as `serve` builds it: the stored predicates plus the
@@ -154,11 +150,7 @@ pub fn serving_on_tcp(files: usize) -> (Serving, String) {
 
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog
-        .create(
-            "code",
-            &code_index::schema(),
-            provisional_fingerprint(&code_index::schema()),
-        )
+        .create("code", &code_index::schema())
         .expect("a database");
 
     let (registry, _listing) =

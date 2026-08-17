@@ -161,7 +161,23 @@ pub enum Compatibility {
     },
 }
 
+/// A schema's whole fingerprint, for a caller that does not want the map.
+///
+/// The number a handshake compares and a sidecar records. It is the same one
+/// `aperture schema fingerprint` prints, which is what lets a client
+/// [carry it rather than derive it](../../../docs/open-decisions.md).
+#[must_use]
+pub fn of(schema: &Schema) -> u64 {
+    identity(schema).schema()
+}
+
 /// Compute a schema's identity.
+///
+/// **Virtual predicates are not in it.** One is answered by whoever runs the query
+/// rather than stored, so it is not part of what a database holds and must not be part
+/// of what a client has to agree with — otherwise a server that grew
+/// `aperture.db.List` would stop every existing client until each declared a predicate
+/// it can never write to.
 #[must_use]
 pub fn identity(schema: &Schema) -> Identity {
     let names = names_of(schema);
@@ -316,10 +332,14 @@ fn type_form(
     }
 }
 
+/// Every **stored** predicate, by id — the ones identity is over.
 fn names_of(schema: &Schema) -> BTreeMap<PredicateId, String> {
     (0..schema.len())
         .filter_map(|index| {
             let id = PredicateId(index as u32);
+            if schema.is_virtual(id) {
+                return None;
+            }
             Some((id, schema.get(id)?.name()?.to_owned()))
         })
         .collect()
@@ -621,6 +641,97 @@ mod tests {
                 broken: vec!["src.A".to_owned()]
             }
         );
+    }
+
+    /// **Two schemas that number their predicates differently are still one schema.**
+    ///
+    /// The text-level claim is above; this is the same one where it can actually bite,
+    /// over hand-built schemas whose positions differ. A reference is spelled by name
+    /// and fingerprint rather than by id, so the two below point at the same predicate
+    /// through two different ids and must come out alike — the guard that a position
+    /// never leaks into identity. It moved here when the provisional fingerprint it was
+    /// written against was deleted; the failure it records is real, and was a .NET demo
+    /// refused at the handshake by a server it agreed with predicate for predicate.
+    #[test]
+    fn positions_are_not_part_of_identity() {
+        use std::sync::Arc;
+
+        use lasso::Rodeo;
+
+        use crate::schema::Predicate;
+
+        fn built(swapped: bool) -> Schema {
+            let mut rodeo = Rodeo::new();
+            let (a, b, field) = (
+                rodeo.get_or_intern("t.A"),
+                rodeo.get_or_intern("t.B"),
+                rodeo.get_or_intern("a"),
+            );
+
+            let at = u32::from(swapped);
+
+            let first = Predicate {
+                name: a,
+                key: PredicateTy::Str,
+                value: None,
+            };
+            let second = Predicate {
+                name: b,
+                key: PredicateTy::Record(Arc::from([(
+                    field,
+                    PredicateTy::Fact(PredicateId(1 - at)),
+                )])),
+                value: None,
+            };
+
+            let predicates = if swapped {
+                vec![second, first]
+            } else {
+                vec![first, second]
+            };
+
+            Schema::new(rodeo.into_reader(), Arc::from(predicates))
+        }
+
+        assert_eq!(
+            of(&built(false)),
+            of(&built(true)),
+            "the same schema written in two orders is the same schema"
+        );
+
+        // The control: order not mattering must not have made *content* stop mattering.
+        let mut rodeo = Rodeo::new();
+        let name = rodeo.get_or_intern("t.A");
+        let different = Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name,
+                key: PredicateTy::Int,
+                value: None,
+            }]),
+        );
+
+        assert_ne!(of(&built(false)), of(&different));
+    }
+
+    /// **A virtual predicate is invisible to identity**, which is the property the
+    /// whole virtual/stored split rests on: a server that grows one must not stop every
+    /// client that has never heard of it, and no artifact may claim to hold a kind of
+    /// fact nothing can write to it.
+    #[test]
+    fn a_virtual_predicate_is_not_part_of_a_schemas_identity() {
+        let stored = identity_of("schema src { predicate File : string }");
+
+        let served = schema_of(
+            "schema src { predicate File : string }\n\
+             schema aperture.db { predicate List : string }",
+        );
+        let (id, _) = served.find_position("aperture.db.List").expect("declared");
+        let served = identity(&served.with_virtual([id]));
+
+        assert_eq!(stored.schema(), served.schema());
+        assert_eq!(stored.canonical(), served.canonical());
+        assert_eq!(served.of("aperture.db.List"), None);
     }
 
     /// The version is inside the hash, so changing the algorithm is visible rather than

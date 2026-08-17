@@ -34,7 +34,7 @@ use aperture_store::{
     store::FjallDb,
 };
 
-use aperture_wire::protocol::{self, Control, ControlOp, ControlReply};
+use aperture_wire::protocol::{Control, ControlOp, ControlReply};
 
 use crate::{blocking, error::ServerError, session::Database, stats::ServerStats};
 
@@ -75,7 +75,7 @@ impl Registry {
     /// [`ServerError::Store`] only if the root itself cannot be read.
     pub fn open(catalog: Catalog, schema: Schema) -> Result<(Registry, Listing), ServerError> {
         let schema = Arc::new(schema);
-        let fingerprint = protocol::provisional_fingerprint(&schema);
+        let fingerprint = aperture_schema::fingerprint::of(&schema);
 
         let mut listing = catalog.list()?;
         let mut open = BTreeMap::new();
@@ -181,11 +181,10 @@ impl Registry {
     async fn create(&self, name: &str) -> Result<ControlReply, ServerError> {
         let catalog = self.catalog.clone();
         let schema = Arc::clone(&self.schema);
-        let fingerprint = self.fingerprint;
         let wanted = name.to_owned();
 
         let (entry, db) = blocking::run(move || {
-            let entry = catalog.create(&wanted, &schema, fingerprint)?;
+            let entry = catalog.create(&wanted, &schema)?;
             let db = FjallDb::open(&entry.path)?;
             Ok((entry, db))
         })

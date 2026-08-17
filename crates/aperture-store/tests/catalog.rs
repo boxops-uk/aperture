@@ -57,9 +57,7 @@ fn catalog() -> (tempfile::TempDir, Catalog) {
 #[test]
 fn a_created_database_has_the_layout_the_design_specifies() {
     let (_dir, catalog) = catalog();
-    let entry = catalog
-        .create("code", &schema(), 0xABCD)
-        .expect("it creates");
+    let entry = catalog.create("code", &schema()).expect("it creates");
 
     assert_eq!(entry.name(), "code");
     assert_eq!(entry.status(), Status::Writable);
@@ -95,7 +93,7 @@ fn a_created_database_has_the_layout_the_design_specifies() {
 #[test]
 fn create_materialises_every_predicates_trees() {
     let (_dir, catalog) = catalog();
-    catalog.create("code", &schema(), 1).expect("it creates");
+    catalog.create("code", &schema()).expect("it creates");
 
     let (_entry, reopened) = catalog.open_read("code").expect("it reopens");
 
@@ -114,8 +112,8 @@ fn create_materialises_every_predicates_trees() {
 #[test]
 fn a_listing_works_while_a_database_is_held_open() {
     let (_dir, catalog) = catalog();
-    catalog.create("alpha", &schema(), 1).expect("it creates");
-    catalog.create("beta", &schema(), 1).expect("it creates");
+    catalog.create("alpha", &schema()).expect("it creates");
+    catalog.create("beta", &schema()).expect("it creates");
 
     let (_entry, held) = catalog.open_write("alpha").expect("it opens");
 
@@ -138,7 +136,7 @@ fn a_name_that_could_escape_the_root_is_refused() {
     for bad in ["", ".", "..", ".hidden", "a/b", "a\\b", "a\nb"] {
         assert!(
             matches!(
-                catalog.create(bad, &schema(), 1),
+                catalog.create(bad, &schema()),
                 Err(StoreError::BadDatabaseName { .. })
             ),
             "{bad:?} should be refused"
@@ -149,10 +147,10 @@ fn a_name_that_could_escape_the_root_is_refused() {
 #[test]
 fn creating_the_same_name_twice_is_refused() {
     let (_dir, catalog) = catalog();
-    catalog.create("code", &schema(), 1).expect("it creates");
+    catalog.create("code", &schema()).expect("it creates");
 
     assert!(matches!(
-        catalog.create("code", &schema(), 1),
+        catalog.create("code", &schema()),
         Err(StoreError::DatabaseExists(_))
     ));
 }
@@ -162,7 +160,7 @@ fn creating_the_same_name_twice_is_refused() {
 #[test]
 fn a_complete_database_cannot_be_opened_for_writing() {
     let (_dir, catalog) = catalog();
-    let entry = catalog.create("code", &schema(), 1).expect("it creates");
+    let entry = catalog.create("code", &schema()).expect("it creates");
 
     // Sealing is 9b's; this reaches in to set the status so the *refusal* can be
     // tested now, on the establishment path that will still be the one enforcing it.
@@ -199,7 +197,7 @@ fn a_failed_create_leaves_nothing_behind() {
     fs::write(catalog.root().join("code"), b"in the way").expect("it writes");
 
     assert!(matches!(
-        catalog.create("code", &schema(), 1),
+        catalog.create("code", &schema()),
         Err(StoreError::DatabaseExists(_))
     ));
 
@@ -223,7 +221,7 @@ fn a_failed_create_leaves_nothing_behind() {
 #[test]
 fn a_listing_skips_what_is_not_a_database() {
     let (_dir, catalog) = catalog();
-    catalog.create("real", &schema(), 1).expect("it creates");
+    catalog.create("real", &schema()).expect("it creates");
 
     // A stray directory, a stray file, a name directory with no instance in it, and
     // an instance-shaped directory with no sidecar.
@@ -245,8 +243,8 @@ fn a_listing_skips_what_is_not_a_database() {
 #[test]
 fn a_malformed_sidecar_is_a_problem_rather_than_a_failure() {
     let (_dir, catalog) = catalog();
-    catalog.create("good", &schema(), 1).expect("it creates");
-    let broken = catalog.create("bad", &schema(), 1).expect("it creates");
+    catalog.create("good", &schema()).expect("it creates");
+    let broken = catalog.create("bad", &schema()).expect("it creates");
 
     fs::write(broken.path.join(META_FILE), b"{not json").expect("it writes");
 
@@ -262,7 +260,7 @@ fn a_malformed_sidecar_is_a_problem_rather_than_a_failure() {
 #[test]
 fn removing_a_database_takes_the_whole_tree() {
     let (_dir, catalog) = catalog();
-    catalog.create("code", &schema(), 1).expect("it creates");
+    catalog.create("code", &schema()).expect("it creates");
 
     catalog.remove("code").expect("it removes");
 
@@ -313,7 +311,7 @@ fn a_second_holder_of_the_root_is_refused() {
 fn the_lock_file_is_invisible_to_a_listing() {
     let (_dir, catalog) = catalog();
     let _held = catalog.lock().expect("the lock");
-    catalog.create("code", &schema(), 1).expect("it creates");
+    catalog.create("code", &schema()).expect("it creates");
 
     assert!(catalog.root().join(LOCK_FILE).exists());
 
@@ -327,14 +325,16 @@ fn the_lock_file_is_invisible_to_a_listing() {
 #[test]
 fn a_sidecar_round_trips_through_the_catalog() {
     let (_dir, catalog) = catalog();
-    let created = catalog
-        .create("code", &schema(), 0x1234_5678)
-        .expect("it creates");
+    let created = catalog.create("code", &schema()).expect("it creates");
 
     let found = catalog.get("code").expect("it is found");
 
     assert_eq!(found.meta, created.meta);
-    assert_eq!(found.meta.schema_fingerprint, 0x1234_5678);
+    assert_eq!(
+        found.meta.schema_fingerprint,
+        aperture_schema::fingerprint::of(&schema()),
+        "the number recorded is the schema's own identity, not one a caller supplied"
+    );
     assert_eq!(found.meta.version, Meta::VERSION);
     assert_eq!(found.meta.content_fingerprint, None, "recorded at finish");
     assert_eq!(found.meta.facts, None, "counted at finish");
@@ -477,7 +477,7 @@ fn crashing_creator_child_process() {
 
     // Finished before the watchdog is armed: the parent's non-vacuity check.
     catalog
-        .create("alpha", &schema(), 1)
+        .create("alpha", &schema())
         .expect("the first database");
 
     std::thread::spawn(move || {
@@ -489,7 +489,7 @@ fn crashing_creator_child_process() {
 
     // Whatever this returns is irrelevant — the watchdog is expected to win. If it
     // somehow does not, the parent's `!status.success()` catches it.
-    let _ = catalog.create("code", &schema(), 1);
+    let _ = catalog.create("code", &schema());
 
     // Keep the process alive long enough for the watchdog even if `create` was fast.
     std::thread::sleep(std::time::Duration::from_millis(delay_ms + 500));

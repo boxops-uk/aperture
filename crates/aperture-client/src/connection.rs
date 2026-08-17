@@ -238,7 +238,7 @@ impl Connection {
         };
 
         let fingerprint = if assert_schema {
-            protocol::provisional_fingerprint(&connection.schema)
+            aperture_schema::fingerprint::of(&connection.schema)
         } else {
             0
         };

@@ -55,7 +55,7 @@ pub fn run(
     // two ends have to agree about — so a client that has never heard of it still
     // connects ([`code_index::with_catalogue`]).
     let schema = code_index::with_catalogue();
-    let fingerprint = protocol::provisional_fingerprint(&schema);
+    let fingerprint = aperture_schema::fingerprint::of(&schema);
 
     // The registry takes the catalog with it, because owning the root and owning the
     // databases under it are the same ownership: `create` and `remove` arriving over

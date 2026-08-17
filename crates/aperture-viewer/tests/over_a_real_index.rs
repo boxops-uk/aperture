@@ -16,7 +16,6 @@ use aperture_client::{Connection, Mode, WireFact, WireRef, WireValue};
 use aperture_schema::schema::{PredicateId, Schema};
 use aperture_server::{Registry, server::Listener};
 use aperture_store::catalog::Catalog;
-use aperture_wire::provisional_fingerprint;
 
 /// The built-in schema, parsed from the file the server reads.
 fn schema() -> Schema {
@@ -84,9 +83,7 @@ fn start() -> Serving {
     let schema = schema();
 
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
-    catalog
-        .create("code", &schema, provisional_fingerprint(&schema))
-        .expect("a database");
+    catalog.create("code", &schema).expect("a database");
 
     let (registry, _listing) = Registry::open(catalog, schema).expect("a registry");
     let listener = Listener::bind(&socket).expect("a socket");

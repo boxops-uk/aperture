@@ -63,6 +63,15 @@ internal static class CodeIndex
     public const uint DerivesFrom = 25;
     public const uint AttributeOf = 26;
 
+/// <summary>
+    /// The schema fingerprint, as <c>aperture schema fingerprint</c> prints it.
+    /// </summary>
+    /// <remarks>
+    /// Carried rather than computed — see <see cref="ApertureSchema"/>. A schema edit
+    /// moves it, and a stale one is refused at the handshake by name.
+    /// </remarks>
+    public const ulong SchemaFingerprint = 0x08b4c4306f2ea1b0;
+
     /// <summary>Every predicate id, in schema order — what a report iterates.</summary>
     public static readonly uint[] Predicates =
     [
@@ -220,7 +229,7 @@ internal static class CodeIndex
         new AperturePredicate("src.AttributeOf", ApertureType.Rec(
             ("target", ApertureType.Reference(Decl)),
             ("attribute", ApertureType.String)), null),
-    ]);
+    ], SchemaFingerprint);
 
     public static string NameOf(uint predicate) => Schema[predicate].Name;
 
