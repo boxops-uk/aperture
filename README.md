@@ -25,9 +25,11 @@ ingestion is "fearless."
 > ordered sequence of **steps**, so a value can be derived mid-query and *recomputed* rather than
 > saved when a query suspends ([I14](docs/invariants.md#i14)); a bind to a constant is folded
 > instead, at compile time.
-> **Not yet built:** the rest of the query surface (`|`, `never`, `!`, subqueries, unions),
-> bulk ingestion, schema parsing, **stored** derivation (which needs the schema DSL first) and
-> the operational layer. See
+> Since then the deferred query surface compiles (`|`, `never`, `!`, subqueries), the wire
+> protocol and the operational layer are built — a database is created, written to, queried,
+> sealed and removed against a running server — and **schemas are files**: a database is created
+> against one, embeds it, and is served from that copy ([I13](docs/invariants.md#i13)).
+> **Not yet built:** union types, bulk ingestion from files, and **stored** derivation. See
 > [`PLAN.md`](PLAN.md) for the sequence and current state.
 
 ---

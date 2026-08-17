@@ -108,10 +108,18 @@ The engine spine exists in `crates/aperture-engine/`:
   *reads*, which is the whole of the placement rule Datalog states separately. The machine grew one
   step kind and no control flow. What each construct still refuses is narrower than the code that
   reports it suggests, and each refusal has a corpus entry.
-- **Unbuilt:** bulk ingestion, schema parsing, **stored** derivation (gated on the schema DSL —
-  [Phase 8b](#phase-8b--stored-derivation)), the wire protocol, and the operational layer.
-  `schema.rs` holds Phase 8's guards, written up front and `#[ignore]`d — the only pending
-  entries left in the coverage ledger.
+- **Schemas are files** (`aperture-schema/src/syntax`, Phase 8.2–8.5) — lex → parse → lower →
+  identity, plus **imports** (`resolve`) and the three commands `schema check` / `fingerprint` /
+  `diff`. A database is **created against a schema file**, embeds it as source, and is *served
+  from that copy* rather than from whatever the server was started with — which is what lets one
+  store root hold artifacts built from different declarations, and what
+  [I13](docs/invariants.md#i13) has been asking for since Phase 0. The provisional handshake
+  fingerprint is gone: identity is chapter 6's, and a client **carries** the number rather than
+  computing it. What is left of Phase 8 is **unions** (8.6), which is why
+  `schema::discriminants_append_only` is now the *only* `#[ignore]`d guard in the ledger.
+- **Unbuilt:** bulk ingestion (7b), unions (8.6), **stored** derivation
+  ([Phase 8b](#phase-8b--stored-derivation)), and the operational gaps Phase 9 lists as
+  deliberately missing.
 
 Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the design docs.
 
@@ -125,7 +133,7 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
                            └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ✅ ─┬─▶ 5  REPL ✅  (→ remote-only later)
                                                                                     ├─▶ 6  dynamic derivation ✅ (machine change; I14 green)
                                                                                     │      └─▶ 6b  deferred query surface ✅ (`|`, never, `!`, subquery)
-                                                                                    └─▶ 7a wire ingestion ✅ ─▶ 9  operations ─▶ 8  schema (+ union types) ─▶ 8b  stored derivation
+                                                                                    └─▶ 7a wire ingestion ✅ ─▶ 9  operations ✅ ─▶ 8  schema ✅ (8.1–8.5; unions are 8.6) ─▶ 8b  stored derivation
                                                                                                              └─▶ 7b  file ingestion (deferred past 9)
 
 Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends on 1 (store + atomic put_fact).
@@ -137,7 +145,8 @@ Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends 
               Nothing in 7–9 depends on 6b, so its position *before* 7 is a choice, not a constraint.
               **9 was resequenced ahead of 7b and 8** — see the ordering principle. It depended on
               "7–8"; with the schema hardcoded, 8 stops being a dependency and only 7a is needed.
-Gates:        Codec I1–I3 green.  Executor I4–I7, I9 green on MemStore.  I8/I11/I12 at Phase 1.  I10/I13 at Phase 8.
+Gates:        Codec I1–I3 green.  Executor I4–I7, I9 green on MemStore.  I8/I11/I12 at Phase 1.
+              I13 green at 8.4; I10 waits on unions (8.6) and is the last ignored guard in the ledger.
               FactRef marker — resolved (own marker 0x51, already in the codec); no longer gates ingestion.
               Union types gate on the schema DSL (8), not on 6b: a union cannot be declared before it can be written down.
 ```
@@ -972,10 +981,16 @@ fingerprints, subset-containment compatibility, embed-and-freeze) are
 resolution, `schema_path` roots, and redeclaration errors are
 [operations §7](docs/aperture-cli-design.md).
 
+**The step tree is [`docs/phase-8-schemas.md` §4](docs/phase-8-schemas.md)** — `8.1`–`8.6`, and
+numbered rather than lettered because this file already has a *separate* Phase 8b. **8.1–8.5 are
+done**; 8.6 (unions) is what is left, and the acceptance boxes below say which is which.
+
 **Invariants in scope:**
-- *makes green:* [I13](docs/invariants.md#i13) (`schema::ingest_rejects_incompatible_schema`
-  + `schema::fingerprint_is_order_independent`); [I10](docs/invariants.md#i10)
-  (`schema::discriminants_append_only`) when unions are represented.
+- *makes green:* [I13](docs/invariants.md#i13)
+  (`i13_embedded_schema::ingest_rejects_incompatible_schema` +
+  `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint`) — **green at
+  8.4**; [I10](docs/invariants.md#i10) (`schema::discriminants_append_only`) when unions are
+  represented, which is 8.6 and the only guard still `#[ignore]`d.
 - *upholds:* [I3](docs/invariants.md#i3) (reject schema changes that would violate on-disk marker ordering);
   [I11](docs/invariants.md#i11) — **a predicate id must fit the 24-bit fact-id tag**; the
   schema loader is where that is validated (the store rejects it today, but only at the point
@@ -994,13 +1009,26 @@ rather than only for the DSL: a union payload is not a fact row, so it needs the
 variant.
 
 **Acceptance:**
-- [ ] Parse a schema file and run a query against it end-to-end (test).
-- [ ] Fingerprint order-independence green (tier-2: two source orderings → identical fingerprint).
-- [ ] Ingest rejects a fact file whose schema fingerprint isn't subset-compatible (I13).
-- [ ] Invariant-violating schema edits (renumbered discriminant, reordered marker) are rejected at load (I10/I3, tested).
+- [x] Parse a schema file and run a query against it end-to-end (test). *Twice over: `create
+      --schema` offline and over the wire, and `each_database_its_own_schema` asks two databases
+      under one root the same question and gets one answer and one refusal.*
+- [x] Fingerprint order-independence green (tier-2: two source orderings → identical fingerprint),
+      with the negative control that a **field** permutation moves it.
+- [x] Ingest rejects a producing schema that isn't subset-compatible (I13) — renamed, retyped,
+      dropped field, reordered key — and **accepts a compatible subset**, which is the half that
+      needed the handshake to carry per-predicate claims rather than one number.
+- [ ] Invariant-violating schema edits (renumbered discriminant, reordered marker) are rejected at load (I10/I3, tested). *8.6.*
 - [ ] A union declares, ingests, round-trips through the codec, and `X.alt?` selects an
       alternative and binds its payload — the `nyi/union-select` corpus entry reclassified to
-      `Supported` with its rows, and the code retired from `Code::ALL`.
+      `Supported` with its rows, and the code retired from `Code::ALL`. *8.6.*
+
+**What 8.4 settled that this section had wrong.** "The embedded copy becomes the canonical form"
+was the plan and is not what shipped: the canonical form exists to be hashed, and embedding it
+would need a second parser for a second grammar with exactly one reader. A database embeds its
+schema **as source**, printed in id order and read back by a lowering that keeps declaration
+order — because an id is a position and it is the tag in every `FactId` the database holds, so
+recovering a numbering and assigning one are different operations and now have different
+entry points. `create` proves the round trip before anything exists on disk.
 
 ---
 

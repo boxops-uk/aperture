@@ -245,8 +245,11 @@ Glean's docs and `inherit` is deprecated.
 > `evolves` in P0). Every ingest is validated against the embedded schema by subset
 > containment; the DB carries its own schema.
 >
-> *Guard:* `schema::ingest_rejects_incompatible_schema` (subset containment enforced at
-> ingest) + `schema::fingerprint_is_order_independent` (tier-2 metamorphic).
+> *Guard:* `i13_embedded_schema::ingest_rejects_incompatible_schema` (subset containment
+> enforced at ingest, in `aperture-client/tests/` since 8.4 — it needs a database, a parsed
+> schema and a write path, none of which is in `aperture-schema`) +
+> `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` (tier-2
+> metamorphic).
 
 Embedding the schema is what lets ingest validate a fact file's producing-schema
 fingerprint cheaply (a handshake compares fingerprints before any bytes flow), and what
@@ -296,7 +299,7 @@ disabled can. Three ways it can still bite, each cheaper to decide in **Phase 8*
 | # | Statement | Guard test |
 |---|-----------|------------|
 | [I10](invariants.md#i10) | Union discriminants are stable and append-only. | `schema::discriminants_append_only` (pending unions) |
-| [I13](invariants.md#i13) | The DB's schema is embedded and frozen at create. | `schema::ingest_rejects_incompatible_schema` + `fingerprint_is_order_independent` (pending schema) |
+| [I13](invariants.md#i13) | The DB's schema is embedded and frozen at create. | `i13_embedded_schema::ingest_rejects_incompatible_schema` + `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` |
 
 Related: [I3](02-tuple-codec.md) (frozen markers) — the codec-side counterpart of the same
 "frozen once data exists" principle.

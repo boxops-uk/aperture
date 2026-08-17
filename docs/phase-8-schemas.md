@@ -29,8 +29,10 @@ fingerprints, subset containment and the freeze; [operations §7](aperture-cli-d
 those; this file does not restate them.**
 
 **Invariants in scope:**
-- *makes green:* [I13](invariants.md#i13) — `schema::ingest_rejects_incompatible_schema` and
-  `schema::fingerprint_is_order_independent`; [I10](invariants.md#i10) —
+- *makes green:* [I13](invariants.md#i13) — `ingest_rejects_incompatible_schema` (which moved
+  to `aperture-client/tests/i13_embedded_schema.rs` to be runnable at all) and
+  `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint`;
+  [I10](invariants.md#i10) —
   `schema::discriminants_append_only`, once unions are represented. These three are the last
   pending entries in the coverage ledger, and their bodies are already written as the
   specification (`crates/aperture-schema/src/schema.rs`).
@@ -148,11 +150,12 @@ fragment or a split without reading a header first.
 
 ### D2 — The fingerprint algorithm is a cross-language, unversioned dependency
 
-Chapter 6 calls this "the load-bearing one for Phase 8", and it is worse than that chapter
-says, because the .NET client implements the fingerprint too
-(`clients/dotnet/Aperture.Client/Schema.cs` computes `provisional_fingerprint` and its own
-doc already anticipates being replaced). Changing *how* a fingerprint is computed silently
-rejects every artifact and every client already built.
+Chapter 6 calls this "the load-bearing one for Phase 8", and it was worse than that chapter
+says, because the .NET client implemented the fingerprint too — its `Schema.cs` computed the
+provisional hash, and its own doc already anticipated being replaced. Changing *how* a
+fingerprint is computed silently rejects every artifact and every client already built.
+**Settled and done at 8.4**: the provisional hash is deleted, identity is what the handshake
+carries, and the C# side holds one `ulong` it does not compute.
 
 **Recommendation, and one part of it was wrong until Glean was read.**
 
@@ -172,10 +175,19 @@ rejects every artifact and every client already built.
 
 #### What Aperture should do instead
 
-**Now (8.4): a client carries the number, it does not derive it.** `aperture schema
-fingerprint` prints it; the client holds it as a constant and asserts it at the handshake.
-The C# side deletes its FNV implementation and keeps one `ulong`. A stale constant then fails
-the handshake loudly, which is exactly what the assertion is for.
+**Now (8.4): a client carries the number, it does not derive it.** ✅ `aperture schema
+fingerprint` prints it; `Aperture.Demo` and `Aperture.Indexer` each hold it as a `const ulong`
+and assert it at the handshake. The C# FNV is gone. A stale constant fails the handshake
+loudly, and — better — fails `the_dotnet_clients_schema_is_this_one` without `dotnet` or a
+running server, because the golden records the constant and the Rust side computes what it
+should be.
+
+**One thing 8.4 added that the recommendation did not foresee.** Equality is the wrong
+question for a producer writing *part* of a schema, so a startup frame also carries the
+predicates a client claims, each with its own fingerprint, and containment is checked when the
+whole-schema numbers differ ([I13](invariants.md#i13)). It does not weaken D2: a client that
+carries a constant sends no map, which is what the .NET client does. A **Rust** client computes
+one, and that is not a second implementation — it links the first.
 
 Be honest about what that constant *is*, though: a **provenance** tag — "this client was
 built against that schema" — rather than a checksum of the shapes the client actually
@@ -308,9 +320,17 @@ Operations §7 settles this; the build is a transcription:
   file identity, union the blocks. **Cycles are harmless by construction**, and the real error
   is genuine redeclaration: two different definitions of one fully-qualified name, as against
   the same file reached twice;
-- roots come from `schema_path`, first-match-wins — a new config key, and `config.rs` has none
-  today;
+- roots come from `schema_path`, first-match-wins — a new config key, added at 8.5
+  (`--schema-path`, `APERTURE_SCHEMA_PATH`), with an entry file's **own directory searched
+  first** so a self-contained directory of schemas needs no configuration at all;
 - transitive visibility is accepted and documented rather than fought.
+
+**Built at 8.5** as `aperture_schema::syntax::resolve`. Two things it decides that §7 left to a
+resolver: a namespace is a path (`lang.rust` → `lang/rust.aps`), and each file is **parsed on
+its own before the union is lowered** — so a syntax error points at the file it is in, while a
+cross-file reference and a cross-file redeclaration are still answered over the union, which is
+where they are visible. A schema with no imports is lowered under its own name with its own line
+numbers; several files get a header apiece and a name that says a union was read.
 
 ---
 
@@ -333,17 +353,31 @@ before anything depends on it, and unions come last because they are the widest 
   `aperture_engine::corpus` gates the query one.
 - **8.3 — Lower to `Schema`, and identity.** The canonical form as a specified byte string,
   per-predicate and whole-schema fingerprints, D1's id validation, D3's cycle answer. *Done
-  when* `fingerprint_is_order_independent` is un-ignored and green, **with its negative
+  when* order-independence is green, **with its negative
   control**: a field permutation must move the fingerprint.
-- **8.4 — Load a database from a schema file.** `create` takes a schema path; the embedded copy
-  becomes the canonical form; `code_index` is deleted. *Done when* a parsed schema runs a query
-  end to end, and when `ingest_rejects_incompatible_schema` is green.
-  - **Half done.** The hardcoded Rust schema is gone: `schemas/code.aps` and
-    `schemas/catalogue.aps` are the statement, `code_index` is the two lines that parse them
-    plus the lookups that used to be id constants, and the parsed schema runs the .NET demo
-    end to end — created, written to over the wire, and queried back. What is left is
-    `create --schema <path>`, the embedded copy becoming the canonical form, and the sidecar
-    recording the real fingerprint.
+- **8.4 — Load a database from a schema file.** ✅ `create` takes a schema path; the embedded
+  copy is what a database is served from; `code_index` is a default rather than a definition.
+  *Done when* a parsed schema runs a query end to end, and when
+  `ingest_rejects_incompatible_schema` is green — **both**, and the guard moved crates to run
+  at all (see [I13](invariants.md#i13)).
+  - **What the second half turned out to be.** "The embedded copy becomes the canonical form"
+    was the wrong shape, and building it said why: the canonical form's job is to be *hashed*,
+    and embedding it would need a second parser for a second grammar with one reader. The copy
+    is **source**, written by `syntax::print` and read back by `syntax::recover` — a second
+    entry point to lowering that keeps the **declaration order** as the numbering, because an
+    id is a position and it is the tag in every FactId the database holds. `create` proves the
+    round trip before anything exists on disk, and a schema that does not survive it is refused
+    rather than embedded.
+  - **And a database is now served from its copy**, not from the schema the server was started
+    with — which is what makes one store root able to hold artifacts built from different
+    declarations. A copy that disagrees with the sidecar leaves the database listed and
+    unserved; a database with no copy at all is served with the server's own schema and
+    unchecked, because such an artifact predates both halves of the comparison.
+  - **One deliberate divergence from §5**, recorded rather than left to be discovered:
+    operations §5 says `create` *requires* `--schema`. Here it is optional and defaults to the
+    built-in code index. Every test, demo and instrument in the tree creates a database without
+    naming a schema, and the default is exactly what each of them had; making it required is a
+    one-line change and a flag day, and nothing yet needs one.
   - **What deleting the constants found.** `provisional_fingerprint` hashed predicates in
     *traversal* order, and lowering sorts a schema's predicates by name while a hand-written
     client lists them in whatever order reads well. The two ends then disagreed about a schema
@@ -354,8 +388,14 @@ before anything depends on it, and unions come last because they are the widest 
     is worth reading as evidence for D2: the fingerprint had **two** independent
     reimplementations of it, and it took a client that was not the one being changed to notice
     they had drifted.
-- **8.5 — `schema check` / `fingerprint` / `diff`.** The three commands §5 specifies, `diff`
-  answering `Identical | Compatible (n added) | Breaking` with per-predicate reasons.
+- **8.5 — `schema check` / `fingerprint` / `diff`.** ✅ The three commands §5 specifies, over
+  the import resolution above. `diff` answers `Identical | Compatible (n added) | Breaking`
+  with per-predicate reasons, and takes **files, database names, or one of each** — comparing
+  what a build would produce against what an artifact already holds is the question it is for.
+  Two additions §5 did not ask for and the work wanted: `fingerprint --canonical` prints the
+  form the number is taken over (what a second implementation is written against), and
+  `describe --schema` dumps a database's copy verbatim, which is text `create --schema` takes
+  back.
 - **8.6 — Unions.** `PredicateTy::Union`, marker `0x52`, the discriminant freeze, `X.alt?`
   lowering to `DiscriminantEq` plus a payload bind. *Done when* `discriminants_append_only` is
   green and the `nyi/union-select` corpus entry is reclassified `Supported` with its rows and
@@ -365,7 +405,7 @@ before anything depends on it, and unions come last because they are the widest 
 
 ## 5. What this deletes, and what has to move with it
 
-- **`src/code_index.rs` goes.** ✅ *Mostly done.* The 22 predicates of hardcoded Rust are
+- **`src/code_index.rs` goes.** ✅ *Done, in the sense that was actually available.* The 22 predicates of hardcoded Rust are
   gone, and so are the six id constants beside them — an id is a position, and a constant was
   a second statement of something the schema decides. What survives is exactly what §5
   predicted had to: the `with_catalogue` split, because a virtual predicate is a property of
@@ -374,15 +414,18 @@ before anything depends on it, and unions come last because they are the widest 
   asserts the intended field order, because "the file says what the file says" is not a guard,
   and field order is what decides which questions are seeks. What is left of the module is a
   *default* schema rather than a definition: the one you get when `create` was not given a
-  path.
-- **Both .NET schema statements and the golden.** `Aperture.Indexer/CodeIndex.cs` and
+  path — which is what it is since 8.4, and the reason the module survives at all.
+- **Both .NET schema statements and the golden.** ✅ `Aperture.Indexer/CodeIndex.cs` and
   `Aperture.Demo/Program.cs` state the schema independently *on purpose* — that is what makes
   the byte-identical golden meaningful. What they must **not** do is reimplement the
-  fingerprint: they delete their FNV and carry the number `aperture schema fingerprint`
-  prints, per D2. So the work is one constant per client and the shapes they already have,
-  not a port of the canonical form.
-- **`schema_doc`** is explicitly provisional and safe to replace; nothing reads it to make a
-  decision.
+  fingerprint: they deleted their FNV and carry the number `aperture schema fingerprint`
+  prints, per D2. One constant per client, the shapes they already had, no port of the
+  canonical form — and the golden's blocks did not move, which is what says this changed
+  identity and not the wire format.
+- **`schema_doc`** ✅ was explicitly provisional and safe to replace, and was replaced: it
+  holds the schema as source now, and it is the thing a server reads to learn what a database
+  holds. It stopped being a document nothing depends on the moment a store root could hold
+  two schemas.
 - **The blast radius of `PredicateTy::Union`** is **29 files** that name the enum's variants —
   about half of them tests, but the other half is the codec, the wire value encoder,
   `flatten`, `iter`, `intern`, `desc` and `print`, each of which has to answer what a union
