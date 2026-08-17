@@ -170,7 +170,27 @@ mid-query, and `enumerate` has neither an arm that re-runs the body nor a write 
 holding state across iterations conflicts with [I8](invariants.md#i8).
 **Status: undecided, and expensive.**
 
-### Primitives, expressions and aggregation
+### Primitives, expressions and aggregation — **mostly closed** (Phase 11)
+
+Order comparisons and arithmetic are in the language. A comparison is a residual and a
+**byte** compare, since the key encoding is order-preserving
+([I1](invariants.md#i1)) — which is wider than Angle, whose comparisons are nat-only;
+strings compare here for the same reason integers do. Arithmetic is `+` and `-` on
+integers, wrapping, and it is the first thing in focus to lower a `Step::Derive` at all.
+
+**Aggregation is still an Aperture-only absence, and the shape of the absence changed.**
+There is no `count` in the language and no `all q` to build a set from. What there is
+instead is `QUERY_COUNT`: the same plan with a different accumulator, counted at the
+consumer, which is where this design has always put aggregation — the difference is
+that it no longer costs a full result over the wire. `prim.size (all …)` as a *term*
+still needs set construction.
+
+What remains absent: **if-then-else**, and a **sargeable** comparison. The second is
+worth knowing about — an order comparison on a leading key field denotes one contiguous
+run of the key order, unlike a denial, so unlike `NotPrefix` there *is* a seek form to
+look for later. **Status: built, except aggregation-as-a-term.**
+
+### Primitives, expressions and aggregation — as it stood
 
 Angle has `prim.*` and if-then-else — but the surface is **much smaller than this file used to
 imply**: exactly 15 primitives, arithmetic is `+` on nat only, string functions are `toLower`
@@ -235,8 +255,10 @@ from); no database properties; **no at-rest validation** — Glean's `Validate` 
 two of which are literally [I1](invariants.md#i1) (enumeration order) and
 [I12](invariants.md#i12) (`idByKey` agreement); no per-predicate stats, which Glean maintains
 incrementally for an O(1) read *and spends on planning*, and which per-predicate keyspaces make
-nearly free here; no retention policy. And in the shell, **`:more`** — ours discards the cursor,
-so [I4](invariants.md#i4) and [I8](invariants.md#i8) have no interactive exerciser.
+nearly free here; no retention policy. **`:more` is closed** — Phase 9f's wire shell holds a real
+cursor across a round trip, and Phase 11 went further: a cursor now crosses the wire as bytes, so
+paging survives the connection that started it, which is more than Glean's continuations do for a
+stateless caller.
 [Operations](aperture-cli-design.md).
 
 ### The idiomatic spelling of a join — closed

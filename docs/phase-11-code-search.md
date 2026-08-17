@@ -1,6 +1,12 @@
-# Phase 11 (proposed) — a code-search site, and what Aperture is missing to serve it
+# Phase 11 — a code-search site, and what Aperture was missing to serve it
 
-> [Aperture design book](../README.md) · **analysis, not an approved plan**
+> [Aperture design book](../README.md) · **built** — the analysis, and what came of it
+
+**Status: everything below is done except stored derivation.** The five blockers are
+closed, the degradations are answered or recorded as decided-against, and
+[`aperture-viewer`](../crates/aperture-viewer) is the site. The analysis is kept as
+written, with what happened marked against it — a gap analysis edited to match the
+outcome is one nobody can calibrate against.
 
 The target is Glean's code-navigation demo: browse a repository, open a file, click a
 symbol, land on its definition — plus the things the demo *implies* and Glass actually
@@ -48,6 +54,13 @@ So this analysis reads against two bars, and they are very different sizes:
 ## 1. The screens, decomposed — with the plan each one actually compiles to
 
 ✅ seeks · ⚠️ works but scans or costs more than it should · ❌ not expressible
+
+**As it stands now:** rows 4 and 6 seek and carry their spans (`src.FileXRef`,
+`at.length`, `src.DeclSpan`); 9 seeks (`src.SearchByLowerName`); 14 and 16 seek
+(`src.AttributeOf`, `src.DerivesFrom`); 18 is `QUERY_COUNT`; 19 is ranked over a
+bounded window by the viewer, which is where ranking belongs; and 20 is expressible,
+because `<=` is a token now. The table below is what it looked like before any of
+that.
 
 | # | Screen | Query | Plan | |
 |---|---|---|---|---|
@@ -351,6 +364,78 @@ find-references and prefix search — i.e. the demo, and most of the product bar
 
 **Not proposed:** unions, enums, `maybe`, arrays, recursion. Each is real, none is on
 the path to this site, and three of them are Phase 8.6's 29-file blast radius.
+
+---
+
+## 6a. What was built
+
+Phase A, and none of it needed the engine:
+
+| | | |
+|---|---|---|
+| A1 | **Spans** | `src.Ref.at` gained `length`, in the *key* so it is in the register the scan holds rather than a point read per row; `src.DeclSpan` carries where a declaration's name starts and where it ends, as a sibling in `src.TypeOf`'s shape rather than folded into an identity |
+| A2 | **`src.FileXRef`** | `src.Ref` keyed `{file, at, to}`, so a file's references seek and arrive in the order a renderer splices them |
+| A3 | **`src.SearchByLowerName`** | the search index case-folded, since focus has no `toLower` |
+| — | **`src.DerivesFrom`, `src.AttributeOf`** | the two key orders a symbol panel wanted and `src.Extends`/`src.Attribute` answer backwards |
+| A4 | **Re-index** | `dotnet/runtime`, 32,710 files, ~25M facts — up from 18.2M, which is what five more predicates cost |
+| A5 | **The site** | [`aperture-viewer`](../crates/aperture-viewer), over `aperture-client` and nothing below it |
+
+Phase B, all but the one that is gated on a decision:
+
+| | | |
+|---|---|---|
+| B1 | **Stream-map removal** | a stream's task ends when its work does, the reader sweeps dead handles, and the client recycles ids. `streams_live` was already the gauge and nothing was allowed to decrement it |
+| B2 | **A cursor the client holds** | `Cursor::to_bytes`/`from_bytes` and a `QUERY_PAGE` frame, so paging stops needing the connection. Guarded by taking every page on a *new* connection and comparing the concatenation against the uninterrupted result |
+| B3 | **Comparisons and arithmetic** | `<`, `<=`, `>`, `>=` as residuals — a **byte** compare, since the key encoding is order-preserving ([I1](invariants.md#i1)) — and `+`/`-` as the first thing in focus to lower a `Step::Derive` at all |
+| B4 | **Stored derivation** | not built, and the only item here that is *asked* to wait |
+| B5 | **Counts and ordering** | `QUERY_COUNT` is the same plan with a different accumulator and never encodes a row. Ranking is the viewer's, over a bounded window, and §6b says why |
+
+### 6b. Two things deliberately not built
+
+**A general `ORDER BY`.** Rows arrive in key order, and any other order means either
+materialising the result — an anti-pattern here, and for reasons that have not changed
+— or a reverse-scan direction through `Source`, `FactStore`, the stack frame and the
+resume cursor. The second is a real change to the machine's hot path and to
+[I4](invariants.md#i4), and nothing on this site wants it: search results are
+alphabetical and nobody asked for them backwards. What "best match first" actually
+means is ranking, which is a judgement rather than an order, and the viewer makes it
+over a window whose size the page states.
+
+**Batching several questions into one request.** A symbol panel is five predicates and
+five round trips, and Glean's Haxl coalesces exactly that. It is a protocol feature
+with its own design questions — what a batch is if one member fails, what it does to
+cancellation — and it is not on the path to a working site. Recorded, not scheduled.
+
+### 6c. What the work turned up
+
+Four things found by building it rather than by reading:
+
+- **A record-valued predicate panicked the compiler.** `X.value` projects; `X.value.a`
+  typechecks, because a value's type has fields now, and then flatten declined
+  *quietly* — which trips its own "no plan without a reason" assertion. It is
+  `nyi/value-field` now. Reachable from a schema somebody wrote, which is input.
+- **The handshake fingerprint hashed traversal order.** Lowering sorts a schema's
+  predicates; a hand-written client lists them however reads well. The .NET demo was
+  refused against a schema it agreed with predicate for predicate.
+- **A register address was a level's position**, and a derived bind takes an address
+  without being a level. `level_mut` counted levels; it finds one by what it *binds*
+  now.
+- **A query's head record is sorted by field name at lowering**, so `{line, col,
+  length}` arrives as `col, length, line`. The viewer read rows positionally until an
+  end-to-end test rendered an outline with the name and the kind swapped.
+
+### 6d. What is still missing, and now known precisely
+
+- **A reference to a scalar-keyed predicate has no field to read through.** `R.to.name`
+  works because `src.Decl` has a field called `name`; `src.File`'s key is a bare string,
+  so a reference's file comes back as an id and the viewer resolves it from a map it
+  loads at startup. A fetch through a reference already exists — what is missing is a
+  way to *name* the whole key of the fetched fact.
+- **No cost model.** Statement order still decides the plan, and the wrong order is a
+  three-million-row scan with no diagnostic attached.
+- **Stored derivation.** Five predicates in `schemas/code.aps` are now a second key
+  order over data already there. That is five apologies in five comments where there
+  used to be two.
 
 ---
 

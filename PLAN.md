@@ -1596,6 +1596,54 @@ above it *produces* rather than per row a scan examines — which is why
 
 ---
 
+## Phase 11 — A code-search site, and what it took ✅
+
+**Goal.** Build Glean's code-navigation demo on Aperture — browse a repository, open a
+file, click a symbol, land on its definition — plus the three things that demo implies
+and Glass actually serves: search, find-references, a symbol panel. Then fix what
+building it turned out to need.
+
+**Design of record:** [`docs/phase-11-code-search.md`](docs/phase-11-code-search.md),
+which is the gap analysis it started from *and* the record of what came of it. The
+analysis is kept as written rather than edited to match the outcome.
+
+**What landed, in the order it landed:**
+
+- **The stream leak's mechanism**, which `bench/FINDINGS.md` §7 costed and named a
+  connection pool as the shape that hits. A stream's task now ends when its work does,
+  the reader sweeps dead handles, and the client recycles ids.
+- **Five key orders in the schema** — `src.FileXRef`, `src.DeclSpan`,
+  `src.SearchByLowerName`, `src.DerivesFrom`, `src.AttributeOf` — plus `at.length` on a
+  reference. Three of them are the same data keyed a second way, which is what a stored
+  derivation would materialise and is why five comments now carry the same apology.
+- **Order comparisons**, as a byte compare over the order-preserving encoding
+  ([I1](docs/invariants.md#i1)) rather than a decode. `X < 3` was a **lex** error before
+  this — the one place the grammar broke its own permissive-early rule.
+- **Arithmetic**, which is the first thing in focus to lower a `Step::Derive` at all.
+- **A cursor the client can hold**, so paging stops needing the connection — which
+  nothing could work around, since "everything after key K" is not expressible.
+- **`QUERY_COUNT`**: the same plan with a different accumulator, so a search UI can say
+  how many results there are without receiving them.
+- **[`aperture-viewer`](crates/aperture-viewer)**, over `aperture-client` and nothing
+  below it.
+
+**Not built, and each for a stated reason:** stored derivation (Phase 8b, gated on
+re-derivation vs [I11](docs/invariants.md#i11)); a general `ORDER BY` (materialisation
+or a reverse-scan change to the machine, and nothing wants it — ranking is a judgement,
+and the viewer makes it over a bounded window); request batching (a protocol feature
+with its own design questions, off the path).
+
+**Invariants in scope:** *upholds* [I1](docs/invariants.md#i1) (a comparison **is** the
+order-preservation property, used somewhere other than a seek for the first time),
+[I4](docs/invariants.md#i4) (a cursor now crosses the wire, so the plan-fingerprint
+check is what stands between a caller and a plausible wrong answer),
+[I6](docs/invariants.md#i6)/[I9](docs/invariants.md#i9) (every new residual is a
+borrowed span, no decode and no allocation), [I14](docs/invariants.md#i14) (a derived
+bind is still a pure function of the fact bindings, which is what lets resume recompute
+it).
+
+---
+
 ## Related prior design work
 
 - **[The design book](README.md)** — the engine design of record (codec, storage, executor,
