@@ -468,6 +468,27 @@ That is the strongest evidence this analysis produced for a cost model — stron
 §3's version, because it was found by a consumer rather than by inspection, and because
 the trap is *shape* rather than order.
 
+**What is done about it, and what is not.** The engine is unchanged: there is no
+diagnostic, and a query written the slow way still compiles silently. What exists is a
+**guard on the consumer** — `no_page_reads_a_predicate_whole` profiles every query in
+`query::census()` and fails if any step reports `full_scan`.
+
+That the guard is possible at all is the useful part: `ProfileStep::full_scan` is a
+property of the *plan*, so a two-file test corpus detects it exactly as a 25M-fact one
+does. The check costs milliseconds and needs no benchmark. It is the mechanical guard
+[CLAUDE.md](../CLAUDE.md) asks for — *"non-functional criteria are part of done, and are
+tested, not asserted"* — and it was missing while the slow query was live: **every test
+here passed with it in place**, because at two files both spellings answer identically.
+
+`Paths::load` is exempt by not being in the census, and a second test says so by name
+rather than leaving the omission to look like an oversight.
+
+What this does **not** do is help anybody else. A guard in the viewer protects the
+viewer; the next consumer writes the same query and gets the same 58 seconds. The engine
+answer is a cost model, or failing that a diagnostic — "this level scans a predicate
+while a seek was available" is knowable at flatten time, since it is exactly what
+`Claims` decided. Neither is built.
+
 ### 6e. What the work turned up
 
 Four things found by building it rather than by reading:

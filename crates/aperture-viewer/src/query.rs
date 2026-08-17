@@ -301,6 +301,39 @@ pub fn definition_span(name: &str) -> String {
     )
 }
 
+/// **Every query shape this viewer can ask, with sample arguments.**
+///
+/// The census `no_page_reads_a_predicate_whole` profiles. Hand-written, and that is
+/// deliberate for the reason `aperture_engine::diag::Code::ALL` is hand-written:
+/// adding a query and not adding it here is meant to be visible, and the count below
+/// is what makes it visible rather than merely possible to notice.
+///
+/// The arguments are samples, and they matter less than they look: what the guard
+/// checks is whether a step reads a predicate **whole**, which is a property of the
+/// plan rather than of the arguments or of how many rows are in the database.
+#[must_use]
+pub fn census() -> Vec<(&'static str, String)> {
+    let census = vec![
+        ("file_text", file_text("a.cs")),
+        ("file_xrefs", file_xrefs("a.cs")),
+        ("file_outline", file_outline("a.cs")),
+        ("search", search("x")),
+        ("references", references("X")),
+        ("definition", definition("X")),
+        ("definition_span", definition_span("X")),
+    ];
+
+    // Every query builder in this module except `Paths::load`, which is a scan on
+    // purpose — see the guard, which names it.
+    assert_eq!(
+        census.len(),
+        7,
+        "a query was added to this module without being added to the census"
+    );
+
+    census
+}
+
 /// Run a query and take every row.
 ///
 /// # Errors

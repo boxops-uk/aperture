@@ -348,3 +348,105 @@ fn a_hostile_path_does_not_reach_the_query() {
     );
     assert!(status == 404 || status == 200, "{status}");
 }
+
+/// **No page reads a predicate whole.**
+///
+/// The guard for the trap that cost this viewer 58 seconds a page against the 25M-fact
+/// index, and which every test here passed while it was live: with a two-file corpus
+/// both spellings answer identically in microseconds, so nothing that checks *rows*
+/// can see it.
+///
+/// What it checks instead is the **plan**, through the profile the wire already
+/// carries: `ProfileStep::full_scan` says a step read a predicate whole, and that is a
+/// property of the plan rather than of the corpus. So a two-file database detects it
+/// exactly as a twenty-five-million-fact one does — which is the whole reason this can
+/// be a unit-cost test rather than a benchmark.
+///
+/// # The trap it is actually about
+///
+/// A row bind **claims** its variable. Written
+/// `src.SearchByLowerName {name = "x".., to = D}; D = src.Decl {module = M}`, the
+/// second statement says what `D` *is*, so `flatten`'s `Claims` makes the first
+/// statement's mention of `D` a read — and the level binding it has to run first. No
+/// reordering can rescue that, because it is not an ordering question: `reorder` is
+/// working as designed, and the seek becomes a residual over all 888,177 declarations.
+///
+/// Reading *through* the reference the seek already bound (`D.module.file`) is the same
+/// answer at 2.1 ms against 30,222 ms. Both are things a person would write. This is
+/// what stands between the fast one and the next edit.
+#[test]
+fn no_page_reads_a_predicate_whole() {
+    let serving = start();
+
+    let mut connection = Connection::connect(
+        &serving.socket,
+        "code",
+        Arc::new(schema()),
+        Mode::ReadOnly,
+        false,
+    )
+    .expect("a reader");
+
+    let mut scanning = vec![];
+
+    for (name, query) in aperture_viewer::query::census() {
+        let mut rows = connection.query_profiled(&query).expect(name);
+        let _ = connection.drain(&mut rows).expect("its rows");
+
+        let profile = rows
+            .profile()
+            .expect("a profiled query reports what it examined");
+
+        for step in &profile.steps {
+            if step.full_scan {
+                scanning.push(format!(
+                    "{name}: step `{}` reads its predicate whole\n      {query}",
+                    step.label
+                ));
+            }
+        }
+    }
+
+    assert!(
+        scanning.is_empty(),
+        "{} of the viewer's queries scan a predicate:\n    {}",
+        scanning.len(),
+        scanning.join("\n    ")
+    );
+}
+
+/// **The one scan that is deliberate**, named so it cannot be confused for a miss.
+///
+/// `Paths::load` reads every `src.File` — that is what it is for, and there is no key
+/// order that makes "every row" a seek. It is exempt from the guard above by not being
+/// in the census, and this is the exemption written down.
+///
+/// It is also bounded in a way none of the page queries are: it runs **once**, at
+/// startup, over the smallest predicate in the source layer (~32,000 rows on
+/// `dotnet/runtime`).
+#[test]
+fn loading_the_file_list_is_the_one_deliberate_scan() {
+    let serving = start();
+
+    let mut connection = Connection::connect(
+        &serving.socket,
+        "code",
+        Arc::new(schema()),
+        Mode::ReadOnly,
+        false,
+    )
+    .expect("a reader");
+
+    let mut rows = connection
+        .query_profiled("{id = X, path = P} where X = src.File P")
+        .expect("the file list");
+    let _ = connection.drain(&mut rows).expect("its rows");
+
+    let profile = rows.profile().expect("a profile");
+
+    assert!(
+        profile.steps.iter().any(|step| step.full_scan),
+        "the file list is expected to scan; if it seeks now, the guard above should \
+         cover it and this test should go"
+    );
+}
