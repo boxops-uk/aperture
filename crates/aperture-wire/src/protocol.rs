@@ -283,6 +283,19 @@ pub struct Control {
     /// A flag on the request rather than a separate op, because it changes what one
     /// operation *permits* rather than what it does.
     pub allow_zero_facts: bool,
+
+    /// `create` only: the schema to create it against, as **resolved source**.
+    ///
+    /// Empty means "the server's own", which is what a client that has no opinion
+    /// sends and what every client sent before 8.4. Source rather than a fingerprint
+    /// because the server has to *embed* it: a number would only let it check a schema
+    /// it already had, which is the case that needs no message at all.
+    ///
+    /// Imports are resolved by the **caller**, so a schema path is a property of the
+    /// machine holding the files rather than of the one holding the databases — a
+    /// server asked to read a path it cannot see would be a worse error than the one
+    /// this avoids.
+    pub schema: String,
 }
 
 /// What a lifecycle request came to.
@@ -447,6 +460,7 @@ pub fn encode_control(control: &Control) -> Vec<u8> {
     let mut out = vec![control.op as u8];
     put_str(&mut out, &control.database);
     out.push(u8::from(control.allow_zero_facts));
+    put_str(&mut out, &control.schema);
     out
 }
 
@@ -470,6 +484,9 @@ pub fn decode_control(bytes: &[u8]) -> Result<Control, WireError> {
         != 0;
     at += 1;
 
+    let (schema, used) = get_str(&bytes[at..])?;
+    at += used;
+
     if at != bytes.len() {
         return Err(WireError::TrailingBytes(bytes.len() - at));
     }
@@ -478,6 +495,7 @@ pub fn decode_control(bytes: &[u8]) -> Result<Control, WireError> {
         op,
         database,
         allow_zero_facts,
+        schema,
     })
 }
 
@@ -773,20 +791,31 @@ mod tests {
     #[test]
     fn the_control_messages_round_trip() {
         for control in [
+            // A create carrying a schema, which is the message with something after
+            // its flag byte — the one a decoder that stopped early would get wrong.
             Control {
                 op: ControlOp::Create,
                 database: "code".to_owned(),
                 allow_zero_facts: false,
+                schema: "schema src { predicate File : string }".to_owned(),
+            },
+            Control {
+                op: ControlOp::Create,
+                database: "code".to_owned(),
+                allow_zero_facts: false,
+                schema: String::new(),
             },
             Control {
                 op: ControlOp::Finish,
                 database: "code".to_owned(),
                 allow_zero_facts: true,
+                schema: String::new(),
             },
             Control {
                 op: ControlOp::Remove,
                 database: String::new(),
                 allow_zero_facts: false,
+                schema: String::new(),
             },
         ] {
             let bytes = encode_control(&control);
@@ -871,6 +900,7 @@ mod tests {
             op: ControlOp::Remove,
             database: "code".to_owned(),
             allow_zero_facts: false,
+            schema: String::new(),
         });
         bytes[0] = 4;
 

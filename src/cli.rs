@@ -23,6 +23,14 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub data_dir: Option<PathBuf>,
 
+    /// Where a schema's imports are looked for. Repeatable; first match wins.
+    ///
+    /// Also `APERTURE_SCHEMA_PATH`, separated the way `PATH` is. An entry file's own
+    /// directory is always searched first, so a directory of schemas that import each
+    /// other needs none of this.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub schema_path: Option<Vec<PathBuf>>,
+
     /// Say more. Repeatable.
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
@@ -52,7 +60,19 @@ pub enum Command {
     },
 
     /// Create a Writable database.
-    Create { name: String },
+    Create {
+        name: String,
+
+        /// The schema to create it against — an entry file, whose imports are
+        /// resolved from its own directory and then `--schema-path`.
+        ///
+        /// The schema is **frozen for the database's lifetime** (I13) and embedded in
+        /// it, so this is the one moment it can be chosen. Without it, the built-in
+        /// code index is used, which is what every database held before there was a
+        /// way to say otherwise.
+        #[arg(long, value_name = "FILE")]
+        schema: Option<PathBuf>,
+    },
 
     /// Seal a database: Writable → Complete, and immutable thereafter.
     Finish {
@@ -139,9 +159,58 @@ pub enum Command {
         database: Option<String>,
     },
 
+    /// Read schemas as files, before any database holds one.
+    #[command(subcommand)]
+    Schema(SchemaCommand),
+
     /// Administrative commands.
     #[command(subcommand)]
     Db(DbCommand),
+}
+
+/// The three questions a schema can be asked away from a database
+/// ([operations §5](../docs/aperture-cli-design.md)).
+///
+/// All three take **files**, and `diff` takes a database name just as happily: what is
+/// being compared is a schema, and where it was read from is the caller's business.
+#[derive(Debug, Subcommand)]
+pub enum SchemaCommand {
+    /// Resolve a schema and report what it does not like.
+    ///
+    /// Walks the import closure, unions the blocks, and lowers the result — so this
+    /// answers unresolved imports, syntax errors and genuine redeclarations, which are
+    /// the three things a schema can be wrong about before anything writes a fact.
+    Check {
+        /// The entry file. Its imports are resolved from its own directory, then
+        /// `--schema-path`.
+        file: PathBuf,
+    },
+
+    /// Print a schema's fingerprint, and each predicate's.
+    ///
+    /// **This is the number a client carries.** A client never computes one
+    /// ([open decisions](../docs/open-decisions.md)); it holds what this prints, and a
+    /// stale constant is refused at the handshake by name.
+    Fingerprint {
+        file: PathBuf,
+
+        #[arg(long, value_enum, default_value_t = Format::Table)]
+        format: Format,
+
+        /// Print the canonical form the fingerprint is taken over.
+        ///
+        /// What a second implementation is written against, and what to diff when two
+        /// ends disagree about a schema they believe they share.
+        #[arg(long)]
+        canonical: bool,
+    },
+
+    /// Compare two schemas: `Identical`, `Compatible (n added)`, or `Breaking`.
+    ///
+    /// Each side is a schema file or the name of a database in the store root, in any
+    /// combination — comparing what a build *would* produce against what an artifact
+    /// already holds is the question this is for.
+    Diff { before: String, after: String },
 }
 
 #[derive(Debug, Subcommand)]

@@ -11,6 +11,7 @@ pub mod finish;
 pub mod list;
 pub mod query;
 pub mod rm;
+pub mod schema;
 pub mod serve;
 pub mod shell;
 

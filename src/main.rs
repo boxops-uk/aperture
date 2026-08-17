@@ -21,7 +21,7 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::Parser;
 
 pub use aperture_cli::code_index;
-use cli::{Cli, Command, DbCommand};
+use cli::{Cli, Command, DbCommand, SchemaCommand};
 
 /// Why a command could not run.
 ///
@@ -87,6 +87,15 @@ pub enum CliError {
     #[error("`{address}` is not an address — try aperture://host:port/database")]
     Address { address: String },
 
+    /// A schema that does not resolve, does not parse, or does not lower.
+    ///
+    /// Carries the reason **already rendered against its source**, spans and all,
+    /// because the schema front end is the thing that knows which file and which line —
+    /// and because a resolved schema is several files, so a caret is worth more here
+    /// than anywhere else in this tool.
+    #[error("{0}")]
+    Schema(String),
+
     /// The terminal, rather than anything Aperture did.
     ///
     /// Its own variant because it is the one failure here that says nothing about the
@@ -126,9 +135,19 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             commands::serve::run(root, &socket, listen_tcp.as_deref(), ready_file.as_deref())
         }
 
-        Command::Create { name } => {
-            let created = commands::create::run(root, socket, name)?;
-            println!("created {} ({})", created.name, created.instance);
+        Command::Create { name, schema } => {
+            let created = commands::create::run(
+                root,
+                socket,
+                name,
+                schema.as_deref(),
+                &config::schema_path(cli.schema_path.clone()),
+            )?;
+
+            println!(
+                "created {} ({}) against {}",
+                created.name, created.instance, created.schema
+            );
             Ok(())
         }
 
@@ -259,6 +278,31 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             Some(database) => commands::shell::run(socket, database),
             None => Ok(shell::main()?),
         },
+
+        // **Files, not databases.** Nothing here opens a store root except `diff`, and
+        // that one reads sidecars (`ops-I7`) — so all three work while a server holds
+        // everything under it.
+        Command::Schema(command) => {
+            let roots = config::schema_path(cli.schema_path.clone());
+
+            print!(
+                "{}",
+                match command {
+                    SchemaCommand::Check { file } => commands::schema::check(file, &roots)?,
+
+                    SchemaCommand::Fingerprint {
+                        file,
+                        format,
+                        canonical,
+                    } => commands::schema::print_fingerprint(file, &roots, *format, *canonical)?,
+
+                    SchemaCommand::Diff { before, after } =>
+                        commands::schema::diff(before, after, root, &roots)?,
+                }
+            );
+
+            Ok(())
+        }
 
         Command::Db(DbCommand::Rm { name, yes }) => {
             if !*yes {

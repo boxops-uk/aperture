@@ -15,5 +15,9 @@ logos = "0.16.1"
 serde = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+# Resolution reads files, so testing it needs a directory to read.
+tempfile = "3"
+
 [build-dependencies]
 lelwel = "0.10"

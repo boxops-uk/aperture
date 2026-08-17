@@ -251,6 +251,33 @@ fn build(cst: &Cst<'_>, diags: &mut Vec<Diagnostic>, numbering: Numbering) -> Op
     })
 }
 
+/// The namespaces a source imports, in the order written.
+///
+/// Separate from [`lower`] because **resolution comes first**: a file that references a
+/// predicate declared in the file it imports does not lower on its own, so a resolver
+/// cannot ask lowering what to fetch. Parsing is enough to answer it, and this is that
+/// answer.
+#[must_use]
+pub fn imports(cst: &Cst<'_>) -> Vec<String> {
+    let mut out = vec![];
+
+    for decl in kids(cst, NodeRef::ROOT) {
+        if rule(cst, decl) != Some(Rule::SchemaDecl) {
+            continue;
+        }
+
+        for item in kids(cst, decl) {
+            if rule(cst, item) == Some(Rule::ImportItem)
+                && let Some(ns) = first_text(cst, item, Rule::Ns)
+            {
+                out.push(ns.to_owned());
+            }
+        }
+    }
+
+    out
+}
+
 /// One item of a schema block.
 #[allow(clippy::too_many_arguments)]
 fn collect<'s>(

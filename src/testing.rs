@@ -215,5 +215,5 @@ pub fn create_database(serving: &Serving, name: &str) {
     let mut control = Connection::control(&serving.socket, Arc::new(code_index::schema()))
         .expect("a control session");
 
-    control.create(name).expect("the database is created");
+    control.create(name, "").expect("the database is created");
 }

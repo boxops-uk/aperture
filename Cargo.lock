@@ -198,6 +198,7 @@ dependencies = [
  "lelwel",
  "logos",
  "serde",
+ "tempfile",
  "thiserror",
 ]
 

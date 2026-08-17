@@ -39,6 +39,26 @@ pub fn data_dir(flag: Option<PathBuf>) -> PathBuf {
     PathBuf::from("aperture-data")
 }
 
+/// Where a schema's imports are looked for
+/// ([operations §7](../docs/aperture-cli-design.md)).
+///
+/// A list of roots, searched in order, first match wins — `lang.rust` is `lang/rust.aps`
+/// under one of them. An entry file's *own* directory is always searched first and is
+/// not configured, so a self-contained directory of schemas needs none of this.
+///
+/// `APERTURE_SCHEMA_PATH` is separated the way `PATH` is, because that is the one
+/// convention nobody has to look up.
+#[must_use]
+pub fn schema_path(flag: Option<Vec<PathBuf>>) -> Vec<PathBuf> {
+    if let Some(roots) = flag {
+        return roots;
+    }
+
+    std::env::var_os("APERTURE_SCHEMA_PATH")
+        .map(|raw| std::env::split_paths(&raw).collect())
+        .unwrap_or_default()
+}
+
 /// The socket to listen on or connect to.
 ///
 /// Derived from the store root rather than chosen, which is what makes the socket the

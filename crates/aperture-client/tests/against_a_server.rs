@@ -414,7 +414,7 @@ fn the_lifecycle_runs_through_the_client() {
     let serving = start();
     let mut control = serving.control();
 
-    let instance = control.create("fresh").expect("it is created");
+    let instance = control.create("fresh", "").expect("it is created");
     assert!(!instance.is_empty());
 
     // Immediately usable, without the server being restarted.

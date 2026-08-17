@@ -186,6 +186,7 @@ impl Client {
             op,
             database: database.to_owned(),
             allow_zero_facts,
+            schema: String::new(),
         });
 
         self.send(kinds::CONTROL, StreamId(1), &request);

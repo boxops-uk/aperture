@@ -261,7 +261,7 @@ impl Registry {
     /// session still holds.
     pub async fn execute(&self, request: &Control) -> Result<ControlReply, ServerError> {
         match request.op {
-            ControlOp::Create => self.create(&request.database).await,
+            ControlOp::Create => self.create(&request.database, &request.schema).await,
             ControlOp::Finish => {
                 self.finish(&request.database, request.allow_zero_facts)
                     .await
@@ -275,9 +275,23 @@ impl Registry {
     /// Built and opened before it is published, so a name appears in the registry only
     /// once it names something a session could actually bind — which is the same
     /// all-or-nothing rule [`Catalog::create`] follows on the disk, one level up.
-    async fn create(&self, name: &str) -> Result<ControlReply, ServerError> {
+    ///
+    /// `source` is the schema to create it against, already resolved by the caller, or
+    /// empty for this server's own. It is **lowered here rather than trusted**: the
+    /// text arrived over a socket, and a database created from a schema nothing read
+    /// is a database nothing can serve.
+    async fn create(&self, name: &str, source: &str) -> Result<ControlReply, ServerError> {
         let catalog = self.catalog.clone();
-        let schema = Arc::clone(&self.schemas.fallback);
+
+        let schema = if source.is_empty() {
+            Arc::clone(&self.schemas.fallback)
+        } else {
+            Arc::new(
+                syntax::read("the schema this client sent", source)
+                    .map_err(ServerError::Protocol)?,
+            )
+        };
+
         let wanted = name.to_owned();
 
         let (entry, db) = blocking::run(move || {

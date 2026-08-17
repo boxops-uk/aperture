@@ -114,6 +114,47 @@ fn a_query_is_compiled_against_the_database_it_is_asked_of() {
     assert!(notes.take(&mut rows, 10).expect("a page").is_empty());
 }
 
+/// **A database created through a running server carries the caller's schema**, which
+/// is what makes `create --schema` work against a server rather than only offline.
+///
+/// The source crosses the wire, not a path: the files are on the caller's machine, and
+/// a server asked to read one would fail with "no such file" on a host the caller
+/// cannot see.
+#[test]
+fn create_over_the_wire_takes_the_schema_the_caller_sent() {
+    let serving = start();
+
+    let mut control =
+        Connection::control(&serving.socket, Arc::new(schema(LOGS))).expect("a control session");
+
+    control
+        .create("fresh", NOTES)
+        .expect("it is created with the schema sent");
+
+    // Asserted at the handshake against `NOTES`, which the server had no copy of until
+    // this client sent one.
+    let fresh = connect(&serving, "fresh", NOTES, true);
+    assert_eq!(
+        fresh.hello().schema_fingerprint,
+        fingerprint::of(&schema(NOTES))
+    );
+
+    // A schema that does not lower creates nothing, and says why on the stream that
+    // asked rather than closing the connection.
+    let refused = control
+        .create("never", "schema log { predicate Line : bananas }")
+        .expect_err("that is not a schema");
+
+    assert!(
+        refused.to_string().contains("bananas"),
+        "the reason should reach the caller: {refused}"
+    );
+    assert!(
+        control.create("after", NOTES).is_ok(),
+        "the session survives"
+    );
+}
+
 /// **A copy that disagrees with the sidecar leaves the database unserved.**
 ///
 /// The two are written together at create and neither can move afterwards, so a

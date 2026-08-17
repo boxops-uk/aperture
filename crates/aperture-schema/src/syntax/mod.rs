@@ -29,6 +29,7 @@ pub mod lower;
 pub mod parse;
 pub mod parser;
 pub mod print;
+pub mod resolve;
 
 use crate::schema::Schema;
 

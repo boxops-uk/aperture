@@ -639,12 +639,18 @@ impl Connection {
 
     /// Create a database, and answer with the provisional instance it was given.
     ///
+    /// `schema` is **resolved source** — the union of an entry file and its imports —
+    /// or empty for "the server's own". Source rather than a fingerprint because the
+    /// database has to embed it, and resolved by the caller because the files are on
+    /// the caller's machine.
+    ///
     /// # Errors
     ///
     /// [`ClientError::Server`] if the server declines — a name already taken, a name
-    /// that cannot be a directory, or a read-only session asking.
-    pub fn create(&mut self, database: &str) -> Result<String, ClientError> {
-        match self.control_request(ControlOp::Create, database, false)? {
+    /// that cannot be a directory, a schema it will not accept, or a read-only session
+    /// asking.
+    pub fn create(&mut self, database: &str, schema: &str) -> Result<String, ClientError> {
+        match self.control_request(ControlOp::Create, database, false, schema)? {
             ControlReply::Created { instance } => Ok(instance),
             other => Err(mismatched(&other)),
         }
@@ -661,7 +667,7 @@ impl Connection {
         database: &str,
         allow_zero_facts: bool,
     ) -> Result<Sealed, ClientError> {
-        match self.control_request(ControlOp::Finish, database, allow_zero_facts)? {
+        match self.control_request(ControlOp::Finish, database, allow_zero_facts, "")? {
             ControlReply::Finished {
                 fingerprint,
                 facts,
@@ -685,7 +691,7 @@ impl Connection {
     /// session still holds ([`ErrorCode::InUse`](aperture_wire::ErrorCode), which is
     /// the one worth retrying).
     pub fn remove(&mut self, database: &str) -> Result<(), ClientError> {
-        match self.control_request(ControlOp::Remove, database, false)? {
+        match self.control_request(ControlOp::Remove, database, false, "")? {
             ControlReply::Removed => Ok(()),
             other => Err(mismatched(&other)),
         }
@@ -696,6 +702,7 @@ impl Connection {
         op: ControlOp,
         database: &str,
         allow_zero_facts: bool,
+        schema: &str,
     ) -> Result<ControlReply, ClientError> {
         let stream = self.claim_stream();
 
@@ -706,6 +713,7 @@ impl Connection {
                 op,
                 database: database.to_owned(),
                 allow_zero_facts,
+                schema: schema.to_owned(),
             }),
         )?;
 
