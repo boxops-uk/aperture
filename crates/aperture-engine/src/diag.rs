@@ -60,6 +60,7 @@ pub enum Code {
     NyiSubquery,
     NyiUnionSelect,
     NyiValueBind,
+    NyiValueField,
     NyiValueMatch,
     NyiWholeKey,
 
@@ -101,6 +102,7 @@ impl Code {
         Code::NyiSubquery,
         Code::NyiUnionSelect,
         Code::NyiValueBind,
+        Code::NyiValueField,
         Code::NyiValueMatch,
         Code::NyiWholeKey,
         Code::RejectBindLhs,
@@ -135,6 +137,7 @@ impl Code {
             Code::NyiSubquery => "nyi/subquery",
             Code::NyiUnionSelect => "nyi/union-select",
             Code::NyiValueBind => "nyi/value-bind",
+            Code::NyiValueField => "nyi/value-field",
             Code::NyiValueMatch => "nyi/value-match",
             Code::NyiWholeKey => "nyi/whole-key",
 
@@ -173,6 +176,7 @@ impl Code {
             | Code::NyiSubquery
             | Code::NyiUnionSelect
             | Code::NyiValueBind
+            | Code::NyiValueField
             | Code::NyiValueMatch
             | Code::NyiWholeKey => Kind::Deferred,
 
@@ -389,6 +393,7 @@ mod tests {
                 | Code::NyiSubquery
                 | Code::NyiUnionSelect
                 | Code::NyiValueBind
+                | Code::NyiValueField
                 | Code::NyiValueMatch
                 | Code::NyiWholeKey
                 | Code::RejectBindLhs

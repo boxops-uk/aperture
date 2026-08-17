@@ -28,6 +28,7 @@
 //! predicate test.Ref    : { of : test.Foo }            // a fact-typed field
 //! predicate test.Link   : { at : int, of : test.Foo }  // ...not in the leading field
 //! predicate test.Deep   : { via : test.Ref }           // ...and a chain of two hops
+//! predicate test.Boxed  : { id : int } -> { lo : int, hi : int }   // a record *value*
 //! ```
 //!
 //! Four of those are deliberate awkward cases rather than data: `test.Shadow` has a
@@ -73,6 +74,7 @@ const WIDE: PredicateId = PredicateId(8);
 const REF: PredicateId = PredicateId(9);
 const LINK: PredicateId = PredicateId(10);
 const DEEP: PredicateId = PredicateId(11);
+const BOXED: PredicateId = PredicateId(12);
 
 /// The schema, hand-built.
 ///
@@ -179,6 +181,19 @@ pub fn schema() -> Schema {
             key: PredicateTy::Record(Arc::from([(sym("via"), PredicateTy::Fact(REF))])),
             value: None,
         },
+        // **A record on the *value* side.** Nothing else here has one, and until
+        // schemas were parsed nothing could declare one — which is how `X.value.lo`
+        // came to typecheck (a value's type has fields now) and then make flatten
+        // decline without a diagnostic. Appended last on purpose: an id is a position,
+        // and inserting above would renumber every fact in this file.
+        Predicate {
+            name: sym("test.Boxed"),
+            key: PredicateTy::Record(Arc::from([(sym("id"), PredicateTy::Int)])),
+            value: Some(PredicateTy::Record(Arc::from([
+                (sym("lo"), PredicateTy::Int),
+                (sym("hi"), PredicateTy::Int),
+            ]))),
+        },
     ];
 
     // Field and predicate names queries use but that no declaration interns, so
@@ -260,6 +275,17 @@ pub fn facts() -> Vec<Fact> {
         [(10i64, 1u64), (11, 2), (12, 2)].map(|(at, of)| [int(at), a_foo(of)].concat()),
     );
     push(&mut out, DEEP, [1u64, 2].map(reference));
+
+    // Two rows with a record on the value side, written by hand because `push` writes
+    // no value.
+    for (sequence, (id, lo, hi)) in [(1i64, 10i64, 20i64), (2, 30, 40)].into_iter().enumerate() {
+        out.push(Fact {
+            predicate: BOXED,
+            key: int(id),
+            value: record(&[int(lo), int(hi)]),
+            sequence: sequence as u64 + 1,
+        });
+    }
 
     out
 }

@@ -3260,9 +3260,26 @@ impl Flattener<'_> {
             // rejects: an integer has no fields.
             Slot::Const(folded) => self.folded_field(*folded, name).map(Slot::Const),
 
-            // A field of a value: typecheck rejects it too, since a value's type has
-            // no fields.
-            Slot::Value { .. } => None,
+            // **A field *inside* a value.** Reachable only since schemas could
+            // declare a record-typed value: typecheck resolves the field against the
+            // value's type and accepts it, and there is no projection that can name
+            // it — [`Project::Value`](crate::plan::Project) carries an address and no
+            // path, because a value is fetched whole by a point read
+            // ([I6](../../../docs/invariants.md#i6)) rather than lying in a register
+            // to be walked.
+            //
+            // Declining *quietly* here is what it used to do, which tripped
+            // `flatten_ordered`'s "no plan without a reason" assertion — a panic on a
+            // schema somebody wrote, which is input.
+            Slot::Value { .. } => {
+                self.report(
+                    node,
+                    Code::NyiValueField,
+                    "reading a field of a fact's value is not implemented yet — \
+                     `X.value` projects the whole value",
+                );
+                None
+            }
         }
     }
 

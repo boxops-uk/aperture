@@ -134,6 +134,21 @@ pub const CORPUS: &[Entry] = &[
         "`.value` is the fact's value side — Project::Value",
     ),
     entry(
+        "X.value where X = test.Boxed _",
+        Supported("{lo = 10, hi = 20}; {lo = 30, hi = 40}"),
+        "a **record** on the value side projects whole — one point read, and the \
+         shape comes back as the schema declares it",
+    ),
+    entry(
+        "X.value.lo where X = test.Boxed _",
+        Diagnosed(Code::NyiValueField),
+        "a field *inside* a value. `Project::Value` carries an address and no path, \
+         because a value is fetched whole by a point read (I6) rather than lying in a \
+         register to be walked. It typechecks — the value's type has the field — so \
+         until this code existed flatten declined without a reason and tripped its own \
+         assertion",
+    ),
+    entry(
         "X where test.Edge {from = X, to = Y}; test.Node {id = Y}",
         Supported("1; 1; 2"),
         "two-level join through a shared variable",
