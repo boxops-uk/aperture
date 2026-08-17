@@ -64,6 +64,22 @@ struct Declared<'s> {
     value: Option<NodeRef>,
 }
 
+/// Where a predicate's id comes from.
+///
+/// Two callers, and the difference between them is [D1](../../../../docs/phase-8-schemas.md)
+/// stated as code: a schema being **declared** is numbered by sorted name, so that two
+/// orderings of one schema build the same database; a schema being **recovered** from
+/// the copy a database embedded already has its numbering, frozen in the tag of every
+/// [`FactId`](crate::id::FactId) it holds, and re-assigning it would rename its
+/// keyspaces underneath it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Numbering {
+    /// Sort by qualified name, then enumerate.
+    Assigned,
+    /// Take the order the file lists them in.
+    Declared,
+}
+
 /// Lower `cst` to a schema, reporting into `diags`.
 ///
 /// `None` means nothing usable came back — every predicate was refused, or the file
@@ -71,6 +87,21 @@ struct Declared<'s> {
 /// reader fixing a schema wants every complaint at once.
 #[must_use]
 pub fn lower(cst: &Cst<'_>, diags: &mut Vec<Diagnostic>) -> Option<Lowered> {
+    build(cst, diags, Numbering::Assigned)
+}
+
+/// Lower a schema **a database already numbered**: ids come from the order written.
+///
+/// The reader of [`print`](super::print::print)'s output, and nothing else should call
+/// it. For any schema that was declared as text the two agree — lowering is what sorted
+/// it — so the difference only shows for a hand-built schema, where it is the difference
+/// between recovering a database's numbering and inventing a new one.
+#[must_use]
+pub fn recover(cst: &Cst<'_>, diags: &mut Vec<Diagnostic>) -> Option<Lowered> {
+    build(cst, diags, Numbering::Declared)
+}
+
+fn build(cst: &Cst<'_>, diags: &mut Vec<Diagnostic>, numbering: Numbering) -> Option<Lowered> {
     let mut predicates: Vec<Declared> = vec![];
     let mut aliases: BTreeMap<String, (NodeRef, &str)> = BTreeMap::new();
     let mut imports = vec![];
@@ -121,15 +152,17 @@ pub fn lower(cst: &Cst<'_>, diags: &mut Vec<Diagnostic>) -> Option<Lowered> {
     // read a keyspace belonging to a different predicate. Reserving the namespace to the
     // end makes "adding a virtual predicate renumbers nothing" true by construction,
     // which is the same rule D1 gives additions in general.
-    predicates.sort_by(|a, b| {
-        let key = |d: &Declared| {
-            (
-                d.qualified.starts_with(RESERVED_NAMESPACE),
-                d.qualified.clone(),
-            )
-        };
-        key(a).cmp(&key(b))
-    });
+    if numbering == Numbering::Assigned {
+        predicates.sort_by(|a, b| {
+            let key = |d: &Declared| {
+                (
+                    d.qualified.starts_with(RESERVED_NAMESPACE),
+                    d.qualified.clone(),
+                )
+            };
+            key(a).cmp(&key(b))
+        });
+    }
 
     let ids: BTreeMap<&str, PredicateId> = predicates
         .iter()
