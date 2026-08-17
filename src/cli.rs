@@ -251,6 +251,13 @@ pub enum RowFormat {
     Table,
     /// One JSON document, written incrementally.
     Json,
+    /// One JSON value per line — [JSON Lines](https://jsonlines.org).
+    ///
+    /// The same values `json` writes without the array around them, which is what a
+    /// consumer reading row by row wants (`jq -c`, a `for line in` loop) and what a
+    /// **paged** result has to be: a page is not a document, and three pages of one
+    /// query are not three documents either.
+    Jsonl,
     /// Tab-separated fields, one row per line. Streams.
     Raw,
     /// The row count and nothing else.

@@ -4,7 +4,7 @@
 //! produces JSON — a decision from the original brief, and the reason `--format` is a
 //! flag on a command rather than a field in a request.
 //!
-//! # Three of the four shapes stream, and the fourth says why it does not
+//! # Four of the five shapes stream, and the fifth says why it does not
 //!
 //! A [`Sink`] is handed rows one at a time, as they arrive, and writes as it goes.
 //! [`RowFormat::Table`] is the exception: aligning columns needs the widest cell, and
@@ -12,6 +12,21 @@
 //! to hold is a result to ask for in another shape — which is what `raw` and `count`
 //! are for, and why `count` exists at all: a measurement of the *server* should not be
 //! paying for this file.
+//!
+//! # JSON is shaped like the head, all the way down
+//!
+//! A row's structure is the head's, and the [`Desc`] the server sent describes it —
+//! **recursively**, field names and all. So a nested record comes out as a nested
+//! object rather than as a positional array: `{at = {line = L, col = C}}` reads as
+//! `{"at": {"line": 4, "col": 19}}`, which is the shape somebody asked for when they
+//! wrote the query. Rendering only the top level by name and the rest by position was
+//! the easy half of the same job, and it made every reference-and-span row — the
+//! interesting ones — arrive as numbers in an array.
+//!
+//! A **reference** renders as `"#predicate:sequence"`, the same string the table
+//! shows. A raw `u64` would be the id's bytes rather than the id: nothing takes one as
+//! input (focus names a fact by its key, not by its number), so the useful thing is the
+//! one a person can read and a script can compare.
 
 use std::io::Write;
 
@@ -23,6 +38,11 @@ use crate::cli::RowFormat;
 pub struct Sink<W: Write> {
     out: W,
     format: RowFormat,
+    /// What a row looks like, as the server described it.
+    ///
+    /// Held whole rather than reduced to column names, because JSON needs it whole:
+    /// names live at every level of a record, not only the top one.
+    desc: Desc,
     /// Column names, when the head is a record. Empty for a scalar head, which is one
     /// unnamed column.
     columns: Vec<String>,
@@ -55,6 +75,7 @@ impl<W: Write> Sink<W> {
         Ok(Sink {
             out,
             format,
+            desc: desc.clone(),
             columns,
             buffered: vec![],
             rows: 0,
@@ -80,8 +101,10 @@ impl<W: Write> Sink<W> {
                 if self.rows > 0 {
                     write!(self.out, ",")?;
                 }
-                write!(self.out, "\n  {}", self.json(value))?;
+                write!(self.out, "\n  {}", json(value, &self.desc))?;
             }
+
+            RowFormat::Jsonl => writeln!(self.out, "{}", json(value, &self.desc))?,
 
             RowFormat::Table => {
                 let cells = self.cells(value);
@@ -124,7 +147,7 @@ impl<W: Write> Sink<W> {
                 writeln!(self.out, "{} row(s)", self.rows)?;
             }
 
-            RowFormat::Raw => {}
+            RowFormat::Raw | RowFormat::Jsonl => {}
         }
 
         self.out.flush()?;
@@ -138,21 +161,6 @@ impl<W: Write> Sink<W> {
                 fields.iter().map(render).collect()
             }
             other => vec![render(other)],
-        }
-    }
-
-    fn json(&self, value: &WireValue) -> String {
-        match value {
-            WireValue::Record(fields) if !self.columns.is_empty() => {
-                let pairs: Vec<String> = self
-                    .columns
-                    .iter()
-                    .zip(fields.iter())
-                    .map(|(name, field)| format!("{}: {}", json_string(name), json(field)))
-                    .collect();
-                format!("{{{}}}", pairs.join(", "))
-            }
-            other => json(other),
         }
     }
 }
@@ -188,14 +196,40 @@ pub fn render(value: &WireValue) -> String {
     }
 }
 
-fn json(value: &WireValue) -> String {
-    match value {
-        WireValue::Int(n) => n.to_string(),
-        WireValue::Str(text) => json_string(text),
-        WireValue::Ref(aperture_client::WireRef::Id(id)) => id.raw().to_string(),
-        WireValue::Ref(aperture_client::WireRef::Nested(fact)) => json(&fact.key),
-        WireValue::Record(fields) => {
-            let cells: Vec<String> = fields.iter().map(json).collect();
+/// One value as JSON, named by the descriptor that came with it.
+///
+/// The descriptor is what makes a record an object rather than an array, at every
+/// level. Where the two disagree — a record the descriptor does not describe as one,
+/// or one of a different width — the value wins and comes out positionally: a row that
+/// arrived is a row worth printing, and a mismatch is a server bug better reported by
+/// odd-looking output than by a panic on a data path.
+fn json(value: &WireValue, desc: &Desc) -> String {
+    match (value, desc) {
+        (WireValue::Int(n), _) => n.to_string(),
+        (WireValue::Str(text), _) => json_string(text),
+
+        (WireValue::Ref(aperture_client::WireRef::Id(id)), _) => {
+            json_string(&format!("#{}:{}", id.predicate().0, id.sequence()))
+        }
+
+        // What a producer sends and a server never answers with; printed rather than
+        // refused, for the reason `render` gives.
+        (WireValue::Ref(aperture_client::WireRef::Nested(fact)), _) => json(&fact.key, desc),
+
+        (WireValue::Record(fields), Desc::Record(named)) if fields.len() == named.len() => {
+            let pairs: Vec<String> = fields
+                .iter()
+                .zip(named.iter())
+                .map(|(field, (name, desc))| {
+                    format!("{}: {}", json_string(name), json(field, desc))
+                })
+                .collect();
+
+            format!("{{{}}}", pairs.join(", "))
+        }
+
+        (WireValue::Record(fields), _) => {
+            let cells: Vec<String> = fields.iter().map(|field| json(field, &Desc::Str)).collect();
             format!("[{}]", cells.join(", "))
         }
     }
@@ -316,6 +350,98 @@ mod tests {
         assert_eq!(parsed[0]["at"], 1);
         assert_eq!(parsed[0]["what"], "a\"b");
         assert_eq!(parsed[1]["what"], "c");
+    }
+
+    /// **A row is shaped like its head, all the way down.**
+    ///
+    /// The interesting rows in a code index are nested — a span inside a reference,
+    /// a file inside a declaration — and rendering only the top level by name left
+    /// exactly those arriving as anonymous arrays. The descriptor names every level,
+    /// so this uses it at every level.
+    #[test]
+    fn a_nested_record_is_a_nested_object() {
+        let desc = Desc::Record(Box::from([
+            ("file".to_owned(), Desc::Str),
+            (
+                "at".to_owned(),
+                Desc::Record(Box::from([
+                    ("line".to_owned(), Desc::Int),
+                    ("col".to_owned(), Desc::Int),
+                ])),
+            ),
+        ]));
+
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Json, &desc).unwrap();
+
+        sink.row(&record(vec![
+            WireValue::Str("store/codec.py".to_owned()),
+            record(vec![WireValue::Int(4), WireValue::Int(19)]),
+        ]))
+        .unwrap();
+        sink.end().unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(out).unwrap()).expect("valid JSON");
+
+        assert_eq!(parsed[0]["at"]["line"], 4);
+        assert_eq!(parsed[0]["at"]["col"], 19);
+        assert_eq!(parsed[0]["file"], "store/codec.py");
+    }
+
+    /// A reference is the string the table shows, not the number underneath it.
+    ///
+    /// Nothing takes a raw id as input — focus names a fact by its key — so the useful
+    /// rendering is the one that shows which predicate it belongs to.
+    #[test]
+    fn a_reference_is_readable_in_json_too() {
+        let id = aperture_schema::id::FactId::new(aperture_schema::schema::PredicateId(3), 7)
+            .expect("a fact id");
+
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Jsonl, &Desc::Int).unwrap();
+        sink.row(&WireValue::Ref(aperture_client::WireRef::Id(id)))
+            .unwrap();
+        sink.end().unwrap();
+
+        assert_eq!(String::from_utf8(out).unwrap(), "\"#3:7\"\n");
+    }
+
+    /// **JSON Lines is what a page is**: each row stands alone, so three pages of one
+    /// query concatenate into something a reader can still parse — which an array per
+    /// page does not.
+    #[test]
+    fn jsonl_is_one_value_per_line() {
+        let desc = Desc::Record(Box::from([
+            ("at".to_owned(), Desc::Int),
+            ("what".to_owned(), Desc::Str),
+        ]));
+
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Jsonl, &desc).unwrap();
+
+        sink.row(&record(vec![
+            WireValue::Int(1),
+            WireValue::Str("a".to_owned()),
+        ]))
+        .unwrap();
+        sink.row(&record(vec![
+            WireValue::Int(2),
+            WireValue::Str("b".to_owned()),
+        ]))
+        .unwrap();
+        let rows = sink.end().unwrap();
+
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+
+        assert_eq!(rows, 2);
+        assert_eq!(lines.len(), 2, "one line each, and nothing around them");
+
+        for (n, line) in lines.iter().enumerate() {
+            let parsed: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+            assert_eq!(parsed["at"], n + 1);
+        }
     }
 
     /// An empty result is still a valid document rather than nothing at all.
