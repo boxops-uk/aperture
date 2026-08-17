@@ -55,7 +55,21 @@ const PAGE: usize = 200;
 /// the dominant per-row cost is the framing and the client's decode, so 50 rows costs
 /// 12% less throughput than 100 and 36% less than 256. Fifty is what that finding
 /// recommends for an interactive box.
-const HITS: u64 = 50;
+const HITS: usize = 50;
+
+/// How many to **read** before ranking them.
+///
+/// **Ranking is the client's job here, and the bound is why.** Rows arrive in key
+/// order — alphabetical, for a name prefix — and "best match first" is a different
+/// order that no key gives. Sorting the whole result would mean materialising it,
+/// which is an anti-pattern in this codebase for good reasons
+/// (`docs/conventions.md`), so this reads a bounded window and ranks *that*.
+///
+/// The honesty cost is real and is stated on the page: a match ranked above the
+/// window's edge is one this never saw. Four times the page is the usual shape for a
+/// bounded top-N, and it is four times fifty rather than a bigger number because §11
+/// measured what a page costs.
+const RANK_WINDOW: u64 = 200;
 
 /// Everything a request needs.
 pub struct App {
@@ -334,22 +348,34 @@ async fn search(State(app): Shared, Query(args): Query<Term>) -> impl IntoRespon
         // accumulator and never encodes a row, so "1,234 results" costs the scan
         // rather than the scan plus the wire.
         let total = c.count(&count_query)?;
-        let (rows, _) = query::page(c, &hits_query, HITS, None)?;
+        let (rows, _) = query::page(c, &hits_query, RANK_WINDOW, None)?;
         Ok((total, rows))
     })
     .await;
 
-    let (total, rows) = match found {
+    let (total, mut rows) = match found {
         Ok(found) => found,
         Err(error) => return failed(&shown, &error),
     };
+
+    // **Ranked here, over a bounded window** — see [`RANK_WINDOW`]. An exact match
+    // first, then one that starts a segment of a qualified name (`List.Add` for
+    // `add`), then the rest by length, so the shortest name carrying the prefix wins.
+    // None of that is an order a key can give, and all of it is what somebody typing
+    // three letters means.
+    let ranked = rows.len();
+    rows.sort_by_key(|row| rank(row.str("name"), &term));
+    rows.truncate(HITS);
 
     let mut body = format!("<h1>{}</h1>", render::escape(&shown));
     body.push_str(&format!(
         "<p class=\"stat\">{total} match{}{}</p>",
         if total == 1 { "" } else { "es" },
         if total > rows.len() as u64 {
-            format!(", showing the first {}", rows.len())
+            format!(
+                ", ranked from the first {ranked} and showing {}",
+                rows.len()
+            )
         } else {
             String::new()
         }
@@ -385,6 +411,36 @@ async fn search(State(app): Shared, Query(args): Query<Term>) -> impl IntoRespon
     Html(render::page(&shown, &shown, &body))
 }
 
+/// How well `name` answers `term`, smallest first.
+///
+/// A sort key rather than a score, because a key sorts stably and a score invites
+/// arithmetic nobody can explain later. The three tiers are the three things a person
+/// typing a prefix means, in the order they mean them.
+fn rank(name: &str, term: &str) -> (u8, usize, String) {
+    let lower = name.to_lowercase();
+    let term = term.to_lowercase();
+
+    let tier = if lower == term {
+        0
+    } else if lower.starts_with(&term) {
+        1
+    } else if lower
+        .split(['.', '_'])
+        .any(|segment| segment.starts_with(&term))
+    {
+        // `List.Add` for `add`: the prefix starts a *segment* of a qualified name,
+        // which the index found because it stores the qualified name and the search
+        // was a prefix of the whole.
+        2
+    } else {
+        3
+    };
+
+    // Then the shortest, then alphabetical — so the tie-break is stable and a
+    // re-run answers the same order.
+    (tier, name.len(), lower)
+}
+
 /// One symbol: where it is defined, how far it runs, and everywhere it is used.
 async fn symbol(State(app): Shared, Path(name): Path<String>) -> impl IntoResponse {
     let def_query = query::definition(&name);
@@ -397,7 +453,7 @@ async fn symbol(State(app): Shared, Path(name): Path<String>) -> impl IntoRespon
         let definitions = query::drain(c, &def_query)?;
         let spans = query::drain(c, &span_query)?;
         let total = c.count(&count_query)?;
-        let (uses, _) = query::page(c, &ref_query, HITS, None)?;
+        let (uses, _) = query::page(c, &ref_query, HITS as u64, None)?;
         Ok((definitions, spans, total, uses))
     })
     .await;
@@ -483,4 +539,51 @@ async fn symbol(State(app): Shared, Path(name): Path<String>) -> impl IntoRespon
     body.push_str("</table>");
 
     Html(render::page(&shown, &shown, &body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rank;
+
+    /// **The three tiers are the three things a prefix means**, in order.
+    ///
+    /// Ranking is the one thing here that is a *judgement* rather than a query, so it
+    /// is the one thing worth pinning: an exact match beats a prefix, a prefix beats a
+    /// segment match, and length breaks the rest.
+    #[test]
+    fn an_exact_match_outranks_a_prefix() {
+        let mut names = vec!["ParseInt", "Parse", "TryParse", "ParserSettings"];
+        names.sort_by_key(|name| rank(name, "parse"));
+
+        assert_eq!(names, ["Parse", "ParseInt", "ParserSettings", "TryParse"]);
+    }
+
+    /// A qualified name whose *segment* starts with the term still ranks, and below
+    /// the names that start with it outright.
+    #[test]
+    fn a_segment_match_ranks_below_a_prefix() {
+        let mut names = vec!["List.Add", "Adder", "Add"];
+        names.sort_by_key(|name| rank(name, "add"));
+
+        assert_eq!(names, ["Add", "Adder", "List.Add"]);
+    }
+
+    /// Case does not decide anything: the index is folded and so is this.
+    #[test]
+    fn ranking_is_case_insensitive() {
+        assert_eq!(rank("Parse", "parse").0, rank("parse", "PARSE").0);
+        assert_eq!(rank("Parse", "PARSE").0, 0);
+    }
+
+    /// The order does not depend on the order it was given.
+    #[test]
+    fn ranking_is_stable_under_the_input_order() {
+        let mut forwards = vec!["b", "a", "c"];
+        let mut backwards = vec!["c", "b", "a"];
+
+        forwards.sort_by_key(|name| rank(name, "x"));
+        backwards.sort_by_key(|name| rank(name, "x"));
+
+        assert_eq!(forwards, backwards);
+    }
 }
