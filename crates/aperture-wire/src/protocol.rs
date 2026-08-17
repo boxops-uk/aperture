@@ -145,6 +145,26 @@ pub mod kinds {
     pub const CONTROL: FrameKind = FrameKind(b'L');
     /// Server → client: what the lifecycle request came to.
     pub const CONTROL_REPLY: FrameKind = FrameKind(b'M');
+    /// Client → server: **what can I ask you?** No payload.
+    ///
+    /// The answer is the schema this session's database is served with, as source —
+    /// [`SCHEMA_REPLY`]. Since Phase 8.4 that is a real question rather than a
+    /// formality: a database carries the schema it was created against, so a store root
+    /// holds artifacts of different shapes and a client's built-in idea of one is
+    /// nobody's answer but its own.
+    ///
+    /// What it buys is everything a client can then do *locally*: describe the
+    /// predicates it can actually ask about, compile a query before sending it — so a
+    /// mistake is a caret under the word rather than a round trip and a sentence — and
+    /// show the plan, which a client otherwise never holds. The letters are a pair
+    /// rather than an inheritance: PostgreSQL has nothing to borrow here.
+    pub const SCHEMA: FrameKind = FrameKind(b'H');
+    /// Server → client: the schema, as source. UTF-8, no framing of its own.
+    ///
+    /// **Virtual predicates included**, because the question is what this session can
+    /// *ask*, not what the database holds — a client that cannot see `aperture.db.List`
+    /// cannot compile the one query every server answers.
+    pub const SCHEMA_REPLY: FrameKind = FrameKind(b'h');
 }
 
 /// Which way a session may go, declared at startup and resolved once against the

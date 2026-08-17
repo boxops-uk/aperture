@@ -568,6 +568,7 @@ impl StreamTask {
                 self.query(page.query.as_bytes(), false, Some(&page)).await
             }
             kinds::CONTROL => self.control(payload).await,
+            kinds::SCHEMA => self.schema().await,
 
             other => Err(ServerError::Protocol(format!(
                 "no handler for frame kind `{other}`"
@@ -607,6 +608,31 @@ impl StreamTask {
                 self.stream,
                 &protocol::encode_control_reply(&reply),
             )
+            .await
+    }
+
+    /// Answer with the schema this session can ask about, as source.
+    ///
+    /// **The served schema, virtual predicates and all** — the question is what this
+    /// session can ask, not what the database holds. A control session, bound to no
+    /// database, gets the server's own, which is what its `aperture.db.List` is
+    /// answered against.
+    ///
+    /// Printed rather than read off the disk copy: the copy is what a database
+    /// *embedded*, and a session may be served something a shade wider than that (the
+    /// virtuals) or, for an artifact from before the copy was kept, something the disk
+    /// does not hold at all. Printing what is actually being served cannot disagree
+    /// with what queries are compiled against, because it is the same value.
+    async fn schema(&mut self) -> Result<(), ServerError> {
+        let schema = match &self.session.database {
+            Some(database) => Arc::clone(&database.schema),
+            None => Arc::clone(self.session.registry.schema()),
+        };
+
+        let source = aperture_schema::syntax::print::served(&schema);
+
+        self.outbound
+            .send(kinds::SCHEMA_REPLY, self.stream, source.as_bytes())
             .await
     }
 

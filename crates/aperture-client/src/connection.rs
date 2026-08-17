@@ -495,6 +495,53 @@ impl Connection {
         Ok(count)
     }
 
+    /// **The schema this session can ask about**, fetched from the server.
+    ///
+    /// Not the one this connection was built with, and the difference is the point: a
+    /// database carries the schema it was created against
+    /// ([I13](../../../docs/invariants.md#i13)), so a client's built-in copy is its own
+    /// opinion and this is the answer. It includes the predicates the *server* answers
+    /// (`aperture.db.List`), because the question is what can be asked here.
+    ///
+    /// Read back with [`recover`](aperture_schema::syntax::recover) rather than with
+    /// ordinary lowering, so the ids in it are the server's — which is what makes a
+    /// plan compiled from it name the predicates the server would name.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Server`] if the server declines, or
+    /// [`ClientError::Protocol`] if what comes back is not a schema.
+    pub fn served_schema(&mut self) -> Result<Schema, ClientError> {
+        let source = self.served_schema_source()?;
+
+        aperture_schema::syntax::recover("the schema this server serves", &source)
+            .map_err(ClientError::Protocol)
+    }
+
+    /// The same, as the text the server sent.
+    ///
+    /// What a shell prints for `:schema`: comments and layout are the printer's rather
+    /// than anybody's, but it is the source form, so it reads as a schema rather than
+    /// as a dump of one.
+    ///
+    /// # Errors
+    ///
+    /// As [`served_schema`](Connection::served_schema).
+    pub fn served_schema_source(&mut self) -> Result<String, ClientError> {
+        let stream = self.claim_stream();
+        self.send(kinds::SCHEMA, stream, &[])?;
+
+        let (kind, payload) = self.recv_on(stream)?;
+        self.release_stream(stream);
+
+        if kind != kinds::SCHEMA_REPLY {
+            return Err(unexpected("a schema", kind));
+        }
+
+        String::from_utf8(payload)
+            .map_err(|_| ClientError::Protocol("a schema that is not UTF-8".to_owned()))
+    }
+
     fn start_query(&mut self, focus: &str, kind: FrameKind) -> Result<Rows, ClientError> {
         self.start_query_with(kind, focus.as_bytes())
     }

@@ -155,6 +155,33 @@ fn create_over_the_wire_takes_the_schema_the_caller_sent() {
     );
 }
 
+/// **A client can ask what it may ask**, and the answer is this database's schema —
+/// which is what lets a shell describe, complete and *compile* against the right one
+/// instead of against whatever it was built with.
+#[test]
+fn a_session_can_fetch_the_schema_it_is_served_with() {
+    let serving = start();
+
+    let mut logs = connect(&serving, "logs", LOGS, true);
+    let fetched = logs.served_schema().expect("the schema comes back");
+
+    assert!(fetched.find_position("log.Line").is_some());
+    assert!(
+        fetched.find_position("note.Note").is_none(),
+        "the other database's predicates are not this one's"
+    );
+
+    // The same connection goes on working afterwards: the request is an ordinary
+    // stream, so it claims an id, answers, and gives it back.
+    let mut rows = logs.query("L where log.Line L").expect("a result");
+    assert!(logs.take(&mut rows, 10).expect("a page").is_empty());
+
+    let mut notes = connect(&serving, "notes", NOTES, true);
+    let theirs = notes.served_schema().expect("the schema comes back");
+    assert!(theirs.find_position("note.Note").is_some());
+    assert!(theirs.find_position("log.Line").is_none());
+}
+
 /// **A copy that disagrees with the sidecar leaves the database unserved.**
 ///
 /// The two are written together at create and neither can move afterwards, so a

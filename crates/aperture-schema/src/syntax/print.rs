@@ -33,7 +33,8 @@ use crate::schema::{PredicateId, PredicateTy, Schema};
 ///
 /// Virtual predicates are skipped: one is answered by whoever runs the query rather
 /// than stored, so an artifact must not claim to hold a kind of fact nothing can write
-/// to it — the same rule the fingerprint and the keyspaces follow.
+/// to it — the same rule the fingerprint and the keyspaces follow. [`served`] is the
+/// other reading, for the other question.
 ///
 /// A predicate whose name has no namespace is not expressible (`schema { … }` is not a
 /// schema), and rather than invent one this prints an empty namespace, which does not
@@ -42,13 +43,30 @@ use crate::schema::{PredicateId, PredicateTy, Schema};
 /// fail it loudly rather than come back as something else.
 #[must_use]
 pub fn print(schema: &Schema) -> String {
+    write(schema, false)
+}
+
+/// Write out **everything a server would answer**, virtual predicates included.
+///
+/// The difference from [`print`] is the difference between two questions. *What does
+/// this database hold* leaves out `aperture.db.List`, because no artifact holds it and
+/// a client made to declare it could never write one. *What can I ask you* puts it in,
+/// because a client that cannot see it cannot compile `aperture.db.List _` — and a
+/// shell that compiles its own queries before sending them would refuse the one query
+/// the server most obviously answers.
+#[must_use]
+pub fn served(schema: &Schema) -> String {
+    write(schema, true)
+}
+
+fn write(schema: &Schema, virtuals: bool) -> String {
     let mut out = String::new();
     let mut open: Option<&str> = None;
 
     for index in 0..schema.len() {
         let id = PredicateId(index as u32);
 
-        if schema.is_virtual(id) {
+        if !virtuals && schema.is_virtual(id) {
             continue;
         }
 
@@ -300,6 +318,31 @@ mod tests {
         assert!(
             !equivalent(&schema, &read(&printed, false)),
             "if sorting kept the positions there would be nothing for `recover` to do"
+        );
+    }
+
+    /// **The other reading**: what a server answers includes what it answers *itself*,
+    /// and a client compiling `aperture.db.List _` needs to have been told about it.
+    #[test]
+    fn what_a_server_serves_includes_what_it_answers_itself() {
+        let schema = read(
+            "schema src { predicate File : string }\n\
+             schema aperture.db { predicate List : string }",
+            false,
+        );
+
+        let (id, _) = schema.find_position("aperture.db.List").expect("declared");
+        let printed = served(&schema.with_virtual([id]));
+        assert!(printed.contains("aperture.db"), "{printed}");
+
+        // And it comes back with the same numbering, which is what makes a plan
+        // compiled from it name the predicates the server would name.
+        let back = read(&printed, true);
+        assert_eq!(back.len(), 2);
+        assert_eq!(
+            back.find_position("aperture.db.List").map(|(id, _)| id),
+            Some(id),
+            "the reserved namespace still sorts, and still numbers, last"
         );
     }
 
