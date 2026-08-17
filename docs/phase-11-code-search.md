@@ -468,10 +468,28 @@ That is the strongest evidence this analysis produced for a cost model — stron
 §3's version, because it was found by a consumer rather than by inspection, and because
 the trap is *shape* rather than order.
 
-**What is done about it, and what is not.** The engine is unchanged: there is no
-diagnostic, and a query written the slow way still compiles silently. What exists is a
-**guard on the consumer** — `no_page_reads_a_predicate_whole` profiles every query in
-`query::census()` and fails if any step reports `full_scan`.
+**What is done about it.** The engine now does this transformation itself:
+`flatten::chasable` marks a row bind whose variable another key holds at a reference to
+the same predicate, and `emit` lowers it as a fetch. The query above, **unchanged**, is
+2.772 ms on the 25M-fact index — from 30,222 ms.
+
+It is gated on two *structural* conditions rather than on statistics, and the second one
+is where §6d's reasoning was wrong. Chasing is **not** unconditionally better: a bind
+whose pattern fixes its key is a point seek, and running that first and splicing its id
+beats scanning the referrer. So the bind must give no constant *and* the splice must not
+be able to seek at the reference site. Where a splice would seek, which of the two plans
+wins depends on how big the two predicates are — and that is a cost question, which is
+still unanswered.
+
+It also marks the bind *chasable* rather than rewriting it, so a chasable bind can still
+run first, as the scan it always was. The first version did rewrite it, and the property
+battery caught what that costs: orders that used to compile stopped. A lowering that
+removes orders trades a slow query for a broken one.
+
+Beside it, the **guard on the consumer** stays —
+`no_page_reads_a_predicate_whole` profiles every query in `query::census()` and fails if
+any step reports `full_scan`. It is what caught nothing in the engine and would catch the
+next query written in a shape neither condition covers.
 
 That the guard is possible at all is the useful part: `ProfileStep::full_scan` is a
 property of the *plan*, so a two-file test corpus detects it exactly as a 25M-fact one
@@ -514,8 +532,16 @@ Four things found by building it rather than by reading:
   so a reference's file comes back as an id and the viewer resolves it from a map it
   loads at startup. A fetch through a reference already exists — what is missing is a
   way to *name* the whole key of the fetched fact.
-- **No cost model.** Statement order still decides the plan, and the wrong order is a
-  three-million-row scan with no diagnostic attached.
+- **No cost model, and now the shape of the gap is precise.** Lookup-chasing closed the
+  case where the answer needs no statistics; what is left is exactly the case where it
+  does. `test.Ref {of = P}` holds its reference at field 0, so binding `P` first lets the
+  id lead that key's seek — one seek per referenced row — and chasing instead costs a scan
+  of the referrer. Which wins depends on their sizes, and the compiler has no per-predicate
+  counts to ask. Glean maintains them incrementally *and spends them on planning*, which
+  this comparison already listed as a hole; this is the first place the two holes turn out
+  to be one.
+- **Statement order still decides the plan** where both statements are runnable, and the
+  wrong order is still a three-million-row scan with no diagnostic attached.
 - **Stored derivation.** Five predicates in `schemas/code.aps` are now a second key
   order over data already there. That is five apologies in five comments where there
   used to be two.

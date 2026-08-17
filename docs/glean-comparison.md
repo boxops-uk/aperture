@@ -219,9 +219,19 @@ generated and there is nothing for a pass to undo. Two of `Opt`'s jobs *were* wo
 have been: **statement decomposition** (`expandStmt`'s `{A,B} = {C,D}` → `A=C; B=D`, here as a
 record pattern destructuring any slot, with the trivial leaves never built rather than built
 and dropped) and the reach of substitution *through a record*, which a constant-only fold could
-not do. What remains genuinely absent: **lookup-chasing** (transitive propagation of boundness
-before tier selection), a cost model, and `Prune`'s empty-predicate short-circuit — which a
-sealed DB could answer *exactly* rather than approximately. `Ordered`/`Floating` statement tags
+not do. **Lookup-chasing is now built** (Phase 11), and it was the item on this list that cost
+the most: a row bind whose variable another key holds at a reference to the same predicate
+is lowered as a `Source::Fetch` rather than a level, which took a real query from 30,222 ms
+to 2.772 ms on a 25M-fact index. Two *structural* conditions gate it — the bind must give
+no constant anywhere, and splicing the id at the reference site must not extend that key's
+seek — so it needs no statistics and makes no judgement about sizes. And it marks the bind
+*chasable* rather than rewriting it, so the bind can still run first as the scan it was and
+no order that compiled before stops compiling.
+
+What remains genuinely absent: a **cost model** — which is the other half of the same
+story, since chasing declines exactly the cases where the answer depends on how big two
+predicates are — and `Prune`'s empty-predicate short-circuit, which a sealed DB could
+answer *exactly* rather than approximately. `Ordered`/`Floating` statement tags
 are present (`reorder::Placement`) and carry **no ordering rule at all** — the rule they were
 kept for, Phase 6b's negation placement, turned out not to need them: a negation captures
 nothing, so every variable it names is a `read`, and a frontier that only runs what is runnable
