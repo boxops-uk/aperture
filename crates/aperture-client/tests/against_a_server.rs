@@ -489,49 +489,51 @@ fn the_lifecycle_runs_through_the_client() {
 /// **A schema that disagrees is refused at the handshake**, before a byte of data
 /// flows — which is the whole reason the fingerprint is sent as a claim rather than
 /// asked for as a question.
+///
+/// *Disagrees*, not *differs*: a client declaring fewer predicates than the server has
+/// is checked by containment and let in ([I13](../../../docs/invariants.md#i13), and
+/// `i13_embedded_schema.rs` for the whole rule). What is refused here is a client whose
+/// `src.File` is a different `src.File`.
 #[test]
 fn a_schema_that_disagrees_is_refused_before_any_data() {
     let serving = start();
 
-    // One predicate short of the server's: a producer built against an older schema.
-    let mut rodeo = Rodeo::new();
-    let file = rodeo.get_or_intern("src.File");
-    let stale = Schema::new(
-        rodeo.into_reader(),
-        Arc::from(vec![Predicate {
-            name: file,
-            key: PredicateTy::Str,
-            value: None,
-        }]),
-    );
+    /// One predicate, `src.File`, keyed as `key` says. The server's is a string.
+    fn one(key: PredicateTy) -> Schema {
+        let mut rodeo = Rodeo::new();
+        let file = rodeo.get_or_intern("src.File");
+
+        Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name: file,
+                key,
+                value: None,
+            }]),
+        )
+    }
 
     let refused = Connection::connect(
         &serving.socket,
         "code",
-        Arc::new(stale),
+        Arc::new(one(PredicateTy::Int)),
         Mode::ReadWrite,
         true,
     )
-    .expect_err("the fingerprints disagree");
+    .expect_err("a string key is not an int key");
 
     assert_eq!(refused.code(), Some(ErrorCode::SchemaMismatch));
-
-    // ...and `false` is the reader's answer: nothing is claimed, so nothing is checked.
-    let mut rodeo = Rodeo::new();
-    let file = rodeo.get_or_intern("src.File");
-    let stale = Schema::new(
-        rodeo.into_reader(),
-        Arc::from(vec![Predicate {
-            name: file,
-            key: PredicateTy::Str,
-            value: None,
-        }]),
+    assert!(
+        refused.to_string().contains("src.File"),
+        "the refusal names the predicate that disagrees: {refused}"
     );
 
+    // ...and `false` is the reader's answer: nothing is claimed, so nothing is checked,
+    // even by a client whose idea of `src.File` is wrong.
     Connection::connect(
         &serving.socket,
         "code",
-        Arc::new(stale),
+        Arc::new(one(PredicateTy::Int)),
         Mode::ReadOnly,
         false,
     )

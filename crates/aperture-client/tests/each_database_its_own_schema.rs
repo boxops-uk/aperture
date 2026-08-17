@@ -210,7 +210,7 @@ fn a_database_with_no_embedded_copy_is_served_with_the_servers_own() {
     assert!(listing.problems.is_empty(), "{:?}", listing.problems);
 
     let served = registry.find("logs").expect("it is served");
-    assert_eq!(served.fingerprint, fingerprint::of(&schema(LOGS)));
+    assert_eq!(served.identity.schema(), fingerprint::of(&schema(LOGS)));
 }
 
 /// A client asserting the wrong schema is refused at the handshake, before anything is

@@ -58,7 +58,10 @@ use aperture_engine::{
     plan::{Plan, SeekKey, Source, Step, Test},
 };
 use aperture_ingest::{Ingested, intern_block};
-use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema};
+use aperture_schema::{
+    fingerprint::Identity,
+    schema::{LocalInterner, PredicateId, PredicateTy, Schema},
+};
 use aperture_store::{meta::Status, store::FjallDb};
 use aperture_wire::{
     FrameHeader, FrameKind, StreamId, encode_desc, encode_frame, frame,
@@ -85,9 +88,14 @@ pub struct Database {
     pub name: String,
     pub db: Arc<FjallDb>,
     pub schema: Arc<Schema>,
-    /// This database's schema identity — what a handshake compares against
-    /// ([chapter 6](../../../docs/06-types-and-schema.md)).
-    pub fingerprint: u64,
+    /// This database's schema identity — the whole-schema number a handshake compares
+    /// against, and the per-predicate map a **subset** claim is checked against
+    /// ([chapter 6](../../../docs/06-types-and-schema.md), [I13](../../../docs/invariants.md#i13)).
+    ///
+    /// Computed once at open rather than per connection: it walks the schema and hashes
+    /// it, which is nothing next to opening a store and everything next to doing it on
+    /// every handshake.
+    pub identity: Identity,
     /// **The per-database single writer** (`ops-I1`, `ops-I5`).
     ///
     /// Held across an ingest, so writes to one database are serialised however many
@@ -121,12 +129,11 @@ impl Database {
         schema: Arc<Schema>,
         status: Status,
     ) -> Database {
-        let fingerprint = aperture_schema::fingerprint::of(&schema);
         Database {
             name: name.into(),
             db: Arc::new(db),
+            identity: aperture_schema::fingerprint::identity(&schema),
             schema,
-            fingerprint,
             writer: Mutex::new(()),
             writable: AtomicBool::new(status.is_writable()),
         }
@@ -273,19 +280,63 @@ where
         )
     };
 
-    let (fingerprint, predicates) = match &database {
-        Some(database) => (database.fingerprint, database.schema.len()),
-        None => (registry.fingerprint(), registry.schema().len()),
+    let (identity, predicates) = match &database {
+        Some(database) => (&database.identity, database.schema.len()),
+        None => (registry.identity(), registry.schema().len()),
     };
 
-    // Zero means "do not check" — a reader, or a client written against whatever the
-    // server has. A non-zero value is a claim, and a wrong claim is refused here
-    // rather than after a block of facts nobody can read back.
+    let fingerprint = identity.schema();
+
+    // **Two claims, checked in the order that lets the weaker one be useful.**
+    //
+    // The number is equality: "my schema is your schema", which is what a client
+    // holding the whole of one means and what every client meant before 8.4. It is
+    // checked first because it is the common case and answers in one comparison.
+    //
+    // Containment is the fallback, and it is [I13](../../../docs/invariants.md#i13)'s
+    // actual rule: a producer that writes six of twenty-seven predicates has a
+    // different whole-schema fingerprint and is not wrong about anything. What it
+    // claims is the shapes it uses; what is checked is that this database holds each
+    // of them, *identically* — a predicate whose key gained a field is a predicate
+    // whose stored rows this client would encode wrongly, and it is refused by name
+    // rather than as two numbers that differ.
+    //
+    // Zero and empty together mean "no opinion" — a reader, or a client written
+    // against whatever the server has.
     if startup.schema_fingerprint != 0 && startup.schema_fingerprint != fingerprint {
-        return Err(ServerError::SchemaMismatch {
-            expected: startup.schema_fingerprint,
-            actual: fingerprint,
-        });
+        if startup.predicates.is_empty() {
+            return Err(ServerError::SchemaMismatch {
+                expected: startup.schema_fingerprint,
+                actual: fingerprint,
+            });
+        }
+
+        let broken: Vec<String> = startup
+            .predicates
+            .iter()
+            .filter(|(name, claimed)| identity.of(name) != Some(*claimed))
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        if !broken.is_empty() {
+            let missing = broken
+                .iter()
+                .filter(|name| identity.of(name).is_none())
+                .count();
+
+            return Err(ServerError::SchemaNotContained {
+                database: if startup.database.is_empty() {
+                    "this server".to_owned()
+                } else {
+                    startup.database.clone()
+                },
+                detail: format!(
+                    "{missing} not declared here, {} declared differently",
+                    broken.len() - missing
+                ),
+                broken,
+            });
+        }
     }
 
     // **`ops-I2`, at establishment.** Once a database is Complete every write-mode open

@@ -29,7 +29,7 @@ use std::{
 };
 
 use aperture_schema::{
-    fingerprint,
+    fingerprint::{self, Identity},
     schema::{PredicateId, Schema},
     syntax,
 };
@@ -143,7 +143,7 @@ pub struct Registry {
     /// How each database's schema is arrived at, and what a session bound to *no*
     /// database sees.
     schemas: Schemas,
-    fingerprint: u64,
+    identity: Identity,
     /// Sorted, so a listing derived from it is stable; behind a lock, so a `create`
     /// can add to it while connections are being served.
     open: RwLock<BTreeMap<String, Arc<Database>>>,
@@ -173,7 +173,7 @@ impl Registry {
     ///
     /// [`ServerError::Store`] only if the root itself cannot be read.
     pub fn open(catalog: Catalog, schemas: Schemas) -> Result<(Registry, Listing), ServerError> {
-        let fingerprint = fingerprint::of(&schemas.fallback);
+        let identity = fingerprint::identity(&schemas.fallback);
 
         let mut listing = catalog.list()?;
         let mut open = BTreeMap::new();
@@ -196,7 +196,7 @@ impl Registry {
             Registry {
                 catalog,
                 schemas,
-                fingerprint,
+                identity,
                 open: RwLock::new(open),
                 stats: Arc::new(ServerStats::default()),
             },
@@ -225,7 +225,14 @@ impl Registry {
     /// The schema fingerprint a session that names no database handshakes against.
     #[must_use]
     pub fn fingerprint(&self) -> u64 {
-        self.fingerprint
+        self.identity.schema()
+    }
+
+    /// The identity a session that names no database is checked against — the whole
+    /// number and the per-predicate map alike.
+    #[must_use]
+    pub fn identity(&self) -> &Identity {
+        &self.identity
     }
 
     /// The schema a session that names **no database** sees: the fallback, which is

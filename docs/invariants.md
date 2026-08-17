@@ -40,7 +40,7 @@ green. See [testing](testing.md).
 | [I10](#i10) | Union discriminants are stable and append-only. | `schema::discriminants_append_only` | [ch6](06-types-and-schema.md) | Phase 8 (with unions) |
 | [I11](#i11) | `FactId` is stable, unique, never reused within a DB. | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | [ch3](03-storage-model.md) | ✅ green |
 | [I12](#i12) | A fact is written to both column families atomically. | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) | [ch3](03-storage-model.md) | ✅ green |
-| [I13](#i13) | The DB's schema is embedded and frozen at create. | `schema::ingest_rejects_incompatible_schema` + `fingerprint_is_order_independent` | [ch6](06-types-and-schema.md) | half green — order-independence ✅ at 8.3; ingest pending 8.4 |
+| [I13](#i13) | The DB's schema is embedded and frozen at create. | `i13_embedded_schema::ingest_rejects_incompatible_schema` + `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` | [ch6](06-types-and-schema.md) | ✅ green at 8.4 |
 | [I14](#i14) | A derived bind is a pure function of the fact bindings. | `iter::a_derive_is_recomputed_across_every_cut_point` | [ch7](07-compilation.md) | ✅ green (hand-built plans) |
 | [I15](#i15) | A DB says which format wrote it; an unreadable one is refused. | `store::a_database_says_which_format_wrote_it` + `a_corrupt_format_stamp_is_reported` | [ch3](03-storage-model.md) | ✅ green |
 
@@ -261,10 +261,22 @@ must survive recovery) + `store::put_is_write_once_and_says_so_in_release` and
 Canonical schema + fingerprint embedded at `create`, immutable for the DB's lifetime (no
 `evolves` in P0); every ingest validated by subset containment; the DB is self-describing.
 *Why & how:* [chapter 6](06-types-and-schema.md#the-schema-is-embedded-and-frozen-i13).
-*Guards:* `schema::ingest_rejects_incompatible_schema` (pending 8.4 — it needs a database to
-validate an ingest against) + `schema::fingerprint_is_order_independent` (**green** since 8.3,
-when the canonical form and fingerprints landed in `aperture_schema::fingerprint`). The second one's specification is **predicate order free, field order
-significant**: two source orderings of the same predicates — spread across files differently,
+*Guards:* `aperture-client/tests/i13_embedded_schema.rs`'s
+`ingest_rejects_incompatible_schema` (**green** at 8.4) +
+`fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` (**green** since
+8.3, when the canonical form and fingerprints landed in `aperture_schema::fingerprint`).
+
+The first one moved crates to run at all, and the move is the rule
+[testing](testing.md) states: it was specified in `aperture-schema` in Phase 0, and validating
+an ingest needs a database to validate against, a schema that was *parsed* rather than built,
+and a write path — none of which is below that crate. What it checks is containment from the
+producer's end: everything a producer claims must be in the database **identically**, so a
+subset is accepted (an indexer writing six of twenty-seven predicates restates nothing it does
+not touch) while a renamed predicate, a changed key type, a dropped field and a *reordered* key
+are each refused by name before a byte flows. Mutation-checked both ways — disabling the
+containment check fails it, and so does refusing every subset.
+
+The second one's specification is **predicate order free, field order significant**: two source orderings of the same predicates — spread across files differently,
 declared in a different sequence — must share a fingerprint, and permuting the *fields* of a
 predicate must **change** it. Field order is encoding order (`aperture_store::fact` resolves a fact's named
 fields into declared order before any bytes exist) and it decides the seek prefix, so a field

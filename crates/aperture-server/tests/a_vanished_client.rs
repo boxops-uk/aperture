@@ -145,6 +145,7 @@ impl Client {
             database: "code".to_owned(),
             mode,
             schema_fingerprint: fingerprint,
+            predicates: vec![],
         });
 
         self.send(kinds::STARTUP, StreamId(0), &startup);

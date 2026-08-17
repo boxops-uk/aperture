@@ -103,6 +103,13 @@ public sealed class ApertureConnection : IDisposable
         startup.WriteByte((byte)mode);
         Varint.Write(startup, assertSchema ? schema.Fingerprint : 0);
 
+        // **No per-predicate claims**, which is what a client carrying a constant has
+        // to send. The field is how a producer writing *part* of a database's schema
+        // says which part — it costs a fingerprint per predicate, and computing those
+        // is exactly what a client does not do (see ApertureSchema). Zero here means
+        // "judge me by the number above".
+        Varint.Write(startup, 0);
+
         FrameIo.Write(stream, FrameKind.Startup, 0, startup.Span);
 
         var reply = FrameIo.Read(stream);

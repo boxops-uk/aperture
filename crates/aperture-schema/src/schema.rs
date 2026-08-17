@@ -447,14 +447,21 @@ mod guards {
     }
 }
 
-/// Phase-8 invariant guards still **pending**: [I10](../../docs/invariants.md#i10)
-/// stable union discriminants, and [I13](../../docs/invariants.md#i13)'s ingest half.
+/// The one Phase-8 invariant guard still **pending**:
+/// [I10](../../docs/invariants.md#i10), stable union discriminants.
 ///
-/// Both need what 8.3 did not build — unions in `PredicateTy`, and a database to
-/// validate an ingest against. Written up front as the specification, `#[ignore]`d
-/// until their subject exists, and named under `pending_phase_8` so
-/// `cargo test -- --ignored --list` (the coverage ledger) shows the phase that owns
-/// them.
+/// It needs what 8.6 will build — a `Union` in `PredicateTy` — so it is written up
+/// front as the specification, `#[ignore]`d until its subject exists, and named under
+/// `pending_phase_8` so `cargo test -- --ignored --list` (the coverage ledger) shows
+/// the phase that owns it.
+///
+/// **[I13](../../docs/invariants.md#i13)'s ingest half went green at 8.4 and left this
+/// crate.** Its guard could never have run here: validating an ingest needs a database
+/// to validate it against, a schema that was parsed rather than built, and a write path,
+/// and none of the three is below this crate. It is
+/// `aperture-client/tests/i13_embedded_schema.rs` now, keeping the name the registry
+/// knows it by — which is the rule [testing](../../docs/testing.md) states for a guard
+/// whose subject sits above the crate that specified it.
 #[cfg(test)]
 mod pending_phase_8 {
     // I10 — union alternative discriminants are explicit, assigned once, and
@@ -472,23 +479,6 @@ mod pending_phase_8 {
     fn discriminants_append_only() {
         unimplemented!(
             "Phase 8: assert renumbered and reused union discriminants are rejected at schema load"
-        );
-    }
-
-    // I13 — the DB's schema is embedded and frozen at create, and every ingest is
-    // validated against it by subset containment, so the DB stays
-    // self-describing.
-    //
-    // Procedure: create a DB with schema S (embedding its canonical form and
-    // fingerprint), then attempt to ingest a fact file whose schema fingerprint is
-    // not subset-compatible with S — a renamed predicate, a changed key type, a
-    // dropped field — and assert each is rejected. A fact file whose schema is a
-    // compatible subset must be accepted.
-    #[test]
-    #[ignore = "I13 — pending Phase 8 (needs parsed schemas + ingest validation, PLAN 8)"]
-    fn ingest_rejects_incompatible_schema() {
-        unimplemented!(
-            "Phase 8: assert ingest rejects a fact file whose schema is not subset-compatible"
         );
     }
 }

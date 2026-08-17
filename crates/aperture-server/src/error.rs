@@ -51,6 +51,25 @@ pub enum ServerError {
     )]
     SchemaMismatch { expected: u64, actual: u64 },
 
+    /// A client claiming predicates this database does not hold in that shape.
+    ///
+    /// Distinct from [`SchemaMismatch`](ServerError::SchemaMismatch) in what it can
+    /// *say*: two whole-schema numbers that differ say nothing about which predicate
+    /// they differ over, and a producer writing a subset needs exactly that. Same code
+    /// on the wire — a client branches on "we disagree about the schema" either way —
+    /// and a different message, because a message is what a person acts on.
+    #[error(
+        "schema mismatch: `{database}` does not hold {} as this client declares {them} \
+         ({detail})",
+        if broken.len() == 1 { "this predicate" } else { "these predicates" },
+        them = broken.join(", "),
+    )]
+    SchemaNotContained {
+        database: String,
+        broken: Vec<String>,
+        detail: String,
+    },
+
     #[error("this session is read-only")]
     ModeRefused,
 
@@ -77,7 +96,9 @@ impl ServerError {
         match self {
             ServerError::Protocol(_) | ServerError::Wire(_) => ErrorCode::Protocol,
             ServerError::UnknownDatabase(_) | ServerError::NoDatabase => ErrorCode::UnknownDatabase,
-            ServerError::SchemaMismatch { .. } => ErrorCode::SchemaMismatch,
+            ServerError::SchemaMismatch { .. } | ServerError::SchemaNotContained { .. } => {
+                ErrorCode::SchemaMismatch
+            }
             ServerError::ModeRefused | ServerError::Sealed(_) => ErrorCode::ModeRefused,
             ServerError::InUse(_) => ErrorCode::InUse,
             ServerError::BadQuery(_) => ErrorCode::BadQuery,

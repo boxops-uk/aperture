@@ -150,6 +150,7 @@ impl Client {
             database: database.to_owned(),
             mode,
             schema_fingerprint: serving.fingerprint,
+            predicates: vec![],
         });
 
         client.send(kinds::STARTUP, StreamId(0), &startup);

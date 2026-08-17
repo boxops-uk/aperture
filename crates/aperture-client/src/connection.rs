@@ -237,10 +237,30 @@ impl Connection {
             open: HashSet::new(),
         };
 
-        let fingerprint = if assert_schema {
-            aperture_schema::fingerprint::of(&connection.schema)
+        // **Both halves of the claim, and they answer different questions.** The
+        // number says "my schema is your schema", which is what a client holding the
+        // whole of it means; the map says "these predicates are yours", which is the
+        // only thing a client holding *part* of one can honestly say — an indexer that
+        // writes six of twenty-seven predicates has a different whole-schema
+        // fingerprint and is not wrong about anything ([I13](../../../docs/invariants.md#i13)).
+        //
+        // A Rust client computes both because it links the algorithm. That is not the
+        // thing [D2](../../../docs/open-decisions.md) rules out: what a *foreign*
+        // client must not do is reimplement the canonical form, and one that carries a
+        // constant simply sends no map.
+        let (fingerprint, predicates) = if assert_schema {
+            let identity = aperture_schema::fingerprint::identity(&connection.schema);
+
+            (
+                identity.schema(),
+                identity
+                    .predicates()
+                    .iter()
+                    .map(|(name, fingerprint)| (name.clone(), *fingerprint))
+                    .collect(),
+            )
         } else {
-            0
+            (0, vec![])
         };
 
         connection.send(
@@ -251,6 +271,7 @@ impl Connection {
                 database: database.to_owned(),
                 mode,
                 schema_fingerprint: fingerprint,
+                predicates,
             }),
         )?;
 

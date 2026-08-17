@@ -188,6 +188,22 @@ pub struct Startup {
     /// *non-zero* value is a claim, and a claim that disagrees is refused before any
     /// data flows — which is the cheap early mismatch detection §6 is after.
     pub schema_fingerprint: u64,
+
+    /// The predicates this client claims, each with its own fingerprint — **subset
+    /// containment**, which is [I13](../../../docs/invariants.md#i13)'s actual rule.
+    ///
+    /// The field above is an equality check, and equality is the wrong question for a
+    /// producer that writes six of a database's twenty-seven predicates: its whole
+    /// schema is a different schema, and refusing it would force every indexer to
+    /// restate every predicate it never touches. What it can honestly claim is the
+    /// shapes it *uses*, and containment is what chapter 6 says compatibility is.
+    ///
+    /// Empty means "no per-predicate claim", which is what a client carrying a single
+    /// constant sends — see [the decision](../../../docs/open-decisions.md) that a
+    /// client never computes a fingerprint. A Rust client links the algorithm and can
+    /// compute this from the schema it holds; a hand-written one carries a number and
+    /// leaves this empty.
+    pub predicates: Vec<(String, u64)>,
 }
 
 /// What the server answers with.
@@ -347,6 +363,13 @@ pub fn encode_startup(startup: &Startup) -> Vec<u8> {
     put_str(&mut out, &startup.database);
     out.push(startup.mode.as_byte());
     varint::put_u64(&mut out, startup.schema_fingerprint);
+
+    varint::put_u64(&mut out, startup.predicates.len() as u64);
+    for (name, fingerprint) in &startup.predicates {
+        put_str(&mut out, name);
+        varint::put_u64(&mut out, *fingerprint);
+    }
+
     out
 }
 
@@ -368,6 +391,22 @@ pub fn decode_startup(bytes: &[u8]) -> Result<Startup, WireError> {
     let (schema_fingerprint, used) = varint::get_u64(&bytes[at..])?;
     at += used;
 
+    let (claimed, used) = varint::get_u64(&bytes[at..])?;
+    at += used;
+
+    let claimed = usize::try_from(claimed).map_err(|_| WireError::TypeMismatch("claims"))?;
+    let mut predicates = Vec::with_capacity(claimed.min(64));
+
+    for _ in 0..claimed {
+        let (name, used) = get_str(&bytes[at..])?;
+        at += used;
+
+        let (fingerprint, used) = varint::get_u64(&bytes[at..])?;
+        at += used;
+
+        predicates.push((name, fingerprint));
+    }
+
     if at != bytes.len() {
         return Err(WireError::TrailingBytes(bytes.len() - at));
     }
@@ -377,6 +416,7 @@ pub fn decode_startup(bytes: &[u8]) -> Result<Startup, WireError> {
         database,
         mode,
         schema_fingerprint,
+        predicates,
     })
 }
 
@@ -756,8 +796,21 @@ mod tests {
             database: "code".to_owned(),
             mode: Mode::ReadWrite,
             schema_fingerprint: 0xDEAD_BEEF,
+            // A subset claim, which is the shape with a length prefix in it — the one
+            // a decoder that stopped at the fingerprint would read as trailing bytes.
+            predicates: vec![("src.File".to_owned(), 7), ("src.Decl".to_owned(), 9)],
         };
         assert_eq!(decode_startup(&encode_startup(&startup)), Ok(startup));
+
+        // And the shape a client carrying one constant sends: a number, no map.
+        let carried = Startup {
+            version: VERSION,
+            database: "code".to_owned(),
+            mode: Mode::ReadOnly,
+            schema_fingerprint: 11,
+            predicates: vec![],
+        };
+        assert_eq!(decode_startup(&encode_startup(&carried)), Ok(carried));
 
         let ready = Ready {
             version: VERSION,
@@ -781,6 +834,7 @@ mod tests {
             database: "code".to_owned(),
             mode: Mode::ReadOnly,
             schema_fingerprint: 1,
+            predicates: vec![("src.File".to_owned(), 2)],
         });
 
         for cut in 0..bytes.len() {
