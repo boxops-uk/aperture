@@ -406,7 +406,69 @@ five round trips, and Glean's Haxl coalesces exactly that. It is a protocol feat
 with its own design questions — what a batch is if one member fails, what it does to
 cancellation — and it is not on the path to a working site. Recorded, not scheduled.
 
-### 6c. What the work turned up
+### 6c. Measured, against 25,046,499 facts
+
+`dotnet/runtime` re-indexed and sealed — 32,710 files, 25.0M facts, 3.4 GB. The
+viewer serving it, page by page:
+
+| page | time | what it did |
+|---|---|---|
+| file list | 1.1 ms | in memory; the listing is loaded once at startup |
+| search, `jsonserializer` | 3.9 ms | 64 matches, ranked, from one prefix seek |
+| search, `parse` | 50.7 ms | the wide one — thousands of matches counted, 200 read, 50 shown |
+| symbol, `JsonSerializer` | 10.0 ms | declaration, span, 3,003 uses counted, 50 linked |
+| file view, 908 lines | 26.6 ms | 387 cross-file hyperlinks, each resolved to its target's line |
+
+And B1, the query the whole analysis was about, measured both ways on the same
+question — every cross-reference in one file:
+
+```
+src.FileXRef      387 examined       3.5 ms
+src.Ref     4,879,151 examined   1,918.6 ms   ← labelled `full scan` by the profiler
+```
+
+**546×.** The `src.Ref` number is what every file view would have cost.
+
+Counting is worth its own line: 39,209 matches counted in 32 ms against 74 ms to
+receive them — which understates it, because the receiving side was `--format count`
+in the same process rather than a browser.
+
+### 6d. The cost model bit the viewer, and it was not statement order
+
+§3 recorded "statement order decides the plan" as a hazard with no diagnostic. The
+viewer hit a **sharper** version of it, and only against the real index: its own search
+page took **58 seconds**.
+
+The query was `src.SearchByLowerName {name = "…".., to = D}; D = src.Decl {module = M}`
+— seek the folded index, then read the declaration. The plan:
+
+```
+src.Decl               888,177 examined   full scan
+src.SearchByLowerName  56,843,328 examined
+```
+
+**A row bind claims its variable.** `D = src.Decl {…}` says what `D` *is*, so
+`flatten`'s `Claims` makes every other mention of `D` a read, and the level binding it
+has to run first. That is not an ordering question and no reordering can rescue it —
+`reorder` was working exactly as designed.
+
+The fix is to read *through* the reference the seek already bound —
+`{file = D.module.file}` rather than binding `D` — which is the plan the query
+obviously meant:
+
+```
+src.SearchByLowerName seek[name = "…".., to = _]   64 examined
+fetch src.Decl                                     64
+fetch src.Module                                   64
+```
+
+**2.1 ms against 30,222 ms**, on the identical answer. Both spellings are things a
+person would write, one of them is fourteen thousand times slower, and nothing warns.
+That is the strongest evidence this analysis produced for a cost model — stronger than
+§3's version, because it was found by a consumer rather than by inspection, and because
+the trap is *shape* rather than order.
+
+### 6e. What the work turned up
 
 Four things found by building it rather than by reading:
 

@@ -232,14 +232,32 @@ pub fn file_outline(path: &str) -> String {
 /// `toLower` to apply at read time. The caller lower-cases the term; the rows carry
 /// the declaration's real name.
 ///
-/// Measured at ~6,100 q/s against the case-sensitive twin (`bench/FINDINGS.md` §11),
-/// and there is no reason for the folded copy to differ: same shape, same key order.
+/// **Everything after the seek is a fetch, and that is not a style choice.** This was
+/// written `…, to = D}}; D = src.Decl {{module = M}}` — read the declaration by
+/// binding it — and it cost **30 seconds** against the 25M-fact index where the shape
+/// below costs 2 ms.
+///
+/// The reason is worth knowing, because it is sharper than "statement order decides
+/// the plan": a row bind **claims** its variable ([`flatten`]'s `Claims`), so the
+/// statement saying what `D` *is* has to run before anything that reads it — and no
+/// reordering can rescue that, because it is not an ordering question. `src.Decl`
+/// scanned its 888,177 rows and the seek became a residual on each one.
+///
+/// Reading `D.name` instead makes `D` a reference the seek binds and each read a point
+/// read through it, which is the plan the query obviously means:
+///
+/// ```text
+/// src.SearchByLowerName seek[name = "…".., to = _]
+/// fetch src.Decl
+/// fetch src.Module
+/// ```
+///
+/// [`flatten`]: aperture_client
 #[must_use]
 pub fn search(term: &str) -> String {
     format!(
-        "{{name = D.name, line = D.line, kind = D.value, file = M.file}} \
-         where src.SearchByLowerName {{name = {}.., to = D}}; \
-         D = src.Decl {{module = M}}",
+        "{{name = D.name, line = D.line, kind = D.value, file = D.module.file}} \
+         where src.SearchByLowerName {{name = {}.., to = D}}",
         literal(&term.to_lowercase())
     )
 }
@@ -260,11 +278,15 @@ pub fn references(name: &str) -> String {
 }
 
 /// Where a named declaration is defined, and what it is.
+///
+/// Fetches rather than binds, for the reason [`search`] spells out at length: binding
+/// `D` as a row claims it, which forces `src.Decl`'s level first and turns the seek
+/// into a residual over every declaration in the database.
 #[must_use]
 pub fn definition(name: &str) -> String {
     format!(
-        "{{name = D.name, line = D.line, kind = D.value, file = M.file}} \
-         where src.SearchByName {{name = {}, to = D}}; D = src.Decl {{module = M}}",
+        "{{name = D.name, line = D.line, kind = D.value, file = D.module.file}} \
+         where src.SearchByName {{name = {}, to = D}}",
         literal(name)
     )
 }
