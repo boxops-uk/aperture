@@ -1,0 +1,31 @@
+[package]
+name = "aperture-viewer"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "aperture-viewer"
+path = "src/main.rs"
+
+[dependencies]
+# The client, and **nothing below it**. A viewer is an ordinary consumer of the
+# wire protocol: it holds a schema, opens connections, and asks questions. Reaching
+# past the client for the store or the engine would make it a second server rather
+# than a demonstration that one is enough.
+aperture-client = { path = "../aperture-client" }
+aperture-schema = { path = "../aperture-schema" }
+aperture-wire = { path = "../aperture-wire" }
+
+axum = { version = "0.8", default-features = false, features = [
+    "http1",
+    "tokio",
+    "query",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+aperture-server = { path = "../aperture-server" }
+aperture-store = { path = "../aperture-store" }
+tempfile = "3"
