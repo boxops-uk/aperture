@@ -56,6 +56,20 @@ pub struct Limits {
 /// [`CliError::NoServer`] if nothing is listening, [`CliError::Client`] if the server
 /// refuses the session or the query does not compile — carrying the compiler's own
 /// diagnostics.
+/// Answer **how many rows**, and none of them.
+///
+/// A different entry point rather than a flag on [`run`], because nothing after the
+/// first line is shared: there is no descriptor, no sink, no paging and no cancel
+/// loop — the server counts and sends a number.
+///
+/// # Errors
+///
+/// As [`run`].
+pub fn count(socket: &Path, name: &str, query: &str) -> Result<u64, CliError> {
+    let mut connection = connect(socket, name, Mode::ReadOnly)?;
+    Ok(connection.count(query)?)
+}
+
 pub fn run(
     socket: &Path,
     name: &str,

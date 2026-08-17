@@ -463,7 +463,17 @@ fn the_lifecycle_runs_through_the_client() {
     drop(rows);
     drop(reader);
 
-    control.remove("fresh").expect("it is removed");
+    // **Dropping a connection and the server noticing are not the same event.** The
+    // socket closes here; the server learns when its read loop sees EOF, tears the
+    // session down and releases the database — which is asynchronous with this line
+    // by construction. `remove` refuses a database an open session holds
+    // (`ops-I1`), so a `remove` issued in the same breath as a `drop` can lose the
+    // race and be told the database is in use.
+    //
+    // That is the product behaving correctly and a caller retrying, so the test does
+    // what a caller does rather than asserting a timing it cannot control. It was a
+    // flake before it was a comment: it fired once in a run that added four tests.
+    remove_when_released(&mut control, "fresh");
 
     let gone = Connection::connect(
         &serving.socket,
@@ -902,4 +912,98 @@ fn a_malformed_resume_token_is_refused() {
         .query_page("F where src.File F", 2, None)
         .expect("the connection still works");
     assert_eq!(connection.drain(&mut rows).expect("the page").len(), 2);
+}
+
+/// **A count equals the number of rows, and does not receive them.**
+///
+/// The same plan and the same executor; what differs is the accumulator. So the
+/// claim worth pinning is the boring one — that it agrees with counting the rows by
+/// hand — over results on both sides of the server's chunk boundary, since counting
+/// is chunked the same way answering is and an off-by-one at the seam is exactly the
+/// mistake available here.
+#[test]
+fn a_count_agrees_with_the_rows() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 600);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    for (query, want) in [
+        ("F where src.File F", 600u64),
+        // A prefix that matches a tenth of them, so the count is not the whole
+        // predicate and a plan that ignored the seek would be visible.
+        ("F where src.File F; F = \"f0000\"..", 10),
+        ("F where src.File F; F = \"nothing\"..", 0),
+    ] {
+        let counted = connection.count(query).expect("a count");
+
+        let mut rows = connection.query(query).expect("a query");
+        let received = connection.drain(&mut rows).expect("the rows").len() as u64;
+
+        assert_eq!(counted, want, "{query}");
+        assert_eq!(
+            counted, received,
+            "{query}: the count and the rows disagree"
+        );
+    }
+
+    // 600 crosses the server's 256-row chunk boundary twice, which is the seam this
+    // is here for: counting is chunked exactly as answering is, and an off-by-one at
+    // a resume would show as a count short or long by a chunk. Said out loud so a
+    // future edit to the corpus size cannot quietly remove the coverage.
+    const ROWS: usize = 600;
+    const CHUNK: usize = 256;
+    const { assert!(ROWS > 2 * CHUNK, "the corpus spans more than two chunks") };
+}
+
+/// A count leaves the connection usable and recycles its stream id.
+#[test]
+fn a_count_ends_its_stream() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 3);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    for _ in 0..50 {
+        assert_eq!(connection.count("F where src.File F").expect("a count"), 3);
+    }
+
+    assert!(
+        connection.stream_ids_issued() <= 2,
+        "fifty counts invented {} stream ids",
+        connection.stream_ids_issued()
+    );
+}
+
+/// Remove a database once the server has let go of it.
+///
+/// See the call site: a client's `drop` and the server's session teardown are
+/// separate events, so a `remove` in the same breath can be refused for a session
+/// that is on its way out. Polled rather than slept on — the release is immediate
+/// once it happens, and a fixed sleep would be either flaky or slow.
+fn remove_when_released(control: &mut Connection, database: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+
+    loop {
+        match control.remove(database) {
+            Ok(()) => return,
+            Err(error) if std::time::Instant::now() < deadline => {
+                // Only the one refusal is worth waiting out; anything else is a
+                // real failure and saying so now beats timing out on it.
+                assert_eq!(
+                    error.code(),
+                    Some(ErrorCode::InUse),
+                    "removing {database} failed for a reason waiting cannot fix"
+                );
+                thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("{database} was still in use after five seconds: {error}"),
+        }
+    }
 }

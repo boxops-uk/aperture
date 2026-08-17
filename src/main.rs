@@ -173,7 +173,24 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             limit,
             timing,
             profile,
+            count,
         } => {
+            if *count {
+                let started = std::time::Instant::now();
+                let rows = commands::query::count(socket, name, query)?;
+
+                println!("{rows}");
+
+                if *timing {
+                    eprintln!(
+                        "counted in {:.3} ms",
+                        started.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
+
+                return Ok(());
+            }
+
             let limits = commands::query::Limits {
                 rows: *limit,
                 timeout: timeout.map(std::time::Duration::from_secs_f64),

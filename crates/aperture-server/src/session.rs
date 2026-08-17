@@ -510,6 +510,7 @@ impl StreamTask {
             FrameKind::COPY_DONE => self.copy_done().await,
             kinds::QUERY => self.query(payload, false, None).await,
             kinds::QUERY_PROFILE => self.query(payload, true, None).await,
+            kinds::QUERY_COUNT => self.count(payload).await,
             kinds::QUERY_PAGE => {
                 let page = protocol::decode_page(payload)?;
                 self.query(page.query.as_bytes(), false, Some(&page)).await
@@ -670,6 +671,94 @@ impl StreamTask {
             Err(_) => stats.query_failed(),
         }
         outcome
+    }
+
+    /// Run a query and answer **how many rows** it has.
+    ///
+    /// The same plan and the same executor as [`query`](Self::query); what differs is
+    /// the accumulator, because `enumerate` is a fold and counting is a fold that
+    /// keeps a number. Chunked exactly as the row path is, and for the same two
+    /// reasons rather than for streaming: the snapshot is released at each suspend
+    /// ([I8](../../../docs/invariants.md#i8)), and a cancel lands between chunks.
+    ///
+    /// **This is not aggregation in the language.** A query still answers rows; this
+    /// asks a question about the answer. What it saves is the part that costs —
+    /// `bench/FINDINGS.md` §9 puts row encoding at 1.5× the executor's own work and
+    /// the wire above it at another 3.6×, all of which a caller that only wants a
+    /// number throws away.
+    async fn count(&mut self, payload: &[u8]) -> Result<(), ServerError> {
+        let stats = Arc::clone(self.session.registry.stats());
+        stats.query_started();
+
+        let outcome = self.run_count(payload, &stats).await;
+        match &outcome {
+            Ok(()) => stats.query_completed(),
+            Err(_) => stats.query_failed(),
+        }
+        outcome
+    }
+
+    async fn run_count(
+        &mut self,
+        payload: &[u8],
+        stats: &Arc<crate::stats::ServerStats>,
+    ) -> Result<(), ServerError> {
+        let source = std::str::from_utf8(payload)
+            .map_err(|_| ServerError::Protocol("a query that is not UTF-8".to_owned()))?
+            .to_owned();
+
+        let database = Arc::clone(self.database()?);
+        let prepared = {
+            let queued = std::time::Instant::now();
+            let stats = Arc::clone(stats);
+            let database = Arc::clone(&database);
+            let catalog = self.session.registry.catalog().clone();
+            blocking::run(move || {
+                stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
+                prepare(&database, &catalog, &source)
+            })
+            .await?
+        };
+
+        let mut cursor: Option<Cursor> = None;
+        let mut total: u64 = 0;
+
+        loop {
+            let database = Arc::clone(&database);
+            let plan = prepared.plan.clone();
+            let token = self.cancel.clone();
+            let resume = cursor.take();
+            let listing = prepared.catalogue.clone();
+
+            let (counted, next) = {
+                let queued = std::time::Instant::now();
+                let stats = Arc::clone(stats);
+                blocking::run(move || {
+                    stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
+                    count_chunk(&database, listing.as_ref(), &plan, resume, &token)
+                })
+                .await?
+            };
+
+            total += counted;
+
+            match next {
+                Some(next) if !self.cancel.is_cancelled() => cursor = Some(next),
+                _ => break,
+            }
+        }
+
+        self.outbound
+            .send(kinds::COUNT, self.stream, &total.to_le_bytes())
+            .await?;
+
+        self.outbound
+            .send(
+                kinds::COMPLETE,
+                self.stream,
+                &protocol::encode_complete(total, 0),
+            )
+            .await
     }
 
     async fn run_query(
@@ -1056,6 +1145,70 @@ fn prepare(
             interner: Arc::new(interner),
         },
         catalogue,
+    })
+}
+
+/// One chunk of a **count**: how many rows, and where to carry on.
+///
+/// A sibling of [`run_chunk`] rather than a mode of it, and deliberately: the row
+/// path is the hot one, and threading "do not encode" through it would put a branch
+/// per row in the middle of what `bench/FINDINGS.md` §9 measured. This shares the
+/// executor and shares nothing else.
+fn count_chunk(
+    database: &Database,
+    catalogue: Option<&Arc<Catalogue>>,
+    plan: &Plan,
+    resume: Option<Cursor>,
+    cancel: &CancellationToken,
+) -> Result<(u64, Option<Cursor>), ServerError> {
+    let store = database.db.reader();
+
+    match catalogue {
+        Some(catalogue) => counting(
+            Catalogued::new(store, Arc::clone(catalogue)),
+            plan,
+            resume,
+            cancel,
+        ),
+        None => counting(store, plan, resume, cancel),
+    }
+}
+
+/// [`count_chunk`], once the store is known.
+fn counting<S: aperture_store::fact_store::FactStore>(
+    store: S,
+    plan: &Plan,
+    resume: Option<Cursor>,
+    cancel: &CancellationToken,
+) -> Result<(u64, Option<Cursor>), ServerError> {
+    let executor = match resume {
+        Some(cursor) => Executor::resume(store, plan.clone(), cursor),
+        None => Ok(Executor::new(store, plan.clone())),
+    }
+    .map_err(|error| ServerError::Execution(error.to_string()))?;
+
+    // **The row is never built.** `to_value` is what allocates and what decodes; a
+    // count needs neither, so the closure looks at nothing and adds one. That is the
+    // whole saving, and it is why this is a different accumulator rather than a
+    // different plan.
+    let outcome = executor
+        .enumerate(
+            0u64,
+            |n, _row| {
+                let n = n + 1;
+                Ok(if n % CHUNK_ROWS as u64 == 0 {
+                    Stream::Suspend(n)
+                } else {
+                    Stream::Continue(n)
+                })
+            },
+            cancel,
+        )
+        .map_err(|error| ServerError::Execution(error.to_string()))?;
+
+    Ok(match outcome {
+        Iteratee::Done(n) => (n, None),
+        Iteratee::Suspended(n, cursor) => (n, Some(cursor)),
     })
 }
 

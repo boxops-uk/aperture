@@ -429,6 +429,51 @@ impl Connection {
         self.start_query_with(kinds::QUERY_PAGE, &payload)
     }
 
+    /// **How many rows a query has**, without receiving them.
+    ///
+    /// The same plan and the same executor as [`query`](Connection::query); what
+    /// differs is that the server counts instead of encoding. That is the part that
+    /// costs — `bench/FINDINGS.md` §9 puts row encoding at 1.5× the executor's own
+    /// work and the wire above it at another 3.6× — so counting a large result is a
+    /// different order of expense from receiving one and calling `.len()`.
+    ///
+    /// **Not aggregation in the language.** focus has no `count`, and this does not
+    /// give it one: a query still answers rows, and this asks a question *about* the
+    /// answer. It is what a search UI needs to say "1,234 results" honestly.
+    ///
+    /// # Errors
+    ///
+    /// As [`query`](Connection::query).
+    pub fn count(&mut self, focus: &str) -> Result<u64, ClientError> {
+        let stream = self.claim_stream();
+        self.send(kinds::QUERY_COUNT, stream, focus.as_bytes())?;
+
+        let (kind, payload) = self.recv_on(stream)?;
+        if kind != kinds::COUNT {
+            self.open.remove(&stream.0);
+            return Err(unexpected("a count", kind));
+        }
+
+        let count = u64::from_le_bytes(
+            payload
+                .get(..8)
+                .ok_or_else(|| ClientError::Protocol("a truncated count".to_owned()))?
+                .try_into()
+                .map_err(|_| ClientError::Protocol("a truncated count".to_owned()))?,
+        );
+
+        // The stream still owes a `COMPLETE`, and reading it here is what lets the
+        // id be recycled — a stream left half-read is one that never comes back.
+        let (kind, _) = self.recv_on(stream)?;
+        self.release_stream(stream);
+
+        if kind != kinds::COMPLETE {
+            return Err(unexpected("a complete frame", kind));
+        }
+
+        Ok(count)
+    }
+
     fn start_query(&mut self, focus: &str, kind: FrameKind) -> Result<Rows, ClientError> {
         self.start_query_with(kind, focus.as_bytes())
     }

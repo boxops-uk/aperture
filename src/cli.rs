@@ -113,6 +113,14 @@ pub enum Command {
         /// and this says how many rows that came to.
         #[arg(long)]
         profile: bool,
+
+        /// Print **how many rows**, and none of them.
+        ///
+        /// The same plan and the same executor; what differs is that the server
+        /// counts instead of encoding. That is the part that costs, so this is a
+        /// different order of expense from piping the rows to `wc -l`.
+        #[arg(long, conflicts_with_all = ["limit", "profile", "format"])]
+        count: bool,
     },
 
     /// An interactive REPL.

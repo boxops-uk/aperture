@@ -104,6 +104,20 @@ pub mod kinds {
     /// to see page two — which a web tier cannot do, and cannot work around either,
     /// because "everything after key K" is not expressible in the language.
     pub const QUERY_PAGE: FrameKind = FrameKind(b'G');
+    /// Client → server: run a query and report only **how many rows** it has.
+    ///
+    /// A fourth query kind, and the cheapest one to justify: the plan is the same,
+    /// the executor is the same, and what differs is the accumulator — `enumerate`
+    /// is a fold, so counting is a fold that keeps a number instead of a row.
+    ///
+    /// **Not aggregation in the language.** focus has no `count`, and this does not
+    /// give it one: a query still answers rows, and this asks a question *about* the
+    /// answer rather than computing one. What it saves is the part that costs —
+    /// `bench/FINDINGS.md` §9 puts row encoding at 1.5× the executor and the wire
+    /// above it at another 3.6×, all of which a caller counting rows throws away.
+    pub const QUERY_COUNT: FrameKind = FrameKind(b'N');
+    /// Server → client: how many rows the query has.
+    pub const COUNT: FrameKind = FrameKind(b'n');
     /// Server → client: the resume token, sent once, just before [`COMPLETE`].
     ///
     /// Only when the result was cut short by a page limit *and* there is more. A
