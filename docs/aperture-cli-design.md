@@ -457,6 +457,23 @@ Interactive psql-like REPL.
   fast-follow convenience, same executor library.)
 - Meta-commands mirroring psql: `\l` (list — issues `aperture.db.List`), `\d [pred]`
   (describe DB / predicate), `\c <db>` (reconnect), `\timing`, `\q`. Readline editing + history.
+  **Amended as built: the commands are `:`-prefixed and the `\` spellings are aliases.** Both
+  prefixes are accepted because neither can begin a focus query, so a hand trained on psql costs
+  nothing; the table is named for `:` because that is what this tool's other shell has always
+  used and what its own commands are called in this document. The set is wider than the list
+  above — `:type`, `:plan`, `:facts`, `:schema`, `:limit`, `:format`, `:clear`, `:help` — and
+  `:help` is generated from the table, so a command that exists is a command that is listed.
+- **The shell compiles what you type, and that changed the argument for two shells.** It holds
+  the schema the server said it serves (the `H`/`h` frames, §6), so a query is compiled here
+  before it is sent: a mistake is the compiler's own diagnostic, with the code, the caret and
+  colour, and no round trip. `:plan` and `:type` follow from the same thing — they were the
+  reason the embedded shell survived Phase 9f, on the grounds that a client never holds a plan,
+  and what was actually missing was the *schema*. The rule where the two compilers could
+  disagree: the **server** decides what runs.
+- **Rows print as JSON** — one value per line, shaped by the row descriptor at every level, so a
+  nested record is a nested object. A page is not a document and three pages of one query are not
+  three documents, which is why the line-per-row form rather than an array. `:format table` is
+  there for reading rather than piping.
 - **Built, and `aperture.db.List` is answered at the `FactStore` seam** rather than by a new
   kind of plan step. `Catalogued` wraps the store, answers the catalogue's keyspace from a
   listing encoded through `fact::encode` — `predicate_id ++ key`, sorted, byte for byte what a
@@ -620,7 +637,17 @@ is listed at the end of this section rather than implied by its absence.
 - Server obligations: fair per-connection writer task; chunked results; in-band per-stream
   cancel; flow-control windows deferred (bounded queues + connection backpressure in P0).
 - Handshake compares the client's expected schema fingerprint against the DB's — cheap early
-  mismatch detection, enabled by self-describing DBs.
+  mismatch detection, enabled by self-describing DBs. **Since Phase 8.4 the startup frame also
+  carries the predicates a client claims**, each with its own fingerprint, and a claim that is
+  not an exact match is checked by *subset containment* — which is what
+  [I13](invariants.md#i13) actually says, and what lets a producer writing six of a database's
+  twenty-seven predicates connect without restating the twenty-one it never touches.
+- **`H`/`h` — "what can I ask you?"** No payload out; the schema this session is served with,
+  as source, back. It exists because a database carries the schema it was created against, so a
+  client's built-in copy is its own opinion and there was no way to ask for the truth. What it
+  buys is everything a client can then do locally: describe the right predicates, compile a
+  query before sending it, and show a plan. Virtual predicates are **in** the answer, because
+  the question is what may be asked rather than what the database holds.
 
 ### The value encoding
 

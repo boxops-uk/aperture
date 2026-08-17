@@ -1402,6 +1402,15 @@ and `:type` need a compiler in the same process as the question, and a client ho
 text and never its plan. `aperture shell <db>` is the wire shell; `aperture shell` is still
 the embedded demo over its own scratch database.
 
+**And the reason turned out to be half right, which is worth more than the rule.** A client
+holds a query's text and never its plan — but it can *compile* one, and what it was missing
+was never the compiler (the CLI links it) but the **schema**: a database carries the one it
+was created against ([I13](docs/invariants.md#i13)), and there was no way to ask for it. With
+the `H`/`h` frames there is. So the wire shell compiles what you type, before sending it: a
+mistake is the compiler's own diagnostic with a caret and a colour, and `:plan` and `:type`
+are answered locally. Both shells still exist, for the honest reason rather than that one —
+the demo *seeds its own database*, which is the thing no wire client can do.
+
 **`aperture.db.List` is a virtual predicate, and it is answered at the `FactStore` seam.**
 The obvious home for one is the executor — a `Source::Virtual` beside `Seek` and `Fetch` —
 and that is the wrong place: `FactStore` is already the answer to "where do rows come from",
