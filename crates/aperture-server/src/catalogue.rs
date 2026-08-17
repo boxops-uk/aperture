@@ -283,7 +283,9 @@ pub fn reads(plan: &aperture_engine::plan::Plan, predicate: PredicateId) -> bool
         let sources = match step {
             Step::Level(level) => &level.sources,
             Step::Test(Test::Absent(sources)) => sources,
-            Step::Derive(_) => return false,
+            // Neither reads a predicate: a derive computes from registers, and a
+            // computed comparison reads none at all.
+            Step::Derive(_) | Step::Test(Test::Compare { .. }) => return false,
         };
 
         sources

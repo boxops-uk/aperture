@@ -22,7 +22,30 @@ built](#an-on-disk-format-version--settled-two-numbers-in-db-metadata), and what
 in a fact file, [settled when Phase 7 was
 sequenced](#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline).)
 
-### Primitives in the query language
+### Primitives in the query language — **settled and built** (Phase 11)
+
+**Comparisons and arithmetic are in the language.** `<`, `<=`, `>`, `>=` are statements;
+`+` and `-` are expressions binding tighter than `|` and looser than access. What follows is
+kept as the record of the decision.
+
+A comparison is a **residual** where one side is a field of a row, and a byte compare rather
+than a decode: the key encoding is order-preserving ([I1](invariants.md#i1)), so the
+lexicographic order of two encoded fields of one type *is* their value order. Three shapes —
+against a constant, against another register's field, against another field of the same row —
+and which one is used is decided by *address* rather than by syntax, the relation flipping
+where the field turned out to be on the right. Where neither side is a row it is a
+`Step::Test` instead, which is what a filter with no row of its own is.
+
+Arithmetic is integers, wrapping, and it is **the first thing in focus to lower a
+`Step::Derive` at all** — the machinery Phase 6 built and only hand-written plans had
+exercised. `Computed` grew from one arm to four; nothing about the machine moved.
+
+What is still absent: **if-then-else**, and a **sargeable** comparison. The second is worth
+knowing about — an order comparison on a leading key field denotes one contiguous run of the
+key order, unlike a denial, so unlike `NotPrefix` there *is* a seek form to look for later.
+It is not built.
+
+### Primitives in the query language — the decision as it stood
 
 Angle's primitive surface is **narrower than "arithmetic, string operations, comparisons" sounds**:
 exactly 15 `prim.*` ops — arithmetic is `+` on nat *only*, string functions are `toLower` and

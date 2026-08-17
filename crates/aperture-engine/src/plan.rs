@@ -192,6 +192,19 @@ pub enum ResidualOp {
         path: FieldPath,
     },
 
+    /// `field < computed` — a comparison against a **derived bind's** output.
+    ///
+    /// The one comparison that cannot be a byte compare: the other side is a
+    /// computed `Value`, not encoded bytes, and encoding it per row would allocate
+    /// ([I9](../../docs/invariants.md#i9)). So this decodes the *field* instead —
+    /// a fixed-width integer read, which allocates nothing — and compares numbers.
+    /// Integers only, which typecheck already guarantees of anything arithmetic
+    /// produced.
+    CmpRegisterValue {
+        op: Compare,
+        address: Address,
+    },
+
     /// `field < field`, **both of this row** — `test.Edge {from = X, to = Y}; X < Y`.
     ///
     /// Its own arm rather than [`CmpRegisterField`](ResidualOp::CmpRegisterField)
@@ -478,19 +491,75 @@ pub enum Project {
 
 /// What a **derived bind** computes: a pure expression over already-bound slots.
 ///
-/// The vocabulary is deliberately one arm wide. Without primitives (an
-/// [open decision](../../docs/open-decisions.md)) a derived bind can only produce
-/// a constant, and inventing arms for arithmetic here would be speculating about a
-/// decision that has not been taken. What the enum *is* for is the shape of the
-/// seam: every arm must be a pure function of the fact slots, with no iteration and
-/// no hidden state, because that purity is what lets a [`Cursor`] save only
-/// generator positions and recompute the rest
+/// Every arm is a pure function of the bindings, with no iteration and no hidden
+/// state, and that purity is the load-bearing part: it is what lets a [`Cursor`]
+/// save only generator positions and recompute the rest
 /// ([chapter 7](../../docs/07-compilation.md#derived-facts)).
+///
+/// This was one arm wide until Phase 11 — a constant, because nothing in the
+/// language could produce anything else. Arithmetic is the first thing that does,
+/// and it arrived as three more arms rather than as a reshape, which is what the
+/// seam was for.
 ///
 /// [`Cursor`]: crate::iter::Cursor
 #[derive(Debug, Clone)]
 pub enum Computed {
     Lit(Value),
+
+    /// An **integer** field of a bound row, decoded.
+    ///
+    /// Integers only, because arithmetic is integers only — which is what keeps
+    /// this allocation-free ([I9](../../docs/invariants.md#i9)): a fixed-width read
+    /// into an `i64`, with no `String` built per row. A string-valued arm would
+    /// need one, and there is nothing yet that would use it.
+    Field {
+        address: Address,
+        path: FieldPath,
+    },
+
+    /// Another derived bind's output — `Y = X + 1; Z = Y * …`.
+    ///
+    /// Reading a register rather than re-deriving, so a chain costs one evaluation
+    /// per link rather than one per link per use.
+    Register(Address),
+
+    /// `a + b - c` — **flat**, N operands and N-1 operators, as the syntax is.
+    Sum {
+        operands: Box<[Computed]>,
+        ops: Box<[Arith]>,
+    },
+}
+
+/// The two arithmetic operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arith {
+    Add,
+    Sub,
+}
+
+impl Arith {
+    /// Applied, with **wrapping** on overflow.
+    ///
+    /// Wrapping rather than saturating or erroring, and the reason is the codec: an
+    /// `i64` is what the encoding holds, every one of them is a legal value, and
+    /// there is no arithmetic error in the type model for a query to receive. A
+    /// checked variant is the additive change if one is ever wanted — this is the
+    /// arm that would grow it, not a shape that would have to move.
+    #[must_use]
+    pub const fn apply(self, left: i64, right: i64) -> i64 {
+        match self {
+            Arith::Add => left.wrapping_add(right),
+            Arith::Sub => left.wrapping_sub(right),
+        }
+    }
+
+    #[must_use]
+    const fn tag(self) -> u8 {
+        match self {
+            Arith::Add => 0,
+            Arith::Sub => 1,
+        }
+    }
 }
 
 /// A variable bound to a computed value rather than to a row — chapter 7's
@@ -529,6 +598,20 @@ pub enum Test {
     /// ([I6](../../../docs/invariants.md#i6) is about values, and a probe fetches
     /// none).
     Absent(Box<[Source]>),
+
+    /// **An order comparison over computed values** — `E = S.col + S.len; E > 5`.
+    ///
+    /// The residual forms cover a comparison where one side is a *field of a row*,
+    /// because a residual runs inside the scan and drops the row before it costs
+    /// anything. Neither side being a row leaves nothing to hang one on, and a test
+    /// is what a filter with no row of its own is: it binds nothing, takes no cursor
+    /// entry, and is re-decided on restore rather than replayed — which is exactly
+    /// what a comparison over pure computations needs.
+    Compare {
+        left: Computed,
+        op: Compare,
+        right: Computed,
+    },
 }
 
 /// One position in a plan's body: a level to iterate, a value to compute, or a
@@ -869,6 +952,44 @@ impl Fingerprint {
                     self.byte(op.tag());
                     self.path(path);
                 }
+                ResidualOp::CmpRegisterValue { op, address } => {
+                    self.byte(9);
+                    self.byte(op.tag());
+                    self.address(*address);
+                }
+            }
+        }
+    }
+
+    /// A derived bind's expression, recursively.
+    ///
+    /// Tagged per arm and per operator, for the reason every other tag here exists:
+    /// two plans differing only in `+` against `-` compute different values, so a
+    /// cursor from one must not resume into the other.
+    fn computed(&mut self, value: &Computed) {
+        match value {
+            Computed::Lit(v) => {
+                self.byte(0);
+                self.value(v);
+            }
+            Computed::Field { address, path } => {
+                self.byte(1);
+                self.address(*address);
+                self.path(path);
+            }
+            Computed::Register(address) => {
+                self.byte(2);
+                self.address(*address);
+            }
+            Computed::Sum { operands, ops } => {
+                self.byte(3);
+                self.int(operands.len() as u64);
+                for operand in operands.iter() {
+                    self.computed(operand);
+                }
+                for op in ops.iter() {
+                    self.byte(op.tag());
+                }
             }
         }
     }
@@ -916,12 +1037,7 @@ impl Fingerprint {
                 Step::Derive(derived) => {
                     self.byte(1);
                     self.address(derived.bind);
-                    match &derived.value {
-                        Computed::Lit(v) => {
-                            self.byte(0);
-                            self.value(v);
-                        }
-                    }
+                    self.computed(&derived.value);
                 }
                 Step::Test(test) => {
                     self.byte(2);
@@ -932,6 +1048,12 @@ impl Fingerprint {
                             for source in sources.iter() {
                                 self.source(source);
                             }
+                        }
+                        Test::Compare { left, op, right } => {
+                            self.byte(1);
+                            self.byte(op.tag());
+                            self.computed(left);
+                            self.computed(right);
                         }
                     }
                 }
@@ -1202,6 +1324,94 @@ mod tests {
                         op: ResidualOp::CmpSelfField {
                             op: Compare::Lt,
                             path: FieldPath::field(1),
+                        },
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            // **The derived bind's expression, arm by arm.** `Computed` grew from one
+            // arm to four when arithmetic landed, and a fingerprint that walked only
+            // the first would make two plans computing different numbers agree.
+            (
+                "a derived bind reading a field rather than a literal",
+                with_body(&|body| {
+                    body[2] = Step::Derive(DerivedBind {
+                        bind: Address::new(2),
+                        value: Computed::Field {
+                            address: Address::new(0),
+                            path: FieldPath::field(0),
+                        },
+                    });
+                }),
+            ),
+            (
+                "a derived bind reading another register",
+                with_body(&|body| {
+                    body[2] = Step::Derive(DerivedBind {
+                        bind: Address::new(2),
+                        value: Computed::Register(Address::new(1)),
+                    });
+                }),
+            ),
+            (
+                "a derived bind adding",
+                with_body(&|body| {
+                    body[2] = Step::Derive(DerivedBind {
+                        bind: Address::new(2),
+                        value: Computed::Sum {
+                            operands: Box::new([
+                                Computed::Lit(Value::Int(42)),
+                                Computed::Lit(Value::Int(1)),
+                            ]),
+                            ops: Box::new([Arith::Add]),
+                        },
+                    });
+                }),
+            ),
+            (
+                "the same operands subtracted",
+                with_body(&|body| {
+                    body[2] = Step::Derive(DerivedBind {
+                        bind: Address::new(2),
+                        value: Computed::Sum {
+                            operands: Box::new([
+                                Computed::Lit(Value::Int(42)),
+                                Computed::Lit(Value::Int(1)),
+                            ]),
+                            ops: Box::new([Arith::Sub]),
+                        },
+                    });
+                }),
+            ),
+            (
+                "a test comparing two computed values",
+                with_body(&|body| {
+                    body.push(Step::Test(Test::Compare {
+                        left: Computed::Register(Address::new(2)),
+                        op: Compare::Lt,
+                        right: Computed::Lit(Value::Int(1)),
+                    }));
+                }),
+            ),
+            (
+                "the same test, the other relation",
+                with_body(&|body| {
+                    body.push(Step::Test(Test::Compare {
+                        left: Computed::Register(Address::new(2)),
+                        op: Compare::Gt,
+                        right: Computed::Lit(Value::Int(1)),
+                    }));
+                }),
+            ),
+            (
+                "a comparison against a computed value",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    *l.sources[0].residuals_mut() = Box::new([Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::CmpRegisterValue {
+                            op: Compare::Lt,
+                            address: Address::new(2),
                         },
                     }]);
                     body[0] = Step::Level(l);

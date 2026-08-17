@@ -231,6 +231,73 @@ pub const CORPUS: &[Entry] = &[
         Diagnosed(Code::RejectTypeMismatch),
         "a **prefix range** has no order either — it is a set of values, not one",
     ),
+    // ---- arithmetic --------------------------------------------------------
+    //
+    // The first thing in focus to lower a `Step::Derive` at all. The machinery has
+    // been there since Phase 6 and was exercised only by hand-built plans, which is
+    // why these entries are also its first coverage from the language.
+    entry(
+        "Y where test.Count X; Y = X + 1",
+        Supported("-9223372036854775807; -41; 8; 1001"),
+        "a **derived bind** — one value per row, computed from the row, in a \
+         register of its own. Not a level: `enumerate` does not iterate it and the \
+         cursor stores nothing for it, because it is recomputed on resume",
+    ),
+    entry(
+        "Y where test.Count X; Y = X - 1",
+        Supported("9223372036854775807; -43; 6; 999"),
+        "and subtraction, which **wraps** — `i64::MIN - 1` is `i64::MAX`, because \
+         every `i64` is a legal value and the type model has no arithmetic error \
+         for a query to receive",
+    ),
+    entry(
+        "Y where test.Edge {from = A, to = B}; Y = A + B",
+        Supported("3; 4; 5"),
+        "two fields of one row as operands",
+    ),
+    entry(
+        "Y where test.Edge {from = A, to = B}; Y = A + B - 1",
+        Supported("2; 3; 4"),
+        "**flat**, left to right: three operands and two operators in one step, \
+         which is the shape the syntax has",
+    ),
+    entry(
+        "Z where test.Count X; Y = X + 1; Z = Y + 1",
+        Supported("-9223372036854775806; -40; 9; 1002"),
+        "a **chain** — the second derive reads the first's register rather than \
+         re-deriving it, so a chain costs one evaluation per link",
+    ),
+    entry(
+        "X where test.Count X; Y = X + 1; Y > 8",
+        Supported("1000"),
+        "comparing a **computed** value against a constant. Neither side is a row, \
+         so there is no level to hang a residual on — which is what a `Step::Test` \
+         is: it binds nothing and is re-decided on restore",
+    ),
+    entry(
+        "N where test.Name N; Y = 1 + 1; Y > 5",
+        Supported(""),
+        "the negative control for that test: it fails, and nothing survives",
+    ),
+    entry(
+        "Y where test.Name N; Y = N + 1",
+        Diagnosed(Code::RejectTypeMismatch),
+        "arithmetic is integers, both ways — there is no string concatenation \
+         hiding behind `+`",
+    ),
+    entry(
+        "Y where X = test.Foo _; Y = X + 1",
+        Diagnosed(Code::RejectTypeMismatch),
+        "a whole **row** is not a number. Its id is an allocation sequence, and \
+         adding to one would be arithmetic on an accident",
+    ),
+    entry(
+        "Y where test.Foo {id = X}; test.Bar {id = Y + 1}",
+        Diagnosed(Code::NyiValueMatch),
+        "matching a **key field** against a computed value: a seek compares bytes \
+         known at compile time, and this is a number that does not exist until the \
+         row above it does",
+    ),
     entry(
         "X where X = test.Foo _; X.value < \"b\"",
         Diagnosed(Code::NyiValueMatch),
@@ -1103,6 +1170,103 @@ mod tests {
                 .iter()
                 .filter(|entry| matches!(entry.expect, Supported(_)))
                 .count(),
+            wrong.join("\n    "),
+        );
+    }
+
+    /// **Every supported entry answers the same when it is interrupted.**
+    ///
+    /// [I4](../../docs/invariants.md#i4) says a resumed run equals an uninterrupted
+    /// one, and the property battery in `flatten` says it over generated queries —
+    /// but a generator only draws the shapes it was taught, so every construct
+    /// added to the language starts outside its reach. The corpus is the place that
+    /// lists them all by hand, which makes it the cheapest complete coverage of I4
+    /// there is: suspend after *every* row of *every* entry and compare.
+    ///
+    /// It found nothing when it was written, which is the point of writing it
+    /// before the next construct rather than after.
+    #[test]
+    fn every_supported_entry_resumes_to_the_same_rows() {
+        use crate::{compile::Compilation, fixtures::run_with_suspends};
+        use aperture_store::{fixture, mem_store::MemStore};
+        use std::collections::BTreeSet;
+
+        let schema = schema();
+
+        let store = || {
+            let mut store = MemStore::new();
+            for fixture::Fact {
+                predicate,
+                key,
+                value,
+                sequence,
+            } in fixture::facts()
+            {
+                store.insert_valued(predicate, key, sequence, value);
+            }
+            store
+        };
+
+        let mut wrong = vec![];
+
+        for Entry {
+            source,
+            expect,
+            note,
+        } in CORPUS
+        {
+            let Supported(_) = expect else { continue };
+
+            let mut compilation = Compilation::new(source, &schema);
+            let Some(plan) = compilation.plan() else {
+                continue;
+            };
+
+            // Suspend after every row. A schedule wider than the result is harmless
+            // — a cut past the last row never fires — and this way no entry needs
+            // its own number.
+            let every: BTreeSet<usize> = (1..=64).collect();
+            let interner = compilation.interner();
+
+            let straight =
+                run_with_suspends(|| (store(), plan.clone()), interner, &BTreeSet::new());
+            let cut = run_with_suspends(|| (store(), plan.clone()), interner, &every);
+
+            match (straight, cut) {
+                (Ok((want, _)), Ok((got, suspends))) => {
+                    if want != got {
+                        wrong.push(format!(
+                            "{source:?}\n      uninterrupted {want:?}\n      resumed       {got:?}  ({note})"
+                        ));
+                    } else if !want.is_empty() && plan.levels() > 0 && suspends == 0 {
+                        // The vacuity check: an entry that produced rows and never
+                        // suspended tested nothing about resume.
+                        //
+                        // **Unless it has no levels.** A plan whose every bind folded
+                        // is the unit relation — exactly one row, no loop to be part
+                        // way through — so there is nothing for a cursor to hold and
+                        // suspending is not a thing that can happen to it. Four
+                        // entries are that shape, and they are still worth running:
+                        // what they check is that a plan with no levels answers the
+                        // same whether or not anybody asked it to stop.
+                        wrong.push(format!(
+                            "{source:?}\n      produced {} rows and never suspended  ({note})",
+                            want.len()
+                        ));
+                    }
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    wrong.push(format!(
+                        "{source:?}\n      failed to run: {error}  ({note})"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            wrong.is_empty(),
+            "{} entries answer differently when resumed:\n    {}",
+            wrong.len(),
             wrong.join("\n    "),
         );
     }

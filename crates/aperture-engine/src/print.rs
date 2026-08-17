@@ -21,8 +21,8 @@ use std::fmt::Write as _;
 
 use crate::{
     plan::{
-        Address, FieldPath, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source,
-        Step, Test,
+        Address, Arith, Computed, FieldPath, Plan, Project, Residual, ResidualOp, SeekKey,
+        SeekKeyPart, Source, Step, Test,
     },
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt, narrow_offset},
 };
@@ -98,10 +98,26 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
                 level += 1;
                 (&generator.sources, opening)
             }
-            // A derived bind names the register it computes, since it has no
-            // predicate to be about and no scan to narrow.
+            // A derived bind names the register it computes, and what it computes
+            // it from, since it has no predicate to be about and no scan to narrow.
             Step::Derive(derived) => {
-                let _ = writeln!(out, "  {} = <computed>", derived.bind);
+                let _ = writeln!(
+                    out,
+                    "  {} = {}",
+                    derived.bind,
+                    computed(plan, schema, &derived.value)
+                );
+                continue;
+            }
+            // A comparison over computed values reads no predicate at all.
+            Step::Test(Test::Compare { left, op, right }) => {
+                let _ = writeln!(
+                    out,
+                    "  where {} {} {}",
+                    computed(plan, schema, left),
+                    op.symbol(),
+                    computed(plan, schema, right)
+                );
                 continue;
             }
             // No register and no arrow: a negation reads a predicate and answers
@@ -225,6 +241,9 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
                     ResidualOp::CmpSelfField { op, path } => {
                         write!(out, "\n       where {at} {} {path}", op.symbol())
                     }
+                    ResidualOp::CmpRegisterValue { op, address } => {
+                        write!(out, "\n       where {at} {} {address}", op.symbol())
+                    }
                 };
             }
         }
@@ -238,6 +257,36 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
         projection(plan, &plan.head, schema, interner)
     );
     out
+}
+
+/// A derived bind's expression, as the source that produced it reads.
+///
+/// Field paths are named against the register's predicate where the plan says which
+/// one it holds, so `r1 = r0.line + 10` reads like the query rather than like the
+/// index of the field it happened to be.
+fn computed(plan: &Plan, schema: &Schema, value: &Computed) -> String {
+    match value {
+        Computed::Lit(Value::Int(n)) => n.to_string(),
+        Computed::Lit(Value::Str(s)) => format!("{s:?}"),
+        Computed::Lit(other) => format!("{other:?}"),
+        Computed::Field { address, path } => register_field(plan, schema, address, path),
+        Computed::Register(address) => format!("{address}"),
+        Computed::Sum { operands, ops } => {
+            let mut out = String::new();
+            for (at, operand) in operands.iter().enumerate() {
+                if at > 0 {
+                    out.push(' ');
+                    out.push_str(match ops.get(at - 1) {
+                        Some(Arith::Sub) => "-",
+                        _ => "+",
+                    });
+                    out.push(' ');
+                }
+                out.push_str(&computed(plan, schema, operand));
+            }
+            out
+        }
+    }
 }
 
 /// A seek, as the key it seeks: one entry per key field, in key order.
@@ -533,6 +582,9 @@ fn projection(plan: &Plan, project: &Project, schema: &Schema, interner: &LocalI
         }
         Project::Value { address, .. } => format!("{address}.value"),
         // A computed value, which no predicate's field names.
+        // A derived bind's register. `=` after it, because the register holds a
+        // computed value rather than a row and the two read very differently in a
+        // plan somebody is trying to cost.
         Project::Computed(address) => format!("{address}="),
         Project::Record(fields) => format!(
             "{{{}}}",

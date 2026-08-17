@@ -860,6 +860,10 @@ fn label_step(step: &Step, schema: &Schema) -> (String, bool) {
         // so the positions line up, and it will always read zero.
         Step::Derive(_) => ("derive".to_owned(), false),
 
+        // Reads no predicate, so there is nothing for a profile to name — but it is
+        // a step and the profile has one entry per step, so it says what it is.
+        Step::Test(Test::Compare { op, .. }) => (format!("test {}", op.symbol()), false),
+
         Step::Test(Test::Absent(sources)) => {
             let names: Vec<String> = sources
                 .iter()

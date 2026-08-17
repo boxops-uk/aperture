@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     error::ApertureError,
     plan::{
-        Access, Address, Computed, FieldPath, Plan, PlanFingerprint, Project, Residual, ResidualOp,
-        SeekKey, SeekKeyPart, Source, Step, Test,
+        Access, Address, Arith, Computed, FieldPath, Plan, PlanFingerprint, Project, Residual,
+        ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
 };
 use aperture_encoding::{
@@ -847,6 +847,20 @@ impl<S: FactStore> StackFrame<S> {
                     let other: &&[u8] = &&key[other];
                     op.holds(field.cmp(other))
                 }
+
+                // **The field decoded, not the value encoded.** A computed value is
+                // a `Value` rather than bytes, and encoding one per row would
+                // allocate ([I9]); decoding a fixed-width integer does not.
+                //
+                // [I9]: ../../docs/invariants.md#i9
+                ResidualOp::CmpRegisterValue {
+                    op,
+                    address: var_address,
+                } => {
+                    let (left, _) = aperture_encoding::tuple::get_i64(field)?;
+                    let right = as_i64(state.value(*var_address)?)?;
+                    op.holds(left.cmp(&right))
+                }
             };
             if !ok {
                 return Ok(false);
@@ -1194,8 +1208,10 @@ impl<S: FactStore> Executor<S> {
                 }
 
                 Step::Derive(derived) => {
-                    ex.state
-                        .bind(derived.bind, Slot::Value(compute(&derived.value)))?;
+                    ex.state.bind(
+                        derived.bind,
+                        Slot::Value(compute(&derived.value, &ex.state)?),
+                    )?;
                     frame.produced = true;
                 }
 
@@ -1375,8 +1391,10 @@ impl<S: FactStore> Executor<S> {
                         }
                         self.depth -= 1;
                     } else {
-                        self.state
-                            .bind(derived.bind, Slot::Value(compute(&derived.value)))?;
+                        self.state.bind(
+                            derived.bind,
+                            Slot::Value(compute(&derived.value, &self.state)?),
+                        )?;
                         frame.produced = true;
                         self.depth += 1;
                     }
@@ -1388,6 +1406,33 @@ impl<S: FactStore> Executor<S> {
                 // control flow either — it is the same backtrack an exhausted level
                 // does, which is why negation needed no new direction in the machine
                 // and no reshaping of this loop.
+                // The same one-row generator as a negation, over pure
+                // computations rather than over a probe of the store. Re-decided on
+                // restore rather than replayed, which costs nothing here: `compute`
+                // is pure, so a second evaluation of the same bindings is the same
+                // answer.
+                Step::Test(Test::Compare { left, op, right }) => {
+                    if frame.produced {
+                        frame.produced = false;
+                        if self.depth == 0 {
+                            return Ok(Iteratee::Done(acc));
+                        }
+                        self.depth -= 1;
+                    } else {
+                        let a = as_i64(&compute(left, &self.state)?)?;
+                        let b = as_i64(&compute(right, &self.state)?)?;
+
+                        if op.holds(a.cmp(&b)) {
+                            frame.produced = true;
+                            self.depth += 1;
+                        } else if self.depth == 0 {
+                            return Ok(Iteratee::Done(acc));
+                        } else {
+                            self.depth -= 1;
+                        }
+                    }
+                }
+
                 Step::Test(Test::Absent(sources)) => {
                     if frame.produced {
                         frame.produced = false;
@@ -1420,13 +1465,65 @@ impl<S: FactStore> Executor<S> {
 
 /// Evaluate a derived bind.
 ///
-/// Total and pure by construction — no store, no state, no iteration — which is
-/// the invariant the resume path depends on: this is called again after a restore
-/// and must produce what it produced before
-/// ([chapter 7](../../docs/07-compilation.md#derived-facts)).
-fn compute(value: &Computed) -> Value {
-    match value {
+/// **Pure, and that is the invariant the resume path depends on**: no store, no
+/// iteration, nothing but the bindings already in `state`. It is called again after
+/// a restore and must produce what it produced before
+/// ([chapter 7](../../docs/07-compilation.md#derived-facts)) — which is why the
+/// registers it reads are only ones bound by *earlier* steps, and why a cursor
+/// stores nothing for it.
+///
+/// It is no longer total: reading a field that is not an integer, or a register
+/// holding the wrong kind of slot, is a malformed plan rather than a data condition
+/// — but a plan can arrive off the wire, so it reports rather than panics.
+fn compute(value: &Computed, state: &MachineState) -> Result<Value, ApertureError> {
+    Ok(match value {
         Computed::Lit(v) => v.clone(),
+
+        Computed::Field { address, path } => Value::Int(field_i64(state.fact(*address)?, path)?),
+
+        Computed::Register(address) => state.value(*address)?.clone(),
+
+        // Left to right, as written. Wrapping on overflow — see
+        // [`Arith::apply`](crate::plan::Arith::apply).
+        Computed::Sum { operands, ops } => {
+            let mut total = match operands.first() {
+                Some(first) => as_i64(&compute(first, state)?)?,
+                None => 0,
+            };
+
+            for (at, operand) in operands.iter().enumerate().skip(1) {
+                let right = as_i64(&compute(operand, state)?)?;
+                let op = ops.get(at - 1).copied().unwrap_or(Arith::Add);
+                total = op.apply(total, right);
+            }
+
+            Value::Int(total)
+        }
+    })
+}
+
+/// One integer field of a bound row, decoded.
+///
+/// A fixed-width read from the row's own bytes: nothing allocated, and no value
+/// fetched ([I6](../../docs/invariants.md#i6)) — a derived bind reads the *key*.
+fn field_i64(register: &Register, path: &FieldPath) -> Result<i64, ApertureError> {
+    let key = register.key();
+    let mut offsets = FieldOffsets::new();
+    let span = field_span(&mut offsets, &key, path)?;
+
+    let (value, _) = aperture_encoding::tuple::get_i64(&key[span])?;
+    Ok(value)
+}
+
+/// A computed value as an integer, or the fault of a plan that said it was one.
+fn as_i64(value: &Value) -> Result<i64, ApertureError> {
+    match value {
+        Value::Int(n) => Ok(*n),
+        _ => Err(ApertureError::SlotKindMismatch {
+            address: Address::new(0),
+            wanted: "an integer",
+            held: "a value of another type",
+        }),
     }
 }
 

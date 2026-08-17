@@ -1077,6 +1077,7 @@ fn plan_shape(plan: &Plan, schema: &Schema) -> String {
                 }
             }
             Step::Derive(_) => parts.push("derive".to_owned()),
+            Step::Test(Test::Compare { .. }) => parts.push("compare".to_owned()),
             Step::Test(Test::Absent(_)) => parts.push("!".to_owned()),
         }
     }

@@ -69,11 +69,11 @@
 use crate::{
     diag::{Code, Diagnostics},
     plan::{
-        Access, Address, Compare as CompareRel, FieldPath, Level, Plan, Project, Residual,
-        ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        Access, Address, Arith, Compare as CompareRel, Computed, DerivedBind, FieldPath, Level,
+        Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
-    syntax::{Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, NodeSpan, QueryStmt},
+    syntax::{ArithOp, Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, NodeSpan, QueryStmt},
 };
 use aperture_encoding::tuple::{MARK_RECORD, MARK_TERM, Value, put_i64, put_str};
 use aperture_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
@@ -111,6 +111,15 @@ enum Slot {
     /// over those fields. Under a wrapped layout neither would be true — the
     /// wrapper's markers are not any field's bytes.
     Key { address: Address, ty: PredicateTy },
+    /// A **derived bind's** output — a computed value in a register of its own.
+    ///
+    /// Distinct from [`Const`](Slot::Const), which is a value known at compile time
+    /// and substituted at every use, and from [`Value`](Slot::Value), which is a
+    /// fact's value side and lives in `entities`. This one is computed per row, from
+    /// the bindings, by a [`Step::Derive`].
+    ///
+    /// Always an integer, because arithmetic is the only thing that produces one.
+    Derived(Address),
     /// A key field of a row, reached by a path.
     Field {
         address: Address,
@@ -168,7 +177,9 @@ impl Stmt {
     fn placement(&self) -> Placement {
         match self {
             Stmt::Scan(generator) | Stmt::Negate(generator) => generator.placement,
-            Stmt::Alias(_) | Stmt::Constrain(_) | Stmt::Compare(_) => Placement::Floating,
+            Stmt::Alias(_) | Stmt::Constrain(_) | Stmt::Compare(_) | Stmt::Derive(_) => {
+                Placement::Floating
+            }
         }
     }
 }
@@ -227,6 +238,16 @@ struct Comparison {
     span: NodeSpan,
 }
 
+/// `pattern = expression` where the expression has to be **computed**.
+#[derive(Debug, Clone)]
+struct Derived {
+    /// The left side — a variable, since typecheck gates the shape.
+    pattern: NodeId,
+    /// The arithmetic expression, still as written.
+    value: NodeId,
+    span: NodeSpan,
+}
+
 #[derive(Debug, Clone)]
 struct Constraint {
     /// The variable being constrained — the only thing the *order* has to know,
@@ -269,6 +290,12 @@ enum Stmt {
     /// reads two — and `reorder` needs both, or it is free to run the comparison
     /// before the level binding its right-hand side.
     Compare(Comparison),
+    /// `Y = X + 1` — a **derived bind**, which becomes a [`Step::Derive`].
+    ///
+    /// The first thing in focus to lower one. Until Phase 11 a bind could only be a
+    /// row, a fold, an alias or a constraint, and the derive machinery was exercised
+    /// by hand-built plans alone.
+    Derive(Derived),
 }
 
 impl Stmt {
@@ -278,6 +305,7 @@ impl Stmt {
             Stmt::Alias(alias) => alias.span.clone(),
             Stmt::Constrain(constraint) => constraint.span.clone(),
             Stmt::Compare(compare) => compare.span.clone(),
+            Stmt::Derive(derived) => derived.span.clone(),
         }
     }
 }
@@ -381,7 +409,16 @@ impl Occurrences {
 /// while the plan is being built.
 struct Body {
     steps: Vec<Step>,
+    /// How many [`Step::Level`]s — which is what a [`Cursor`](crate::iter::Cursor)
+    /// holds one entry per, and so is **not** the same count as `registers`.
     levels: usize,
+    /// How many registers are allocated: one per level, plus one per derived bind.
+    ///
+    /// Separate from `levels` since Phase 11, because a derived bind takes an
+    /// address without being a level. Before that the two were the same number and
+    /// `next_address` could be `Address::new(levels)`; now conflating them would
+    /// hand a derive and the level after it the same register.
+    registers: usize,
 }
 
 impl Body {
@@ -389,13 +426,14 @@ impl Body {
         Self {
             steps: Vec::with_capacity(capacity),
             levels: 0,
+            registers: 0,
         }
     }
 
-    /// The address the **next** level will bind — which is also an address no
+    /// The address the **next** step will bind — which is also an address no
     /// existing register has, and so the one a test can safely be walked against.
     fn next_address(&self) -> Address {
-        Address::new(self.levels)
+        Address::new(self.registers)
     }
 
     /// Append a level, returning the register it binds.
@@ -403,7 +441,20 @@ impl Body {
         let address = self.next_address();
         self.steps.push(Step::Level(level));
         self.levels += 1;
+        self.registers += 1;
         address
+    }
+
+    /// Append a derived bind, returning the register it writes.
+    ///
+    /// Not a level: it produces one value, `enumerate` does not iterate it, and the
+    /// cursor stores nothing for it — it is recomputed on resume, which is what
+    /// [I14](../../../docs/invariants.md#i14) is about.
+    fn push_derive(&mut self, value: Computed) -> Address {
+        let bind = self.next_address();
+        self.steps.push(Step::Derive(DerivedBind { bind, value }));
+        self.registers += 1;
+        bind
     }
 
     fn push_test(&mut self, test: Test) {
@@ -412,9 +463,12 @@ impl Body {
 
     /// The level that binds `address`, to add a residual to it.
     ///
-    /// By position among the *levels*, which is what an address counts.
+    /// **By what it binds, not by position.** It was `levels().nth(address)` while
+    /// every address was a level's; a derived bind taking one broke that silently,
+    /// which is the kind of off-by-one that answers rows rather than failing.
     fn level_mut(&mut self, address: Address) -> Option<&mut Level> {
-        self.levels_mut().nth(address.index())
+        self.levels_mut()
+            .find(|level| level.binds.contains(&address))
     }
 
     fn levels_mut(&mut self) -> impl Iterator<Item = &mut Level> {
@@ -801,6 +855,16 @@ impl Flattener<'_> {
                             var: *lhs,
                             span: self.ast.store().span(*rhs),
                         }));
+                    } else if matches!(self.ast.store().kind(*rhs), ExprKind::Arith(..)) {
+                        // **A derived bind** — the first thing in focus that lowers
+                        // a `Step::Derive`. Not a fold, because an operand is a
+                        // register rather than a literal; not an alias, because
+                        // there is no place the value already lives.
+                        stmts.push(Stmt::Derive(Derived {
+                            pattern: *lhs,
+                            value: *rhs,
+                            span: self.ast.store().span(*rhs),
+                        }));
                     } else if self.names_a_location(*rhs) {
                         // An **alias**: the right side denotes a place — a register,
                         // a field inside one, a fact's value — so the left side is a
@@ -954,6 +1018,14 @@ impl Flattener<'_> {
                     self.scan_read(compare.left, &mut occurrences);
                     self.scan_read(compare.right, &mut occurrences);
                 }
+
+                // **Reads its operands and claims its output.** A claim rather than a
+                // capture: nothing else may offer to bind `Y` in `Y = X + 1`, because
+                // what `Y` is has one answer and this statement is it.
+                Stmt::Derive(derived) => {
+                    self.scan_arith_reads(derived.value, &mut occurrences);
+                    self.scan_pattern(derived.pattern, &mut occurrences);
+                }
             }
 
             deps.push(StmtDeps {
@@ -1081,6 +1153,15 @@ impl Flattener<'_> {
                 // at all, so every variable it names belongs to whatever else in
                 // the query does bind it.
                 Stmt::Constrain(_) | Stmt::Negate(_) | Stmt::Compare(_) => continue,
+
+                // A derived bind claims its left side, exactly as an alias does:
+                // both say what a variable *is*, and neither is an ordering
+                // question anything else gets to answer differently.
+                Stmt::Derive(derived) => {
+                    let mut names = vec![];
+                    self.pattern_claims(derived.pattern, &mut names);
+                    (names, derived.span.clone(), false)
+                }
             };
 
             for name in claimed {
@@ -1827,6 +1908,98 @@ impl Flattener<'_> {
         }
     }
 
+    /// Every variable an arithmetic expression reads.
+    ///
+    /// All reads, never captures: an operand has to be bound before it can be added
+    /// to anything, and a derived bind offers to bind nothing but its own left side.
+    fn scan_arith_reads(&mut self, node: NodeId, occurrences: &mut Occurrences) {
+        match self.ast.store().kind(node) {
+            ExprKind::Arith(operands, _) => {
+                for operand in operands.clone().iter() {
+                    self.scan_arith_reads(*operand, occurrences);
+                }
+            }
+            ExprKind::Lit(_) | ExprKind::Wildcard => {}
+            _ => self.scan_read(node, occurrences),
+        }
+    }
+
+    /// Build the [`Computed`] an arithmetic expression denotes, or report why not.
+    ///
+    /// Every leaf has to be somewhere the machine can read at run time: an integer
+    /// literal, an integer field of a bound row, or another derived bind. A string,
+    /// a whole row and a fact's value are each refused by name — the last because
+    /// values live in `entities` and [I6](../../../docs/invariants.md#i6) keeps
+    /// those out of the row loop.
+    fn computed(&mut self, node: NodeId) -> Option<Computed> {
+        if let ExprKind::Arith(operands, ops) = self.ast.store().kind(node) {
+            let (operands, ops) = (operands.clone(), ops.clone());
+
+            let built: Vec<Computed> = operands
+                .iter()
+                .map(|operand| self.computed(*operand))
+                .collect::<Option<Vec<_>>>()?;
+
+            return Some(Computed::Sum {
+                operands: built.into(),
+                ops: ops
+                    .iter()
+                    .map(|op| match op {
+                        ArithOp::Add => Arith::Add,
+                        ArithOp::Sub => Arith::Sub,
+                    })
+                    .collect(),
+            });
+        }
+
+        if let ExprKind::Lit(Literal::Int(value)) = self.ast.store().kind(node) {
+            return Some(Computed::Lit(Value::Int(*value)));
+        }
+
+        match self.resolve(node)? {
+            Slot::Field { address, path, ty } => match ty {
+                PredicateTy::Int => Some(Computed::Field { address, path }),
+                _ => {
+                    self.report(
+                        node,
+                        Code::RejectTypeMismatch,
+                        "only integers can be added — this field is not one",
+                    );
+                    None
+                }
+            },
+
+            Slot::Derived(address) => Some(Computed::Register(address)),
+
+            Slot::Const(folded) => match self.ast.store().kind(folded) {
+                ExprKind::Lit(Literal::Int(value)) => Some(Computed::Lit(Value::Int(*value))),
+                _ => {
+                    self.report(node, Code::RejectTypeMismatch, "only integers can be added");
+                    None
+                }
+            },
+
+            Slot::Value { .. } => {
+                self.report(
+                    node,
+                    Code::NyiValueMatch,
+                    "a fact's value cannot be an operand yet; a value is a point read \
+                     per row, and a derived bind reads the key",
+                );
+                None
+            }
+
+            Slot::Row { .. } | Slot::Key { .. } => {
+                self.report(
+                    node,
+                    Code::RejectTypeMismatch,
+                    "a whole row cannot be added to anything — name one of its fields",
+                );
+                None
+            }
+        }
+    }
+
     /// Record the read of a hoisted generator's row.
     fn read_hoisted(&mut self, node: NodeId, occurrences: &mut Occurrences) {
         if let Some(row) = self.hoisted_row(node) {
@@ -2118,6 +2291,16 @@ impl Flattener<'_> {
                 // Applied after the body, by whichever level runs later — see
                 // `apply_comparisons`. Nothing to emit from here.
                 Stmt::Compare(_) => {}
+
+                Stmt::Derive(derived) => {
+                    let (pattern, value) = (derived.pattern, derived.value);
+                    self.fetch_within(value, &mut body);
+
+                    if let Some(computed) = self.computed(value) {
+                        let address = body.push_derive(computed);
+                        self.bind_pattern(pattern, Slot::Derived(address));
+                    }
+                }
             }
         }
 
@@ -2137,7 +2320,7 @@ impl Flattener<'_> {
         }
 
         Some(Plan {
-            nvars: body.levels,
+            nvars: body.registers,
             body: body.steps.into(),
             head: head?,
         })
@@ -2586,6 +2769,19 @@ impl Flattener<'_> {
         level: &mut SeekBuilder,
     ) {
         match slot {
+            // **A derived bind matched into a key.** Matching on a computed value:
+            // the seek compares bytes known at compile time, and this is a number
+            // that does not exist until the row above it does.
+            Slot::Derived(_) => {
+                level.building = false;
+                self.report(
+                    node,
+                    Code::NyiValueMatch,
+                    "matching a key field against a computed value is not implemented \
+                     yet; compare it instead",
+                );
+            }
+
             // **A whole key matched into a field.** The two are the same record and
             // not the same bytes: a stored key is flat, while a record *inside* a
             // field keeps its `MARK_RECORD … TERM` wrapper so that it can be skipped
@@ -3104,6 +3300,69 @@ impl Flattener<'_> {
                         },
                     );
                 }
+            }
+
+            // **A derived bind on one side.** The other side's field is decoded and
+            // compared as a number, rather than the computed value being encoded per
+            // row — which would allocate ([I9](../../../docs/invariants.md#i9)).
+            //
+            // The residual goes on the *field's* level, which is the level that runs
+            // later by construction: a derive reads what its operands bind, so it is
+            // placed after them.
+            (Slot::Field { address, path, .. }, Slot::Derived(value)) => {
+                self.push_residual(
+                    body,
+                    address,
+                    path,
+                    ResidualOp::CmpRegisterValue { op, address: value },
+                );
+            }
+            (Slot::Derived(value), Slot::Field { address, path, .. }) => {
+                self.push_residual(
+                    body,
+                    address,
+                    path,
+                    ResidualOp::CmpRegisterValue {
+                        op: op.flipped(),
+                        address: value,
+                    },
+                );
+            }
+
+            // **Two computed values, or one against a constant.** Nothing here is a
+            // row, so there is no level to hang a residual on — which is what a
+            // `Step::Test` is for: it binds nothing, takes no cursor entry, and is
+            // re-decided on restore rather than replayed.
+            //
+            // Appended after the body, so it runs with everything bound. A residual
+            // would be better where one is possible, because it drops the row inside
+            // the scan; here there is no scan to be inside.
+            (Slot::Derived(a), Slot::Derived(b)) => {
+                body.push_test(Test::Compare {
+                    left: Computed::Register(a),
+                    op,
+                    right: Computed::Register(b),
+                });
+            }
+            (Slot::Derived(a), Slot::Const(folded)) => {
+                let Some(value) = self.computed(folded) else {
+                    return;
+                };
+                body.push_test(Test::Compare {
+                    left: Computed::Register(a),
+                    op,
+                    right: value,
+                });
+            }
+            (Slot::Const(folded), Slot::Derived(b)) => {
+                let Some(value) = self.computed(folded) else {
+                    return;
+                };
+                body.push_test(Test::Compare {
+                    left: value,
+                    op,
+                    right: Computed::Register(b),
+                });
             }
 
             // A fact's **value**: the bytes are in `entities`, and [I6] keeps
@@ -3633,6 +3892,11 @@ impl Flattener<'_> {
                 );
                 None
             }
+
+            // **A field of a computed value.** Arithmetic produces an integer, which
+            // has no fields — typecheck says so first, so this is only reachable
+            // through a type it has already poisoned.
+            Slot::Derived(_) => None,
         }
     }
 
@@ -3694,6 +3958,10 @@ impl Flattener<'_> {
                         Some(Project::RegisterField { address, path, ty })
                     }
                     Slot::Value { address, ty } => Some(Project::Value { address, ty }),
+                    // A derived bind projects the register it wrote — which is what
+                    // `Project::Computed` has been for since Phase 6, waiting for
+                    // something in the language to produce one.
+                    Slot::Derived(address) => Some(Project::Computed(address)),
                     // Substitution: project the literal the variable was bound to,
                     // which is the same `Project::Lit` the head would have got had
                     // the literal been written here.
@@ -3886,6 +4154,11 @@ mod tests {
                     out.push(format!("{} = <computed>", derived.bind));
                     continue;
                 }
+                // A comparison over computed values, which reads no predicate.
+                Step::Test(Test::Compare { op, .. }) => {
+                    out.push(format!("test {}", op.symbol()));
+                    continue;
+                }
                 // A negation: the rows that must not exist.
                 Step::Test(Test::Absent(sources)) => (sources, "absent ".to_owned()),
             };
@@ -3954,6 +4227,9 @@ mod tests {
                             }
                             ResidualOp::CmpSelfField { op, path: at } => {
                                 format!("{path} {} {at}", op.symbol())
+                            }
+                            ResidualOp::CmpRegisterValue { op, address } => {
+                                format!("{path} {} {address}", op.symbol())
                             }
                             ResidualOp::EqRegisterFactId(address) => {
                                 format!("{path} == {address}#")
@@ -8793,7 +9069,7 @@ mod battery {
                         self.disjunctive_level |= level.sources.len() > 1;
                         level
                     }
-                    Step::Derive(_) => continue,
+                    Step::Derive(_) | Step::Test(Test::Compare { .. }) => continue,
                     Step::Test(Test::Absent(sources)) => {
                         self.negation_test = true;
                         self.disjunctive_negation |= sources.len() > 1;
@@ -8863,7 +9139,9 @@ mod battery {
                             | ResidualOp::CmpSelfField { path, .. } => {
                                 self.nested_path |= !path.is_flat();
                             }
-                            ResidualOp::EqConst(_) | ResidualOp::CmpConst { .. } => {}
+                            ResidualOp::EqConst(_)
+                            | ResidualOp::CmpConst { .. }
+                            | ResidualOp::CmpRegisterValue { .. } => {}
                         }
                     }
                 }
