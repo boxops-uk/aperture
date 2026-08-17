@@ -508,8 +508,12 @@ impl StreamTask {
             kinds::OPEN_WRITE => self.open_write().await,
             FrameKind::COPY_DATA => self.copy_data(payload).await,
             FrameKind::COPY_DONE => self.copy_done().await,
-            kinds::QUERY => self.query(payload, false).await,
-            kinds::QUERY_PROFILE => self.query(payload, true).await,
+            kinds::QUERY => self.query(payload, false, None).await,
+            kinds::QUERY_PROFILE => self.query(payload, true, None).await,
+            kinds::QUERY_PAGE => {
+                let page = protocol::decode_page(payload)?;
+                self.query(page.query.as_bytes(), false, Some(&page)).await
+            }
             kinds::CONTROL => self.control(payload).await,
 
             other => Err(ServerError::Protocol(format!(
@@ -651,11 +655,16 @@ impl StreamTask {
     /// It is also the first thing in this project to *use* resume for what it is for
     /// rather than to test it: the cursor here is the same bytes-only token
     /// [chapter 5](../../../docs/05-resume.md) is about.
-    async fn query(&mut self, payload: &[u8], profiled: bool) -> Result<(), ServerError> {
+    async fn query(
+        &mut self,
+        payload: &[u8],
+        profiled: bool,
+        page: Option<&protocol::Page>,
+    ) -> Result<(), ServerError> {
         let stats = Arc::clone(self.session.registry.stats());
         stats.query_started();
 
-        let outcome = self.run_query(payload, profiled, &stats).await;
+        let outcome = self.run_query(payload, profiled, page, &stats).await;
         match &outcome {
             Ok(()) => stats.query_completed(),
             Err(_) => stats.query_failed(),
@@ -667,6 +676,7 @@ impl StreamTask {
         &mut self,
         payload: &[u8],
         profiled: bool,
+        page: Option<&protocol::Page>,
         stats: &Arc<crate::stats::ServerStats>,
     ) -> Result<(), ServerError> {
         let source = std::str::from_utf8(payload)
@@ -687,6 +697,41 @@ impl StreamTask {
             .await?
         };
 
+        // **Where this page starts, decided before a byte of answer goes out.** The
+        // token is the client's, so it is untrusted, and the checks are ordered the
+        // way `Executor::resume` orders them: is this a cursor at all, is it in a
+        // layout this build reads, and is it *this plan's*.
+        //
+        // Checked here rather than left to the first chunk because of *when* the
+        // failure lands: a caller that has already been sent a row description and a
+        // row or two, and then an error, has to unpick a result it was told existed.
+        // A refusal before the descriptor is a refusal of the request.
+        let mut cursor: Option<Cursor> = match page {
+            Some(page) if !page.cursor.is_empty() => {
+                let cursor = Cursor::from_bytes(&page.cursor)
+                    .map_err(|error| ServerError::Execution(error.to_string()))?;
+
+                if cursor.version() != aperture_engine::iter::CURSOR_VERSION {
+                    return Err(ServerError::Execution(format!(
+                        "resume token is from cursor layout {}, this server reads {}",
+                        cursor.version(),
+                        aperture_engine::iter::CURSOR_VERSION
+                    )));
+                }
+
+                // Entries are paired with levels by order, so a token from a
+                // different plan does not fail — it answers, from the wrong rows.
+                if cursor.plan() != prepared.plan.fingerprint() {
+                    return Err(ServerError::Execution(
+                        "resume token belongs to a different query".to_owned(),
+                    ));
+                }
+
+                Some(cursor)
+            }
+            _ => None,
+        };
+
         self.outbound
             .send(
                 FrameKind::ROW_DESCRIPTION,
@@ -695,7 +740,7 @@ impl StreamTask {
             )
             .await?;
 
-        let mut cursor: Option<Cursor> = None;
+        let limit = page.map_or(0, |page| page.limit);
         let mut sent: u64 = 0;
 
         // **One profile for the whole run**, carried across every chunk. A chunk
@@ -710,6 +755,14 @@ impl StreamTask {
             let token = self.cancel.clone();
             let resume = cursor.take();
             let mut counted = std::mem::take(&mut profile);
+
+            // A page smaller than a chunk must not overshoot it: the rows past the
+            // limit would be computed, encoded and thrown away, and the token would
+            // name a position the client was never told about.
+            let budget = match limit {
+                0 => CHUNK_ROWS,
+                limit => CHUNK_ROWS.min((limit - sent) as usize),
+            };
 
             // The **same** listing every chunk, which is what makes a virtual predicate
             // behave like a snapshot: cloning the `Arc` shares the rows rather than
@@ -728,10 +781,13 @@ impl StreamTask {
                     let chunk = run_chunk(
                         &database,
                         listing.as_ref(),
-                        &plan,
-                        &shape,
+                        &Chunking {
+                            plan: &plan,
+                            shape: &shape,
+                            budget,
+                            cancel: &token,
+                        },
                         resume,
-                        &token,
                         &mut counted,
                     )?;
                     Ok((chunk, counted))
@@ -749,6 +805,19 @@ impl StreamTask {
                     .send(FrameKind::DATA_ROW, self.stream, row)
                     .await?;
                 sent += 1;
+            }
+
+            // The page is full and there is more: hand the position back rather
+            // than carry on. A page that reached the end sends no token, which is
+            // how a caller knows it has seen everything without asking again to be
+            // told nothing.
+            if limit > 0 && sent >= limit {
+                if let Some(next) = chunk.next {
+                    self.outbound
+                        .send(kinds::RESUME, self.stream, &next.to_bytes())
+                        .await?;
+                }
+                break;
             }
 
             match chunk.next {
@@ -990,14 +1059,25 @@ fn prepare(
     })
 }
 
-/// Run at most [`CHUNK_ROWS`] rows, from the start or from `resume`.
+/// One turn of the chunk loop: what to run, how much of it, and where to stop.
+///
+/// A struct rather than four more parameters — the loop reads better for it, and
+/// `budget` in particular is the one a reader has to be able to find, since a page
+/// limit under [`CHUNK_ROWS`] arriving here is what stops a page overshooting.
+struct Chunking<'a> {
+    plan: &'a Plan,
+    shape: &'a RowShape,
+    /// The most rows this turn may produce: [`CHUNK_ROWS`], or what is left of a page.
+    budget: usize,
+    cancel: &'a CancellationToken,
+}
+
+/// Run at most `work.budget` rows, from the start or from `resume`.
 fn run_chunk(
     database: &Database,
     catalogue: Option<&Arc<Catalogue>>,
-    plan: &Plan,
-    shape: &RowShape,
+    work: &Chunking<'_>,
     resume: Option<Cursor>,
-    cancel: &CancellationToken,
     profile: &mut Profile,
 ) -> Result<Chunk, ServerError> {
     // **The one place a virtual predicate is visible**, and it is a *store*, not a plan
@@ -1016,13 +1096,11 @@ fn run_chunk(
         Some(catalogue) => over(
             Catalogued::new(store, Arc::clone(catalogue)),
             database,
-            plan,
-            shape,
+            work,
             resume,
-            cancel,
             profile,
         ),
-        None => over(store, database, plan, shape, resume, cancel, profile),
+        None => over(store, database, work, resume, profile),
     }
 }
 
@@ -1030,15 +1108,20 @@ fn run_chunk(
 fn over<S: aperture_store::fact_store::FactStore>(
     store: S,
     database: &Database,
-    plan: &Plan,
-    shape: &RowShape,
+    work: &Chunking<'_>,
     resume: Option<Cursor>,
-    cancel: &CancellationToken,
     profile: &mut Profile,
 ) -> Result<Chunk, ServerError> {
+    let Chunking {
+        plan,
+        shape,
+        budget,
+        cancel,
+    } = work;
+    let budget = *budget;
     let executor = match resume {
-        Some(cursor) => Executor::resume(store, plan.clone(), cursor),
-        None => Ok(Executor::new(store, plan.clone())),
+        Some(cursor) => Executor::resume(store, (*plan).clone(), cursor),
+        None => Ok(Executor::new(store, (*plan).clone())),
     }
     .map_err(|error| ServerError::Execution(error.to_string()))?;
 
@@ -1054,7 +1137,7 @@ fn over<S: aperture_store::fact_store::FactStore>(
             |mut acc: Vec<Value>, mut row| {
                 acc.push(row.to_value(&shape.interner)?);
 
-                Ok(if acc.len() >= CHUNK_ROWS {
+                Ok(if acc.len() >= budget {
                     Stream::Suspend(acc)
                 } else {
                     Stream::Continue(acc)

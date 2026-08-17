@@ -932,6 +932,96 @@ impl Cursor {
         &self.entries
     }
 
+    /// **The cursor as bytes a client can hold**, and hand back on any connection.
+    ///
+    /// Chapter 5 has called a cursor "bytes-only" since it was written, and until
+    /// Phase 11 that was a statement about what it *contains* rather than something
+    /// anybody could do: the token lived in the server's session, keyed by stream
+    /// id, and a client held a bookmark naming that stream. So paging meant holding
+    /// a connection, and a stateless caller — a web tier serving `?page=7` — had no
+    /// implementation at all, since "everything after key K" is not expressible
+    /// either.
+    ///
+    /// The layout is deliberately dull and self-describing: little-endian, lengths
+    /// before bytes, no varints. It is read back by [`from_bytes`](Cursor::from_bytes)
+    /// and nothing else, and the `version` at the front is what says whether this
+    /// build knows how.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16 + self.entries.len() * 32);
+
+        out.extend_from_slice(&self.version.to_le_bytes());
+        out.extend_from_slice(&self.plan.raw().to_le_bytes());
+        out.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+
+        for entry in &self.entries {
+            out.extend_from_slice(&(entry.source as u32).to_le_bytes());
+            out.extend_from_slice(&entry.row.fact_id.raw().to_le_bytes());
+
+            let bytes = &entry.row.bytes;
+            out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
+
+        out
+    }
+
+    /// A cursor read back from bytes.
+    ///
+    /// **Untrusted, and only shallowly checked here.** What this refuses is bytes
+    /// that are not a cursor at all — truncated, or claiming more entries than they
+    /// carry. Whether the cursor belongs to *this plan* is
+    /// [`Executor::resume`](Executor::resume)'s question and stays there: the version
+    /// and the plan fingerprint are checked against the plan being run, which is the
+    /// only place that knows what to compare them to.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Cursor, ApertureError> {
+        let mut at = 0usize;
+
+        let short = || ApertureError::CursorTruncated;
+
+        let take = |at: &mut usize, n: usize| -> Result<&[u8], ApertureError> {
+            let end = at.checked_add(n).ok_or_else(short)?;
+            let slice = bytes.get(*at..end).ok_or_else(short)?;
+            *at = end;
+            Ok(slice)
+        };
+
+        let version = u16::from_le_bytes(take(&mut at, 2)?.try_into().map_err(|_| short())?);
+        let plan = u64::from_le_bytes(take(&mut at, 8)?.try_into().map_err(|_| short())?);
+        let count = u32::from_le_bytes(take(&mut at, 4)?.try_into().map_err(|_| short())?) as usize;
+
+        // Bounded by what is actually here before allocating: a forged count of four
+        // billion would otherwise reserve for four billion entries.
+        let mut entries = Vec::with_capacity(count.min(bytes.len() / 16));
+
+        for _ in 0..count {
+            let source =
+                u32::from_le_bytes(take(&mut at, 4)?.try_into().map_err(|_| short())?) as usize;
+            let fact_id = u64::from_le_bytes(take(&mut at, 8)?.try_into().map_err(|_| short())?);
+            let len =
+                u32::from_le_bytes(take(&mut at, 4)?.try_into().map_err(|_| short())?) as usize;
+            let row = take(&mut at, len)?;
+
+            entries.push(Entry {
+                source,
+                row: Register {
+                    fact_id: FactId::from_raw(fact_id),
+                    bytes: ByteView::new(row),
+                },
+            });
+        }
+
+        if at != bytes.len() {
+            return Err(ApertureError::CursorTruncated);
+        }
+
+        Ok(Cursor {
+            version,
+            plan: PlanFingerprint::from_raw(plan),
+            entries,
+        })
+    }
+
     /// Which plan built this cursor.
     #[must_use]
     pub fn plan(&self) -> PlanFingerprint {
@@ -2524,6 +2614,126 @@ mod tests {
             Iteratee::Suspended((), cursor) => cursor,
             Iteratee::Done(()) => panic!("the plan was supposed to suspend"),
         }
+    }
+
+    /// **A cursor survives a round trip through bytes, and resumes the same.**
+    ///
+    /// The claim that makes stateless paging possible: a token a client holds and
+    /// hands back on another connection has to be the cursor the server suspended
+    /// with, entry for entry. Chapter 5 called a cursor "bytes-only" from the start;
+    /// this is the first thing that takes it literally.
+    ///
+    /// Checked two ways, because equality of the decoded structure and equality of
+    /// the *answer* are different claims and only the second one matters: the rows
+    /// after a resume through bytes are compared against the rows after a resume
+    /// from the cursor in hand.
+    #[test]
+    fn a_cursor_round_trips_through_bytes() {
+        let p = PredicateId(0);
+
+        let store = || {
+            let mut store = MemStore::new();
+            for n in 1..=4i64 {
+                store.insert(p, i64_field(n), n as u64);
+            }
+            store
+        };
+
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let cursor = suspend_after_first_row(store(), plan.clone());
+        let bytes = cursor.to_bytes();
+        let back = Cursor::from_bytes(&bytes).expect("it decodes");
+
+        assert_eq!(back.version(), cursor.version(), "the layout version");
+        assert_eq!(back.plan(), cursor.plan(), "the plan fingerprint");
+        assert_eq!(
+            back.entries().len(),
+            cursor.entries().len(),
+            "one entry per level"
+        );
+
+        let interner = interner_with(&[]);
+
+        let direct = Executor::resume(store(), plan.clone(), cursor)
+            .expect("resume")
+            .enumerate(
+                Vec::new(),
+                |mut acc: Vec<Value>, mut row| {
+                    acc.push(row.to_value(&interner)?);
+                    Ok(Stream::Continue(acc))
+                },
+                &CancellationToken::new(),
+            )
+            .expect("run");
+
+        let through_bytes = Executor::resume(store(), plan, back)
+            .expect("resume")
+            .enumerate(
+                Vec::new(),
+                |mut acc: Vec<Value>, mut row| {
+                    acc.push(row.to_value(&interner)?);
+                    Ok(Stream::Continue(acc))
+                },
+                &CancellationToken::new(),
+            )
+            .expect("run");
+
+        let (Iteratee::Done(want) | Iteratee::Suspended(want, _)) = direct;
+        let (Iteratee::Done(got) | Iteratee::Suspended(got, _)) = through_bytes;
+
+        assert_eq!(want, got, "resuming through bytes answers the same rows");
+        assert!(!want.is_empty(), "the resume was not vacuous");
+    }
+
+    /// **Bytes that are not a cursor are refused rather than half-read.**
+    ///
+    /// A resume token comes from a client, so every prefix of a real one and every
+    /// arbitrary string has to end in an error rather than in a plausible cursor
+    /// that resumes somewhere wrong.
+    #[test]
+    fn malformed_resume_tokens_are_refused() {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert(p, i64_field(1), 1);
+        store.insert(p, i64_field(2), 2);
+
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let cursor = suspend_after_first_row(store, plan);
+        let bytes = cursor.to_bytes();
+
+        assert!(
+            Cursor::from_bytes(&[]).is_err(),
+            "an empty token is not a cursor"
+        );
+
+        for cut in 0..bytes.len() {
+            assert!(
+                Cursor::from_bytes(&bytes[..cut]).is_err(),
+                "a {cut}-byte prefix decoded as a whole cursor"
+            );
+        }
+
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(
+            Cursor::from_bytes(&longer).is_err(),
+            "trailing bytes are a fault, not slack"
+        );
+
+        // The control: the untouched token still decodes, so the loop above was
+        // rejecting the mutation rather than everything.
+        assert!(Cursor::from_bytes(&bytes).is_ok());
     }
 
     /// **The resume integrity check.** A cursor's saved key must still resolve to

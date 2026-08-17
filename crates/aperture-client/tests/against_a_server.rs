@@ -740,3 +740,166 @@ fn within(limit: std::time::Duration, mut f: impl FnMut() -> bool) -> bool {
     }
     f()
 }
+
+/// **Paging across separate connections answers the whole result, in order.**
+///
+/// The claim `Rows::resume_token` exists for. An ordinary query streams its result on
+/// one stream, so page two needs the connection that asked for page one — and there is
+/// no workaround in the language, because "everything after key K" cannot be written.
+///
+/// So this asks for every page on a **new connection**, closing the last one first,
+/// which is the shape a stateless web tier has and the shape nothing here could take
+/// before. The concatenated pages must equal the uninterrupted result exactly: same
+/// rows, same order, no gap and no repeat — [I4](../../../docs/invariants.md#i4)
+/// carried through a token rather than through a session.
+#[test]
+fn pages_taken_on_separate_connections_equal_one_result() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 25);
+    drop(writer);
+
+    const QUERY: &str = "F where src.File F";
+
+    let whole = {
+        let mut connection = serving.open(Mode::ReadOnly);
+        let mut rows = connection.query(QUERY).expect("a query");
+        strings(&connection.drain(&mut rows).expect("the rows"))
+    };
+    assert_eq!(whole.len(), 25, "the corpus is what the test thinks it is");
+
+    let mut paged: Vec<String> = vec![];
+    let mut token: Option<Vec<u8>> = None;
+    let mut pages = 0usize;
+
+    loop {
+        // A fresh connection every page, and the previous one is gone — the point is
+        // that nothing about the result lives in a session.
+        let mut connection = serving.open(Mode::ReadOnly);
+
+        let mut rows = connection
+            .query_page(QUERY, 7, token.as_deref())
+            .expect("a page");
+
+        paged.extend(strings(&connection.drain(&mut rows).expect("the page")));
+        pages += 1;
+
+        token = rows.resume_token().map(<[u8]>::to_vec);
+        drop(connection);
+
+        if token.is_none() {
+            break;
+        }
+
+        assert!(pages < 10, "paging did not terminate");
+    }
+
+    assert_eq!(paged, whole, "the pages are the result, in order");
+    assert_eq!(
+        pages, 4,
+        "25 rows at 7 a page is four pages, the last one short"
+    );
+}
+
+/// A page smaller than a chunk does not overshoot it.
+///
+/// The server computes rows a chunk at a time, and a page limit under `CHUNK_ROWS`
+/// has to cut the chunk rather than the frames: rows past the limit would otherwise be
+/// computed, encoded and dropped, and the token would name a position the caller was
+/// never told about — a silent gap in the result.
+#[test]
+fn a_page_smaller_than_a_chunk_stops_at_the_limit() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 400);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("F where src.File F", 3, None)
+        .expect("a page");
+
+    let first = strings(&connection.drain(&mut rows).expect("the page"));
+    assert_eq!(first.len(), 3, "the page is the size asked for");
+
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    let mut rows = connection
+        .query_page("F where src.File F", 3, Some(&token))
+        .expect("the next page");
+
+    let second = strings(&connection.drain(&mut rows).expect("the page"));
+    assert_eq!(second.len(), 3);
+
+    // The join has to be seamless: no row dropped between the pages, and none repeated.
+    let mut whole = connection.query("F where src.File F").expect("a query");
+    let all = strings(&connection.drain(&mut whole).expect("the rows"));
+
+    assert_eq!(&all[..6], &[first, second].concat()[..]);
+}
+
+/// A token from **another query** is refused rather than answered.
+///
+/// A cursor is checked against the plan that built it — entries are paired with levels
+/// by order, so two same-shaped plans over different predicates would otherwise accept
+/// each other's tokens and answer from the wrong rows. Over the wire that check is the
+/// only thing standing between a caller and a plausible wrong answer, because the
+/// token is bytes the caller could have kept from anything.
+#[test]
+fn a_resume_token_belongs_to_the_query_that_made_it() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 20);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("F where src.File F", 2, None)
+        .expect("a page");
+    let _ = connection.drain(&mut rows).expect("the page");
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    // The same shape over a different predicate: one level, one projection.
+    let refused = connection.query_page("D where src.Decl D", 2, Some(&token));
+
+    assert!(
+        refused.is_err(),
+        "a token from another plan was accepted: {:?}",
+        refused.map(|_| ())
+    );
+
+    // And the connection still works, which says the refusal ended the stream rather
+    // than the session.
+    let mut rows = connection
+        .query_page("F where src.File F", 2, Some(&token))
+        .expect("the right query still resumes");
+    assert_eq!(connection.drain(&mut rows).expect("the page").len(), 2);
+}
+
+/// Garbage is refused rather than half-read.
+#[test]
+fn a_malformed_resume_token_is_refused() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 5);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let refused = connection.query_page("F where src.File F", 2, Some(&[1, 2, 3]));
+    assert!(
+        refused.is_err(),
+        "three arbitrary bytes were read as a cursor"
+    );
+
+    let mut rows = connection
+        .query_page("F where src.File F", 2, None)
+        .expect("the connection still works");
+    assert_eq!(connection.drain(&mut rows).expect("the page").len(), 2);
+}

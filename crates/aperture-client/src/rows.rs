@@ -43,6 +43,12 @@ pub struct Rows {
     /// only when the query was issued with [`Connection::query_profiled`], and only
     /// once, just before the result ends.
     profile: Option<QueryProfile>,
+    /// Where to carry on from, for a **paged** query whose page filled up.
+    ///
+    /// `None` on an unpaged query, and on a page that reached the end of the result
+    /// — which is how a caller knows it has seen everything without asking again to
+    /// be told nothing.
+    resume: Option<Vec<u8>>,
 }
 
 impl Rows {
@@ -60,7 +66,28 @@ impl Rows {
             seen: 0,
             state: State::Streaming,
             profile: None,
+            resume: None,
         }
+    }
+
+    /// **The token that continues this result on any connection.**
+    ///
+    /// Opaque: it is the engine's cursor as bytes, and nothing on this side of the
+    /// wire interprets it. Hand it back to
+    /// [`Connection::query_page`](crate::Connection::query_page) with the *same*
+    /// query text — a token is checked against the plan that made it, so a different
+    /// query is refused rather than answered from the wrong rows.
+    ///
+    /// This is what makes paging stateless. Without it a result lives in the
+    /// server's session, keyed by stream id, so page two needs the connection that
+    /// asked for page one.
+    #[must_use]
+    pub fn resume_token(&self) -> Option<&[u8]> {
+        self.resume.as_deref()
+    }
+
+    pub(crate) fn set_resume(&mut self, token: Vec<u8>) {
+        self.resume = Some(token);
     }
 
     /// What the query examined, once it has ended.

@@ -714,6 +714,24 @@ impl Plan {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PlanFingerprint(u64);
 
+impl PlanFingerprint {
+    /// The raw hash, for a codec that has to write it down.
+    #[must_use]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+
+    /// A fingerprint read back from bytes.
+    ///
+    /// **Not a claim that it is any plan's** — the point of the check at
+    /// [`Executor::resume`](crate::iter::Executor::resume) is that a cursor from the
+    /// wire is untrusted, and a forged fingerprint fails there rather than here.
+    #[must_use]
+    pub const fn from_raw(raw: u64) -> PlanFingerprint {
+        PlanFingerprint(raw)
+    }
+}
+
 impl fmt::Debug for PlanFingerprint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "plan {:#018x}", self.0)

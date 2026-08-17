@@ -394,9 +394,48 @@ impl Connection {
         self.start_query(focus, kinds::QUERY_PROFILE)
     }
 
+    /// Run a query as a **page**: at most `limit` rows, carrying on from `cursor`.
+    ///
+    /// `cursor` is `None` for the first page, and afterwards the previous page's
+    /// [`Rows::resume_token`]. The token is opaque here — it is the engine's cursor
+    /// as bytes — and it is checked against the plan that made it, so the same query
+    /// text has to be passed with it.
+    ///
+    /// **What this buys is a caller that does not hold the connection.** An ordinary
+    /// [`query`](Connection::query) streams its whole result on one stream, so
+    /// "page two" means the connection that asked for page one; and there is no
+    /// workaround in the language, since "everything after key K" cannot be written.
+    /// A page hands the position back instead.
+    ///
+    /// `limit` of zero means no limit, which is exactly what
+    /// [`query`](Connection::query) asks.
+    ///
+    /// # Errors
+    ///
+    /// As [`query`](Connection::query), plus [`ClientError::Server`] if the token
+    /// does not belong to this query's plan.
+    pub fn query_page(
+        &mut self,
+        focus: &str,
+        limit: u64,
+        cursor: Option<&[u8]>,
+    ) -> Result<Rows, ClientError> {
+        let payload = protocol::encode_page(&protocol::Page {
+            limit,
+            cursor: cursor.unwrap_or_default().to_vec(),
+            query: focus.to_owned(),
+        });
+
+        self.start_query_with(kinds::QUERY_PAGE, &payload)
+    }
+
     fn start_query(&mut self, focus: &str, kind: FrameKind) -> Result<Rows, ClientError> {
+        self.start_query_with(kind, focus.as_bytes())
+    }
+
+    fn start_query_with(&mut self, kind: FrameKind, payload: &[u8]) -> Result<Rows, ClientError> {
         let stream = self.claim_stream();
-        self.send(kind, stream, focus.as_bytes())?;
+        self.send(kind, stream, payload)?;
 
         let (kind, payload) = self.recv_on(stream)?;
         if kind != FrameKind::ROW_DESCRIPTION {
@@ -437,6 +476,14 @@ impl Connection {
         // separate call so a caller that only pulls rows still ends up holding it.
         if kind == kinds::PROFILE {
             rows.set_profile(protocol::decode_profile(&payload)?);
+            return self.next_row(rows);
+        }
+
+        // Like the profile: sent once, just before the result ends, and taken here
+        // rather than in a separate call so a caller that only pulls rows still ends
+        // up holding it.
+        if kind == kinds::RESUME {
+            rows.set_resume(payload);
             return self.next_row(rows);
         }
 
@@ -531,6 +578,7 @@ impl Connection {
                 _ if kind == kinds::PROFILE => {
                     rows.set_profile(protocol::decode_profile(&payload)?);
                 }
+                _ if kind == kinds::RESUME => rows.set_resume(payload),
                 _ if kind == kinds::COMPLETE => {
                     let (sent, _) = protocol::decode_complete(&payload)?;
                     self.release_stream(rows.stream());

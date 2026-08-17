@@ -44,6 +44,16 @@ pub enum ApertureError {
     #[error("resume cursor is version {cursor}; this build reads version {executor}")]
     CursorVersion { cursor: u16, executor: u16 },
 
+    /// A resume token that is not a cursor at all — truncated, or claiming more
+    /// entries than its bytes carry.
+    ///
+    /// Its own variant rather than a decode error, because it says something
+    /// different: a `StoreCodecError` means a *stored row* is malformed, which is a
+    /// database fault, and this means a **client** handed back something that is not
+    /// the token it was given.
+    #[error("resume token is malformed")]
+    CursorTruncated,
+
     /// A resume cursor built from a **different plan** — the hole the level count
     /// leaves open ([chapter 5](../../docs/05-resume.md)).
     ///

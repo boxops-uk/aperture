@@ -92,6 +92,24 @@ pub mod kinds {
     /// Server → client: what the query examined, sent once, just before its
     /// [`COMPLETE`].
     pub const PROFILE: FrameKind = FrameKind(b'p');
+    /// Client → server: run a query, stop after N rows, and hand back a token.
+    ///
+    /// A third query kind rather than a flag, for the reason
+    /// [`QUERY_PROFILE`] is a second one: [`QUERY`]'s payload is the query text and
+    /// nothing else, and a client that has never heard of paging neither sends this
+    /// nor receives a [`RESUME`] frame.
+    ///
+    /// **This is what makes paging stateless.** Without it a result lives in the
+    /// server's session, keyed by stream id, and a caller has to hold the connection
+    /// to see page two — which a web tier cannot do, and cannot work around either,
+    /// because "everything after key K" is not expressible in the language.
+    pub const QUERY_PAGE: FrameKind = FrameKind(b'G');
+    /// Server → client: the resume token, sent once, just before [`COMPLETE`].
+    ///
+    /// Only when the result was cut short by a page limit *and* there is more. A
+    /// page that reached the end of the result sends no token, which is how a caller
+    /// knows it has seen everything without asking again to be told nothing.
+    pub const RESUME: FrameKind = FrameKind(b'r');
     /// Server → client: the stream finished, with counts.
     pub const COMPLETE: FrameKind = FrameKind(b'C');
     /// Client → server: stop this stream.
@@ -612,6 +630,80 @@ pub fn decode_profile(bytes: &[u8]) -> Result<QueryProfile, WireError> {
     }
 
     Ok(QueryProfile { steps })
+}
+
+/// What a paged query asks for: how many rows, and where to start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    /// The most rows this page may carry. Zero means no limit, which is the same
+    /// question an ordinary [`QUERY`](kinds::QUERY) asks.
+    pub limit: u64,
+    /// A token from a previous page's [`RESUME`](kinds::RESUME), or empty to start.
+    ///
+    /// **Opaque here, and that is the layering.** A cursor is the engine's, a client
+    /// depends on `aperture-wire` and not on the engine, and the only thing either
+    /// end of the wire does with these bytes is carry them. What they mean — and
+    /// whether they mean it for *this* plan — is checked where the plan is.
+    pub cursor: Vec<u8>,
+    /// The query itself.
+    pub query: String,
+}
+
+/// Encode a paged query request.
+#[must_use]
+pub fn encode_page(page: &Page) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + page.cursor.len() + page.query.len());
+
+    out.extend_from_slice(&page.limit.to_le_bytes());
+    out.extend_from_slice(&(page.cursor.len() as u32).to_le_bytes());
+    out.extend_from_slice(&page.cursor);
+    out.extend_from_slice(page.query.as_bytes());
+
+    out
+}
+
+/// Decode a paged query request.
+///
+/// # Errors
+///
+/// [`WireError::UnexpectedEof`] if the frame is shorter than its own lengths claim,
+/// or [`WireError::BadString`] if the query text is not UTF-8.
+pub fn decode_page(bytes: &[u8]) -> Result<Page, WireError> {
+    let mut at = 0usize;
+
+    let limit = u64::from_le_bytes(
+        bytes
+            .get(at..at + 8)
+            .ok_or(WireError::UnexpectedEof)?
+            .try_into()
+            .map_err(|_| WireError::UnexpectedEof)?,
+    );
+    at += 8;
+
+    let cursor_len = u32::from_le_bytes(
+        bytes
+            .get(at..at + 4)
+            .ok_or(WireError::UnexpectedEof)?
+            .try_into()
+            .map_err(|_| WireError::UnexpectedEof)?,
+    ) as usize;
+    at += 4;
+
+    let cursor = bytes
+        .get(at..at + cursor_len)
+        .ok_or(WireError::UnexpectedEof)?
+        .to_vec();
+    at += cursor_len;
+
+    let query = std::str::from_utf8(bytes.get(at..).ok_or(WireError::UnexpectedEof)?)
+        .map_err(|_| WireError::BadString)?
+        .to_owned();
+
+    Ok(Page {
+        limit,
+        cursor,
+        query,
+    })
 }
 
 /// A **provisional** schema fingerprint.
