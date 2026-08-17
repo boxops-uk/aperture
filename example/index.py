@@ -66,8 +66,33 @@ def module_of(path: str) -> str:
     return path.removesuffix(".py").replace("/", ".")
 
 
+def span_of(node, name: str) -> dict:
+    """Where a declaration's name starts, and where the whole thing ends.
+
+    Two spans, not one, because a viewer wants both: the identifier is what you
+    highlight and click, and the whole node is what you fold. `col_offset` points at
+    the *statement* — `def` — so the name starts after the keyword, which is what the
+    offsets below add back.
+    """
+    if isinstance(node, ast.AsyncFunctionDef):
+        lead = len("async def ")
+    elif isinstance(node, ast.FunctionDef):
+        lead = len("def ")
+    elif isinstance(node, ast.ClassDef):
+        lead = len("class ")
+    else:
+        # An assignment target *is* the name, so its own column is the answer.
+        lead = 0
+
+    return {
+        "col": node.col_offset + 1 + lead,
+        "endLine": node.end_lineno or node.lineno,
+        "endCol": (node.end_col_offset or node.col_offset) + 1,
+    }
+
+
 def declarations(tree: ast.Module):
-    """What a module declares, in source order: `(name, line, kind)`.
+    """What a module declares, in source order: `(name, line, kind, span)`.
 
     A class's methods are qualified with its name — `Store.put` — because that is
     what someone searching for one types, and it is what makes the search index
@@ -75,16 +100,21 @@ def declarations(tree: ast.Module):
     """
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            yield node.name, node.lineno, "def"
+            yield node.name, node.lineno, "def", span_of(node, node.name)
         elif isinstance(node, ast.ClassDef):
-            yield node.name, node.lineno, "class"
+            yield node.name, node.lineno, "class", span_of(node, node.name)
             for member in node.body:
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    yield f"{node.name}.{member.name}", member.lineno, "method"
+                    yield (
+                        f"{node.name}.{member.name}",
+                        member.lineno,
+                        "method",
+                        span_of(member, member.name),
+                    )
         elif isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    yield target.id, node.lineno, "const"
+                    yield target.id, node.lineno, "const", span_of(target, target.id)
 
 
 def imports(tree: ast.Module, module: str, modules: set[str], declared: dict) -> tuple:
@@ -169,10 +199,21 @@ def references(tree: ast.Module, file: int, scope: dict, aliases: dict, declared
         if position is not None:
             # `col_offset` is 0-based and counts UTF-8 bytes; a column is reported
             # the way an editor shows it, from 1.
+            #
+            # `length` is the whole expression's, so `keys.encode_key` is one link
+            # over both words rather than a link over `keys` alone. A reference that
+            # wraps a line has no single extent, and 0 says so rather than guessing.
+            one_line = (node.end_lineno or node.lineno) == node.lineno
+            length = (node.end_col_offset or 0) - node.col_offset if one_line else 0
+
             found.append(
                 {
                     "file": file,
-                    "at": {"line": node.lineno, "col": node.col_offset + 1},
+                    "at": {
+                        "line": node.lineno,
+                        "col": node.col_offset + 1,
+                        "length": length,
+                    },
                     "to": position,
                 }
             )
@@ -198,11 +239,13 @@ def main() -> int:
     # One file per module and one module per file, so a module's position is its
     # file's. Written first because everything else points at them.
     decls: list[dict] = []
+    spans: list[dict] = []
     declared: dict[str, dict[str, int]] = {module: {} for module in modules}
 
     for position, (module, tree) in enumerate(zip(modules, trees)):
-        for name, line, kind in declarations(tree):
+        for name, line, kind, span in declarations(tree):
             declared[module][name] = len(decls)
+            spans.append({"decl": len(decls), **span})
             decls.append(
                 {"module": position, "name": name, "line": line, "kind": kind}
             )
@@ -227,6 +270,7 @@ def main() -> int:
             for position, module in enumerate(modules)
         ],
         "decls": decls,
+        "spans": spans,
         "names": names,
         "refs": refs,
         "imports": edges,

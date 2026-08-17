@@ -32,7 +32,7 @@ Four things, in the order they matter:
    nothing the protocol does not offer.
 3. **Something to query.** An index of code someone knows is a database whose answers
    can be checked by opening the file.
-4. **The rest of the schema.** Sixteen of the built-in schema's twenty-two predicates —
+4. **The rest of the schema.** Twenty-one of the built-in schema's twenty-seven predicates —
    the build layer and the declaration graph — cannot be answered by a syntax walk at
    all, and `example/index.py` fills none of them. This program is where they come from,
    which makes it part of the schema rather than a consumer of it.
@@ -60,7 +60,7 @@ It is interning working, and it is the number this whole exercise exists to meas
 
 ## How C# maps onto the code index
 
-The schema is the server's — twenty-two predicates, now parsed from `schemas/code.aps`
+The schema is the server's — twenty-seven predicates, now parsed from `schemas/code.aps`
 rather than written in Rust — so the question is not what to declare but what to put in
 it. `CodeIndex.cs` states it a third time, independently, because that is what the
 handshake fingerprint is for. **Declaration order is not part of that agreement**: the

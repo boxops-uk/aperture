@@ -47,7 +47,7 @@ every name in the result means, and the facts go down the same socket:
 enough to be worth measuring comes from, and it is the same argument as the demo's made
 at a size where it stops being an argument: a producer holding no fact ids, every
 reference nested, emitting in whatever order a syntax walk reaches things.
-**It is also what the built-in schema's other sixteen predicates are for.** `code_index`
+**It is also what the built-in schema's other twenty-one predicates are for.** `code_index`
 holds three layers: the source one `example/index.py` fills, a **build layer** (project,
 assembly, compilation, the two dependency graphs) and a **declaration graph** (member,
 extends, implements, override, parameter, type, doc, attribute) — each answerable only

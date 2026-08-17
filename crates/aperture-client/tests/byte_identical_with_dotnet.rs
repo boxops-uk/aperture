@@ -59,6 +59,13 @@ fn schema() -> Schema {
         sym("src.Implements"),
         sym("src.Override"),
     );
+    let (decl_span, search_lower, file_xref, derives_from, attribute_of) = (
+        sym("src.DeclSpan"),
+        sym("src.SearchByLowerName"),
+        sym("src.FileXRef"),
+        sym("src.DerivesFrom"),
+        sym("src.AttributeOf"),
+    );
     let (param, type_of, doc, attribute, line_of) = (
         sym("src.Param"),
         sym("src.TypeOf"),
@@ -75,6 +82,7 @@ fn schema() -> Schema {
         (sym("member"), sym("base"), sym("type"), sym("iface"));
     let (f_decl, f_index, f_attribute, f_target) =
         (sym("decl"), sym("index"), sym("attribute"), sym("target"));
+    let (f_length, f_end_line, f_end_col) = (sym("length"), sym("endLine"), sym("endCol"));
 
     Schema::new(
         rodeo.into_reader(),
@@ -121,6 +129,7 @@ fn schema() -> Schema {
                         PredicateTy::Record(Arc::from([
                             (f_line, PredicateTy::Int),
                             (f_col, PredicateTy::Int),
+                            (f_length, PredicateTy::Int),
                         ])),
                     ),
                 ])),
@@ -259,6 +268,59 @@ fn schema() -> Schema {
                 ])),
                 value: Some(PredicateTy::Str),
             },
+            // What a code-search viewer needs. Three of these are a second key order
+            // over data already declared above — a predicate leads with one field, and
+            // find-references and a file view want different ones.
+            Predicate {
+                name: decl_span,
+                key: PredicateTy::Record(Arc::from([
+                    (f_decl, PredicateTy::Fact(DECL)),
+                    (f_col, PredicateTy::Int),
+                    (f_end_line, PredicateTy::Int),
+                    (f_end_col, PredicateTy::Int),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: search_lower,
+                key: PredicateTy::Record(Arc::from([
+                    (f_name, PredicateTy::Str),
+                    (f_to, PredicateTy::Fact(DECL)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: file_xref,
+                key: PredicateTy::Record(Arc::from([
+                    (f_file, PredicateTy::Fact(FILE)),
+                    (
+                        f_at,
+                        PredicateTy::Record(Arc::from([
+                            (f_line, PredicateTy::Int),
+                            (f_col, PredicateTy::Int),
+                            (f_length, PredicateTy::Int),
+                        ])),
+                    ),
+                    (f_to, PredicateTy::Fact(DECL)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: derives_from,
+                key: PredicateTy::Record(Arc::from([
+                    (f_type, PredicateTy::Fact(DECL)),
+                    (f_base, PredicateTy::Fact(DECL)),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: attribute_of,
+                key: PredicateTy::Record(Arc::from([
+                    (f_target, PredicateTy::Fact(DECL)),
+                    (f_attribute, PredicateTy::Str),
+                ])),
+                value: None,
+            },
         ]),
     )
 }
@@ -326,7 +388,11 @@ fn corpus() -> Vec<(&'static str, PredicateId, Vec<WireFact>)> {
                         "key_of",
                     )))),
                     WireValue::Ref(WireRef::Nested(Box::new(file("query/plan.py")))),
-                    WireValue::Record(Box::from([WireValue::Int(19), WireValue::Int(4)])),
+                    WireValue::Record(Box::from([
+                        WireValue::Int(19),
+                        WireValue::Int(4),
+                        WireValue::Int(6),
+                    ])),
                 ])),
                 value: None,
             }],

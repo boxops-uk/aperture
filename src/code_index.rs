@@ -14,9 +14,10 @@
 //! guard is therefore not "does the vector still say what it said" but "does the *file*
 //! still declare what the rest of the tree names" — which is what `tests` below asks.
 //!
-//! **Three layers, and the joins between them are the point.** Six predicates are the
-//! source layer every indexer here fills — files, modules, declarations, references —
-//! and `src.Line` is the file's text beside them. The other fifteen are what a
+//! **Three layers plus a viewer's, and the joins between them are the point.** Eight
+//! predicates are the source layer every indexer here fills — files, modules,
+//! declarations, references, their spans and the two search indexes — and `src.Line` is
+//! the file's text beside them. Fifteen more are what a
 //! *compiler* and a *build system* know and a syntax walk does not: which project a
 //! file is compiled by and into which assembly, what a type extends, what a member
 //! overrides, what a parameter's type is spelled as, what the doc comment says.
@@ -25,6 +26,13 @@
 //! Roslyn and MSBuild to answer them with; `example/index.py` fills only the first six
 //! and says so. A predicate nobody fills is an empty keyspace pair, which costs the
 //! ~30 ms it takes to create it and nothing after that.
+//!
+//! **Three of the twenty-seven are the same data keyed a second way**, and they are
+//! here because a predicate leads with one field and two questions want different ones:
+//! `src.SearchByName` against `src.Decl`, `src.FileXRef` against `src.Ref`,
+//! `src.AttributeOf` and `src.DerivesFrom` against their originals. Each is what a
+//! *stored derivation* would materialise ([Phase 8b](../../PLAN.md)); until one can be
+//! declared, the producer writes both orders.
 //!
 //! **This module is still not the end state.** A database carries its own canonical
 //! schema ([I13](../../docs/invariants.md#i13)), so once `create --schema <path>` is the
@@ -201,15 +209,15 @@ mod tests {
     /// This used to check six hand-written id constants against their names, which was
     /// the right guard while a position was written down twice. The positions are gone —
     /// `id` asks the schema — so what is left to check is the *membership*: that the file
-    /// still holds the twenty-two predicates the rest of the tree names, and that asking
+    /// still holds the predicates the rest of the tree names, and that asking
     /// for one by name answers with it.
     #[test]
     fn the_schema_declares_what_the_tree_names() {
         let schema = schema();
         assert_eq!(
             schema.len(),
-            22,
-            "the built-in schema is twenty-two predicates"
+            27,
+            "the built-in schema is twenty-seven predicates"
         );
 
         for name in [
@@ -223,6 +231,13 @@ mod tests {
             "src.Assembly",
             "src.Package",
             "src.Line",
+            // The five a code-search viewer needs and a syntax walk alone cannot
+            // key for — three of them second key orders over data already here.
+            "src.DeclSpan",
+            "src.SearchByLowerName",
+            "src.FileXRef",
+            "src.DerivesFrom",
+            "src.AttributeOf",
         ] {
             assert_eq!(
                 schema.get(id(name)).and_then(|p| p.name()),
@@ -230,6 +245,39 @@ mod tests {
                 "`{name}` is not where the schema says it is"
             );
         }
+    }
+
+    /// **The .NET client states this schema independently, and must still agree.**
+    ///
+    /// The golden records the fingerprint `Aperture.Demo` computed from its own
+    /// twenty-seven declarations. `byte_identical_with_dotnet` compares that against a
+    /// *third* statement in Rust, which is what makes the codec argument; what neither
+    /// checks is whether either agrees with the schema the **server** actually serves,
+    /// because that one is parsed from `schemas/code.aps` and nothing else reads it.
+    ///
+    /// Until this test, drift there surfaced as a failed handshake in `run-demo.sh` —
+    /// a real guard, but one that needs `dotnet` and a running server to fire. This is
+    /// the same claim as a string compare.
+    ///
+    /// Regenerate with `./clients/dotnet/emit-golden.sh` when the schema moves on
+    /// purpose; both sides move together, which is the point.
+    #[test]
+    fn the_dotnet_clients_schema_is_this_one() {
+        const GOLDEN: &str = include_str!("../clients/dotnet/golden/blocks.txt");
+
+        let recorded = GOLDEN
+            .lines()
+            .find_map(|line| line.strip_prefix("schema-fingerprint "))
+            .map(str::trim)
+            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+            .expect("the golden names a schema fingerprint");
+
+        assert_eq!(
+            aperture_wire::protocol::provisional_fingerprint(&schema()),
+            recorded,
+            "`schemas/code.aps` and the .NET client's declaration have drifted — \
+             the demo would be refused at the handshake"
+        );
     }
 
     /// **Every stored key, flat, in the order its bytes go down in.**
@@ -247,8 +295,14 @@ mod tests {
     const KEY_ORDER: &[(&str, &[&str])] = &[
         ("src.Module", &["file", "name"]),
         ("src.Decl", &["module", "name", "line"]),
+        ("src.DeclSpan", &["decl", "col", "endLine", "endCol"]),
         ("src.SearchByName", &["name", "to"]),
-        ("src.Ref", &["to", "file", "at.line", "at.col"]),
+        ("src.SearchByLowerName", &["name", "to"]),
+        ("src.Ref", &["to", "file", "at.line", "at.col", "at.length"]),
+        (
+            "src.FileXRef",
+            &["file", "at.line", "at.col", "at.length", "to"],
+        ),
         ("src.Import", &["from", "to"]),
         ("src.Compilation", &["assembly", "framework", "project"]),
         ("src.ProjectSource", &["file", "project"]),
@@ -259,10 +313,12 @@ mod tests {
         ("src.Extends", &["base", "type"]),
         ("src.Implements", &["iface", "type"]),
         ("src.Override", &["base", "member"]),
+        ("src.DerivesFrom", &["type", "base"]),
         ("src.Param", &["decl", "index", "name"]),
         ("src.TypeOf", &["decl"]),
         ("src.Doc", &["decl"]),
         ("src.Attribute", &["attribute", "target"]),
+        ("src.AttributeOf", &["target", "attribute"]),
         ("src.Line", &["file", "line"]),
     ];
 

@@ -344,8 +344,23 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 return;
             }
 
-            var at = name.Identifier.GetLocation().GetLineSpan().StartLinePosition;
-            sink.Add(CodeIndex.Ref, CodeIndex.RefFact(at.Line + 1, at.Character + 1, file, target.Fact));
+            // **The identifier's extent, not the whole expression's.** A viewer draws
+            // the link over the name someone can click, so `Foo.Bar` is two references
+            // rather than one span covering both.
+            var span = name.Identifier.GetLocation().GetLineSpan();
+            var at = span.StartLinePosition;
+            var length = name.Identifier.Span.Length;
+
+            sink.Add(CodeIndex.Ref, CodeIndex.RefFact(
+                at.Line + 1, at.Character + 1, length, file, target.Fact));
+
+            // The same reference, keyed by file and position. Written twice because a
+            // predicate leads with one field: find-references needs the target to lead
+            // and a file view needs the file to, and until a derived predicate can be
+            // declared the producer is what states the second order.
+            sink.Add(CodeIndex.FileXRef, CodeIndex.FileXRefFact(
+                at.Line + 1, at.Character + 1, length, file, target.Fact));
+
             References++;
 
             if (++target.Uses > _sampleUses)
@@ -449,6 +464,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 && applied.OriginalDefinition.ToDisplayString() is { Length: > 0 } name)
             {
                 sink.Add(CodeIndex.Attribute, CodeIndex.AttributeFact(name, declared.Fact));
+                sink.Add(CodeIndex.AttributeOf, CodeIndex.AttributeOfFact(declared.Fact, name));
             }
         }
 
@@ -517,6 +533,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             && DeclFor(@base) is { } extended)
         {
             sink.Add(CodeIndex.Extends, CodeIndex.ExtendsFact(extended.Fact, declared.Fact));
+            sink.Add(CodeIndex.DerivesFrom, CodeIndex.DerivesFromFact(declared.Fact, extended.Fact));
         }
 
         foreach (var iface in type.AllInterfaces)
@@ -671,7 +688,13 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             return null;
         }
 
-        var line = NameLocation(declaration.GetSyntax()).GetLineSpan().StartLinePosition.Line + 1;
+        // The whole declaration's extent, and separately where its *name* starts — a
+        // viewer highlights the identifier and folds the body, which are two spans.
+        var syntax = declaration.GetSyntax();
+        var nameSpan = NameLocation(syntax).GetLineSpan();
+        var wholeSpan = syntax.GetLocation().GetLineSpan();
+
+        var line = nameSpan.StartLinePosition.Line + 1;
         var module = ModuleFor(path, NamespaceOf(symbol));
         var name = QualifiedName(symbol);
         var kind = KindOf(symbol);
@@ -704,12 +727,31 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         sink.Add(CodeIndex.Decl, fact);
 
+        // The span, only for the symbol that *owns* this key. A partial class reaches
+        // here once per part and they disagree about the extent; `first` is already the
+        // flag for "this is the answer that settled the key", and a span is an attribute
+        // of a declaration exactly as its type and doc comment are.
+        if (first)
+        {
+            sink.Add(CodeIndex.DeclSpan, CodeIndex.DeclSpanFact(
+                fact,
+                nameSpan.StartLinePosition.Character + 1,
+                wholeSpan.EndLinePosition.Line + 1,
+                wholeSpan.EndLinePosition.Character + 1));
+        }
+
         // The same declaration keyed the other way round, so a prefix of a *name* is a
         // range rather than a filter over every declaration in the database. A
         // declaration's own key begins with its module, which is why this predicate
         // exists at all — and the name here is the short one, which is what someone
         // searching types.
         sink.Add(CodeIndex.SearchByName, CodeIndex.SearchFact(simple, fact));
+
+        // And once more folded, because focus has no `toLower` to apply at read time —
+        // invariant rather than current-culture, since the server compares bytes and
+        // has no notion of a culture.
+        sink.Add(CodeIndex.SearchByLowerName,
+            CodeIndex.SearchLowerFact(simple.ToLowerInvariant(), fact));
 
         Declarations++;
         return new Declared(fact, module, simple, kind, first);

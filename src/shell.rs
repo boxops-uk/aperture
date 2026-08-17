@@ -193,17 +193,62 @@ impl Fact for SearchByName {
     }
 }
 
+/// The same rows, name lower-cased — see `src.SearchByLowerName`.
+struct SearchByLowerName {
+    name: String,
+    to: FactId,
+}
+
+impl Fact for SearchByLowerName {
+    const PREDICATE: &'static str = "src.SearchByLowerName";
+
+    fn key(&self) -> Value {
+        record([("name", self.name.to_value()), ("to", self.to.to_value())])
+    }
+}
+
+/// Where a declaration's name starts, and where the whole declaration ends.
+#[derive(Deserialize)]
+struct DeclSpan<Ref = FactId> {
+    decl: Ref,
+    col: i64,
+    #[serde(rename = "endLine")]
+    end_line: i64,
+    #[serde(rename = "endCol")]
+    end_col: i64,
+}
+
+impl Fact for DeclSpan {
+    const PREDICATE: &'static str = "src.DeclSpan";
+
+    fn key(&self) -> Value {
+        record([
+            ("decl", self.decl.to_value()),
+            ("col", self.col.to_value()),
+            ("endLine", self.end_line.to_value()),
+            ("endCol", self.end_col.to_value()),
+        ])
+    }
+}
+
 /// A position in a file — a **nested record**, so it implements [`ToValue`] rather
 /// than [`Fact`]: it is part of a key, not a fact of its own.
 #[derive(Clone, Copy, Deserialize)]
 struct Pos {
     line: i64,
     col: i64,
+    /// How many characters the reference spells — what a viewer draws a link over.
+    /// Zero where the expression wraps a line and has no single extent.
+    length: i64,
 }
 
 impl ToValue for Pos {
     fn to_value(&self) -> Value {
-        record([("line", self.line.to_value()), ("col", self.col.to_value())])
+        record([
+            ("line", self.line.to_value()),
+            ("col", self.col.to_value()),
+            ("length", self.length.to_value()),
+        ])
     }
 }
 
@@ -222,6 +267,26 @@ struct Reference<Ref = FactId> {
 
 impl Fact for Reference {
     const PREDICATE: &'static str = "src.Ref";
+
+    fn key(&self) -> Value {
+        record([
+            ("file", self.file.to_value()),
+            ("at", self.at.to_value()),
+            ("to", self.to.to_value()),
+        ])
+    }
+}
+
+/// **The same reference, keyed by the file it is in.** One `Fact` impl per key order,
+/// from one row — which is what a stored derivation would do for both of them.
+struct FileXRef {
+    file: FactId,
+    at: Pos,
+    to: FactId,
+}
+
+impl Fact for FileXRef {
+    const PREDICATE: &'static str = "src.FileXRef";
 
     fn key(&self) -> Value {
         record([
@@ -260,6 +325,7 @@ struct Index {
     files: Vec<File>,
     modules: Vec<Module<Idx>>,
     decls: Vec<Decl<Idx>>,
+    spans: Vec<DeclSpan<Idx>>,
     names: Vec<SearchByName<Idx>>,
     refs: Vec<Reference<Idx>>,
     imports: Vec<Import<Idx>>,
@@ -312,12 +378,34 @@ fn seed(db: &FjallDb, schema: &Schema) -> Result<usize, ApertureError> {
         kind: decl.kind.clone(),
     })?;
 
+    loader.put_all(&index.spans, |span| DeclSpan {
+        decl: id_at(&decls, span.decl),
+        col: span.col,
+        end_line: span.end_line,
+        end_col: span.end_col,
+    })?;
+
     loader.put_all(&index.names, |name| SearchByName {
         name: name.name.clone(),
         to: id_at(&decls, name.to),
     })?;
 
+    // The case-folded copy, from the same rows: focus has no `toLower`, so the index
+    // that answers a case-insensitive search has to be written.
+    loader.put_all(&index.names, |name| SearchByLowerName {
+        name: name.name.to_lowercase(),
+        to: id_at(&decls, name.to),
+    })?;
+
     loader.put_all(&index.refs, |reference| Reference {
+        file: id_at(&files, reference.file),
+        at: reference.at,
+        to: id_at(&decls, reference.to),
+    })?;
+
+    // And the same references keyed by file, which is the question `src.Ref` cannot
+    // answer and a file view asks once a page.
+    loader.put_all(&index.refs, |reference| FileXRef {
         file: id_at(&files, reference.file),
         at: reference.at,
         to: id_at(&decls, reference.to),

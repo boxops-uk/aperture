@@ -54,12 +54,22 @@ internal static class CodeIndex
     public const uint Attribute = 20;
     public const uint Line = 21;
 
+    // What a code-search viewer needs and a syntax walk cannot key for. Three of these
+    // are a *second key order* over data already above — the shape a derived predicate
+    // would take if one could be declared (Phase 8b).
+    public const uint DeclSpan = 22;
+    public const uint SearchByLowerName = 23;
+    public const uint FileXRef = 24;
+    public const uint DerivesFrom = 25;
+    public const uint AttributeOf = 26;
+
     /// <summary>Every predicate id, in schema order — what a report iterates.</summary>
     public static readonly uint[] Predicates =
     [
         File, Module, Decl, SearchByName, Ref, Import,
         Project, Assembly, Compilation, ProjectSource, ProjectRef, Package, PackageRef,
         Member, Extends, Implements, Override, Param, TypeOf, Doc, Attribute, Line,
+        DeclSpan, SearchByLowerName, FileXRef, DerivesFrom, AttributeOf,
     ];
 
     public static readonly ApertureSchema Schema = new([
@@ -84,13 +94,15 @@ internal static class CodeIndex
             ("to", ApertureType.Reference(Decl))), null),
 
         // Declared {to, file, at}: find-references is the question, and it seeks only
-        // if the target leads.
+        // if the target leads. `at.length` is what a viewer draws the link over, and it
+        // trails the key so every seek prefix above is unchanged.
         new AperturePredicate("src.Ref", ApertureType.Rec(
             ("to", ApertureType.Reference(Decl)),
             ("file", ApertureType.Reference(File)),
             ("at", ApertureType.Rec(
                 ("line", ApertureType.Integer),
-                ("col", ApertureType.Integer)))), null),
+                ("col", ApertureType.Integer),
+                ("length", ApertureType.Integer)))), null),
 
         new AperturePredicate("src.Import", ApertureType.Rec(
             ("from", ApertureType.Reference(Module)),
@@ -178,6 +190,36 @@ internal static class CodeIndex
         new AperturePredicate("src.Line", ApertureType.Rec(
             ("file", ApertureType.Reference(File)),
             ("line", ApertureType.Integer)), ApertureType.String),
+
+        // ---- the viewer's key orders -----------------------------------------------
+
+        new AperturePredicate("src.DeclSpan", ApertureType.Rec(
+            ("decl", ApertureType.Reference(Decl)),
+            ("col", ApertureType.Integer),
+            ("endLine", ApertureType.Integer),
+            ("endCol", ApertureType.Integer)), null),
+
+        new AperturePredicate("src.SearchByLowerName", ApertureType.Rec(
+            ("name", ApertureType.String),
+            ("to", ApertureType.Reference(Decl))), null),
+
+        // The same references as `src.Ref`, keyed by file and then by position — the
+        // question a file view asks, and the one a target-leading key cannot answer.
+        new AperturePredicate("src.FileXRef", ApertureType.Rec(
+            ("file", ApertureType.Reference(File)),
+            ("at", ApertureType.Rec(
+                ("line", ApertureType.Integer),
+                ("col", ApertureType.Integer),
+                ("length", ApertureType.Integer))),
+            ("to", ApertureType.Reference(Decl))), null),
+
+        new AperturePredicate("src.DerivesFrom", ApertureType.Rec(
+            ("type", ApertureType.Reference(Decl)),
+            ("base", ApertureType.Reference(Decl))), null),
+
+        new AperturePredicate("src.AttributeOf", ApertureType.Rec(
+            ("target", ApertureType.Reference(Decl)),
+            ("attribute", ApertureType.String)), null),
     ]);
 
     public static string NameOf(uint predicate) => Schema[predicate].Name;
@@ -203,11 +245,46 @@ internal static class CodeIndex
             ApertureValue.Of(name),
             ApertureValue.Of(ApertureRef.To(decl))));
 
-    public static ApertureFact RefFact(long line, long col, ApertureFact file, ApertureFact decl) =>
+    public static ApertureFact RefFact(long line, long col, long length, ApertureFact file, ApertureFact decl) =>
         new(Ref, ApertureValue.Rec(
             ApertureValue.Of(ApertureRef.To(decl)),
             ApertureValue.Of(ApertureRef.To(file)),
-            ApertureValue.Rec(ApertureValue.Of(line), ApertureValue.Of(col))));
+            ApertureValue.Rec(
+                ApertureValue.Of(line),
+                ApertureValue.Of(col),
+                ApertureValue.Of(length))));
+
+    /// <summary>The same reference, keyed by file and position — see `src.FileXRef`.</summary>
+    public static ApertureFact FileXRefFact(long line, long col, long length, ApertureFact file, ApertureFact decl) =>
+        new(FileXRef, ApertureValue.Rec(
+            ApertureValue.Of(ApertureRef.To(file)),
+            ApertureValue.Rec(
+                ApertureValue.Of(line),
+                ApertureValue.Of(col),
+                ApertureValue.Of(length)),
+            ApertureValue.Of(ApertureRef.To(decl))));
+
+    public static ApertureFact DeclSpanFact(ApertureFact decl, long col, long endLine, long endCol) =>
+        new(DeclSpan, ApertureValue.Rec(
+            ApertureValue.Of(ApertureRef.To(decl)),
+            ApertureValue.Of(col),
+            ApertureValue.Of(endLine),
+            ApertureValue.Of(endCol)));
+
+    public static ApertureFact SearchLowerFact(string name, ApertureFact decl) =>
+        new(SearchByLowerName, ApertureValue.Rec(
+            ApertureValue.Of(name),
+            ApertureValue.Of(ApertureRef.To(decl))));
+
+    public static ApertureFact DerivesFromFact(ApertureFact type, ApertureFact @base) =>
+        new(DerivesFrom, ApertureValue.Rec(
+            ApertureValue.Of(ApertureRef.To(type)),
+            ApertureValue.Of(ApertureRef.To(@base))));
+
+    public static ApertureFact AttributeOfFact(ApertureFact target, string attribute) =>
+        new(AttributeOf, ApertureValue.Rec(
+            ApertureValue.Of(ApertureRef.To(target)),
+            ApertureValue.Of(attribute)));
 
     public static ApertureFact ImportFact(ApertureFact from, ApertureFact to) =>
         new(Import, ApertureValue.Rec(

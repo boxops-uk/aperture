@@ -34,6 +34,19 @@ schema src {
   # matched (I6).
   predicate Decl : { module : Module, name : string, line : int } -> string
 
+  # **Where a declaration's name starts, and where the whole thing ends.**
+  #
+  # A key of one reference plus the span, in the shape `src.TypeOf` and `src.Doc` use —
+  # an attribute *of* something else. It is not folded into `src.Decl` because that
+  # would change what a declaration *is*: the key is the identity, every reference is a
+  # `FactId` to it, and widening an identity to carry a rendering detail is how a schema
+  # acquires fields nobody can explain later.
+  #
+  # `line` is the declaration's, from its key. `col` is where the **name** starts, so a
+  # viewer can highlight the identifier rather than the statement; `endLine`/`endCol`
+  # close the whole declaration, which is what folds a body.
+  predicate DeclSpan : { decl : Decl, col : int, endLine : int, endCol : int }
+
   # **The search index over declaration names**, and the one predicate here that exists
   # for a reason about *keys* rather than about the code. A declaration's key begins
   # with its module, so `src.Decl {name = "encode"..}` reaches the name only after the
@@ -44,12 +57,39 @@ schema src {
   # hand until Phase 8b can declare one.
   predicate SearchByName : { name : string, to : Decl }
 
+  # **The same index, lower-cased**, because a search box is case-insensitive and focus
+  # has no `toLower` to apply one at read time. A caller lower-cases the term and seeks
+  # here; the rows still name the declaration, whose real name is on it.
+  #
+  # A *second* copy rather than a replacement: "find exactly `Parse`" and "find anything
+  # spelled like parse" are different questions, and a case-folded index cannot answer
+  # the first.
+  predicate SearchByLowerName : { name : string, to : Decl }
+
   # Declared `{to, file, at}`, because find-references is the question: "where is this
   # used" seeks only if the target leads. The file comes second so "this declaration's
   # uses in this file" narrows too, and it is a field of its own because `to` reaches
   # the file the *declaration* is in, which for a reference worth having is a different
   # one.
-  predicate Ref : { to : Decl, file : File, at : { line : int, col : int } }
+  # `at.length` is how many characters the reference spells, which is what a viewer
+  # needs to draw a link over it. It is in the **key** rather than on the value side on
+  # purpose: a key field is already in the register the scan is holding, where a value
+  # is a point read per row (I6). It costs the seeks nothing because it trails, so every
+  # prefix above still narrows exactly as it did.
+  predicate Ref : { to : Decl, file : File, at : { line : int, col : int, length : int } }
+
+  # **The same references, keyed by the file they are in** — the one question `src.Ref`
+  # cannot answer, because a predicate leads with one field and find-references needs
+  # that field to be the target.
+  #
+  # This is what a viewer asks once per file, and against `src.Ref` it was a scan of the
+  # largest relational predicate in the index: 4.9M rows to find the few hundred in one
+  # file. Position leads the rest of the key, so a file's references come back in the
+  # order a renderer wants to splice them.
+  #
+  # The third predicate here that exists because a derived one cannot yet be declared —
+  # `src.SearchByName` and `src.Implements`'s closure are the others.
+  predicate FileXRef : { file : File, at : { line : int, col : int, length : int }, to : Decl }
 
   # module → module, deduped: what a name in this file resolved to, rather than what a
   # `using` or an `import` statement claimed.
@@ -87,6 +127,11 @@ schema src {
   predicate Implements : { iface : Decl, type : Decl }
   predicate Override : { base : Decl, member : Decl }
 
+  # **The other direction**, for the question a symbol panel actually asks: given this
+  # type, what does it derive from. `src.Extends` answers "who derives from *this*",
+  # which is the fan-out worth a seek and the opposite of what a panel wants.
+  predicate DerivesFrom : { type : Decl, base : Decl }
+
   # An `int` in the middle of a key, so a method's parameters come back in order.
   predicate Param : { decl : Decl, index : int, name : string } -> string
 
@@ -96,6 +141,10 @@ schema src {
 
   # A string leading the key, so `[Obsolete]` everywhere is a seek rather than a scan.
   predicate Attribute : { attribute : string, target : Decl }
+
+  # And the other direction, for the same reason `src.DerivesFrom` exists: a panel asks
+  # what *this* declaration is marked with.
+  predicate AttributeOf : { target : Decl, attribute : string }
 
   # The **wide row**: a file's line table, one fact per line, the text on the value
   # side. The largest predicate by bytes and the second largest by count.

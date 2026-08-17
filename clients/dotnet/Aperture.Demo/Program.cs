@@ -83,7 +83,8 @@ var schema = new ApertureSchema([
         ("file", ApertureType.Reference(File)),
         ("at", ApertureType.Rec(
             ("line", ApertureType.Integer),
-            ("col", ApertureType.Integer)))), null),
+            ("col", ApertureType.Integer),
+            ("length", ApertureType.Integer)))), null),
 
     new AperturePredicate("src.Import", ApertureType.Rec(
         ("from", ApertureType.Reference(Module)),
@@ -153,6 +154,39 @@ var schema = new ApertureSchema([
     new AperturePredicate("src.Line", ApertureType.Rec(
         ("file", ApertureType.Reference(File)),
         ("line", ApertureType.Integer)), ApertureType.String),
+
+    // ---- what a code-search viewer needs -----------------------------------------
+    //
+    // Three of these are a *second key order* over data already declared above: a
+    // predicate leads with one field, and find-references and a file view want
+    // different ones. Declaring a derived predicate is Phase 8b; until then the
+    // producer states the second order.
+
+    new AperturePredicate("src.DeclSpan", ApertureType.Rec(
+        ("decl", ApertureType.Reference(Decl)),
+        ("col", ApertureType.Integer),
+        ("endLine", ApertureType.Integer),
+        ("endCol", ApertureType.Integer)), null),
+
+    new AperturePredicate("src.SearchByLowerName", ApertureType.Rec(
+        ("name", ApertureType.String),
+        ("to", ApertureType.Reference(Decl))), null),
+
+    new AperturePredicate("src.FileXRef", ApertureType.Rec(
+        ("file", ApertureType.Reference(File)),
+        ("at", ApertureType.Rec(
+            ("line", ApertureType.Integer),
+            ("col", ApertureType.Integer),
+            ("length", ApertureType.Integer))),
+        ("to", ApertureType.Reference(Decl))), null),
+
+    new AperturePredicate("src.DerivesFrom", ApertureType.Rec(
+        ("type", ApertureType.Reference(Decl)),
+        ("base", ApertureType.Reference(Decl))), null),
+
+    new AperturePredicate("src.AttributeOf", ApertureType.Rec(
+        ("target", ApertureType.Reference(Decl)),
+        ("attribute", ApertureType.String)), null),
 ]);
 
 if (goldenPath is not null)
@@ -226,7 +260,10 @@ var references = new List<ApertureFact>
         ApertureValue.Of(ApertureRef.To(
             DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
         ApertureValue.Of(ApertureRef.To(FileFact("query/plan.py"))),
-        ApertureValue.Rec(ApertureValue.Of(19L), ApertureValue.Of(4L)))),
+        ApertureValue.Rec(
+            ApertureValue.Of(19L),
+            ApertureValue.Of(4L),
+            ApertureValue.Of(6L)))),
 };
 
 var refs = connection.Write(Reference, references);
@@ -327,7 +364,10 @@ void EmitGolden(string path)
                 ApertureValue.Of(ApertureRef.To(
                     DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
                 ApertureValue.Of(ApertureRef.To(FileFact("query/plan.py"))),
-                ApertureValue.Rec(ApertureValue.Of(19L), ApertureValue.Of(4L)))),
+                ApertureValue.Rec(
+                    ApertureValue.Of(19L),
+                    ApertureValue.Of(4L),
+                    ApertureValue.Of(6L)))),
         ]),
 
         // A reference in the *middle* of a key, an integer after it, and a value side
