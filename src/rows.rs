@@ -27,6 +27,24 @@
 //! shows. A raw `u64` would be the id's bytes rather than the id: nothing takes one as
 //! input (focus names a fact by its key, not by its number), so the useful thing is the
 //! one a person can read and a script can compare.
+//!
+//! # Colour, when there is a terminal, and jq's colours because they are the ones people
+//! know
+//!
+//! `jq` is what everybody reads JSON through, so its palette is the one a person has
+//! already learned: keys bold blue, strings green, punctuation bright, numbers plain
+//! (its `JQ_COLORS` default). Copying it costs nothing and means nobody has to learn a
+//! second scheme to read the same document.
+//!
+//! **One deliberate divergence**: a *reference* is yellow, not green, even though it
+//! renders as a JSON string. jq has no idea what one is; this tool does, and yellow is
+//! what a predicate name is painted everywhere else in it — in a query, in a schema, and
+//! now in a row. In a fact database the references are the part you follow, and the
+//! palette should say so.
+//!
+//! Colour is asked of [`crate::prompt::colours_enabled`], which answers `NO_COLOR` and
+//! "is stdout a terminal" — so `| jq` and `> file` get plain bytes, exactly as jq's own
+//! output does.
 
 use std::io::Write;
 
@@ -38,6 +56,12 @@ use crate::cli::RowFormat;
 pub struct Sink<W: Write> {
     out: W,
     format: RowFormat,
+    /// Whether to paint, decided **once** when the result starts.
+    ///
+    /// Carried rather than asked per value, so that the answer cannot change halfway
+    /// down a document — and so a test can render both ways without a terminal, which
+    /// is the only way the escape codes are ever checked at all.
+    colour: bool,
     /// What a row looks like, as the server described it.
     ///
     /// Held whole rather than reduced to column names, because JSON needs it whole:
@@ -62,19 +86,34 @@ impl<W: Write> Sink<W> {
     /// # Errors
     ///
     /// Whatever writing reports.
-    pub fn new(mut out: W, format: RowFormat, desc: &Desc) -> std::io::Result<Sink<W>> {
+    pub fn new(out: W, format: RowFormat, desc: &Desc) -> std::io::Result<Sink<W>> {
+        Sink::painted(out, format, desc, crate::prompt::colours_enabled())
+    }
+
+    /// The same, told whether to paint rather than asking.
+    ///
+    /// # Errors
+    ///
+    /// Whatever writing reports.
+    pub fn painted(
+        mut out: W,
+        format: RowFormat,
+        desc: &Desc,
+        colour: bool,
+    ) -> std::io::Result<Sink<W>> {
         let columns = match desc {
             Desc::Record(fields) => fields.iter().map(|(name, _)| name.clone()).collect(),
             _ => vec![],
         };
 
         if format == RowFormat::Json {
-            write!(out, "[")?;
+            write!(out, "{}", punct("[", colour))?;
         }
 
         Ok(Sink {
             out,
             format,
+            colour,
             desc: desc.clone(),
             columns,
             buffered: vec![],
@@ -99,12 +138,12 @@ impl<W: Write> Sink<W> {
 
             RowFormat::Json => {
                 if self.rows > 0 {
-                    write!(self.out, ",")?;
+                    write!(self.out, "{}", punct(",", self.colour))?;
                 }
-                write!(self.out, "\n  {}", json(value, &self.desc))?;
+                write!(self.out, "\n  {}", json(value, &self.desc, self.colour))?;
             }
 
-            RowFormat::Jsonl => writeln!(self.out, "{}", json(value, &self.desc))?,
+            RowFormat::Jsonl => writeln!(self.out, "{}", json(value, &self.desc, self.colour))?,
 
             RowFormat::Table => {
                 let cells = self.cells(value);
@@ -129,7 +168,7 @@ impl<W: Write> Sink<W> {
                 if self.rows > 0 {
                     writeln!(self.out)?;
                 }
-                writeln!(self.out, "]")?;
+                writeln!(self.out, "{}", punct("]", self.colour))?;
             }
 
             RowFormat::Table => {
@@ -203,36 +242,80 @@ pub fn render(value: &WireValue) -> String {
 /// or one of a different width — the value wins and comes out positionally: a row that
 /// arrived is a row worth printing, and a mismatch is a server bug better reported by
 /// odd-looking output than by a panic on a data path.
-fn json(value: &WireValue, desc: &Desc) -> String {
+fn json(value: &WireValue, desc: &Desc, colour: bool) -> String {
     match (value, desc) {
-        (WireValue::Int(n), _) => n.to_string(),
-        (WireValue::Str(text), _) => json_string(text),
+        (WireValue::Int(n), _) => paint(NUMBER, &n.to_string(), colour),
+        (WireValue::Str(text), _) => paint(STRING, &json_string(text), colour),
 
-        (WireValue::Ref(aperture_client::WireRef::Id(id)), _) => {
-            json_string(&format!("#{}:{}", id.predicate().0, id.sequence()))
-        }
+        (WireValue::Ref(aperture_client::WireRef::Id(id)), _) => paint(
+            REFERENCE,
+            &json_string(&format!("#{}:{}", id.predicate().0, id.sequence())),
+            colour,
+        ),
 
         // What a producer sends and a server never answers with; printed rather than
         // refused, for the reason `render` gives.
-        (WireValue::Ref(aperture_client::WireRef::Nested(fact)), _) => json(&fact.key, desc),
+        (WireValue::Ref(aperture_client::WireRef::Nested(fact)), _) => {
+            json(&fact.key, desc, colour)
+        }
 
         (WireValue::Record(fields), Desc::Record(named)) if fields.len() == named.len() => {
             let pairs: Vec<String> = fields
                 .iter()
                 .zip(named.iter())
                 .map(|(field, (name, desc))| {
-                    format!("{}: {}", json_string(name), json(field, desc))
+                    format!(
+                        "{}{} {}",
+                        paint(KEY, &json_string(name), colour),
+                        punct(":", colour),
+                        json(field, desc, colour)
+                    )
                 })
                 .collect();
 
-            format!("{{{}}}", pairs.join(", "))
+            format!(
+                "{}{}{}",
+                punct("{", colour),
+                pairs.join(&format!("{} ", punct(",", colour))),
+                punct("}", colour)
+            )
         }
 
         (WireValue::Record(fields), _) => {
-            let cells: Vec<String> = fields.iter().map(|field| json(field, &Desc::Str)).collect();
-            format!("[{}]", cells.join(", "))
+            let cells: Vec<String> = fields
+                .iter()
+                .map(|field| json(field, &Desc::Str, colour))
+                .collect();
+
+            format!(
+                "{}{}{}",
+                punct("[", colour),
+                cells.join(&format!("{} ", punct(",", colour))),
+                punct("]", colour)
+            )
         }
     }
+}
+
+/// jq's `JQ_COLORS` defaults, and one addition of our own.
+const STRING: &str = "0;32";
+const NUMBER: &str = "0;39";
+const KEY: &str = "34;1";
+const PUNCTUATION: &str = "1;39";
+/// A fact reference — **not** jq's, because jq has no such thing. Yellow is what a
+/// predicate is painted in a query and in a schema, and a reference names one.
+const REFERENCE: &str = "33";
+
+fn paint(code: &str, text: &str, colour: bool) -> String {
+    if colour {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_owned()
+    }
+}
+
+fn punct(text: &str, colour: bool) -> String {
+    paint(PUNCTUATION, text, colour)
 }
 
 /// A JSON string, escaped by hand.
@@ -442,6 +525,69 @@ mod tests {
             let parsed: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
             assert_eq!(parsed["at"], n + 1);
         }
+    }
+
+    /// **jq's palette, and the one place it is not jq's.**
+    ///
+    /// Keys bold blue, strings green, punctuation bright — `JQ_COLORS`' defaults, so
+    /// nobody has to learn a second scheme to read the same document. A **reference** is
+    /// yellow rather than green, because jq has no idea what one is and this tool does:
+    /// yellow is what a predicate is painted in a query and in a schema, and in a fact
+    /// database the references are the part you follow.
+    ///
+    /// Checked by asking for colour explicitly, since a test has no terminal and the
+    /// answer would otherwise always be "no" — which is how a palette rots.
+    #[test]
+    fn colour_follows_jq_except_where_jq_has_nothing_to_say() {
+        let desc = Desc::Record(Box::from([
+            ("name".to_owned(), Desc::Str),
+            ("line".to_owned(), Desc::Int),
+            (
+                "of".to_owned(),
+                Desc::Fact(aperture_schema::schema::PredicateId(3)),
+            ),
+        ]));
+
+        let id = aperture_schema::id::FactId::new(aperture_schema::schema::PredicateId(3), 7)
+            .expect("a fact id");
+
+        let mut out = vec![];
+        let mut sink = Sink::painted(&mut out, RowFormat::Jsonl, &desc, true).unwrap();
+
+        sink.row(&record(vec![
+            WireValue::Str("encode".to_owned()),
+            WireValue::Int(12),
+            WireValue::Ref(aperture_client::WireRef::Id(id)),
+        ]))
+        .unwrap();
+        sink.end().unwrap();
+
+        let text = String::from_utf8(out).unwrap();
+
+        assert!(text.contains("\u{1b}[34;1m\"name\"\u{1b}[0m"), "{text:?}");
+        assert!(text.contains("\u{1b}[0;32m\"encode\"\u{1b}[0m"), "{text:?}");
+        assert!(text.contains("\u{1b}[0;39m12\u{1b}[0m"), "{text:?}");
+        assert!(text.contains("\u{1b}[33m\"#3:7\"\u{1b}[0m"), "{text:?}");
+        assert!(text.contains("\u{1b}[1;39m{\u{1b}[0m"), "{text:?}");
+
+        // And with colour off it is the same document with nothing in it — which is
+        // what a pipe gets, and what every other test here reads.
+        let mut plain = vec![];
+        let mut sink = Sink::painted(&mut plain, RowFormat::Jsonl, &desc, false).unwrap();
+        sink.row(&record(vec![
+            WireValue::Str("encode".to_owned()),
+            WireValue::Int(12),
+            WireValue::Ref(aperture_client::WireRef::Id(id)),
+        ]))
+        .unwrap();
+        sink.end().unwrap();
+
+        let plain = String::from_utf8(plain).unwrap();
+        assert!(!plain.contains('\u{1b}'), "{plain:?}");
+        assert_eq!(
+            plain.trim(),
+            r##"{"name": "encode", "line": 12, "of": "#3:7"}"##
+        );
     }
 
     /// An empty result is still a valid document rather than nothing at all.

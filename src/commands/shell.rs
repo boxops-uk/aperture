@@ -190,10 +190,20 @@ pub const COMMANDS: [Command; 14] = [
 /// is what ends it — it is handled before dispatch, beside Ctrl-D.
 const QUIT: [&str; 4] = [":quit", ":q", "\\q", "\\quit"];
 
-/// Whether the loop should keep going.
+/// What the loop should do next.
+///
+/// [`Clear`](Control::Clear) is here rather than done where it is asked because the
+/// screen belongs to **rustyline**: it tracks where the cursor is in order to redraw a
+/// line, and an escape written behind its back leaves it drawing against a screen state
+/// it does not have. Writing one into an `impl Write` also does not reach the terminal
+/// until something flushes, which for a sequence with no newline in it is the next
+/// thing printed — so the screen cleared *after* the prompt was drawn, if at all. The
+/// editor has a `clear_screen` that does both halves; this is how the answer gets back
+/// to it, and it keeps `handle` a function from a line to a sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
     Continue,
+    Clear,
     Quit,
 }
 
@@ -326,13 +336,7 @@ impl Repl {
         match command.name {
             ":help" => help(out)?,
 
-            ":clear" => {
-                // The escape a terminal understands, and nothing at all when this is
-                // not one: a `Vec<u8>` in a test should not collect a screen-clear.
-                if prompt::colours_enabled() {
-                    write!(out, "\x1b[2J\x1b[H")?;
-                }
-            }
+            ":clear" => return Ok(Control::Clear),
 
             ":schema" => self.describe(argument, out)?,
 
@@ -962,6 +966,12 @@ pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
             Ok(Control::Quit) => break,
             Ok(Control::Continue) => {}
 
+            // rustyline's, so that it clears the screen *and* forgets where it had
+            // drawn — the two halves that make the next prompt appear at the top.
+            Ok(Control::Clear) => {
+                let _ = editor.clear_screen();
+            }
+
             // The conversation is broken rather than the request refused — see the
             // module docs for which is which. One attempt to open a new one, because a
             // server restarted under a shell should cost a line rather than a session;
@@ -1343,6 +1353,25 @@ mod tests {
 
         assert_eq!(named("code"), "code");
         assert_eq!(named("aperture://box:7000/code"), "code");
+    }
+
+    /// **`:clear` asks the loop, and the loop asks rustyline.**
+    ///
+    /// It used to write an escape into the sink, which failed twice over: the sequence
+    /// has no newline, so a line-buffered stdout held it until something else printed,
+    /// and rustyline went on believing the screen still held what it had drawn. The
+    /// value that comes back is the whole fix, and it is checkable without a terminal.
+    #[test]
+    fn clear_is_asked_of_the_editor_rather_than_written_at_the_screen() {
+        let serving = serving(1);
+        let mut repl = repl(&serving);
+        let mut out = Vec::new();
+
+        assert_eq!(
+            repl.handle(":clear", &mut out).expect("handled"),
+            Control::Clear
+        );
+        assert!(out.is_empty(), "nothing is written at the screen: {out:?}");
     }
 
     /// An unknown command says so and points at the one that lists them.
