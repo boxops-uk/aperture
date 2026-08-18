@@ -89,6 +89,25 @@ pub fn run(
         eprintln!("warning: {problem}");
     }
 
+    // **A database with no embedded schema is being read through a guess, and the guess
+    // is silent.** Since 8.4 a database carries the schema it was created against and
+    // the two are checked against each other; one made before that carries neither half
+    // of the comparison, so it is served with *this build's* built-in schema — and if
+    // that schema has moved since (a field reordered, a predicate retyped) the rows
+    // decode as something else. The loud version is a decode error; the quiet version
+    // is a query answering zero rows, which is why this is worth a line at startup
+    // rather than a note in a document.
+    for entry in &listing.entries {
+        if matches!(aperture_store::schema_doc::source(&entry.path), Ok(None)) {
+            eprintln!(
+                "warning: `{}` embeds no schema copy — it predates one being kept, so it is \n\
+                 served with this build's built-in schema. If that schema has changed since the \n\
+                 database was written, its rows will decode as something else. Re-index it.",
+                entry.name()
+            );
+        }
+    }
+
     if let Some(address) = listen {
         // Said out loud, every time, because `ops-I10`'s argument is that this never
         // happens by accident — and a line in the startup banner is what makes an

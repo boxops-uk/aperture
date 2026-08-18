@@ -808,14 +808,20 @@ impl StreamTask {
             let resume = cursor.take();
             let listing = prepared.catalogue.clone();
 
-            let (counted, next) = {
+            let counting = {
                 let queued = std::time::Instant::now();
                 let stats = Arc::clone(stats);
                 blocking::run(move || {
                     stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
                     count_chunk(&database, listing.as_ref(), &plan, resume, &token)
                 })
-                .await?
+                .await
+            };
+
+            let (counted, next) = match counting {
+                Ok(counted) => counted,
+                Err(_) if self.cancel.is_cancelled() => break,
+                Err(error) => return Err(error),
             };
 
             total += counted;
@@ -959,10 +965,26 @@ impl StreamTask {
                     )?;
                     Ok((chunk, counted))
                 })
-                .await?
+                .await
             };
 
-            let (chunk, counted) = chunk;
+            // **A cancel that lands *inside* a chunk ends the stream, exactly as one
+            // that lands between chunks does** — the arm below this loop says so in
+            // those words, and this is the same rule where the executor gets to the
+            // news first. To the executor a cancellation *is* an error: it stops
+            // mid-scan and says so. To a client that asked for one it is the answer,
+            // and sending it on has two costs rather than one — the caller is handed a
+            // failure for something it requested, and the `COMPLETE` it was waiting for
+            // never arrives, so the stream is never drained and its id never returned.
+            //
+            // Any error while cancelled is treated this way, not only the executor's
+            // own: a client that has asked to stop is owed a clean stop, and whatever
+            // else went wrong on the way down will be found again by the next query.
+            let (chunk, counted) = match chunk {
+                Ok(chunk) => chunk,
+                Err(_) if self.cancel.is_cancelled() => break,
+                Err(error) => return Err(error),
+            };
             profile = counted;
 
             stats.chunk_sent(chunk.rows.len() as u64);

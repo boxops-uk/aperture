@@ -1008,3 +1008,55 @@ fn remove_when_released(control: &mut Connection, database: &str) {
         }
     }
 }
+
+/// **A cancel that lands *inside* a chunk is still a cancel**, not a failure.
+///
+/// The loop already says so where a cancel lands *between* chunks: "a cancel is an
+/// early end, not a failure, and a client that asked for one is not owed an error".
+/// Inside one it went the other way — the executor reports cancellation as an error,
+/// because to the executor it is one, and that error was sent on the stream instead of
+/// the `COMPLETE` the client was waiting for. Two things then go wrong at once: the
+/// caller is handed an error for something it asked for, and the stream is left
+/// un-drained with its id never returned.
+///
+/// It needs a *slow* chunk to be observable at all, which is why this query examines a
+/// million rows to produce none: a cancel arriving between chunks takes the clean path
+/// and proves nothing. On a small corpus every chunk is microseconds, which is why this
+/// was invisible until a 25M-fact index made an ordinary shell session hit it every
+/// time.
+#[test]
+fn a_cancel_inside_a_chunk_completes_rather_than_fails() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    seed(&mut connection, 1000);
+
+    // A thousand files joined against a thousand files, with every inner row denied:
+    // a million rows examined, none produced, and all of it inside the first chunk.
+    // **A denial rather than a constraint**, and that is the whole of why this is slow
+    // — `G = "zzzz".."` would be *captured* by the level that binds `G` and become a
+    // seek that finds nothing immediately, where `!=` is never a seek and filters
+    // however it is written (chapter 7). Every file the seed writes begins `f`, so this
+    // rejects all thousand of them, a thousand times over.
+    //
+    // The descriptor arrives before any of that work, so the cancel below lands while
+    // the executor is in the middle of it.
+    let mut rows = connection
+        .query("{a = F} where src.File F; src.File G; G != \"f\"..")
+        .expect("a result");
+
+    let sent = connection
+        .cancel(&mut rows)
+        .expect("a cancel is not a failure");
+
+    assert_eq!(sent, 0, "it produced nothing before it was stopped");
+
+    // And the connection is still usable — which it would not be if the stream had
+    // been left waiting for a completion that was replaced by an error.
+    let mut after = connection.query("F where src.File F").expect("a result");
+    assert_eq!(
+        connection.take(&mut after, 3).expect("a page").len(),
+        3,
+        "the session goes on"
+    );
+}
