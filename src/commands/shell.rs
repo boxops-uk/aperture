@@ -861,7 +861,7 @@ fn predicate_line(schema: &Schema, index: usize) -> String {
 
     format!(
         "  {}{virtual_note}",
-        prompt::paint_schema(&format!("predicate {name} : {signature}"))
+        prompt::paint_schema(&format!("predicate {name}: {signature}"))
     )
 }
 

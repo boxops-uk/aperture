@@ -89,7 +89,7 @@ fn write(schema: &Schema, virtuals: bool) -> String {
 
         out.push_str("  predicate ");
         out.push_str(name);
-        out.push_str(" : ");
+        out.push_str(": ");
         ty(&mut out, schema, &predicate.predicate().key);
 
         if let Some(value) = predicate.predicate().value.as_ref() {
@@ -219,7 +219,7 @@ fn ty(out: &mut String, schema: &Schema, shape: &PredicateTy) {
                     out.push_str(", ");
                 }
                 out.push_str(schema.interner().resolve(*name).unwrap_or(""));
-                out.push_str(" : ");
+                out.push_str(": ");
                 ty(out, schema, field);
             }
             out.push_str(" }");
@@ -376,11 +376,15 @@ mod tests {
             false,
         );
 
+        // **The colon sticks to the name it belongs to**, here and in a record's fields:
+        // `file: src.File` reads as one thing said about `file`, where `file : src.File`
+        // reads as three tokens with equal claim on the eye. It is also what the shell
+        // already prints a *type* as, so the two now agree.
         assert_eq!(
             print(&schema),
             "schema src {\n  \
-               predicate File : string\n  \
-               predicate Ref : { at : { line : int, col : int }, file : src.File } -> string\n\
+               predicate File: string\n  \
+               predicate Ref: { at: { line: int, col: int }, file: src.File } -> string\n\
              }\n"
         );
     }
@@ -395,7 +399,7 @@ mod tests {
         );
 
         let printed = print(&schema);
-        assert!(printed.contains("d : src.Decl"), "{printed}");
+        assert!(printed.contains("d: src.Decl"), "{printed}");
         assert!(equivalent(&schema, &read(&printed, true)));
     }
 }

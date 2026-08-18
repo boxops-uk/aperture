@@ -65,7 +65,7 @@ fn a_database_lives_and_dies_through_the_command_tree() {
     // rather than from anything compiled in.
     assert!(described.contains("src.Decl"), "{described}");
     assert!(
-        described.contains("{ file : src.File, name : string }"),
+        described.contains("{ file: src.File, name: string }"),
         "{described}"
     );
 
@@ -318,7 +318,7 @@ fn a_database_is_created_against_a_schema_file_and_carries_it() {
 
     // `--schema` dumps the copy itself, which is text `create --schema` would take back.
     let dumped = ok(root, &["describe", "tiny", "--schema"]);
-    assert!(dumped.contains("predicate Line : string"), "{dumped}");
+    assert!(dumped.contains("predicate Line: string"), "{dumped}");
 
     // And the copy agrees with the file it came from, which is what `diff` is for.
     let same = ok(root, &["schema", "diff", path, "tiny"]);
