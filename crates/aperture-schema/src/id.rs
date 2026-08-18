@@ -66,7 +66,9 @@ pub const MAX_FACT_SEQUENCE: u64 = (1 << FACT_ID_SEQUENCE_BITS) - 1;
 ///
 /// [I11]: ../../../docs/invariants.md#i11
 /// [chapter 3]: ../../../docs/03-storage-model.md
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// `Hash` because an id is a thing callers key a map by — a client caching the fact
+/// each one names, say. It agrees with `Eq` by construction, both being the `u64`'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FactId(u64);
 
 impl FactId {

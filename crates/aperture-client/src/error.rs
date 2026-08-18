@@ -27,6 +27,22 @@ pub enum ClientError {
     /// ends disagree about the conversation rather than about the format.
     #[error("protocol: {0}")]
     Protocol(String),
+
+    /// **The server is older than the question.**
+    ///
+    /// It answered a frame kind it does not know, which is the framing layer working as
+    /// designed: an unrecognised kind is handed up intact rather than failing the decode,
+    /// so a peer *can* be told "I do not know that message". This is that answer, made
+    /// into a sentence somebody can act on.
+    ///
+    /// Its own variant because the remedy is different in kind. Every other refusal is
+    /// about the request — a bad query, a sealed database, a name already taken — and the
+    /// answer is in the message. This one is about the **build on the other end**, and
+    /// the answer is to restart it. A caller that can carry on without the request should
+    /// (the shell turns expansion off and prints the rows), and one that cannot should
+    /// fail: a script that asked for expanded rows must not silently receive ids.
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 impl ClientError {

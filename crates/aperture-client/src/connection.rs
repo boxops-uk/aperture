@@ -8,7 +8,10 @@ use std::{
     sync::Arc,
 };
 
-use aperture_schema::schema::{LocalInterner, PredicateId, Schema};
+use aperture_schema::{
+    id::FactId,
+    schema::{LocalInterner, PredicateId, Schema},
+};
 use aperture_wire::{
     Control, ControlOp, ControlReply, FrameHeader, FrameKind, Mode, Startup, StreamId, WireFact,
     decode_desc, encode_block, encode_frame, frame,
@@ -540,6 +543,98 @@ impl Connection {
 
         String::from_utf8(payload)
             .map_err(|_| ClientError::Protocol("a schema that is not UTF-8".to_owned()))
+    }
+
+    /// **What facts do these ids name?** One answer each, in the order asked: the key, or
+    /// which kind of nothing was there — a *missing* stored fact, which is corruption, or
+    /// a row of a predicate the server **answers rather than stores**, whose listing has
+    /// simply moved on. See [`Found`](aperture_wire::protocol::Found).
+    ///
+    /// A row carries a reference as a `FactId`, because that is what a reference is once
+    /// stored, and focus cannot ask what one names — a query names a fact by its key. So
+    /// this is how a client holding `#3:7` reaches the declaration behind it, and it is
+    /// what [`Expander`](crate::expand::Expander) is built on.
+    ///
+    /// # The schema is a parameter, and it has to be
+    ///
+    /// The reply is **schema-driven** — each key is encoded against its own predicate's
+    /// key type, with no descriptor to carry the shape — so it can only be read against
+    /// the schema the *server* encoded it with. That is
+    /// [`served_schema`](Connection::served_schema)'s answer, not this connection's own
+    /// copy: a reader makes no claim about the schema, so `self.schema` here may be this
+    /// build's built-in one while the database was created against something else
+    /// ([I13](../../../docs/invariants.md#i13)). Passing the wrong one does not fail
+    /// loudly — it decodes the bytes as a different shape — so the caller names it
+    /// rather than this having an opinion.
+    ///
+    /// Rows have no such problem: the server sends a descriptor and they decode against
+    /// that.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Server`] if the server declines — an id naming a predicate it does
+    /// not have, or a virtual one — or [`ClientError::Protocol`] if what comes back is
+    /// not an answer to this question.
+    pub fn fetch(
+        &mut self,
+        schema: &Schema,
+        ids: &[FactId],
+    ) -> Result<Vec<aperture_wire::protocol::Found>, ClientError> {
+        // No round trip for nothing: a row with no references at all is the common case
+        // in a query somebody narrowed by hand, and it should cost what it did before
+        // expansion existed.
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        if ids.len() > protocol::MAX_FETCH {
+            return Err(ClientError::Protocol(format!(
+                "a fetch names {} ids, and {} is the most one may carry",
+                ids.len(),
+                protocol::MAX_FETCH
+            )));
+        }
+
+        let stream = self.claim_stream();
+        self.send(kinds::FETCH, stream, &protocol::encode_fetch(ids))?;
+
+        let answer = self.recv_on(stream);
+        self.release_stream(stream);
+
+        let (kind, payload) = match answer {
+            Ok(answer) => answer,
+
+            // **A server that predates the question says so as a protocol fault.** An
+            // unrecognised frame kind is handed up intact by the framing layer rather
+            // than failing the decode, precisely so a peer can be told it — and a server
+            // built before this frame existed answers `no handler for frame kind F`,
+            // which is not a sentence anybody can act on, and whose remedy is not in it.
+            //
+            // **Named as the likely cause rather than the certain one**, because the code
+            // is shared: `ErrorCode::Protocol` also carries a wire fault, so a server that
+            // failed to encode a reply arrives here too. That case means a damaged
+            // database rather than an old binary, so this says which is usual, gives the
+            // remedy for it, and passes the server's own words along for the rest.
+            Err(ClientError::Server {
+                code: aperture_wire::ErrorCode::Protocol,
+                message,
+            }) => {
+                return Err(ClientError::Unsupported(format!(
+                    "this server did not accept a fetch frame, so a reference cannot be \
+                     expanded into the fact it names — usually that means a build from \
+                     before expansion existed, and restarting it with a current one is \
+                     the fix. The server said: {message}"
+                )));
+            }
+
+            Err(other) => return Err(other),
+        };
+
+        if kind != kinds::FETCHED {
+            return Err(unexpected("the facts some ids name", kind));
+        }
+
+        Ok(protocol::decode_fetched(&payload, schema, ids)?)
     }
 
     fn start_query(&mut self, focus: &str, kind: FrameKind) -> Result<Rows, ClientError> {

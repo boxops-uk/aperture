@@ -69,10 +69,12 @@
 
 pub mod connection;
 pub mod error;
+pub mod expand;
 pub mod rows;
 
 pub use connection::{Connection, Hello, Sealed, Written};
 pub use error::ClientError;
+pub use expand::{Expander, FULL_DEPTH};
 pub use rows::Rows;
 
 // The vocabulary a caller needs, so a consumer imports one crate rather than two for

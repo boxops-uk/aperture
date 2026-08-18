@@ -569,6 +569,7 @@ impl StreamTask {
             }
             kinds::CONTROL => self.control(payload).await,
             kinds::SCHEMA => self.schema().await,
+            kinds::FETCH => self.fetch(payload).await,
 
             other => Err(ServerError::Protocol(format!(
                 "no handler for frame kind `{other}`"
@@ -633,6 +634,87 @@ impl StreamTask {
 
         self.outbound
             .send(kinds::SCHEMA_REPLY, self.stream, source.as_bytes())
+            .await
+    }
+
+    /// Answer with the facts a batch of ids names.
+    ///
+    /// **The read-path twin of a nested reference on the way in.** A row carries a
+    /// reference as a `FactId` because that is what one is once stored, and nothing in
+    /// focus can ask what an id names — a query names a fact by its key. So a client
+    /// that wants the declaration behind `#3:7` asks here, and the answer is the
+    /// target's *key*: the same logical form a producer sends when it nests a reference,
+    /// and the same one `ops-I4`'s content hash is computed over.
+    ///
+    /// One point read each, on the blocking pool with everything else that touches a
+    /// store. Bounded by [`MAX_FETCH`](aperture_wire::protocol::MAX_FETCH) in the
+    /// decoder, so the batch a peer can ask for is a protocol rule rather than this
+    /// handler's caution.
+    ///
+    /// **A virtual predicate answers this too**, and it does so through the same seam
+    /// everything else does. `Catalogued` wraps the store and answers *both* of
+    /// [`FactStore`](aperture_store::fact_store::FactStore)'s methods for the catalogue's
+    /// keyspace — a scan from its rows, and `point` by finding the id among them — so a
+    /// reference into `aperture.db.List` expands exactly as a stored one does. The
+    /// listing is materialised only when an id actually names it, which is the rule the
+    /// query path follows for the same reason: building one walks the store root and
+    /// reads a sidecar per database.
+    ///
+    /// The one thing that differs is worth stating, because it is what "populated
+    /// dynamically" costs. A stored fact's id is stable forever
+    /// ([I11](../../../docs/invariants.md#i11)); a catalogue row's is its position in the
+    /// listing that produced it, so a database created or removed between a query and a
+    /// fetch can move it. Inside one query that cannot happen — every chunk sees the same
+    /// materialisation — and across the round trip an expansion may resolve to a
+    /// different row of the listing, or to none. It is a handle into a view, not an
+    /// identity, and only a view of the *server* has that property.
+    ///
+    /// **Read-only is enough**, unlike a control frame: this reads facts, which is what
+    /// every session may do, and it names no database of its own — the session's is the
+    /// one it reads.
+    async fn fetch(&mut self, payload: &[u8]) -> Result<(), ServerError> {
+        let ids = protocol::decode_fetch(payload)?;
+
+        let database = Arc::clone(self.database()?);
+        let working = Arc::clone(&database);
+        let catalog = self.session.registry.catalog().clone();
+
+        // The cheap question first, as `prepare` asks it: does any id name the catalogue
+        // at all? Almost none do, and the walk is far too much to do otherwise.
+        let catalogue_id = working
+            .schema
+            .find_position(catalogue::PREDICATE)
+            .map(|(id, _)| id);
+        let wants_listing =
+            catalogue_id.is_some_and(|id| ids.iter().any(|asked| asked.predicate() == id));
+
+        let answers: Vec<protocol::Fetched> = blocking::run(move || {
+            let store = working.db.reader();
+            let schema = &working.schema;
+
+            // One interner for the batch: `decode_key` resolves a record's field names
+            // through it, and building one per id would allocate per point read.
+            let interner = LocalInterner::new(schema.interner().clone());
+
+            let listing = if wants_listing {
+                Catalogue::materialise(schema, &catalog.list()?)?.map(Arc::new)
+            } else {
+                None
+            };
+
+            // Two calls rather than one boxed store, for the reason `run_chunk` gives: a
+            // `dyn FactStore` would have to erase the scan too.
+            match listing {
+                Some(listing) => resolve(&Catalogued::new(store, listing), schema, &interner, &ids),
+                None => resolve(&store, schema, &interner, &ids),
+            }
+        })
+        .await?;
+
+        let reply = protocol::encode_fetched(&database.schema, &answers)?;
+
+        self.outbound
+            .send(kinds::FETCHED, self.stream, &reply)
             .await
     }
 
@@ -1323,6 +1405,27 @@ struct Chunking<'a> {
     /// The most rows this turn may produce: [`CHUNK_ROWS`], or what is left of a page.
     budget: usize,
     cancel: &'a CancellationToken,
+}
+
+/// The facts a batch of ids names, once the store to read them from is known.
+///
+/// Generic for the same reason [`over`] is: which store answers depends on whether the
+/// catalogue is in play, and `FactStore::Scan` being an associated type makes `dyn` cost
+/// an allocation and a virtual call to save one line.
+fn resolve<S: aperture_store::fact_store::FactStore>(
+    store: &S,
+    schema: &Schema,
+    interner: &LocalInterner,
+    ids: &[aperture_schema::id::FactId],
+) -> Result<Vec<protocol::Fetched>, ServerError> {
+    ids.iter()
+        .map(|id| {
+            Ok(protocol::Fetched {
+                id: *id,
+                found: rows::key_of(store, schema, interner, *id)?,
+            })
+        })
+        .collect()
 }
 
 /// Run at most `work.budget` rows, from the start or from `resume`.

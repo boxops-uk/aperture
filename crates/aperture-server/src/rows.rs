@@ -27,11 +27,15 @@
 //! `Value`, which is about twenty-five lines and would be a second definition of the
 //! wire format. Going the long way round keeps one.
 
-use aperture_encoding::tuple::Value;
+use aperture_encoding::tuple::{Value, decode_key};
 use aperture_engine::syntax::Ty;
-use aperture_schema::schema::{LocalInterner, PredicateTy};
+use aperture_schema::{
+    id::FactId,
+    schema::{LocalInterner, PredicateTy, Schema},
+};
+use aperture_store::fact_store::FactStore;
 
-use aperture_wire::{Desc, WireRef, WireValue};
+use aperture_wire::{Desc, WireRef, WireValue, protocol::Found};
 
 use crate::error::ServerError;
 
@@ -130,4 +134,82 @@ pub fn to_wire(ty: &PredicateTy, value: &Value) -> Result<WireValue, ServerError
             ));
         }
     })
+}
+
+/// **The fact an id names**, as its key — or which kind of nothing was there.
+///
+/// What answers [`kinds::FETCH`](aperture_wire::kinds::FETCH), and the same chain the
+/// rest of this module is, one step longer at the front: a fetch starts from *stored
+/// bytes* rather than from a row the executor already decoded.
+///
+/// ```text
+///   FactId ──point──▶ Entity.key ──decode_key──▶ Value ──to_wire──▶ WireValue
+/// ```
+///
+/// [`decode_key`] rather than `decode_typed`, and the distinction is the layout: a
+/// stored key is its fields back to back with no record wrapper, so handing a
+/// record-keyed predicate's key to the field decoder looks for a `MARK_RECORD` that was
+/// never written.
+///
+/// # It reads the store as it is now, and for a stored fact that is not a race
+///
+/// A query holds an immutable snapshot and releases it at every suspend
+/// ([I8](../../../docs/invariants.md#i8)), so an id resolved after the fact is read
+/// under a *later* view of the store than the row that carried it. Nothing follows from
+/// that for a stored fact: one is immutable once written and an id is never reused
+/// ([I11](../../../docs/invariants.md#i11)), so an id that was in a row is in every
+/// later state, naming the same fact. A reader that took its own snapshot per batch would
+/// be buying consistency that immutability already gave it.
+///
+/// **A virtual predicate is where that argument stops**, which is what
+/// [`Found::Unstored`] exists to say. Its rows are materialised per query, so an id is a
+/// position in the listing that produced it: a database created or removed in between can
+/// move it or take it away. Ordinary, and not corruption — the distinction the caller
+/// needs, and one only this side can draw.
+///
+/// # Errors
+///
+/// [`ServerError::Unprojectable`] for an id naming a predicate this schema does not
+/// declare, [`ServerError::Store`] for a read that fails, or
+/// [`ServerError::Execution`] for stored bytes that do not decode as the key their own
+/// predicate declares, which is corruption rather than a bad request.
+pub fn key_of<S: FactStore>(
+    store: &S,
+    schema: &Schema,
+    interner: &LocalInterner,
+    id: FactId,
+) -> Result<Found, ServerError> {
+    let predicate = id.predicate();
+
+    let declared = schema
+        .get(predicate)
+        .ok_or(ServerError::Unprojectable(
+            "an id naming a predicate this schema does not declare",
+        ))?
+        .predicate();
+
+    // **A virtual predicate is not a special case here, and asking whether it is one
+    // would be the mistake.** `Catalogued` answers both halves of the seam for the
+    // catalogue's keyspace — a scan from its rows, and `point` by finding the id among
+    // them — so a reference into one resolves through exactly this call. What decides the
+    // answer is which store the caller wrapped, which is the caller's business; refusing
+    // by schema flag here made an ordinary query (`X where X = aperture.db.List _`) fail
+    // for a reason that was not true.
+    let Some(entity) = store.point(id)? else {
+        // **Which kind of absence**, since they mean opposite things and only this side
+        // knows which. A stored fact cannot dangle (I11, I12), so a missing one is
+        // corruption and the client should say so; a virtual predicate's rows are a view
+        // materialised per query, so one that has gone means a database was created or
+        // removed since — ordinary, and not something to alarm anybody about.
+        return Ok(if schema.is_virtual(predicate) {
+            Found::Unstored
+        } else {
+            Found::Missing
+        });
+    };
+
+    let key = decode_key(interner, &entity.key, &declared.key)
+        .map_err(|error| ServerError::Execution(error.to_string()))?;
+
+    Ok(Found::Key(to_wire(&declared.key, &key)?))
 }

@@ -12,7 +12,7 @@
 
 use std::{path::Path, sync::Arc, time::Instant};
 
-use aperture_client::{ClientError, Connection, Mode};
+use aperture_client::{ClientError, Connection, Expander, Mode};
 
 use crate::{CliError, cli::RowFormat, code_index, rows::Sink};
 
@@ -42,6 +42,42 @@ pub struct Summary {
     pub stopped: Stopped,
     /// What the server said it examined, when asked.
     pub profile: Option<aperture_client::QueryProfile>,
+    /// Point reads spent expanding references — distinct ids, so the difference between
+    /// this and the references printed is what the cache saved. Zero when not expanding.
+    pub fetched: u64,
+    /// References that named no fact. Not an absence but a **damaged database**, since
+    /// both column families are written together ([I12](../../docs/invariants.md#i12))
+    /// and ids are never reused ([I11](../../docs/invariants.md#i11)) — so it is reported
+    /// rather than left looking like a field somebody chose not to expand.
+    pub unresolved: u64,
+    /// What expansion could not do, in words — a predicate this server will not resolve
+    /// an id of, because it answers that predicate rather than storing it. One line per
+    /// predicate, not per row.
+    pub notices: Vec<String>,
+}
+
+/// How rows are to be shown.
+///
+/// Two display choices travelling together, because they are decided in the same place
+/// and neither is a question about the *query*: one is the shape a row prints in, the
+/// other how far a reference in it is followed.
+#[derive(Debug, Clone, Copy)]
+pub struct Rendering {
+    pub format: RowFormat,
+    /// Hops to follow a reference. Zero prints ids, which is what a row carries.
+    pub expand: usize,
+}
+
+impl Rendering {
+    /// One shape, references left as the ids a row carries.
+    ///
+    /// Test-only: every real caller has an `--expand` to pass, and a default that meant
+    /// "off" would be a second place for that decision to live.
+    #[cfg(test)]
+    #[must_use]
+    pub fn plain(format: RowFormat) -> Rendering {
+        Rendering { format, expand: 0 }
+    }
 }
 
 /// What the caller is prepared to wait for.
@@ -74,7 +110,7 @@ pub fn run(
     socket: &Path,
     name: &str,
     query: &str,
-    format: RowFormat,
+    rendering: Rendering,
     limits: Limits,
     profile: bool,
     interrupted: &std::sync::atomic::AtomicBool,
@@ -85,6 +121,19 @@ pub fn run(
     // database because its own built-in copy had moved on would be refusing the one
     // thing that still works.
     let mut connection = connect(socket, name, Mode::ReadOnly)?;
+
+    // **Asked for only when expanding**, and it is the *served* schema rather than this
+    // tool's built-in one. A fetch reply is schema-driven — each key encoded against its
+    // own predicate's key type, with no descriptor to carry the shape — so it can only be
+    // read against the schema the database was created with ([I13]). It also names the
+    // fields of an expanded reference on the way out.
+    //
+    // [I13]: ../../docs/invariants.md#i13
+    let schema = if rendering.expand > 0 {
+        Some(Arc::new(connection.served_schema()?))
+    } else {
+        None
+    };
 
     let started = Instant::now();
     let opened = if profile {
@@ -99,8 +148,17 @@ pub fn run(
     };
 
     let stdout = std::io::stdout();
-    let mut sink = Sink::new(stdout.lock(), format, result.desc())?;
+    let mut sink = match &schema {
+        Some(schema) => Sink::naming(
+            stdout.lock(),
+            rendering.format,
+            result.desc(),
+            Arc::clone(schema),
+        ),
+        None => Sink::new(stdout.lock(), rendering.format, result.desc()),
+    }?;
 
+    let mut expander = schema.map(Expander::new);
     let mut stopped = Stopped::No;
 
     loop {
@@ -130,7 +188,17 @@ pub fn run(
         }
 
         match connection.next_row(&mut result)? {
-            Some(row) => sink.row(&row)?,
+            Some(row) => {
+                // A row at a time, on the way to the sink, so the whole result is still
+                // streamed: expansion adds reads per row, never a buffer.
+                match &mut expander {
+                    Some(expander) => {
+                        let expanded = expander.expand(&mut connection, &row, rendering.expand)?;
+                        sink.row(&expanded)?;
+                    }
+                    None => sink.row(&row)?,
+                }
+            }
             None => break,
         }
     }
@@ -141,6 +209,15 @@ pub fn run(
         rows,
         elapsed: started.elapsed(),
         stopped,
+        fetched: expander.as_ref().map_or(0, Expander::fetched),
+        unresolved: expander.as_ref().map_or(0, Expander::unresolved),
+        // Whatever expansion could not do — a predicate the server answers rather than
+        // stores, say. Carried out rather than printed here, because this function writes
+        // *rows* to stdout and a notice is not one.
+        notices: expander
+            .as_mut()
+            .map(Expander::take_notices)
+            .unwrap_or_default(),
         // Absent after any of the three early stops, and that is honest rather than a
         // gap: the server reports what it examined when the query *ends*, and a
         // cancelled one ended early — a tally taken then would describe a different
@@ -290,7 +367,7 @@ pub(crate) fn connect(socket: &Path, database: &str, mode: Mode) -> Result<Conne
 mod tests {
     use std::{sync::atomic::AtomicBool, time::Duration};
 
-    use super::{Limits, Stopped, run};
+    use super::{Limits, Rendering, Stopped, run};
     use crate::{cli::RowFormat, testing::serving};
 
     const FILES: usize = 600;
@@ -308,7 +385,7 @@ mod tests {
             // Counted rather than rendered: what these tests are about is *how many*
             // rows crossed the socket before the cancel landed, and a table would put
             // six hundred lines through the harness to say it.
-            RowFormat::Count,
+            Rendering::plain(RowFormat::Count),
             limits,
             false,
             interrupted,
@@ -416,7 +493,7 @@ mod tests {
             &serving.socket,
             "code",
             "X where src.File X; src.File _; src.File _",
-            RowFormat::Count,
+            Rendering::plain(RowFormat::Count),
             Limits {
                 rows: Some(5),
                 timeout: None,
@@ -439,7 +516,7 @@ mod tests {
             &serving.socket,
             "code",
             "F where src.File F",
-            RowFormat::Count,
+            Rendering::plain(RowFormat::Count),
             Limits::default(),
             true,
             &quiet,
@@ -454,7 +531,7 @@ mod tests {
 mod catalogue {
     use std::sync::atomic::AtomicBool;
 
-    use super::{Limits, Stopped, run};
+    use super::{Limits, Rendering, Stopped, run};
     use crate::{cli::RowFormat, testing::serving};
 
     /// Run a query against the seeded server and capture what it printed.
@@ -470,7 +547,7 @@ mod catalogue {
             &serving.socket,
             "code",
             query,
-            RowFormat::Count,
+            Rendering::plain(RowFormat::Count),
             Limits::default(),
             false,
             &quiet,
@@ -530,7 +607,7 @@ mod catalogue {
             &serving.socket,
             "code",
             "I where aperture.db.List {name = \"code\", instance = I}",
-            RowFormat::Count,
+            Rendering::plain(RowFormat::Count),
             Limits::default(),
             true,
             &quiet,
@@ -570,7 +647,7 @@ mod catalogue {
 mod over_tcp {
     use std::sync::atomic::AtomicBool;
 
-    use super::{Limits, Stopped, run};
+    use super::{Limits, Rendering, Stopped, run};
     use crate::{CliError, cli::RowFormat, testing::serving_on_tcp};
 
     /// **The same protocol, over a different pipe** — which is the whole claim
@@ -589,7 +666,7 @@ mod over_tcp {
                 &serving.socket,
                 name,
                 "F where src.File F",
-                RowFormat::Count,
+                Rendering::plain(RowFormat::Count),
                 Limits::default(),
                 false,
                 &quiet,
@@ -620,7 +697,7 @@ mod over_tcp {
                 &serving.socket,
                 bad,
                 "F where src.File F",
-                RowFormat::Count,
+                Rendering::plain(RowFormat::Count),
                 Limits::default(),
                 false,
                 &quiet,
@@ -639,7 +716,7 @@ mod over_tcp {
 mod mixed {
     use std::sync::atomic::AtomicBool;
 
-    use super::{Limits, Stopped, run};
+    use super::{Limits, Rendering, Stopped, run};
     use crate::{cli::RowFormat, testing::serving};
 
     /// Rows a query answers with, counted server-side.
@@ -650,7 +727,7 @@ mod mixed {
             &serving.socket,
             "code",
             query,
-            RowFormat::Count,
+            Rendering::plain(RowFormat::Count),
             Limits::default(),
             false,
             &quiet,
@@ -799,7 +876,7 @@ mod mixed {
             &serving.socket,
             "code",
             query,
-            RowFormat::Count,
+            Rendering::plain(RowFormat::Count),
             Limits {
                 rows: Some(600),
                 timeout: None,
@@ -849,7 +926,7 @@ mod mixed {
 mod surface {
     use std::sync::atomic::AtomicBool;
 
-    use super::{Limits, run};
+    use super::{Limits, Rendering, run};
     use crate::{
         cli::RowFormat,
         testing::{create_database, serving},
@@ -864,13 +941,193 @@ mod surface {
             &serving.socket,
             "code",
             query,
-            RowFormat::Count,
+            Rendering::plain(RowFormat::Count),
             Limits::default(),
             false,
             &quiet,
         )
         .expect("the query runs")
         .rows
+    }
+
+    /// **`--expand` resolves the references in a result, and changes nothing else.**
+    ///
+    /// What is checked here is the *cost and the shape of the run*, since `run` writes to
+    /// stdout: the same query answers the same rows, and expansion shows up as point
+    /// reads. That it renders the fact rather than the id is
+    /// [`crate::rows`]' test, and that a person sees it is the shell's.
+    ///
+    /// The corpus is `declaration → module → file`, so each row holds one reference and
+    /// each module holds one more: **two** distinct ids per declaration, and one file per
+    /// module. Six declarations therefore cost twelve reads and not one more — which is
+    /// the cache being asserted, since every row is read at two levels and none twice.
+    #[test]
+    fn expanding_resolves_every_reference_once() {
+        let serving = serving(FILES);
+        let quiet = AtomicBool::new(false);
+
+        let expanded = run(
+            &serving.socket,
+            "code",
+            "D where src.Decl D",
+            Rendering {
+                format: RowFormat::Count,
+                expand: aperture_client::FULL_DEPTH,
+            },
+            Limits::default(),
+            false,
+            &quiet,
+        )
+        .expect("the query runs");
+
+        assert_eq!(expanded.rows, FILES as u64, "the same rows either way");
+        assert_eq!(
+            expanded.fetched,
+            (FILES * 2) as u64,
+            "one module and one file per declaration, each read once"
+        );
+        assert_eq!(
+            expanded.unresolved, 0,
+            "every reference in a database this tool wrote resolves"
+        );
+
+        // Off, nothing is read at all — the flag is the whole difference.
+        let plain = run(
+            &serving.socket,
+            "code",
+            "D where src.Decl D",
+            Rendering::plain(RowFormat::Count),
+            Limits::default(),
+            false,
+            &quiet,
+        )
+        .expect("the query runs");
+
+        assert_eq!(plain.rows, FILES as u64);
+        assert_eq!(plain.fetched, 0, "no expansion, no point reads");
+
+        // One hop reads the modules and not their files.
+        let shallow = run(
+            &serving.socket,
+            "code",
+            "D where src.Decl D",
+            Rendering {
+                format: RowFormat::Count,
+                expand: 1,
+            },
+            Limits::default(),
+            false,
+            &quiet,
+        )
+        .expect("the query runs");
+
+        assert_eq!(shallow.fetched, FILES as u64, "one level, one read per row");
+    }
+
+    /// **A reference into a virtual predicate expands, like any other reference.**
+    ///
+    /// `X where X = aperture.db.List _` heads on the fact type rather than on its key, so
+    /// the row is a *reference to a catalogue row* — the shape that has to work if
+    /// "virtual predicates behave like facts" is to mean anything on the read path. It
+    /// does, because `Catalogued` answers `point` as well as `scan`, and the fetch handler
+    /// wraps the store in it exactly as the query path does.
+    ///
+    /// Nothing is spent when no id asks for it, which is the other half: materialising a
+    /// listing walks the store root and reads a sidecar per database, so it happens only
+    /// when an id names the catalogue.
+    #[test]
+    fn a_reference_into_a_virtual_predicate_expands() {
+        let serving = serving(FILES);
+        let quiet = AtomicBool::new(false);
+
+        let summary = run(
+            &serving.socket,
+            "code",
+            "X where X = aperture.db.List _",
+            Rendering {
+                format: RowFormat::Count,
+                expand: aperture_client::FULL_DEPTH,
+            },
+            Limits::default(),
+            false,
+            &quiet,
+        )
+        .expect("the query runs");
+
+        assert_eq!(summary.rows, 1, "the row survives: {summary:?}");
+        assert_eq!(
+            summary.fetched, 1,
+            "the catalogue row was read: {summary:?}"
+        );
+        assert_eq!(
+            summary.unresolved, 0,
+            "and it resolved, so nothing looks like damage"
+        );
+        assert!(
+            summary.notices.is_empty(),
+            "nothing to apologise for: {:?}",
+            summary.notices
+        );
+    }
+
+    /// **A virtual predicate answers a fetch like any other**, and an id past its end is
+    /// an *unstored* absence rather than a missing fact.
+    ///
+    /// The whole claim `aperture.db.List` makes is that a virtual predicate is ordinary:
+    /// `Catalogued` answers both halves of the store seam for it, so a `point` read finds
+    /// a catalogue row exactly as it finds a stored one, and nothing above the seam knows
+    /// the difference. Refusing here — which is what this test used to assert — made the
+    /// seam's own promise false one layer up, and broke an ordinary query.
+    ///
+    /// The second half is the distinction that replaced the refusal. A stored fact that is
+    /// not there is corruption ([I11](../../docs/invariants.md#i11),
+    /// [I12](../../docs/invariants.md#i12)); a *catalogue* row that is not there is a
+    /// listing that has moved on, since these ids are positions in a view materialised per
+    /// query rather than durable identities. Only the server can tell those apart, so it
+    /// says which.
+    #[test]
+    fn a_virtual_predicate_resolves_an_id_and_says_when_one_has_moved_on() {
+        use aperture_client::{Mode, WireValue};
+        use aperture_schema::id::FactId;
+        use aperture_wire::protocol::Found;
+
+        let serving = serving(FILES);
+        let mut connection =
+            super::connect(&serving.socket, "code", Mode::ReadOnly).expect("a connection");
+
+        let schema = std::sync::Arc::new(connection.served_schema().expect("the schema"));
+        let catalogue = crate::code_index::catalogue_id();
+
+        // Sequence 1 is the first listed database, since the catalogue hands sequences out
+        // from 1 as a real allocator does.
+        let first = FactId::new(catalogue, 1).expect("a fact id");
+        let answered = connection.fetch(&schema, &[first]).expect("it resolves");
+
+        let Some(Found::Key(WireValue::Record(fields))) = answered.first() else {
+            panic!("a catalogue row is a record: {answered:?}");
+        };
+        assert_eq!(
+            fields[0],
+            WireValue::Str("code".to_owned()),
+            "the row the listing holds, name first: {fields:?}"
+        );
+
+        // Past the end of the listing: nothing there, and **not** a claim of damage.
+        let past = FactId::new(catalogue, 9_999).expect("a fact id");
+        assert_eq!(
+            connection.fetch(&schema, &[past]).expect("it is answered"),
+            vec![Found::Unstored],
+            "a listing that has no such row is not a missing fact"
+        );
+
+        // And the session still answers about the catalogue the ordinary way.
+        let mut rows = connection
+            .query("N where aperture.db.List {name = N}")
+            .expect("it compiles");
+        assert_eq!(
+            connection.drain(&mut rows).expect("the rows arrive").len(),
+            1
+        );
     }
 
     /// **A disjunction with one branch in memory and one in fjall.**

@@ -7,11 +7,15 @@
 
 use std::{path::PathBuf, sync::Arc, thread};
 
-use aperture_client::{ClientError, Connection, ErrorCode, Mode, WireFact, WireRef, WireValue};
+use aperture_client::{
+    ClientError, Connection, ErrorCode, Expander, FULL_DEPTH, Mode, WireFact, WireRef, WireValue,
+};
 use aperture_schema::fingerprint;
+use aperture_schema::id::FactId;
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use aperture_server::{Registry, registry::Schemas, server::Listener};
 use aperture_store::catalog::Catalog;
+use aperture_wire::protocol::Found;
 use lasso::Rodeo;
 
 const FILE: PredicateId = PredicateId(0);
@@ -268,6 +272,201 @@ fn a_key_of_one_field_holds_a_reference_and_a_value() {
             "key_of: The key a row is filed under.",
         ]
     );
+}
+
+/// **A reference expanded into the fact it names, all the way down.**
+///
+/// The read-path counterpart of the write path this file already proves: a producer
+/// nests a target rather than holding an id, ingest interns it, and a query then answers
+/// with the id — which is a number naming a fact the reader cannot see. Expanding it
+/// recovers the same nested shape the producer sent, which is the claim worth having,
+/// since it means one logical form rather than a display invention.
+///
+/// `src.Doc` is keyed by a reference to a declaration, whose key holds a reference to a
+/// file: three predicates, two hops, and the deepest chain this schema has.
+#[test]
+fn a_reference_expands_into_the_fact_it_names() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    connection
+        .write(
+            DOC,
+            &[
+                doc(
+                    "store/keys.py",
+                    12,
+                    "key_of",
+                    "The key a row is filed under.",
+                ),
+                doc(
+                    "store/keys.py",
+                    48,
+                    "key_prefix",
+                    "Everything under a prefix.",
+                ),
+            ],
+        )
+        .expect("the facts are written");
+
+    let schema = Arc::new(schema());
+    let mut rows = connection
+        .query("D where src.Doc D")
+        .expect("a whole-fact bind compiles");
+    let unexpanded = connection.drain(&mut rows).expect("the rows arrive");
+
+    // What a row holds before expansion: one field, and it is an id.
+    let WireValue::Record(fields) = &unexpanded[0] else {
+        panic!("src.Doc's key is a record of one: {:?}", unexpanded[0]);
+    };
+    assert!(
+        matches!(fields[0], WireValue::Ref(WireRef::Id(_))),
+        "stored, a reference is an id: {fields:?}"
+    );
+
+    let mut expander = Expander::new(Arc::clone(&schema));
+    let expanded = expander
+        .expand(&mut connection, &unexpanded[0], FULL_DEPTH)
+        .expect("the ids resolve");
+
+    // doc → declaration → file, and the file's key is the path the producer nested.
+    let decl = nested(field(&expanded, 0));
+    assert_eq!(decl.predicate, DECL);
+
+    let WireValue::Record(decl_fields) = &decl.key else {
+        panic!("a declaration's key is a record: {decl:?}");
+    };
+    assert_eq!(decl_fields[1], WireValue::Int(12));
+    assert_eq!(decl_fields[2], WireValue::Str("key_of".to_owned()));
+
+    let file = nested(&decl_fields[0]);
+    assert_eq!(file.predicate, FILE);
+    assert_eq!(file.key, WireValue::Str("store/keys.py".to_owned()));
+
+    // Two point reads for two hops, and **the value side is not one of them**: a
+    // reference names an identity, and the identity is the key.
+    assert_eq!(expander.fetched(), 2);
+    assert_eq!(expander.unresolved(), 0);
+    assert!(
+        decl.value.is_none() && file.value.is_none(),
+        "expansion answers keys"
+    );
+
+    // **The cache is what makes this affordable.** The second row names a different
+    // declaration in the *same* file, so it costs one read rather than two — and
+    // re-expanding the first costs none at all.
+    expander
+        .expand(&mut connection, &unexpanded[1], FULL_DEPTH)
+        .expect("the ids resolve");
+    assert_eq!(expander.fetched(), 3, "the file was already known");
+
+    expander
+        .expand(&mut connection, &unexpanded[0], FULL_DEPTH)
+        .expect("the ids resolve");
+    assert_eq!(expander.fetched(), 3, "nothing was read twice");
+
+    // Depth is hops: one reaches the declaration and leaves its file an id.
+    let shallow = expander
+        .expand(&mut connection, &unexpanded[0], 1)
+        .expect("the ids resolve");
+    let WireValue::Record(shallow_decl) = &nested(field(&shallow, 0)).key else {
+        panic!("a declaration's key is a record");
+    };
+    assert!(
+        matches!(shallow_decl[0], WireValue::Ref(WireRef::Id(_))),
+        "the second hop is not taken at depth 1: {shallow_decl:?}"
+    );
+}
+
+/// **An id naming no fact is an absence, and one naming no predicate is a refusal.**
+///
+/// The first cannot happen for an id out of a row — both column families are written
+/// together ([I12](../../../docs/invariants.md#i12)) and ids are never reused
+/// ([I11](../../../docs/invariants.md#i11)) — so the server answers "nothing" and lets
+/// the client decide what that means about where the id came from. The second is a
+/// question about a schema both ends share, so it is refused on the stream that asked,
+/// and the session goes on.
+#[test]
+fn an_id_that_names_nothing_is_answered_and_one_that_cannot_exist_is_refused() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+    let schema = Arc::new(schema());
+
+    connection
+        .write(FILE, &[file("a.py")])
+        .expect("one file is written");
+
+    let absent = FactId::new(FILE, 9_999).expect("a well-formed id");
+    assert_eq!(
+        connection
+            .fetch(&schema, &[absent])
+            .expect("it is answered"),
+        vec![Found::Missing],
+        "a well-formed id for a fact nobody wrote"
+    );
+
+    let nowhere = FactId::new(PredicateId(99), 1).expect("a well-formed id");
+    let refused = connection
+        .fetch(&schema, &[nowhere])
+        .expect_err("no such predicate");
+    assert!(
+        matches!(refused, ClientError::Server { .. }),
+        "refused on the stream, not by closing the connection: {refused:?}"
+    );
+
+    // And the session still answers.
+    let mut rows = connection.query("F where src.File F").expect("it compiles");
+    assert_eq!(
+        strings(&connection.drain(&mut rows).expect("the rows arrive")),
+        ["a.py"]
+    );
+}
+
+/// **Only a *protocol* refusal means "this server cannot do that".**
+///
+/// A fetch is translated into [`ClientError::Unsupported`] when the server answers with
+/// `ErrorCode::Protocol`, because on that stream it can only mean the `F` frame was not
+/// understood — a server older than expansion. The translation has to be that narrow: a
+/// session bound to no database is refused for an ordinary reason, with an ordinary code,
+/// and reporting *that* as "restart your server" would send somebody after the wrong
+/// thing entirely.
+#[test]
+fn a_refusal_that_is_not_about_the_frame_is_not_reported_as_an_old_server() {
+    let serving = start();
+    let mut control = serving.control();
+    let schema = Arc::new(schema());
+
+    let id = FactId::new(FILE, 1).expect("a well-formed id");
+    let refused = control
+        .fetch(&schema, &[id])
+        .expect_err("a control session names no database");
+
+    assert!(
+        matches!(
+            refused,
+            ClientError::Server {
+                code: ErrorCode::UnknownDatabase,
+                ..
+            }
+        ),
+        "an ordinary refusal, under its own code: {refused:?}"
+    );
+}
+
+/// The fact behind a reference, or a panic naming what was there instead.
+fn nested(value: &WireValue) -> &WireFact {
+    match value {
+        WireValue::Ref(WireRef::Nested(fact)) => fact,
+        other => panic!("expected an expanded reference, got {other:?}"),
+    }
+}
+
+/// One field of a record row.
+fn field(value: &WireValue, index: usize) -> &WireValue {
+    match value {
+        WireValue::Record(fields) => &fields[index],
+        other => panic!("expected a record, got {other:?}"),
+    }
 }
 
 /// **The page holds its place, and the pages concatenate.**

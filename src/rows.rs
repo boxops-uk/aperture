@@ -28,6 +28,16 @@
 //! input (focus names a fact by its key, not by its number), so the useful thing is the
 //! one a person can read and a script can compare.
 //!
+//! # An **expanded** reference is the fact, and the schema is what names it
+//!
+//! `:expand` and `--expand` replace a reference with the fact it names
+//! ([`Expander`](aperture_client::Expander)), so what arrives here is a nested fact where
+//! the descriptor says `Fact(p)`. The descriptor is not wrong — that *is* what the row
+//! carried — it simply has nothing to say about the shape underneath, which is `p`'s key.
+//! So this is the one place rendering consults the **schema** rather than the descriptor,
+//! and the one reason a [`Sink`] can hold one. Without it the fields still print, in
+//! order, which is the same fallback a descriptor mismatch takes.
+//!
 //! # Colour, when there is a terminal, and jq's colours because they are the ones people
 //! know
 //!
@@ -46,9 +56,10 @@
 //! "is stdout a terminal" — so `| jq` and `> file` get plain bytes, exactly as jq's own
 //! output does.
 
-use std::io::Write;
+use std::{io::Write, sync::Arc};
 
 use aperture_client::{Desc, WireValue};
+use aperture_schema::schema::{PredicateId, Schema};
 
 use crate::cli::RowFormat;
 
@@ -56,6 +67,15 @@ use crate::cli::RowFormat;
 pub struct Sink<W: Write> {
     out: W,
     format: RowFormat,
+    /// The schema, when the caller has one — needed only to **name** the fields of an
+    /// expanded reference.
+    ///
+    /// A descriptor describes a reference *as* a reference (`Desc::Fact`), which is
+    /// right: that is what a row carries. Once one has been expanded into the fact it
+    /// names, the shape underneath it is the target predicate's key, and the only place
+    /// that says so is the schema. Without one the fields still print, positionally,
+    /// which is the same fallback a descriptor mismatch takes.
+    schema: Option<Arc<Schema>>,
     /// Whether to paint, decided **once** when the result starts.
     ///
     /// Carried rather than asked per value, so that the answer cannot change halfway
@@ -87,7 +107,28 @@ impl<W: Write> Sink<W> {
     ///
     /// Whatever writing reports.
     pub fn new(out: W, format: RowFormat, desc: &Desc) -> std::io::Result<Sink<W>> {
-        Sink::painted(out, format, desc, crate::prompt::colours_enabled())
+        Sink::painted(out, format, desc, None, crate::prompt::colours_enabled())
+    }
+
+    /// The same, holding the schema — which is what names the fields of an **expanded**
+    /// reference.
+    ///
+    /// # Errors
+    ///
+    /// Whatever writing reports.
+    pub fn naming(
+        out: W,
+        format: RowFormat,
+        desc: &Desc,
+        schema: Arc<Schema>,
+    ) -> std::io::Result<Sink<W>> {
+        Sink::painted(
+            out,
+            format,
+            desc,
+            Some(schema),
+            crate::prompt::colours_enabled(),
+        )
     }
 
     /// The same, told whether to paint rather than asking.
@@ -99,6 +140,7 @@ impl<W: Write> Sink<W> {
         mut out: W,
         format: RowFormat,
         desc: &Desc,
+        schema: Option<Arc<Schema>>,
         colour: bool,
     ) -> std::io::Result<Sink<W>> {
         let columns = match desc {
@@ -113,6 +155,7 @@ impl<W: Write> Sink<W> {
         Ok(Sink {
             out,
             format,
+            schema,
             colour,
             desc: desc.clone(),
             columns,
@@ -140,10 +183,18 @@ impl<W: Write> Sink<W> {
                 if self.rows > 0 {
                     write!(self.out, "{}", punct(",", self.colour))?;
                 }
-                write!(self.out, "\n  {}", json(value, &self.desc, self.colour))?;
+                write!(
+                    self.out,
+                    "\n  {}",
+                    json(value, &self.desc, self.schema.as_deref(), self.colour)
+                )?;
             }
 
-            RowFormat::Jsonl => writeln!(self.out, "{}", json(value, &self.desc, self.colour))?,
+            RowFormat::Jsonl => writeln!(
+                self.out,
+                "{}",
+                json(value, &self.desc, self.schema.as_deref(), self.colour)
+            )?,
 
             RowFormat::Table => {
                 let cells = self.cells(value);
@@ -220,13 +271,13 @@ pub fn render(value: &WireValue) -> String {
             format!("#{}:{}", id.predicate().0, id.sequence())
         }
 
-        // A nested reference is what a *producer* sends, never what a server answers
-        // with — stored, a reference is a `FactId` and nothing else. Rendered anyway
-        // rather than panicked on: a client that cannot print what it decoded is a
-        // worse bug report than one that prints something odd.
-        WireValue::Ref(aperture_client::WireRef::Nested(fact)) => {
-            format!("<{}>", render(&fact.key))
-        }
+        // **An expanded reference is the fact it names**, so it renders as that fact's
+        // key does and nothing marks it as having been a reference. In a table that is
+        // the whole point: a `file` column holds `store/codec.py` instead of `#1:12`,
+        // which is what somebody turned expansion on to see. The same shape reaches here
+        // from a producer that nested a reference on the way *in*, and there is nothing
+        // to tell them apart by — nor any reason to.
+        WireValue::Ref(aperture_client::WireRef::Nested(fact)) => render(&fact.key),
 
         WireValue::Record(fields) => {
             let cells: Vec<String> = fields.iter().map(render).collect();
@@ -242,7 +293,13 @@ pub fn render(value: &WireValue) -> String {
 /// or one of a different width — the value wins and comes out positionally: a row that
 /// arrived is a row worth printing, and a mismatch is a server bug better reported by
 /// odd-looking output than by a panic on a data path.
-fn json(value: &WireValue, desc: &Desc, colour: bool) -> String {
+///
+/// **An expanded reference is the one place the descriptor runs out**, and the schema
+/// takes over. A descriptor says `Fact(p)`, which is exactly what the row carried; the
+/// fact underneath it is shaped like *p's key*, and only the schema knows that shape's
+/// field names. So a nested reference is rendered against the target predicate's key
+/// type, and a caller with no schema gets the same positional fallback a mismatch does.
+fn json(value: &WireValue, desc: &Desc, schema: Option<&Schema>, colour: bool) -> String {
     match (value, desc) {
         (WireValue::Int(n), _) => paint(NUMBER, &n.to_string(), colour),
         (WireValue::Str(text), _) => paint(STRING, &json_string(text), colour),
@@ -253,10 +310,12 @@ fn json(value: &WireValue, desc: &Desc, colour: bool) -> String {
             colour,
         ),
 
-        // What a producer sends and a server never answers with; printed rather than
-        // refused, for the reason `render` gives.
+        // The fact a reference names, in place of the reference: an object where the
+        // target's key is a record, its bare value where the key is a scalar — which is
+        // the same rule the row itself follows, since a row is shaped like its head.
         (WireValue::Ref(aperture_client::WireRef::Nested(fact)), _) => {
-            json(&fact.key, desc, colour)
+            let target = schema.and_then(|schema| key_desc(schema, fact.predicate));
+            json(&fact.key, target.as_ref().unwrap_or(desc), schema, colour)
         }
 
         (WireValue::Record(fields), Desc::Record(named)) if fields.len() == named.len() => {
@@ -268,7 +327,7 @@ fn json(value: &WireValue, desc: &Desc, colour: bool) -> String {
                         "{}{} {}",
                         paint(KEY, &json_string(name), colour),
                         punct(":", colour),
-                        json(field, desc, colour)
+                        json(field, desc, schema, colour)
                     )
                 })
                 .collect();
@@ -284,7 +343,7 @@ fn json(value: &WireValue, desc: &Desc, colour: bool) -> String {
         (WireValue::Record(fields), _) => {
             let cells: Vec<String> = fields
                 .iter()
-                .map(|field| json(field, &Desc::Str, colour))
+                .map(|field| json(field, &Desc::Str, schema, colour))
                 .collect();
 
             format!(
@@ -295,6 +354,19 @@ fn json(value: &WireValue, desc: &Desc, colour: bool) -> String {
             )
         }
     }
+}
+
+/// A predicate's key, as a descriptor — the shape an expanded reference to it has.
+///
+/// Computed where it is needed rather than cached: it is a small tree, it is built only
+/// for a reference that was actually expanded, and expansion has already paid for a
+/// point read by the time this runs. `None` for a predicate the schema does not declare,
+/// or a field name its interner cannot resolve, which are both "a schema that is not the
+/// one these rows came from" and answered by printing positionally rather than by
+/// failing a row.
+fn key_desc(schema: &Schema, predicate: PredicateId) -> Option<Desc> {
+    let key = &schema.get(predicate)?.predicate().key;
+    Desc::of(schema, key).ok()
 }
 
 /// jq's `JQ_COLORS` defaults, and one addition of our own.
@@ -363,6 +435,81 @@ mod tests {
         assert_eq!(
             render(&WireValue::Ref(aperture_client::WireRef::Id(id))),
             "#3:7"
+        );
+    }
+
+    /// **An expanded reference is named by the schema, not by the descriptor.**
+    ///
+    /// A descriptor says `Fact(p)` — which is what the row carried — so the fields of the
+    /// fact underneath it have no names in it at all. Rendering them positionally was the
+    /// easy half of this job and would have made `{"module": ["f.py", "store"]}` out of
+    /// the interesting rows, which is the same mistake nesting a *record* by position
+    /// was. The schema is the only thing that knows the shape, so it renders against the
+    /// target predicate's key.
+    ///
+    /// The chain is the built-in one: a declaration's `module` is a `src.Module`, whose
+    /// own `file` is a `src.File` — one hop expanded, one left as an id, which is also
+    /// what a bounded `:expand 1` produces.
+    #[test]
+    fn an_expanded_reference_is_named_by_the_schema() {
+        use aperture_client::{WireFact, WireRef};
+
+        let schema = Arc::new(crate::code_index::schema());
+        let file = aperture_schema::id::FactId::new(crate::code_index::id("src.File"), 4)
+            .expect("a fact id");
+
+        let desc = Desc::Record(Box::from([
+            ("name".to_owned(), Desc::Str),
+            (
+                "module".to_owned(),
+                Desc::Fact(crate::code_index::id("src.Module")),
+            ),
+        ]));
+
+        let module = WireValue::Ref(WireRef::Nested(Box::new(WireFact {
+            predicate: crate::code_index::id("src.Module"),
+            key: record(vec![
+                WireValue::Ref(WireRef::Id(file)),
+                WireValue::Str("store".to_owned()),
+            ]),
+            value: None,
+        })));
+
+        let row = record(vec![WireValue::Str("encode".to_owned()), module.clone()]);
+
+        let mut out = vec![];
+        let mut sink =
+            Sink::painted(&mut out, RowFormat::Jsonl, &desc, Some(schema), false).unwrap();
+        sink.row(&row).unwrap();
+        sink.end().unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(out).unwrap()).expect("valid JSON");
+
+        assert_eq!(parsed["module"]["name"], "store", "{parsed}");
+        assert_eq!(
+            parsed["module"]["file"],
+            format!("#{}:4", crate::code_index::id("src.File").0),
+            "the hop that was not taken is still an id: {parsed}"
+        );
+
+        // **With no schema, the fields still print** — positionally, which is the same
+        // fallback a descriptor mismatch takes. A row that arrived is a row worth
+        // printing.
+        let mut bare = vec![];
+        let mut sink = Sink::painted(&mut bare, RowFormat::Jsonl, &desc, None, false).unwrap();
+        sink.row(&row).unwrap();
+        sink.end().unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(bare).unwrap()).expect("valid JSON");
+        assert_eq!(parsed["module"][1], "store", "{parsed}");
+
+        // And in a table it is the target's key, with nothing marking it as having been
+        // a reference — which is what somebody turned expansion on to see.
+        assert_eq!(
+            render(&module),
+            format!("{{#{}:4, store}}", crate::code_index::id("src.File").0)
         );
     }
 
@@ -552,7 +699,7 @@ mod tests {
             .expect("a fact id");
 
         let mut out = vec![];
-        let mut sink = Sink::painted(&mut out, RowFormat::Jsonl, &desc, true).unwrap();
+        let mut sink = Sink::painted(&mut out, RowFormat::Jsonl, &desc, None, true).unwrap();
 
         sink.row(&record(vec![
             WireValue::Str("encode".to_owned()),
@@ -573,7 +720,7 @@ mod tests {
         // And with colour off it is the same document with nothing in it — which is
         // what a pipe gets, and what every other test here reads.
         let mut plain = vec![];
-        let mut sink = Sink::painted(&mut plain, RowFormat::Jsonl, &desc, false).unwrap();
+        let mut sink = Sink::painted(&mut plain, RowFormat::Jsonl, &desc, None, false).unwrap();
         sink.row(&record(vec![
             WireValue::Str("encode".to_owned()),
             WireValue::Int(12),

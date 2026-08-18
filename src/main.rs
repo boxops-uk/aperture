@@ -214,6 +214,7 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             timing,
             profile,
             count,
+            expand,
         } => {
             if *count {
                 let started = std::time::Instant::now();
@@ -249,8 +250,22 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
                 });
             }
 
-            let summary =
-                commands::query::run(socket, name, query, *format, limits, *profile, &interrupted)?;
+            let rendering = commands::query::Rendering {
+                format: *format,
+                // `--expand` with no number means all the way down; absent means ids,
+                // which is what a row carries.
+                expand: expand.unwrap_or(0),
+            };
+
+            let summary = commands::query::run(
+                socket,
+                name,
+                query,
+                rendering,
+                limits,
+                *profile,
+                &interrupted,
+            )?;
 
             if let Some(measured) = &summary.profile {
                 eprint!(
@@ -276,6 +291,22 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
                 }
             }
 
+            // Where expansion could not go, and why — one line per predicate. On stderr
+            // with everything else that is not a row.
+            for notice in &summary.notices {
+                eprintln!("aperture: {notice}");
+            }
+
+            // **Never silent**, and never on stdout: a reference naming no fact is a
+            // damaged database, not a row somebody chose not to expand.
+            if summary.unresolved > 0 {
+                eprintln!(
+                    "aperture: {} reference(s) named no fact and were printed as ids; \
+                     this database is damaged",
+                    summary.unresolved
+                );
+            }
+
             if *timing {
                 // stderr, so a timing number never lands in a pipe someone is parsing.
                 eprintln!(
@@ -283,6 +314,10 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
                     summary.rows,
                     summary.elapsed.as_secs_f64() * 1000.0
                 );
+
+                if summary.fetched > 0 {
+                    eprintln!("{} point read(s) to expand", summary.fetched);
+                }
             }
 
             Ok(())

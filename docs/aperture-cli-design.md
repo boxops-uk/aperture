@@ -474,6 +474,56 @@ Interactive psql-like REPL.
   nested record is a nested object. A page is not a document and three pages of one query are not
   three documents, which is why the line-per-row form rather than an array. `:format table` is
   there for reading rather than piping.
+- **`:expand` — show the fact a reference names, recursively.** Not in the original list, and it
+  is the second thing a wire client could not do at all. A row carries a reference as a `FactId`
+  because that is what one is once stored, so a query over a code index answers `{"to": "#4:1"}`
+  — a number naming a fact the reader cannot see — and *focus cannot ask*, since a query names a
+  fact by its key and never by its number. That stays true: an id is physical, and putting one in
+  the language would put a storage detail in a query. So the question goes on the **protocol**
+  (§6's `F`/`f`), and the answer is the target's key, expanded again to whatever depth was asked
+  for: `{"to": {"module": {"file": "…", "name": "store"}, "name": "encode", "line": 12}}`.
+  Four things fall out, and each is why this shape rather than another:
+    - **It is the logical form, which is a name this design already has.** Expanding every
+      reference to its target's key, recursively, is what `ops-I4`'s content hash is computed over
+      and what a producer sends when it nests a reference instead of holding an id. An expanded
+      row and the form the same fact was *written* in are one shape rather than two.
+    - **It composes with every way of asking for rows**, because it is a question asked after the
+      row arrived rather than a flag on the query. A fifth query kind would have needed one per
+      combination of paging, profiling and counting.
+    - **The recursion, the depth and the cache are the client's**, which is where a display
+      decision belongs — and rendering stays client-side, as everything readable in this tool is.
+      One round trip per level of depth, one point read per distinct id, cached across pages
+      because a page of references into one file names that file forty times.
+    - **A reference that resolves to nothing is reported, not hidden.** It cannot happen for an id
+      out of a row ([I11](invariants.md#i11), [I12](invariants.md#i12)), so it means a damaged
+      database — and a row printing the id instead would look like a field somebody chose not to
+      expand.
+    - **A virtual predicate expands like anything else**, and that is the seam's promise kept
+      rather than an exception made. `X where X = aperture.db.List _` heads on a whole catalogue
+      row, so the row is a *reference* to one — and `Catalogued` answers both halves of
+      `FactStore` for the catalogue's keyspace, `point` as well as `scan`, so the fetch resolves it
+      exactly as it resolves a stored fact. The fetch handler wraps the store the same way the
+      query path does, and materialises the listing only when an id actually names it. Refusing by
+      schema flag instead — which is what this first did — made the seam's own claim false one
+      layer up and broke an ordinary query.
+    - **Which leaves one real difference, and the reply says it.** A stored fact's id is durable
+      ([I11](invariants.md#i11)); a catalogue row's is its position in the listing that produced
+      it, so a database created or removed between a query and an expansion of it can move the row
+      or take it away. So `f` answers three ways, not two — the key, *missing* (a stored fact that
+      is not there, which is corruption), or *unstored* (a predicate that is answered rather than
+      stored, whose listing has moved on). Collapsing the last two would mean either crying
+      corruption at an ordinary `db rm` or staying quiet about a damaged store, and the client
+      cannot tell them apart on its own: virtuality belongs to the server, and the served schema is
+      *printed* with its virtual predicates written like any other.
+    - **Expansion never costs a row.** Should the server refuse a fetch outright, the rows still
+      print with ids in them and one line names the predicate. Its motivating case is gone — that
+      was the virtual refusal above — and it is kept because losing a page of good rows to a
+      *display* feature is the wrong failure. Ids are batched **per predicate** so that such a
+      refusal attributes to one rather than to every predicate in the batch; a level rarely holds
+      more than two.
+
+  `aperture query --expand[=hops]` is the same thing non-interactively, which is what makes a
+  row a script can read without a second query to resolve each id.
 - **Built, and `aperture.db.List` is answered at the `FactStore` seam** rather than by a new
   kind of plan step. `Catalogued` wraps the store, answers the catalogue's keyspace from a
   listing encoded through `fact::encode` — `predicate_id ++ key`, sorted, byte for byte what a
@@ -648,6 +698,39 @@ is listed at the end of this section rather than implied by its absence.
   buys is everything a client can then do locally: describe the right predicates, compile a
   query before sending it, and show a plan. Virtual predicates are **in** the answer, because
   the question is what may be asked rather than what the database holds.
+- **`F`/`f` — "what facts do these ids name?"** A batch of ids out; one **key** each back, in the
+  order asked, or an absence for an id naming no fact. The read-path twin of a nested reference on
+  the way in: stored, a reference is a `FactId`, so a row carries a number, and focus cannot ask
+  what it names because a query names a fact by its key. It is what `:expand` and
+  `query --expand` are built on (§5).
+    - **The key and not the value side**, because a reference names an *identity* and the identity
+      is the key ([I11](invariants.md#i11)). It is also exactly the logical form `ops-I4` hashes
+      and a producer nests, so one shape covers writing a fact, hashing it and expanding it. The
+      value side is a different read with a different cost ([I6](invariants.md#i6)) and a query
+      can already ask for it by name.
+    - **Positional against the request**, so the reply does not send the question back with the
+      answer — the same bargain a row strikes with its descriptor. It carries a count, so the one
+      fault positional pairing is exposed to is caught rather than mis-paired.
+    - **Absence, not a failed stream**, for an id naming no fact: the server cannot tell an id
+      lifted out of a row (where a dangling one means corruption) from one somebody typed, and
+      the client can. A bad *predicate* id is a refusal, because that is a disagreement about a
+      schema both ends hold.
+    - **And two kinds of absence**, because they mean opposite things and only this end knows
+      which: *missing* for a predicate that stores its facts, where I11 and I12 make a dangling id
+      impossible and so corruption the only explanation, and *unstored* for one that is **answered
+      rather than stored**, whose rows are a view materialised per query and may simply have moved
+      on. A virtual predicate resolves through the same `point` read as any other (§5), so this is
+      the only place its nature shows.
+    - **Read-only is enough** — unlike a control frame, this reads facts, which is what every
+      session may do. One point read each, on the blocking pool, bounded by `MAX_FETCH` in the
+      decoder so the batch size is a protocol rule rather than a handler's caution. It reads the
+      store as it is *now* rather than under the query's snapshot, and nothing follows from that:
+      a fact is immutable and an id is never reused, so an id that was in a row names the same
+      fact under every later view.
+    - **Not a fifth query kind.** Expansion is orthogonal to paging, profiling and counting, so a
+      query kind would have needed one per combination. Additive on the same terms as the rest of
+      this section: a client that never asks neither sends it nor receives a reply, and
+      `VERSION` does not move.
 
 ### The value encoding
 

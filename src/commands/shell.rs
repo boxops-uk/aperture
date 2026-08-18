@@ -39,6 +39,16 @@
 //! its call sites. `:more` is a person holding a cursor across a round trip, and
 //! [`pages_concatenate_to_an_uninterrupted_run`](tests) is that claim as a test.
 //!
+//! # `:expand` is the other thing a wire client could not do
+//!
+//! A row carries a reference as a `FactId`, so a query over a code index answers with
+//! numbers naming facts a person cannot see — and focus cannot ask what one names, since
+//! it names a fact by its key. `:expand` asks the *protocol*
+//! ([`kinds::FETCH`](aperture_wire::kinds::FETCH)) and shows the fact instead, recursively:
+//! `{"to": "#4:1"}` becomes `{"to": {"module": {…}, "name": "encode", "line": 1}}`, which
+//! is the same nested shape a producer sends when it writes one. It costs a point read
+//! per distinct reference, cached across pages, which is why it is off until asked for.
+//!
 //! # Errors do not end the session, and which ones do is a rule
 //!
 //! A [`ClientError::Server`] is the server refusing one *stream* — a query it will not
@@ -57,7 +67,7 @@ use std::{
     time::Instant,
 };
 
-use aperture_client::{ClientError, Connection, Mode, Rows};
+use aperture_client::{ClientError, Connection, Expander, FULL_DEPTH, Mode, Rows};
 use aperture_engine::{compile::Compilation, print};
 use aperture_schema::{
     schema::{PredicateId, Schema},
@@ -99,7 +109,7 @@ const LISTING: &str = "{name = D.name, status = D.status, facts = D.facts, \
 /// hand trained on psql types without thinking; neither can begin a focus query, so
 /// accepting both costs nothing. Aliases are not advertised — a help screen that lists
 /// every spelling twice is one nobody reads to the end.
-pub const COMMANDS: [Command; 14] = [
+pub const COMMANDS: [Command; 15] = [
     Command {
         name: ":type",
         aliases: &[],
@@ -141,6 +151,12 @@ pub const COMMANDS: [Command; 14] = [
         aliases: &[],
         argument: None,
         help: "how a row prints: jsonl, json, table, raw",
+    },
+    Command {
+        name: ":expand",
+        aliases: &[],
+        argument: Some("[hops]"),
+        help: "show the fact a reference names, not its id (bare toggles it)",
     },
     Command {
         name: ":cancel",
@@ -242,6 +258,17 @@ pub struct Repl {
     profiling: bool,
     page: usize,
     format: RowFormat,
+    /// How many hops a reference is followed when a row is shown. Zero is off, which is
+    /// the default: expansion costs a point read per reference, and a person who wants
+    /// one asks.
+    expand: usize,
+    /// The reader that resolves ids, and the cache that makes it affordable across
+    /// pages.
+    ///
+    /// Rebuilt on `:connect` along with the schema, because both are the database's: an
+    /// id means a fact in *this* database, and a cache carried across would answer with
+    /// the last one's.
+    expander: Expander,
     /// Set by Ctrl-C while a page is being read, and cleared before every line.
     ///
     /// A page is read a row at a time so this can be *noticed*: the alternative is a
@@ -272,12 +299,14 @@ impl Repl {
             address: address.to_owned(),
             database: named(address).to_owned(),
             socket: socket.to_path_buf(),
+            expander: Expander::new(Arc::clone(&schema)),
             schema,
             held: None,
             timing: false,
             profiling: false,
             page: PAGE,
             format: RowFormat::Jsonl,
+            expand: 0,
             interrupt: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -285,7 +314,7 @@ impl Repl {
     /// What the prompt says, which is which database is answering.
     #[must_use]
     pub fn prompt(&self) -> String {
-        format!("{}=> ", self.database)
+        format!("{}> ", self.database)
     }
 
     /// The predicate names tab-completion should offer.
@@ -362,6 +391,7 @@ impl Repl {
 
             ":limit" => self.limit(argument, out)?,
             ":format" => self.set_format(argument, out)?,
+            ":expand" => self.set_expand(argument, out)?,
 
             ":cancel" => match self.cancel() {
                 Ok(Some(sent)) => writeln!(out, "  cancelled after {sent} row(s)")?,
@@ -485,9 +515,26 @@ impl Repl {
         };
 
         // A page at a time through the same renderer `query` uses, so the shell cannot
-        // drift from the non-interactive tool in how a row reads.
-        let mut sink =
-            Sink::new(&mut *out, self.format, held.rows.desc()).map_err(ClientError::Io)?;
+        // drift from the non-interactive tool in how a row reads. The schema goes with it
+        // only when expanding, because it is needed for exactly one thing: naming the
+        // fields of a reference that has become a fact.
+        let mut sink = if self.expand > 0 {
+            Sink::naming(
+                &mut *out,
+                self.format,
+                held.rows.desc(),
+                Arc::clone(&self.schema),
+            )
+        } else {
+            Sink::new(&mut *out, self.format, held.rows.desc())
+        }
+        .map_err(ClientError::Io)?;
+
+        let (reads, unresolved) = (self.expander.fetched(), self.expander.unresolved());
+
+        // Set if this server turns out not to answer a fetch at all, which turns
+        // expansion off for the session rather than failing every row of every page.
+        let mut unsupported: Option<String> = None;
 
         // **A row at a time, so Ctrl-C is noticed.** `take(page)` would block until the
         // whole page had arrived, which on a scan that produces few rows is precisely
@@ -507,13 +554,43 @@ impl Repl {
             }
 
             for value in &row {
-                sink.row(value).map_err(ClientError::Io)?;
+                // Expanded a row at a time, on the way to the sink: the reads for one
+                // row happen together, so a page is a handful of exchanges rather than
+                // one per reference — and a row that is interrupted before it is reached
+                // costs nothing.
+                if self.expand > 0 {
+                    match self
+                        .expander
+                        .expand(&mut self.connection, value, self.expand)
+                    {
+                        Ok(expanded) => sink.row(&expanded).map_err(ClientError::Io)?,
+
+                        // **A server that cannot expand should cost one message, not one
+                        // per row.** Expansion goes off and the rows are printed as they
+                        // arrived: the person asked for something this server does not
+                        // answer, and the ids are still worth reading. It lands on the
+                        // *first* row expansion is tried on, so no page comes out half
+                        // expanded.
+                        Err(ClientError::Unsupported(message)) => {
+                            self.expand = 0;
+                            unsupported = Some(message);
+                            sink.row(value).map_err(ClientError::Io)?;
+                        }
+
+                        Err(other) => return Err(other),
+                    }
+                } else {
+                    sink.row(value).map_err(ClientError::Io)?;
+                }
             }
             shown += row.len();
         }
 
         let written = sink.end().map_err(ClientError::Io)?;
         held.delivered += written;
+
+        let reads = self.expander.fetched() - reads;
+        let dangling = self.expander.unresolved() - unresolved;
 
         let delivered = held.delivered;
         let profile = held.rows.profile().cloned();
@@ -547,8 +624,41 @@ impl Repl {
             .map_err(ClientError::Io)?;
         }
 
+        // Said once, after the rows, because it is about the *server* rather than about
+        // this page — and because expansion is off now, so nothing will say it again.
+        if let Some(message) = unsupported {
+            writeln!(out, "  {message}").map_err(ClientError::Io)?;
+            writeln!(out, "  expansion is off; rows show ids").map_err(ClientError::Io)?;
+        }
+
+        // A predicate the server will not resolve an id of — a virtual one, whose rows it
+        // answered rather than stored. Named on the page it was discovered on and not
+        // again, since the expander has stopped asking about it.
+        for notice in self.expander.take_notices() {
+            writeln!(out, "  {notice}").map_err(ClientError::Io)?;
+        }
+
+        // **Never silent.** A reference that names no fact cannot happen — both column
+        // families are written together ([I12](../../docs/invariants.md#i12)) and ids are
+        // never reused ([I11](../../docs/invariants.md#i11)) — so one that did is
+        // corruption, and a row rendering the id instead would look like an ordinary
+        // unexpanded field.
+        if dangling > 0 {
+            writeln!(
+                out,
+                "  {dangling} reference(s) named no fact — shown as ids; this database is damaged"
+            )
+            .map_err(ClientError::Io)?;
+        }
+
         if self.timing {
             writeln!(out, "  {:.3} ms", elapsed.as_secs_f64() * 1000.0).map_err(ClientError::Io)?;
+
+            // What expansion cost, next to what the page cost. It counts *distinct* ids,
+            // so the gap between this and the references on screen is the cache's work.
+            if self.expand > 0 {
+                writeln!(out, "  {reads} point read(s) to expand").map_err(ClientError::Io)?;
+            }
         }
 
         Ok(())
@@ -615,6 +725,55 @@ impl Repl {
                 }
             }
             None => writeln!(out, "  :format takes jsonl, json, table or raw")?,
+        }
+
+        Ok(())
+    }
+
+    /// `:expand` — show the fact a reference names instead of its id.
+    ///
+    /// Bare, it toggles: off becomes all the way down, and anything else becomes off.
+    /// That is the shape of `:timing` and `:profile`, and it is what a person types when
+    /// the row in front of them is full of numbers. A count is for when the whole chain
+    /// is more than was wanted — `:expand 1` shows what a row points at without showing
+    /// what *that* points at.
+    fn set_expand(&mut self, argument: &str, out: &mut impl Write) -> Result<(), CliError> {
+        self.expand = match argument {
+            "" => {
+                if self.expand == 0 {
+                    FULL_DEPTH
+                } else {
+                    0
+                }
+            }
+            "off" | "none" | "0" => 0,
+            "on" | "all" => FULL_DEPTH,
+            count => match count.parse::<usize>() {
+                Ok(hops) => hops,
+                Err(_) => {
+                    writeln!(out, "  :expand takes a number of hops, `off`, or nothing")?;
+                    return Ok(());
+                }
+            },
+        };
+
+        match self.expand {
+            0 => writeln!(out, "  references print as ids")?,
+            1 => writeln!(out, "  references expand one hop")?,
+            hops if hops >= FULL_DEPTH => writeln!(
+                out,
+                "  references expand into the facts they name, all the way down"
+            )?,
+            hops => writeln!(out, "  references expand {hops} hops")?,
+        }
+
+        // Said once, where it is chosen, because it is the cost somebody should know
+        // about before they run a scan with it on rather than after.
+        if self.expand > 0 {
+            writeln!(
+                out,
+                "  each one is a point read — :timing counts them per page"
+            )?;
         }
 
         Ok(())
@@ -730,8 +889,13 @@ impl Repl {
 
         match Repl::connect(&self.socket, database) {
             Ok(fresh) => {
-                let (timing, profiling, page, format) =
-                    (self.timing, self.profiling, self.page, self.format);
+                let (timing, profiling, page, format, expand) = (
+                    self.timing,
+                    self.profiling,
+                    self.page,
+                    self.format,
+                    self.expand,
+                );
                 let interrupt = Arc::clone(&self.interrupt);
 
                 *self = fresh;
@@ -739,6 +903,10 @@ impl Repl {
                 self.profiling = profiling;
                 self.page = page;
                 self.format = format;
+                // **The depth carries and the cache does not.** How deep to expand is a
+                // preference; what an id means is the database's, and `fresh` brought a
+                // reader for the new one.
+                self.expand = expand;
                 // The Ctrl-C handler holds this one: a fresh flag would be a flag
                 // nothing sets.
                 self.interrupt = interrupt;
@@ -1255,6 +1423,65 @@ mod tests {
         assert!(table.contains("PATH"), "{table}");
 
         assert!(typed(&mut repl, ":format sideways").contains("takes jsonl"));
+    }
+
+    /// **`:expand` shows the fact a reference names, all the way down.**
+    ///
+    /// The corpus is `declaration → module → file`, so a row holding a module reference
+    /// is a two-hop chain: what the shell prints unexpanded is `"#2:1"`, and what it
+    /// prints expanded is the module's own key with the file's *path* inside it. The
+    /// depth is hops, which the middle assertion is about — `:expand 1` reaches the
+    /// module and leaves the module's file an id.
+    #[test]
+    fn expand_shows_the_fact_a_reference_names() {
+        let serving = serving(1);
+        let mut repl = repl(&serving);
+
+        let query = "{name = D.name, module = D.module} where src.Decl D";
+        let object = |rows: &str| -> serde_json::Value {
+            rows.lines()
+                .find(|line| line.starts_with('{'))
+                .map(|line| serde_json::from_str(line).expect("valid JSON"))
+                .unwrap_or_else(|| panic!("no row in: {rows}"))
+        };
+
+        // Off by default: a reference is the id a row carries, which is also what says
+        // expansion costs something nobody has asked for yet.
+        let plain = object(&typed(&mut repl, query));
+        assert!(
+            plain["module"]
+                .as_str()
+                .is_some_and(|id| id.starts_with('#')),
+            "unexpanded, a reference is an id: {plain}"
+        );
+
+        assert!(typed(&mut repl, ":expand").contains("all the way down"));
+
+        let deep = object(&typed(&mut repl, query));
+        assert_eq!(
+            deep["module"]["name"], "m00000",
+            "the module's own fields, named from the schema: {deep}"
+        );
+        assert_eq!(
+            deep["module"]["file"], "f00000.py",
+            "and its file is the path, not the id: {deep}"
+        );
+
+        // One hop reaches the module and stops.
+        assert!(typed(&mut repl, ":expand 1").contains("one hop"));
+        let shallow = object(&typed(&mut repl, query));
+        assert_eq!(shallow["module"]["name"], "m00000");
+        assert!(
+            shallow["module"]["file"]
+                .as_str()
+                .is_some_and(|id| id.starts_with('#')),
+            "the second hop is not taken: {shallow}"
+        );
+
+        // Bare again turns it off, and a nonsense argument changes nothing.
+        assert!(typed(&mut repl, ":expand").contains("print as ids"));
+        assert!(typed(&mut repl, ":expand sideways").contains("takes a number of hops"));
+        assert_eq!(repl.expand, 0, "a bad argument leaves the setting alone");
     }
 
     /// A new query ends the old result rather than leaving `:more` pointed at it.

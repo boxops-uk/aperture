@@ -474,6 +474,46 @@ fn copy_data_on_an_unopened_stream_is_refused() {
     assert!(message.contains("never opened"), "{message}");
 }
 
+/// **A frame kind this server does not know is `Protocol`, on the stream that sent it.**
+///
+/// The framing layer hands an unrecognised kind up intact rather than failing the decode,
+/// so that a peer speaking a newer protocol can be *told* rather than left to read
+/// "malformed". This is the other half of that promise, and it is load-bearing at a
+/// distance: [`Connection::fetch`](aperture_client::Connection::fetch) reads exactly this
+/// code to turn a server that predates the `F` frame into a sentence naming the remedy —
+/// "restart it with a current build" — instead of showing somebody
+/// `no handler for frame kind`. A future change that answered an unknown kind with some
+/// other code would leave that translation silently unreachable, and the person back where
+/// they started.
+///
+/// `Z` is deliberately not a kind anything assigns, and this is the test that would fail
+/// if it became one.
+#[test]
+fn an_unknown_frame_kind_is_refused_by_code_and_the_connection_lives() {
+    let serving = start();
+    let mut client = Client::connect(&serving);
+    client.hello(0, Mode::ReadOnly);
+
+    client.send(FrameKind(b'Z'), StreamId(1), b"");
+
+    let (header, payload) = client.recv();
+    assert_eq!(header.kind, FrameKind::ERROR);
+
+    let (code, message) = protocol::decode_error(&payload).expect("an error frame");
+    assert_eq!(
+        code,
+        ErrorCode::Protocol,
+        "an unhandled kind is a protocol fault: {message}"
+    );
+    assert!(message.contains('Z'), "and it names the kind: {message}");
+
+    // The connection survives it, which is what makes "I do not know that message" a
+    // conversation rather than a disconnection.
+    client.send(kinds::QUERY, StreamId(2), b"F where src.File F");
+    let (header, _) = client.recv();
+    assert_eq!(header.kind, FrameKind::ROW_DESCRIPTION);
+}
+
 /// **A block whose bytes do not decode fails its stream, and the connection lives.**
 ///
 /// Worth telling apart from a frame-level fault, and the codes do: the *frame* was

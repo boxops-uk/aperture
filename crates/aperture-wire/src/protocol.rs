@@ -24,6 +24,9 @@
 //!
 //!     ── L control{op, name}  (stream 3) ───▶
 //!     ◀──────── M control-reply[…] ─────────      or E error
+//!
+//!     ── F fetch{ids}         (stream 4) ───▶
+//!     ◀──────── f fetched[keys] ────────────      or E error
 //! ```
 //!
 //! # The lifecycle is a stream like any other
@@ -45,6 +48,15 @@
 //! control frames never sends one and is never sent one. The .NET client under
 //! `clients/dotnet` is the check that this is true rather than hoped.
 //!
+//! # Asking what an id names is a question of its own
+//!
+//! [`FETCH`](kinds::FETCH) is the read-path twin of a nested reference on the way in: a
+//! row carries a reference as a `FactId`, and this answers with the fact. It is additive
+//! on the same terms — a client that never asks neither sends it nor receives a reply —
+//! and it is deliberately **not** a fifth query kind. Expansion is orthogonal to paging,
+//! profiling and counting, so a query kind for it would need one per combination;
+//! asking about the ids in a row after the row arrived composes with all of them.
+//!
 //! # Every message is a frame, including the handshake
 //!
 //! PostgreSQL's startup packet is special-cased — length-prefixed with no type byte —
@@ -59,7 +71,16 @@
 //! *skip* without parsing — a frame's length, a block's — and a handshake field is
 //! never skipped.
 
-use crate::{WireError, varint};
+use aperture_schema::{
+    id::FactId,
+    schema::{PredicateId, Schema},
+};
+
+use crate::{
+    WireError,
+    value::{WireValue, decode_value, encode_value},
+    varint,
+};
 
 /// The protocol version this build speaks.
 ///
@@ -165,6 +186,35 @@ pub mod kinds {
     /// *ask*, not what the database holds — a client that cannot see `aperture.db.List`
     /// cannot compile the one query every server answers.
     pub const SCHEMA_REPLY: FrameKind = FrameKind(b'h');
+    /// Client → server: **what facts do these ids name?**
+    ///
+    /// The read-path twin of [a reference on the way in][settled]. Stored, a reference
+    /// *is* a `FactId` and nothing else, so a row carries `#3:7` where the thing worth
+    /// reading is the declaration it names — and nothing in focus can ask, because a
+    /// query names a fact by its key and never by its number. That is deliberate and
+    /// stays that way: an id is physical, and putting one in the language would put a
+    /// storage detail in a query. So the question goes on the protocol, which is the one
+    /// place an id has already legitimately crossed.
+    ///
+    /// **Not a fifth query kind.** [`QUERY_PROFILE`] and [`QUERY_PAGE`] are separate
+    /// kinds because a flag in [`QUERY`]'s payload would change what its bytes mean;
+    /// a query kind for expansion would be worse than that, since expansion is
+    /// orthogonal to paging, profiling and counting alike and would need a kind per
+    /// combination. Asking about the ids in a row *after* the row arrived composes with
+    /// every way of asking for rows, and costs a client that never asks nothing at all.
+    ///
+    /// [settled]: ../../../docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
+    pub const FETCH: FrameKind = FrameKind(b'F');
+    /// Server → client: the facts those ids name, **in the order they were asked
+    /// about**.
+    ///
+    /// Positional against the request, which is the same bargain
+    /// [`ROW_DESCRIPTION`](crate::FrameKind::ROW_DESCRIPTION) strikes with its rows: the
+    /// asker still holds the ids, so echoing them back would be sending the question
+    /// with the answer. The reply carries its own count, so the one fault positional
+    /// encoding is exposed to — two peers disagreeing about how many answers there are
+    /// — is caught rather than mis-paired.
+    pub const FETCHED: FrameKind = FrameKind(b'f');
 }
 
 /// Which way a session may go, declared at startup and resolved once against the
@@ -805,9 +855,245 @@ pub fn decode_page(bytes: &[u8]) -> Result<Page, WireError> {
     })
 }
 
+// ---- fetching the fact an id names ------------------------------------------
+
+/// The most ids one [`FETCH`](kinds::FETCH) may name.
+///
+/// Bounded for the reason a block's fact count is: a count read off a socket sizes an
+/// allocation, and here it also buys a point read each. The number is what a *page* of
+/// rows can plausibly name — a client expanding one row at a time never comes near it —
+/// and a caller holding more ids than this has to ask twice, which is a loop it already
+/// has.
+pub const MAX_FETCH: usize = 4096;
+
+/// One answer in a [`FETCHED`](kinds::FETCHED) reply.
+///
+/// # The **key**, and not the value side
+///
+/// A reference names a fact's *identity*, and the identity is the key
+/// ([I11](../../../docs/invariants.md#i11)). Expanding one to its target's key,
+/// recursively, is already the definition of a database's canonical logical form — it
+/// is what `ops-I4`'s content hash is computed over, and what a producer sends when it
+/// nests a reference instead of holding an id. Answering with the same thing means the
+/// expanded form of a row and the form a producer would have written are one shape,
+/// rather than two that have to be kept in step.
+///
+/// The value side is left out because it is a *different read* with a different cost
+/// ([I6](../../../docs/invariants.md#i6)), and one a query can already ask for by name:
+/// `X.value` projects it. Folding it in here would make every expansion pay for a
+/// column family nobody asked about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    /// The id this answers about. **Not encoded** — the reply is positional — and
+    /// carried because the encoder needs it to find the key's type.
+    pub id: FactId,
+    pub found: Found,
+}
+
+/// What was there.
+///
+/// **Three answers rather than two, and the third is the interesting one.** An absence
+/// means opposite things depending on what kind of predicate was asked about, and only
+/// the server knows which: a *stored* fact cannot dangle — both column families are
+/// written together ([I12](../../../docs/invariants.md#i12)) and ids are never reused
+/// ([I11](../../../docs/invariants.md#i11)) — so a missing one is corruption and should
+/// be said out loud. A **virtual** predicate's rows are a view of the server, materialised
+/// per query, so one going missing between a query and an expansion of it is a database
+/// having been created or removed in between, which is ordinary. Collapsing the two would
+/// mean either crying corruption at a `db rm` or staying quiet about a damaged store, and
+/// the client cannot tell them apart: virtuality belongs to the server, and the schema it
+/// serves is *printed* with its virtual predicates written like any other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    /// The fact's key.
+    Key(WireValue),
+    /// No such fact, in a predicate that stores them. Corruption, if the id came from a
+    /// row.
+    Missing,
+    /// No such row, in a predicate that is **answered rather than stored** — so nothing
+    /// was promised, and the listing has simply moved on.
+    Unstored,
+}
+
+/// Encode a request naming the ids to resolve.
+#[must_use]
+pub fn encode_fetch(ids: &[FactId]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + ids.len() * 4);
+    varint::put_u64(&mut out, ids.len() as u64);
+
+    for id in ids {
+        // **The two halves, not the raw `u64`.** A fact id carries its predicate in the
+        // *high* 24 bits (I11), so a varint of the whole number sets a continuation bit
+        // in every byte — eight or nine of them, for every id. A predicate and a
+        // sequence are one or two each, and `FactId::new` re-checks the pair on the way
+        // back in, which the raw form would have skipped.
+        varint::put_u64(&mut out, u64::from(id.predicate().0));
+        varint::put_u64(&mut out, id.sequence());
+    }
+
+    out
+}
+
+/// Decode a fetch request.
+///
+/// # Errors
+///
+/// [`WireError::BlockTooLarge`] past [`MAX_FETCH`], [`WireError::BadFactId`] for a pair
+/// that is not a fact id — sequence zero is reserved, so a zeroed frame is detectably
+/// not one — or [`WireError::TrailingBytes`] if the frame says more than it counted.
+pub fn decode_fetch(bytes: &[u8]) -> Result<Vec<FactId>, WireError> {
+    let (count, mut at) = varint::get_u64(bytes)?;
+
+    if count > MAX_FETCH as u64 {
+        return Err(WireError::BlockTooLarge {
+            what: "fetch ids",
+            declared: count,
+            max: MAX_FETCH as u64,
+        });
+    }
+
+    let count = usize::try_from(count).map_err(|_| WireError::LengthOutOfRange {
+        declared: count,
+        available: bytes.len(),
+    })?;
+
+    let mut ids = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let (predicate, used) = varint::get_u64(&bytes[at..])?;
+        at += used;
+
+        let (sequence, used) = varint::get_u64(&bytes[at..])?;
+        at += used;
+
+        let predicate = u32::try_from(predicate)
+            .map_err(|_| WireError::UnknownPredicate(u32::MAX))
+            .map(PredicateId)?;
+
+        ids.push(
+            FactId::new(predicate, sequence)
+                .map_err(|_| WireError::BadFactId((u64::from(predicate.0) << 40) | sequence))?,
+        );
+    }
+
+    if at != bytes.len() {
+        return Err(WireError::TrailingBytes(bytes.len() - at));
+    }
+
+    Ok(ids)
+}
+
+/// Encode the answers, in the order they were asked about.
+///
+/// # Errors
+///
+/// [`WireError::UnknownPredicate`] for an id naming a predicate this schema does not
+/// declare, or whatever [`encode_value`] reports about a key that does not fit the type
+/// its own predicate declares.
+pub fn encode_fetched(schema: &Schema, found: &[Fetched]) -> Result<Vec<u8>, WireError> {
+    let mut out = Vec::with_capacity(1 + found.len() * 8);
+    varint::put_u64(&mut out, found.len() as u64);
+
+    for answer in found {
+        match &answer.found {
+            Found::Key(key) => {
+                out.push(PRESENT);
+                encode_value(
+                    &mut out,
+                    schema,
+                    key_ty(schema, answer.id.predicate())?,
+                    key,
+                )?;
+            }
+            // No key follows either way, so nothing has to be skipped: the reader consults
+            // the schema for the *next* answer's type and this one contributed no bytes.
+            Found::Missing => out.push(MISSING),
+            Found::Unstored => out.push(UNSTORED),
+        }
+    }
+
+    Ok(out)
+}
+
+/// Decode the answers to `asked`, in that order.
+///
+/// The ids are a parameter rather than something on the wire because they are what
+/// says how to read the bytes: each key is encoded against its own predicate's key
+/// type, and the predicate comes from the id ([I11](../../../docs/invariants.md#i11)
+/// tags one). A reply is therefore only readable by the peer that asked, which is the
+/// same property a row has against its descriptor.
+///
+/// # Errors
+///
+/// [`WireError::TypeMismatch`] if the reply answers a different number of ids than
+/// were asked about, [`WireError::UnknownPredicate`] for an id this schema cannot
+/// place, or whatever [`decode_value`] reports about the bytes.
+pub fn decode_fetched(
+    bytes: &[u8],
+    schema: &Schema,
+    asked: &[FactId],
+) -> Result<Vec<Found>, WireError> {
+    let (count, mut at) = varint::get_u64(bytes)?;
+
+    if count != asked.len() as u64 {
+        return Err(WireError::TypeMismatch(
+            "a fetch reply answering a different number of ids than were asked about",
+        ));
+    }
+
+    let mut out = Vec::with_capacity(asked.len());
+
+    for id in asked {
+        let present = *bytes.get(at).ok_or(WireError::UnexpectedEof)?;
+        at += 1;
+
+        match present {
+            MISSING => out.push(Found::Missing),
+            UNSTORED => out.push(Found::Unstored),
+            PRESENT => {
+                let (key, used) =
+                    decode_value(&bytes[at..], schema, key_ty(schema, id.predicate())?)?;
+                at += used;
+                out.push(Found::Key(key));
+            }
+            other => return Err(WireError::UnknownRefForm(u64::from(other))),
+        }
+    }
+
+    if at != bytes.len() {
+        return Err(WireError::TrailingBytes(bytes.len() - at));
+    }
+
+    Ok(out)
+}
+
+/// The three answers, as one byte each.
+///
+/// **Append only, like every other discriminant on this wire.** `0` and `1` are the two
+/// this reply started with; `2` was added when an absence turned out to mean two different
+/// things, which is why a reader refuses a byte it does not know rather than guessing at
+/// the nearest one it does.
+const MISSING: u8 = 0;
+const PRESENT: u8 = 1;
+const UNSTORED: u8 = 2;
+
+/// A predicate's key type, which is what a fetched key is encoded against.
+fn key_ty(
+    schema: &Schema,
+    predicate: PredicateId,
+) -> Result<&aperture_schema::schema::PredicateTy, WireError> {
+    Ok(&schema
+        .get(predicate)
+        .ok_or(WireError::UnknownPredicate(predicate.0))?
+        .predicate()
+        .key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::WireRef;
+    use ::proptest::prelude::*;
 
     #[test]
     fn the_handshake_messages_round_trip() {
@@ -997,5 +1283,255 @@ mod tests {
             decode_ready(&bytes),
             Err(WireError::TrailingBytes(1))
         ));
+    }
+
+    // ---- fetching the fact an id names -------------------------------------
+
+    /// `two.Ref : { to : two.Named }` over `two.Named : string` — the smallest schema
+    /// with a reference in it, which is what an expansion is about.
+    fn two_predicates() -> Schema {
+        use aperture_schema::schema::{Predicate, PredicateTy};
+        use lasso::Rodeo;
+        use std::sync::Arc;
+
+        let mut rodeo = Rodeo::new();
+        let named = rodeo.get_or_intern("two.Named");
+        let reference = rodeo.get_or_intern("two.Ref");
+        let to = rodeo.get_or_intern("to");
+
+        Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![
+                Predicate {
+                    name: named,
+                    key: PredicateTy::Str,
+                    value: None,
+                },
+                Predicate {
+                    name: reference,
+                    key: PredicateTy::Record(Arc::from(vec![(
+                        to,
+                        PredicateTy::Fact(PredicateId(0)),
+                    )])),
+                    value: None,
+                },
+            ]),
+        )
+    }
+
+    fn id(predicate: u32, sequence: u64) -> FactId {
+        FactId::new(PredicateId(predicate), sequence).expect("a fact id")
+    }
+
+    #[test]
+    fn the_fetch_messages_round_trip() {
+        let schema = two_predicates();
+        let asked = vec![id(0, 1), id(1, 7), id(0, 4_000_000)];
+
+        let request = encode_fetch(&asked);
+        assert_eq!(decode_fetch(&request), Ok(asked.clone()));
+
+        // **All three answers in one reply**, which is what exercises the presence byte
+        // over its whole range — and the second is a *record* key, so a decoder that read
+        // the wrong type for answer two would mis-pair every answer after it.
+        let found = vec![
+            Fetched {
+                id: asked[0],
+                found: Found::Key(WireValue::Str("store/codec.py".to_owned())),
+            },
+            Fetched {
+                id: asked[1],
+                found: Found::Key(WireValue::Record(Box::from([WireValue::Ref(WireRef::Id(
+                    asked[0],
+                ))]))),
+            },
+            Fetched {
+                id: asked[2],
+                found: Found::Missing,
+            },
+        ];
+
+        let reply = encode_fetched(&schema, &found).expect("well-typed keys");
+        assert_eq!(
+            decode_fetched(&reply, &schema, &asked),
+            Ok(vec![
+                Found::Key(WireValue::Str("store/codec.py".to_owned())),
+                Found::Key(WireValue::Record(Box::from([WireValue::Ref(WireRef::Id(
+                    asked[0]
+                ))]))),
+                Found::Missing,
+            ])
+        );
+
+        // **The two absences are distinct on the wire**, which is the whole reason the
+        // third byte exists: one says a stored fact is not there, which is corruption, and
+        // the other says a predicate the server *answers* had no such row, which is a
+        // listing that moved on. A reply that could not tell them apart would leave the
+        // client crying corruption at an ordinary `db rm`.
+        let absences = vec![
+            Fetched {
+                id: asked[0],
+                found: Found::Missing,
+            },
+            Fetched {
+                id: asked[1],
+                found: Found::Unstored,
+            },
+        ];
+        let two = [asked[0], asked[1]];
+
+        assert_eq!(
+            decode_fetched(
+                &encode_fetched(&schema, &absences).expect("no keys to type"),
+                &schema,
+                &two
+            ),
+            Ok(vec![Found::Missing, Found::Unstored])
+        );
+
+        // An empty ask is a well-formed message rather than a special case: a client
+        // whose page held no references still has a code path.
+        assert_eq!(decode_fetch(&encode_fetch(&[])), Ok(vec![]));
+        assert_eq!(
+            decode_fetched(&encode_fetched(&schema, &[]).unwrap(), &schema, &[]),
+            Ok(vec![])
+        );
+    }
+
+    /// A cut message is refused rather than defaulted — the rule the handshake and the
+    /// control messages follow. It matters as much here: a reply truncated inside its
+    /// third answer, read as two, would silently pair every id with the wrong fact.
+    #[test]
+    fn a_truncated_fetch_is_refused_rather_than_defaulted() {
+        let schema = two_predicates();
+        let asked = vec![id(0, 1), id(0, 2)];
+
+        let request = encode_fetch(&asked);
+        for cut in 0..request.len() {
+            assert!(decode_fetch(&request[..cut]).is_err(), "cut to {cut}");
+        }
+
+        let reply = encode_fetched(
+            &schema,
+            &[
+                Fetched {
+                    id: asked[0],
+                    found: Found::Key(WireValue::Str("a.py".to_owned())),
+                },
+                Fetched {
+                    id: asked[1],
+                    found: Found::Key(WireValue::Str("b.py".to_owned())),
+                },
+            ],
+        )
+        .expect("well-typed keys");
+
+        for cut in 0..reply.len() {
+            assert!(
+                decode_fetched(&reply[..cut], &schema, &asked).is_err(),
+                "cut to {cut}"
+            );
+        }
+
+        let mut over = reply.clone();
+        over.push(0);
+        assert!(matches!(
+            decode_fetched(&over, &schema, &asked),
+            Err(WireError::TrailingBytes(1))
+        ));
+    }
+
+    /// **The one fault positional pairing is exposed to**, and it is caught.
+    ///
+    /// A reply is read against the ids the caller still holds, so a reply that answers
+    /// a different number of them is not a wrong answer to one id — it is every answer
+    /// after the divergence attached to the wrong id. The count makes that a refusal.
+    #[test]
+    fn a_reply_that_answers_a_different_number_of_ids_is_refused() {
+        let schema = two_predicates();
+        let asked = vec![id(0, 1), id(0, 2)];
+
+        let short = encode_fetched(
+            &schema,
+            &[Fetched {
+                id: asked[0],
+                found: Found::Key(WireValue::Str("a.py".to_owned())),
+            }],
+        )
+        .expect("well-typed key");
+
+        assert!(matches!(
+            decode_fetched(&short, &schema, &asked),
+            Err(WireError::TypeMismatch(_))
+        ));
+    }
+
+    /// A count past the cap is refused before it sizes anything, and an id whose
+    /// sequence is the reserved zero is refused as not being an id at all.
+    #[test]
+    fn a_fetch_a_peer_should_not_have_sent_is_refused() {
+        let mut huge = vec![];
+        varint::put_u64(&mut huge, MAX_FETCH as u64 + 1);
+        assert!(matches!(
+            decode_fetch(&huge),
+            Err(WireError::BlockTooLarge {
+                what: "fetch ids",
+                ..
+            })
+        ));
+
+        // Sequence zero is reserved (I11), so a zeroed frame is detectably not a fact
+        // id rather than an id of fact zero.
+        let mut zeroed = vec![];
+        varint::put_u64(&mut zeroed, 1);
+        varint::put_u64(&mut zeroed, 0);
+        varint::put_u64(&mut zeroed, 0);
+        assert!(matches!(
+            decode_fetch(&zeroed),
+            Err(WireError::BadFactId(_))
+        ));
+    }
+
+    /// **An id costs its two halves, not its sixty-four bits.**
+    ///
+    /// The reason [`encode_fetch`] splits one: a fact id keeps its predicate in the top
+    /// 24 bits, so a varint over the raw number sets a continuation bit in every byte
+    /// it has. Stated as arithmetic rather than as a golden count, so it says why.
+    #[test]
+    fn an_id_costs_its_halves_rather_than_its_bits() {
+        let low = encode_fetch(&[id(3, 7)]);
+        assert_eq!(low.len(), 1 + 1 + 1, "count, predicate 3, sequence 7");
+
+        let raw_would_be = {
+            let mut out = vec![];
+            varint::put_u64(&mut out, id(3, 7).raw());
+            out.len()
+        };
+        assert!(
+            raw_would_be > 2,
+            "the raw form spends {raw_would_be} bytes on the same id"
+        );
+    }
+
+    proptest! {
+        /// Any key a fact can have, resolved and read back — the property the two
+        /// small schemas above cannot cover, since a key is any type the schema
+        /// language can write.
+        #[test]
+        fn a_fetched_key_round_trips(drawn in crate::value::proptest::arb_schema_and_fact()) {
+            let schema = drawn.schema();
+            let fact = drawn.fact(&schema);
+            let asked = [FactId::new(fact.predicate, 12).expect("a fact id")];
+
+            let reply = encode_fetched(
+                &schema,
+                &[Fetched { id: asked[0], found: Found::Key(fact.key.clone()) }],
+            )?;
+
+            prop_assert_eq!(
+                decode_fetched(&reply, &schema, &asked)?,
+                vec![Found::Key(fact.key)]
+            );
+        }
     }
 }

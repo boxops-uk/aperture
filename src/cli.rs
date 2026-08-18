@@ -145,6 +145,26 @@ pub enum Command {
         /// different order of expense from piping the rows to `wc -l`.
         #[arg(long, conflicts_with_all = ["limit", "profile", "format"])]
         count: bool,
+
+        /// Show the fact a reference names, instead of its id — recursively.
+        ///
+        /// A row carries a reference as an id (`#3:7`), because that is what one is once
+        /// stored. This replaces each with the fact it names, and each reference in
+        /// *that* with the fact *it* names: `{"to": "#3:7"}` becomes
+        /// `{"to": {"module": {…}, "name": "encode", "line": 12}}`, which is the same
+        /// nested shape a producer sends when it writes one.
+        ///
+        /// Bare, it follows every reference to the end of the chain; with a number, that
+        /// many hops. **It costs a point read per distinct reference**, answered from a
+        /// cache within the run, so it is off unless asked for.
+        #[arg(
+            long,
+            value_name = "HOPS",
+            num_args = 0..=1,
+            default_missing_value = "16",
+            conflicts_with = "count"
+        )]
+        expand: Option<usize>,
     },
 
     /// An interactive REPL.
@@ -265,4 +285,62 @@ pub enum RowFormat {
     /// For measuring the *server*: rendering is the client's cost, and a throughput
     /// number that includes it is measuring the wrong process.
     Count,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **`--expand`'s bare depth is [`aperture_client::FULL_DEPTH`]**, restated as a
+    /// literal.
+    ///
+    /// clap needs `default_missing_value` as a string at attribute position, so the
+    /// number is written twice: once in `aperture-client`, where the walk is, and once
+    /// above. This is the check that they agree — the sort of drift nothing else would
+    /// notice, since a wrong number here still expands, just not as far as the flag's own
+    /// help says.
+    ///
+    /// Parsed rather than read off the `Arg`, so what is asserted is the value the
+    /// command actually receives.
+    #[test]
+    fn the_bare_expand_depth_is_the_clients_full_depth() {
+        let parsed = Cli::parse_from([
+            "aperture",
+            "query",
+            "code",
+            "F where src.File F",
+            "--expand",
+        ]);
+
+        let Command::Query { expand, .. } = parsed.command else {
+            panic!("that is a query");
+        };
+
+        assert_eq!(
+            expand,
+            Some(aperture_client::FULL_DEPTH),
+            "`--expand` with no number should follow a chain as far as the expander does"
+        );
+
+        // And with a number it is that number, which is the form the bare one defaults.
+        let parsed = Cli::parse_from([
+            "aperture",
+            "query",
+            "code",
+            "F where src.File F",
+            "--expand",
+            "2",
+        ]);
+        let Command::Query { expand, .. } = parsed.command else {
+            panic!("that is a query");
+        };
+        assert_eq!(expand, Some(2));
+
+        // Absent is absent: ids, and no point reads.
+        let parsed = Cli::parse_from(["aperture", "query", "code", "F where src.File F"]);
+        let Command::Query { expand, .. } = parsed.command else {
+            panic!("that is a query");
+        };
+        assert_eq!(expand, None);
+    }
 }
