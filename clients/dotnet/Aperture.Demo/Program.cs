@@ -9,8 +9,14 @@ using Aperture.Client;
 // an indexer walking a syntax tree knows the file when it reaches the declaration, and
 // should not have to remember what the server called it.
 
-var socket = Args("--socket") ?? "/tmp/aperture.sock";
-var database = Args("--database") ?? "code";
+// One address rather than a socket and a name: `[where//]db[@instance]`, the same
+// grammar the `aperture` CLI takes. `--socket` and `--database` still work, and compose
+// into one.
+const string DefaultSocket = "/tmp/aperture.sock";
+
+var address = ApertureAddress
+    .Parse(Args("--at") ?? $"{Args("--socket") ?? DefaultSocket}//{Args("--database") ?? "code"}")
+    .OrSocket(DefaultSocket);
 
 // With `--golden <path>` this program connects to nothing: it encodes a fixed corpus
 // and writes the bytes out, for the Rust client's test to compare itself against. See
@@ -200,12 +206,11 @@ if (goldenPath is not null)
     return;
 }
 
-Console.WriteLine($"connecting to {socket} ({database})");
+Console.WriteLine($"connecting to {address}");
 Console.WriteLine($"  our schema fingerprint {schema.Fingerprint:x16}");
 
 using var connection = ApertureConnection.Connect(
-    socket,
-    database,
+    address,
     schema,
     SessionMode.ReadWrite,
     // A claim, not a question: if the server's schema differs, the handshake refuses

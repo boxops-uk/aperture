@@ -31,8 +31,8 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 scratch="${APERTURE_INDEX_DIR:-/tmp/ap-index}"
 
-# The socket is derived from the store root rather than chosen (operations §9), so
-# `aperture query` finds the same server this indexer wrote to without being told where.
+# A named store root keeps its socket beside it (operations §2), so `aperture query`
+# finds the same server this indexer wrote to without being told where.
 socket="$scratch/db/aperture.sock"
 
 cargo build --manifest-path "$root/Cargo.toml" --bin aperture --release
@@ -58,8 +58,7 @@ done
 
 dotnet run --project "$root/clients/dotnet/Aperture.Indexer" --configuration Release -- \
     --source "$source_path" \
-    --socket "$socket" \
-    --database "$database" \
+    --at "$socket//$database" \
     "$@"
 
 echo

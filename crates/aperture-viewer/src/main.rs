@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! aperture --data-dir ~/ap-cs/db serve &
-//! aperture-viewer --socket ~/ap-cs/db/aperture.sock --database code
+//! aperture-viewer ~/ap-cs/db/aperture.sock//code
 //! ```
 //!
 //! Everything it does is in [`aperture_viewer`]; this file is the argument parsing and
@@ -11,18 +11,20 @@
 
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
+use aperture_client::{Address, Endpoint};
 use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "aperture-viewer", about = "Browse an Aperture code index")]
 struct Args {
-    /// The server's socket. Derived from a data directory as `<dir>/aperture.sock`.
-    #[arg(long, value_name = "PATH")]
-    socket: PathBuf,
-
-    /// Which database on that server.
-    #[arg(long, default_value = "code")]
-    database: String,
+    /// Where to read from: `[where//]name[@instance]`.
+    ///
+    /// The same address grammar `aperture` takes — a bare name means the default
+    /// socket, `/path/to.sock//code` names one, and `box:7280//code` is TCP. An address
+    /// naming no target uses `$XDG_RUNTIME_DIR/aperture.sock`, which is where a server
+    /// started with no `--data-dir` listens.
+    #[arg(default_value = "code")]
+    address: String,
 
     /// Where to listen.
     #[arg(long, default_value = "127.0.0.1:8088")]
@@ -34,6 +36,19 @@ struct Args {
     /// the floor rather than the ceiling. See `pool` for why a pool has a policy.
     #[arg(long, default_value_t = 8)]
     pool: usize,
+}
+
+/// Resolve an address argument, defaulting the target the way the CLI does.
+///
+/// A viewer has no configuration layer of its own, so the one default is the well-known
+/// socket — `$XDG_RUNTIME_DIR/aperture.sock`, where a server started with no `--data-dir`
+/// listens. Anything else is named in the address.
+fn address(text: &str) -> Result<Address, aperture_client::ClientError> {
+    let socket = std::env::var_os("XDG_RUNTIME_DIR")
+        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
+        .join("aperture.sock");
+
+    Ok(Address::parse(text)?.or_endpoint(Endpoint::Unix(socket)))
 }
 
 fn main() -> ExitCode {
@@ -53,22 +68,24 @@ fn main() -> ExitCode {
         // and it is frozen at create (I13).
         let schema = Arc::new(aperture_cli_schema());
 
-        let app = match aperture_viewer::App::open(&args.socket, &args.database, schema, args.pool)
-        {
+        let address = match address(&args.address) {
+            Ok(address) => address,
+            Err(error) => {
+                eprintln!("aperture-viewer: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+
+        let app = match aperture_viewer::App::open(&address, schema, args.pool) {
             Ok(app) => Arc::new(app),
             Err(error) => {
-                eprintln!(
-                    "aperture-viewer: could not read `{}` on {}: {error}",
-                    args.database,
-                    args.socket.display()
-                );
+                eprintln!("aperture-viewer: could not read `{address}`: {error}");
                 return ExitCode::FAILURE;
             }
         };
 
         println!("aperture-viewer");
-        println!("  socket    {}", args.socket.display());
-        println!("  database  {}", args.database);
+        println!("  reading   {address}");
         println!("  files     {}", app.files());
         println!("  listening http://{}", args.bind);
 

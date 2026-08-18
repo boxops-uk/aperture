@@ -90,12 +90,11 @@ impl App {
     /// does not compile, which for these queries means the database's schema is not
     /// the code index.
     pub fn open(
-        socket: impl Into<std::path::PathBuf>,
-        database: impl Into<String>,
+        address: &aperture_client::Address,
         schema: Arc<Schema>,
         pool_size: usize,
     ) -> Result<App, ClientError> {
-        let pool = Pool::new(socket, database, schema, pool_size);
+        let pool = Pool::new(address.clone(), schema, pool_size);
         let paths = pool.with(Paths::load)?;
 
         Ok(App { pool, paths })

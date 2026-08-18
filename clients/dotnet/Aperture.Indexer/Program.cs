@@ -185,7 +185,7 @@ internal static class Program
             Console.WriteLine("  --emit: one writer, so the file is a deterministic run of blocks");
         }
 
-        Console.WriteLine($"connecting to {options.Socket} ({options.Database}), {writers} writer(s)");
+        Console.WriteLine($"connecting to {options.Address}, {writers} writer(s)");
 
         // A claim, not a question: an indexer that disagrees with the server about the
         // schema is refused at the handshake rather than after an hour of writing facts
@@ -194,8 +194,7 @@ internal static class Program
         for (var n = 0; n < writers; n++)
         {
             connections.Add(ApertureConnection.Connect(
-                options.Socket,
-                options.Database,
+                options.Address,
                 CodeIndex.Schema,
                 SessionMode.ReadWrite,
                 assertSchema: true));

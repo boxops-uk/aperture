@@ -21,7 +21,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use aperture_client::{ClientError, Connection, Mode};
+use aperture_client::{Address, ClientError, Connection, Mode};
 use aperture_schema::schema::Schema;
 
 /// How many queries one connection answers before it is closed and replaced.
@@ -38,8 +38,7 @@ struct Pooled {
 
 /// Connections to one database, handed out one at a time.
 pub struct Pool {
-    socket: std::path::PathBuf,
-    database: String,
+    address: Address,
     schema: Arc<Schema>,
     idle: Mutex<Vec<Pooled>>,
     /// The most connections to keep *idle*. Beyond this they are closed on return
@@ -49,15 +48,9 @@ pub struct Pool {
 
 impl Pool {
     #[must_use]
-    pub fn new(
-        socket: impl Into<std::path::PathBuf>,
-        database: impl Into<String>,
-        schema: Arc<Schema>,
-        capacity: usize,
-    ) -> Pool {
+    pub fn new(address: Address, schema: Arc<Schema>, capacity: usize) -> Pool {
         Pool {
-            socket: socket.into(),
-            database: database.into(),
+            address,
             schema,
             idle: Mutex::new(Vec::new()),
             capacity,
@@ -81,9 +74,9 @@ impl Pool {
         let mut held = match self.idle.lock().expect("the pool lock").pop() {
             Some(pooled) => pooled,
             None => Pooled {
-                connection: Connection::connect(
-                    &self.socket,
-                    &self.database,
+                connection: Connection::open(
+                    self.address.endpoint().expect("a resolved address"),
+                    self.address.database(),
                     Arc::clone(&self.schema),
                     // **Read-only, and asserting nothing.** A viewer has no claim to
                     // make about the schema: the database's is the one that matters,

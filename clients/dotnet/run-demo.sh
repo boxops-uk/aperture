@@ -28,4 +28,4 @@ done
 
 [ -e "$scratch/ready" ] || { echo "the server never became ready" >&2; exit 1; }
 
-dotnet run --project "$root/clients/dotnet/Aperture.Demo" -- --socket "$scratch/aperture.sock"
+dotnet run --project "$root/clients/dotnet/Aperture.Demo" -- --at "$scratch/aperture.sock//code"

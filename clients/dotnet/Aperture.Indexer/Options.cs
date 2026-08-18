@@ -1,3 +1,5 @@
+using Aperture.Client;
+
 namespace Aperture.Indexer;
 
 /// <summary>What to index, where the facts go, and how much of it to do.</summary>
@@ -29,9 +31,20 @@ internal sealed record Options
     /// </remarks>
     public string? Dotnet { get; init; }
 
-    public string Socket { get; init; } = "/tmp/aperture.sock";
+    /// <summary>
+    /// Where to write, and which database: <c>[where//]name[@instance]</c>.
+    /// </summary>
+    /// <remarks>
+    /// The same address grammar the `aperture` CLI takes, so a producer is pointed at a
+    /// server the way everything else is. An address naming no target means the socket
+    /// in <see cref="DefaultSocket"/>, since this producer has no configuration layer to
+    /// consult.
+    /// </remarks>
+    public ApertureAddress Address { get; init; } =
+        ApertureAddress.ForSocket(DefaultSocket, "code");
 
-    public string Database { get; init; } = "code";
+    /// <summary>Where a target-less address goes.</summary>
+    public const string DefaultSocket = "/tmp/aperture.sock";
 
     /// <summary>Index and encode, but connect to nothing — what the volume would be.</summary>
     public bool DryRun { get; init; }
@@ -138,8 +151,10 @@ internal sealed record Options
           --source <path>       a .sln, .slnx, .csproj, or a directory holding one (required)
           --root <path>         paths are reported relative to this (default: the solution's directory)
           --dotnet <path>       the dotnet host to build with (default: <root>/.dotnet/dotnet if present)
-          --socket <path>       the server's socket (default: /tmp/aperture.sock)
-          --database <name>     the database to write to (default: code)
+          --at <address>        where to write: [where//]name[@instance]
+                                (default: code, on /tmp/aperture.sock — a bare name means
+                                that socket, `box:7280//code` means TCP, and
+                                `/run/aperture.sock//code` names a socket)
           --batch <n>           facts per block (default: 4096)
           --max-files <n>       stop after n source files
           --skip-files <n>      skip the first n files, in path order (--syntax-only)
@@ -159,6 +174,20 @@ internal sealed record Options
           --help
         """;
 
+    /// <summary>The `where` half of an address, for the flags that set one half.</summary>
+    private static string Where(string address)
+    {
+        var at = address.LastIndexOf(ApertureAddress.Separator, StringComparison.Ordinal);
+        return at < 0 ? "" : address[..at];
+    }
+
+    /// <summary>The database half, likewise.</summary>
+    private static string Database(string address)
+    {
+        var at = address.LastIndexOf(ApertureAddress.Separator, StringComparison.Ordinal);
+        return at < 0 ? address : address[(at + ApertureAddress.Separator.Length)..];
+    }
+
     /// <summary>Parse <paramref name="argv"/>, or say what is wrong with it.</summary>
     public static bool TryParse(string[] argv, out Options options, out string? error)
     {
@@ -166,8 +195,7 @@ internal sealed record Options
         error = null;
 
         string? source = null, root = null, emit = null, dotnet = null;
-        var socket = "/tmp/aperture.sock";
-        var database = "code";
+        var at = $"{DefaultSocket}{ApertureAddress.Separator}code";
         int batch = 4096, maxFiles = 0, maxProjects = 0, skipFiles = 0;
         var jobs = Math.Min(4, Environment.ProcessorCount);
         int? writers = null;
@@ -205,8 +233,12 @@ internal sealed record Options
                     case "--source": source = Value(); break;
                     case "--root": root = Value(); break;
                     case "--dotnet": dotnet = Value(); break;
-                    case "--socket": socket = Value(); break;
-                    case "--database": database = Value(); break;
+                    case "--at": at = Value(); break;
+
+                    // The two flags this replaced, kept working so a script written
+                    // against them still runs — they compose into one address.
+                    case "--socket": at = $"{Value()}{ApertureAddress.Separator}{Database(at)}"; break;
+                    case "--database": at = $"{Where(at)}{ApertureAddress.Separator}{Value()}"; break;
                     case "--emit": emit = Value(); break;
                     case "--batch": batch = Number(); break;
                     case "--max-files": maxFiles = Number(); break;
@@ -251,13 +283,23 @@ internal sealed record Options
             return false;
         }
 
+        ApertureAddress address;
+        try
+        {
+            address = ApertureAddress.Parse(at).OrSocket(DefaultSocket);
+        }
+        catch (FormatException failure)
+        {
+            error = failure.Message;
+            return false;
+        }
+
         options = new Options
         {
+            Address = address,
             Source = Path.GetFullPath(source),
             Root = root is null ? null : Path.GetFullPath(root),
             Dotnet = dotnet is null ? Bootstrapped(source, root) : Path.GetFullPath(dotnet),
-            Socket = socket,
-            Database = database,
             Emit = emit is null ? null : Path.GetFullPath(emit),
             Batch = batch,
             MaxFiles = maxFiles,

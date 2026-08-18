@@ -217,8 +217,13 @@ fn seed(serving: &Serving) {
 fn serve(serving: &Serving) -> (SocketAddr, tokio::runtime::Runtime) {
     let runtime = tokio::runtime::Runtime::new().expect("a runtime");
 
-    let app = aperture_viewer::App::open(&serving.socket, "code", Arc::new(schema()), 2)
-        .expect("the viewer opens the database");
+    let app = aperture_viewer::App::open(
+        &aperture_client::Address::local("code")
+            .or_endpoint(aperture_client::Endpoint::Unix(serving.socket.clone())),
+        Arc::new(schema()),
+        2,
+    )
+    .expect("the viewer opens the database");
 
     let app = Arc::new(app);
 

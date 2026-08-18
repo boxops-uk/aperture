@@ -92,8 +92,59 @@ public sealed class ApertureConnection : IDisposable
         SessionMode mode = SessionMode.ReadWrite,
         bool assertSchema = true)
     {
-        var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-        socket.Connect(new UnixDomainSocketEndPoint(socketPath));
+        return Connect(
+            ApertureAddress.ForSocket(socketPath, database),
+            database,
+            schema,
+            mode,
+            assertSchema);
+    }
+
+    /// <summary>
+    /// Connect wherever <paramref name="address"/> says, and complete the handshake.
+    /// </summary>
+    /// <remarks>
+    /// The database comes from the address, so the two halves of "where and what" cannot
+    /// be passed separately and disagree. An address that names no target is a
+    /// programming error here rather than a default: this client has no configuration
+    /// layer to fall back to, so the caller resolves it with
+    /// <see cref="ApertureAddress.OrSocket"/> before arriving.
+    /// </remarks>
+    public static ApertureConnection Connect(
+        ApertureAddress address,
+        ApertureSchema schema,
+        SessionMode mode = SessionMode.ReadWrite,
+        bool assertSchema = true)
+        => Connect(address, address.Database, schema, mode, assertSchema);
+
+    private static ApertureConnection Connect(
+        ApertureAddress address,
+        string database,
+        ApertureSchema schema,
+        SessionMode mode,
+        bool assertSchema)
+    {
+        Socket socket;
+
+        if (address.SocketPath is { } path)
+        {
+            socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            socket.Connect(new UnixDomainSocketEndPoint(path));
+        }
+        else if (address.Host is { } host)
+        {
+            socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+            socket.Connect(host, address.Port);
+
+            // Small frames, answered one at a time: Nagle would hold a handshake back
+            // waiting for company that is not coming. The Rust client says the same.
+            socket.NoDelay = true;
+        }
+        else
+        {
+            throw new ArgumentException(
+                $"`{address}` names no server to connect to", nameof(address));
+        }
 
         var stream = new NetworkStream(socket, ownsSocket: false);
 
