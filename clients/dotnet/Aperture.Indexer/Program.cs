@@ -61,7 +61,9 @@ internal static class Program
             + $"loaded in {loading.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine();
 
-        using var connection = Connect(options);
+        var connections = Connect(options);
+        using var closing = new Closing(connections);
+        var connection = connections.Count > 0 ? connections[0] : null;
 
         if (connection is not null)
         {
@@ -74,7 +76,7 @@ internal static class Program
         int files;
         Indexer indexer;
 
-        using (var sink = new FactSink(options, connection))
+        using (var sink = new FactSink(options, connections))
         {
             indexer = new Indexer(options, sink, root, solution.Build);
             var reported = TimeSpan.Zero;
@@ -136,26 +138,70 @@ internal static class Program
         return 0;
     }
 
-    private static ApertureConnection? Connect(Options options)
+    /// <summary>Closes every connection when the run ends, however it ends.</summary>
+    /// <remarks>
+    /// A list is not <see cref="IDisposable"/>, and a run that threw halfway would
+    /// otherwise leave sockets open until the process exited — which is tidy enough for
+    /// a tool and untidy for a server counting connections.
+    /// </remarks>
+    private sealed class Closing(IReadOnlyList<ApertureConnection> connections) : IDisposable
+    {
+        public void Dispose()
+        {
+            foreach (var connection in connections)
+            {
+                connection.Dispose();
+            }
+        }
+    }
+
+    /// <summary>One connection per writer thread.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Connections rather than streams, because the client cannot multiplex.</b>
+    /// <see cref="ApertureConnection"/> issues streams sequentially over one socket, so
+    /// two concurrent write streams need two sockets. The server does not mind: it
+    /// excludes writers per key rather than per database.
+    /// </para>
+    /// <para>
+    /// <b>One writer when emitting.</b> <c>--emit</c> writes every block to a file, and
+    /// that file is a checked-in golden — several writers would interleave into it and
+    /// make its contents depend on scheduling. Anything that has to be reproducible byte
+    /// for byte gets one writer, whatever <c>--writers</c> says.
+    /// </para>
+    /// </remarks>
+    private static List<ApertureConnection> Connect(Options options)
     {
         if (options.DryRun)
         {
             Console.WriteLine("  --dry-run: encoding the facts and connecting to nothing");
             Console.WriteLine();
-            return null;
+            return [];
         }
 
-        Console.WriteLine($"connecting to {options.Socket} ({options.Database})");
+        var writers = options.Emit is null ? options.Writers : 1;
+        if (options.Emit is not null && options.Writers > 1)
+        {
+            Console.WriteLine("  --emit: one writer, so the file is a deterministic run of blocks");
+        }
+
+        Console.WriteLine($"connecting to {options.Socket} ({options.Database}), {writers} writer(s)");
 
         // A claim, not a question: an indexer that disagrees with the server about the
         // schema is refused at the handshake rather than after an hour of writing facts
         // nobody can read back.
-        return ApertureConnection.Connect(
-            options.Socket,
-            options.Database,
-            CodeIndex.Schema,
-            SessionMode.ReadWrite,
-            assertSchema: true);
+        var connections = new List<ApertureConnection>(writers);
+        for (var n = 0; n < writers; n++)
+        {
+            connections.Add(ApertureConnection.Connect(
+                options.Socket,
+                options.Database,
+                CodeIndex.Schema,
+                SessionMode.ReadWrite,
+                assertSchema: true));
+        }
+
+        return connections;
     }
 
     private static void Report(Options options, FactSink sink, Indexer indexer, TimeSpan elapsed)
@@ -184,8 +230,8 @@ internal static class Program
             // working, and it is the number this whole exercise is a measurement of.
             Console.WriteLine($"  {"server",-20}{Count((long)sink.Created),14} created, "
                 + $"{Count((long)sink.Deduped)} deduped");
-            Console.WriteLine($"  {"writing",-20}{sink.Writing.TotalSeconds,14:F1}s of {elapsed.TotalSeconds:F1}s"
-                + $"  (writer thread, overlapped)");
+            Console.WriteLine($"  {"writing",-20}{sink.Writing.TotalSeconds,14:F1}s"
+                + $"  (summed over {sink.Writers} writer(s), overlapped — not wall clock)");
             Console.WriteLine($"  {"queueing",-20}{sink.Queueing.TotalSeconds,14:F1}s"
                 + $"  (walk blocked on a full queue)");
         }

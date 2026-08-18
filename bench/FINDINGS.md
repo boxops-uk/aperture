@@ -902,6 +902,41 @@ stops below them deliberately, and the layer that adds them is what finding 12's
 
 ---
 
+## 14. The indexer can now use many write streams, and on a small corpus it should not
+
+Phase 12 made a database take as many writers as it has streams; `clients/dotnet` can now
+ask for them (`--writers n`, one connection each, since the C# client issues streams
+sequentially over one socket and cannot multiplex). Measured on this repository's own
+`clients/dotnet` tree — 16 files, 12,382 facts, `--syntax-only`:
+
+| | 1 writer | 4 writers |
+|---|---|---|
+| throughput | **4,703 facts/s** | 4,251 facts/s |
+| queueing (walk blocked on a full queue) | 0.1 s | **0.0 s** |
+| gate wait (walkers blocked on each other) | 0.8 s | 0.9 s |
+| created / deduped / blocks | 12,382 / 32,211 / 26 | **identical** |
+
+Two things, and the second is the reason the default is 1.
+
+**It is correct.** Four writers against one database produce exactly the counts one writer
+does — which is the wire-level version of what
+`writer_count_and_write_order_do_not_change_the_database` asserts in process, now with a
+real server, real sockets and a real Roslyn walk in front of it.
+
+**It is not faster here, and could not have been.** `queueing` was already 0.1 s of a
+~2.6 s run, so the writer was never the ceiling; adding three more can only add
+connections, handshakes and scheduling. Most of that is fixed cost and would disappear at
+scale — but "would" is not a measurement. The number that says to raise `--writers` is
+`queueing`; while it is near zero, one writer is the right answer.
+
+**What this does not measure.** A corpus of 26 blocks tells you nothing about a corpus of
+six thousand. Finding 12's 2,255 s inside `Write` was taken *before* the producer stopped
+waiting (finding 12's own fix), so nobody knows what `queueing` looks like on a real index
+today. That needs a `dotnet/runtime` re-index, which is hours — and it is now the one
+measurement that would settle both this and the `--commit-per-block` flag.
+
+---
+
 ## What is still open
 
 - **F6** — the reader head-of-line blocking on a ≥3-block ingest. The only hypothesis left

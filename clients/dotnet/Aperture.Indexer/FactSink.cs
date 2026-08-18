@@ -23,11 +23,18 @@ namespace Aperture.Indexer;
 /// now only detaches the full list and queues it.
 /// </para>
 /// <para>
-/// <b>The queue is bounded, and that bound is the backpressure.</b> The server interns
-/// one block at a time per database (its writer mutex), so an unbounded queue would
-/// only convert a stall into memory. When the walk outruns the writer, producers block
-/// in <see cref="Queueing"/> — which is the honest measure of how much the write path
-/// still costs, now that it no longer costs the lock.
+/// <b>Several writers, each with its own connection.</b> The server excludes writers per
+/// <em>key</em> rather than per database, so a database takes as many as there are
+/// streams. One connection cannot carry them: <see cref="ApertureConnection"/> issues
+/// streams sequentially and shares one socket, so concurrency here means one connection
+/// per writer thread and nothing shared between them but the queue.
+/// </para>
+/// <para>
+/// <b>The queue is bounded, and that bound is the backpressure.</b> An unbounded queue
+/// would convert a stall into memory rather than into throughput. The bound scales with
+/// the writer count, because the thing it has to keep fed is now several drains rather
+/// than one. When the walk outruns them, producers block in <see cref="Queueing"/> —
+/// which is what says whether the write path is still the ceiling.
 /// </para>
 /// <para>
 /// <b>Nothing here holds an id.</b> Every reference is the target fact nested inline,
@@ -37,20 +44,21 @@ namespace Aperture.Indexer;
 /// </remarks>
 internal sealed class FactSink : IDisposable
 {
-    /// <summary>How many full blocks may wait for the writer before producers block.</summary>
+    /// <summary>Blocks that may wait <em>per writer</em> before producers block.</summary>
     /// <remarks>
-    /// Small on purpose. One block is up to <c>--batch</c> facts, and the server drains
-    /// them strictly one at a time, so a deep queue buys no throughput — it only hides
-    /// the stall from <see cref="Queueing"/>, which is the number we want to see.
+    /// Small on purpose, and multiplied by the writer count rather than fixed. One block
+    /// is up to <c>--batch</c> facts, so a deep queue costs real memory and buys nothing
+    /// once the writers are keeping up — it only hides the stall from
+    /// <see cref="Queueing"/>, which is the number we want to see.
     /// </remarks>
-    private const int QueueDepth = 8;
+    private const int QueueDepthPerWriter = 4;
 
     private readonly Options _options;
-    private readonly ApertureConnection? _connection;
+    private readonly IReadOnlyList<ApertureConnection> _connections;
     private readonly FileStream? _emit;
     private readonly List<ApertureFact>[] _pending;
     private readonly BlockingCollection<(uint Predicate, List<ApertureFact> Facts)> _queue;
-    private readonly Thread _writer;
+    private readonly Thread[] _writers;
 
     /// <summary>Set if the writer thread died; rethrown from <see cref="Dispose"/>.</summary>
     /// <remarks>
@@ -62,12 +70,25 @@ internal sealed class FactSink : IDisposable
 
     private long _queueingTicks;
 
+    // Written by every writer thread, so every one of them is interlocked and the
+    // properties below are projections rather than fields.
+    private long _blocks;
+    private long _bytes;
+    private long _created;
+    private long _deduped;
+    private long _writingTicks;
+
     private bool _drained;
 
-    public FactSink(Options options, ApertureConnection? connection)
+    /// <summary>A sink writing through <paramref name="connections"/>, one writer thread each.</summary>
+    /// <remarks>
+    /// An empty list is a run that connects to nothing (<c>--dry-run</c>), which still
+    /// wants one thread so the encoding it measures happens off the walk.
+    /// </remarks>
+    public FactSink(Options options, IReadOnlyList<ApertureConnection> connections)
     {
         _options = options;
-        _connection = connection;
+        _connections = connections;
         _emit = options.Emit is null ? null : File.Create(options.Emit);
         _pending = new List<ApertureFact>[CodeIndex.Predicates.Length];
 
@@ -78,30 +99,49 @@ internal sealed class FactSink : IDisposable
 
         Facts = new long[CodeIndex.Predicates.Length];
 
-        _queue = new BlockingCollection<(uint, List<ApertureFact>)>(QueueDepth);
-        _writer = new Thread(WriteLoop) { IsBackground = false, Name = "aperture-writer" };
-        _writer.Start();
+        var writers = Math.Max(1, connections.Count);
+        _queue = new BlockingCollection<(uint, List<ApertureFact>)>(QueueDepthPerWriter * writers);
+
+        _writers = new Thread[writers];
+        for (var n = 0; n < writers; n++)
+        {
+            // Each thread owns exactly one connection, so nothing about the socket or
+            // the stream numbering is shared and none of it needs a lock.
+            var connection = n < connections.Count ? connections[n] : null;
+            _writers[n] = new Thread(() => WriteLoop(connection))
+            {
+                IsBackground = false,
+                Name = $"aperture-writer-{n}",
+            };
+            _writers[n].Start();
+        }
     }
+
+    /// <summary>How many writer threads are draining the queue.</summary>
+    public int Writers => _writers.Length;
 
     /// <summary>Facts queued per predicate, whether or not they turned out to be new.</summary>
     public long[] Facts { get; }
 
-    public long Blocks { get; private set; }
+    public long Blocks => Interlocked.Read(ref _blocks);
 
     /// <summary>Encoded block bytes — counted only when this sink encodes, which is when it emits or is dry.</summary>
-    public long Bytes { get; private set; }
+    public long Bytes => Interlocked.Read(ref _bytes);
 
-    public ulong Created { get; private set; }
+    public ulong Created => (ulong)Interlocked.Read(ref _created);
 
-    public ulong Deduped { get; private set; }
+    public ulong Deduped => (ulong)Interlocked.Read(ref _deduped);
 
-    /// <summary>Time the writer thread spent inside <see cref="ApertureConnection.Write(uint, IReadOnlyList{ApertureFact})"/>.</summary>
+    /// <summary>Time <em>summed over the writers</em> inside <see cref="ApertureConnection.Write(uint, IReadOnlyList{ApertureFact})"/>.</summary>
     /// <remarks>
-    /// No longer time the walk pays: it is the writer thread's, and it overlaps the
-    /// walk. Compare it against <see cref="Queueing"/> — writing that exceeds the walk
-    /// shows up there and nowhere else.
+    /// Not time the walk pays, and — with more than one writer — not wall clock either:
+    /// it is a sum across threads that overlap each other as well as the walk, so it can
+    /// exceed the run's elapsed time and says nothing on its own. Divide by
+    /// <see cref="Writers"/> for a rough per-writer figure, and read
+    /// <see cref="Queueing"/> for the question that actually matters — whether the walk
+    /// ever had to wait for them.
     /// </remarks>
-    public TimeSpan Writing { get; private set; }
+    public TimeSpan Writing => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _writingTicks));
 
     /// <summary>Time producers spent blocked on a full queue, i.e. waiting for the writer.</summary>
     public TimeSpan Queueing => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _queueingTicks));
@@ -168,8 +208,12 @@ internal sealed class FactSink : IDisposable
         Interlocked.Add(ref _queueingTicks, Stopwatch.GetTimestamp() - started);
     }
 
-    /// <summary>The one thread that encodes, emits and writes. Owns every counter it touches.</summary>
-    private void WriteLoop()
+    /// <summary>One writer: encodes, emits and writes down its own connection.</summary>
+    /// <remarks>
+    /// Every counter it touches is interlocked, because several of these run at once and
+    /// the totals are read from the walk's thread at the end.
+    /// </remarks>
+    private void WriteLoop(ApertureConnection? connection)
     {
         try
         {
@@ -180,40 +224,44 @@ internal sealed class FactSink : IDisposable
                 if (_emit is not null || _options.DryRun)
                 {
                     var block = Block.Encode(CodeIndex.Schema, predicate, facts);
-                    Bytes += block.Length;
+                    Interlocked.Add(ref _bytes, block.Length);
+
+                    // Only ever one writer when emitting — see `Program.Connect` — so the
+                    // file is a deterministic run of blocks rather than an interleaving.
                     _emit?.Write(block);
                 }
 
-                if (_connection is not null)
+                if (connection is not null)
                 {
                     var started = Stopwatch.GetTimestamp();
-                    var summary = _connection.Write(predicate, facts);
-                    Writing += Stopwatch.GetElapsedTime(started);
+                    var summary = connection.Write(predicate, facts);
+                    Interlocked.Add(ref _writingTicks, Stopwatch.GetTimestamp() - started);
 
-                    Created += summary.Created;
-                    Deduped += summary.Deduped;
+                    Interlocked.Add(ref _created, (long)summary.Created);
+                    Interlocked.Add(ref _deduped, (long)summary.Deduped);
                 }
 
-                Blocks++;
+                Interlocked.Increment(ref _blocks);
             }
         }
         catch (Exception error)
         {
-            _failure = error;
+            // First failure wins; the rest are consequences of the queue closing.
+            Interlocked.CompareExchange(ref _failure, error, null);
             _queue.CompleteAdding();
 
             // Drain, so a producer parked on a full queue is released rather than left
-            // waiting on a writer that has stopped consuming.
+            // waiting on writers that have stopped consuming.
             foreach (var _ in _queue.GetConsumingEnumerable())
             {
             }
         }
     }
 
-    /// <summary>Queue everything left, then wait for the writer to finish.</summary>
+    /// <summary>Queue everything left, then wait for every writer to finish.</summary>
     /// <remarks>
     /// <b>Call this before reading any count.</b> <see cref="FlushAll"/> only hands the
-    /// remaining blocks to the writer; until it has drained them, <see cref="Blocks"/>,
+    /// remaining blocks over; until they have all drained, <see cref="Blocks"/>,
     /// <see cref="Created"/>, <see cref="Deduped"/> and <see cref="Writing"/> are still
     /// moving. A report taken between the two would be short, and the elapsed time it
     /// divided by would stop before the last block was written.
@@ -228,7 +276,10 @@ internal sealed class FactSink : IDisposable
         _drained = true;
         FlushAll();
         _queue.CompleteAdding();
-        _writer.Join();
+        foreach (var writer in _writers)
+        {
+            writer.Join();
+        }
 
         if (_failure is not null)
         {

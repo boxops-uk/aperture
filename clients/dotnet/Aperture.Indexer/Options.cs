@@ -90,6 +90,33 @@ internal sealed record Options
     /// </summary>
     public int Jobs { get; init; } = Math.Min(4, Environment.ProcessorCount);
 
+    /// <summary>
+    /// Write streams to the server, each on its own connection.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A database takes as many writers as there are streams — it excludes them per key
+    /// rather than per database — so this is how much of that the indexer asks for.
+    /// </para>
+    /// <para>
+    /// <b>One by default, because that is what has been measured.</b> This was set to
+    /// follow <see cref="Jobs"/> on the reasoning that the two sides of a run should be
+    /// sized alike, and a 16-file corpus said otherwise: four writers cost ~10%
+    /// throughput and moved nothing, because <c>queueing</c> was already near zero — the
+    /// writer was not the ceiling, so more of them could only add connections and
+    /// handshakes. Most of that is fixed cost and would vanish at scale, but "would" is
+    /// not a measurement, and a default should not be an argument.
+    /// </para>
+    /// <para>
+    /// <b>The number that says to raise it is <c>queueing</c></b>: time the walk spent
+    /// blocked on a full queue. While it is near zero the writers are keeping up and this
+    /// should stay at one. When it is a real share of the run, raise it — that is the
+    /// case this exists for, and the one nobody has measured yet, because measuring it
+    /// costs a re-index of something the size of <c>dotnet/runtime</c>.
+    /// </para>
+    /// </remarks>
+    public int Writers { get; init; } = 1;
+
     /// <summary>Let the design-time build restore first. Off is much faster when it is already restored.</summary>
     public bool Restore { get; init; } = true;
 
@@ -118,6 +145,8 @@ internal sealed record Options
           --skip-files <n>      skip the first n files, in path order (--syntax-only)
           --max-projects <n>    stop after n projects
           --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
+          --writers <n>         concurrent write streams, one connection each (default: 1;
+                                raise it when the report's `queueing` is a real share of the run)
           --no-refs             declarations only: no src.Ref, no src.Import
           --no-lines            do not write the line table (src.Line)
           --no-docs             do not write doc comments (src.Doc)
@@ -141,6 +170,7 @@ internal sealed record Options
         var database = "code";
         int batch = 4096, maxFiles = 0, maxProjects = 0, skipFiles = 0;
         var jobs = Math.Min(4, Environment.ProcessorCount);
+        int? writers = null;
         bool references = true, restore = true, syntaxOnly = false;
         bool lines = true, docs = true;
         bool dryRun = false, smoke = true, verbose = false;
@@ -183,6 +213,7 @@ internal sealed record Options
                     case "--skip-files": skipFiles = Number(); break;
                     case "--max-projects": maxProjects = Number(); break;
                     case "--jobs": jobs = Math.Max(1, Number()); break;
+                    case "--writers": writers = Math.Max(1, Number()); break;
                     case "--no-refs": references = false; break;
                     case "--no-lines": lines = false; break;
                     case "--no-docs": docs = false; break;
@@ -233,6 +264,7 @@ internal sealed record Options
             SkipFiles = skipFiles,
             MaxProjects = maxProjects,
             Jobs = jobs,
+            Writers = writers ?? 1,
             References = references,
             Lines = lines,
             Docs = docs,
