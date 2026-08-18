@@ -52,6 +52,16 @@ pub enum CliError {
     #[error("{0}")]
     Client(#[from] aperture_client::ClientError),
 
+    /// A config file that was named and could not be read, or that is not a config file.
+    ///
+    /// A *missing* `./aperture.json` is not this — nobody asked for one. A missing
+    /// `--config` is, because somebody did.
+    #[error("{path}: {detail}", path = path.display())]
+    Config {
+        path: std::path::PathBuf,
+        detail: String,
+    },
+
     /// Nothing is listening where a database was asked for.
     ///
     /// §2's rule 1, and the message it asks for: a bare name always means "ask the
@@ -59,10 +69,10 @@ pub enum CliError {
     /// because a server may be holding it (`ops-I1`). So the failure has to say what
     /// to do about it rather than quietly doing something else.
     #[error(
-        "could not connect to the Aperture server on socket {}\n           is one running? `aperture serve` starts one over this data directory",
-        socket.display()
+        "could not connect to the Aperture server at {target}\n           \
+         is one running? `aperture serve` starts one over this data directory"
     )]
-    NoServer { socket: PathBuf },
+    NoServer { target: aperture_client::Endpoint },
 
     /// A store root held by a process that is **not** listening on this socket.
     ///
@@ -117,14 +127,8 @@ pub enum CliError {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let root = config::data_dir(cli.data_dir.clone());
 
-    // Derived from the root rather than chosen (§2), which is what makes it the
-    // server-detection mechanism: a command that knows the data directory knows where
-    // to look, with nothing to configure and nothing to get out of step.
-    let socket = config::socket_path(&root, None);
-
-    match dispatch(&cli, &root, &socket) {
+    match start(&cli).and_then(|context| dispatch(&cli, &context)) {
         Ok(()) => ExitCode::SUCCESS,
 
         // A diagnostic is printed as it was rendered. Everything else is a sentence,
@@ -141,7 +145,55 @@ fn main() -> ExitCode {
     }
 }
 
-fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Result<(), CliError> {
+/// Everything a command needs to know about *where*, worked out once.
+struct Context {
+    /// The store root — for the offline path, and for `serve`.
+    root: std::path::PathBuf,
+    /// The socket this root's server listens on, and the default target's path.
+    socket: std::path::PathBuf,
+    /// Where an address that named no target goes.
+    default: aperture_client::Endpoint,
+    /// Whether that default is this machine's own socket, which is the only case with
+    /// an offline half — see [`commands::Target`].
+    default_is_local: bool,
+}
+
+impl Context {
+    /// Resolve an address argument against the default target.
+    fn target(&self, address: &str) -> Result<commands::Target, CliError> {
+        commands::Target::resolve(address, &self.default, self.default_is_local)
+    }
+}
+
+/// The layering, applied once: **flag over environment over file over default**.
+///
+/// The address argument is the layer above all of these and is applied per command, in
+/// [`Context::target`], because it is the argument.
+fn start(cli: &Cli) -> Result<Context, CliError> {
+    let file = config::file(cli.config.as_deref())?;
+
+    let root = config::data_dir(cli.data_dir.clone().or_else(|| file.data_dir.clone()));
+    let chosen = config::root_was_chosen(cli.data_dir.as_ref()) || file.data_dir.is_some();
+    let socket = config::socket_path(&root, chosen, None);
+
+    let default = config::default_endpoint(&socket, &file)?;
+
+    // Only the plain local socket keeps an offline half. A target from the environment
+    // or a config file is one somebody named, and reaching past a named server to open
+    // a directory is what §2 forbids.
+    let default_is_local = default == aperture_client::Endpoint::Unix(socket.clone());
+
+    Ok(Context {
+        root,
+        socket,
+        default,
+        default_is_local,
+    })
+}
+
+fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
+    let root = context.root.as_path();
+
     match &cli.command {
         Command::Serve {
             socket: bind,
@@ -149,7 +201,10 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             ready_file,
             commit_per_block,
         } => {
-            let socket = config::socket_path(root, bind.clone());
+            // **The same path a client computes**, which is the whole of the
+            // server-detection mechanism: a server that listened somewhere else would
+            // be invisible to every command that did not name it.
+            let socket = bind.clone().unwrap_or_else(|| context.socket.clone());
             commands::serve::run(
                 root,
                 &socket,
@@ -162,8 +217,7 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
         Command::Create { name, schema } => {
             let created = commands::create::run(
                 root,
-                socket,
-                name,
+                &context.target(name)?,
                 schema.as_deref(),
                 &config::schema_path(cli.schema_path.clone()),
             )?;
@@ -185,7 +239,7 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             // line that matters is still the one on stdout.
             eprintln!("sealing {name} — merging trees, then computing identity");
 
-            let sealed = commands::finish::run(root, socket, name, *allow_zero_facts)?;
+            let sealed = commands::finish::run(root, &context.target(name)?, *allow_zero_facts)?;
 
             if sealed.already_complete {
                 println!("{name} is already complete ({:#018x})", sealed.fingerprint);
@@ -225,7 +279,7 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
         } => {
             if *count {
                 let started = std::time::Instant::now();
-                let rows = commands::query::count(socket, name, query)?;
+                let rows = commands::query::count(&context.target(name)?, query)?;
 
                 println!("{rows}");
 
@@ -265,8 +319,7 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             };
 
             let summary = commands::query::run(
-                socket,
-                name,
+                &context.target(name)?,
                 query,
                 rendering,
                 limits,
@@ -334,7 +387,7 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
         // one silently opens a store root a server might hold: the wire shell connects
         // or says nothing is listening, and the demo makes its own scratch database.
         Command::Shell { database } => match database {
-            Some(database) => commands::shell::run(socket, database),
+            Some(database) => commands::shell::run(&context.target(database)?),
             None => Ok(shell::main()?),
         },
 
@@ -371,7 +424,7 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
                 return Ok(());
             }
 
-            commands::rm::run(root, socket, name)?;
+            commands::rm::run(root, &context.target(name)?)?;
             println!("removed {name}");
             Ok(())
         }

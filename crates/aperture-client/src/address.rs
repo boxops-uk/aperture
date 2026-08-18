@@ -70,6 +70,41 @@ pub enum Endpoint {
     Tcp(String),
 }
 
+impl std::fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Endpoint::Unix(path) => write!(f, "{}", path.display()),
+            Endpoint::Tcp(authority) => f.write_str(authority),
+        }
+    }
+}
+
+impl Endpoint {
+    /// Parse a bare `where` — a host, a `host:port`, or a socket path.
+    ///
+    /// The same grammar as the left of an address's `//`, on its own, which is what an
+    /// environment variable or a config file's `target` holds: those say *where*, and
+    /// never *which database*, because a config file that silently decided which
+    /// database you meant is the ambient-state problem one level down.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::BadAddress`] for something that is neither, or for an empty string.
+    pub fn parse(text: &str) -> Result<Endpoint, ClientError> {
+        if text.is_empty() {
+            return Err(ClientError::BadAddress(
+                "a target cannot be empty".to_owned(),
+            ));
+        }
+
+        // Routed through the address parser rather than restated, so a target and the
+        // left half of an address can never drift apart.
+        Address::parse(&format!("{text}{SEPARATOR}"))?
+            .endpoint
+            .ok_or_else(|| ClientError::BadAddress(format!("`{text}`: names no target")))
+    }
+}
+
 /// An address: where, and which database.
 ///
 /// The endpoint is optional because the everyday form names none, and what "none" means
@@ -357,6 +392,27 @@ mod tests {
         assert_eq!(parse("//code").to_string(), "code");
         assert_eq!(parse("box//code").to_string(), "box:7280//code");
         assert_eq!(parse("//").to_string(), "//");
+    }
+
+    #[test]
+    fn a_target_on_its_own_parses_the_same_way() {
+        assert_eq!(
+            Endpoint::parse("box").expect("it parses"),
+            Endpoint::Tcp(format!("box:{DEFAULT_PORT}"))
+        );
+        assert_eq!(
+            Endpoint::parse("/tmp/a.sock").expect("it parses"),
+            Endpoint::Unix(PathBuf::from("/tmp/a.sock"))
+        );
+        assert_eq!(
+            Endpoint::parse("./a.sock").expect("it parses"),
+            Endpoint::Unix(PathBuf::from("./a.sock"))
+        );
+
+        // It says where, never which database — so a target carrying one is refused
+        // rather than half-read.
+        assert!(Endpoint::parse("").is_err());
+        assert!(Endpoint::parse("box//code").is_err());
     }
 
     #[test]

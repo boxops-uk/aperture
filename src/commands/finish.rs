@@ -6,7 +6,7 @@ use aperture_store::catalog::Finished;
 
 use crate::{
     CliError, code_index,
-    commands::{self, Route},
+    commands::{self, Route, Target},
 };
 
 /// # Errors
@@ -15,13 +15,8 @@ use crate::{
 /// no facts, which takes `--allow-zero-facts` whichever door it is sealed through —
 /// [`CliError::RootHeld`] if none is listening and something else holds the root, or
 /// whatever sealing reports.
-pub fn run(
-    root: &Path,
-    socket: &Path,
-    name: &str,
-    allow_zero_facts: bool,
-) -> Result<Finished, CliError> {
-    match commands::route(root, socket)? {
+pub fn run(root: &Path, target: &Target, allow_zero_facts: bool) -> Result<Finished, CliError> {
+    match commands::route(root, target)? {
         // The server seals through the handle it already holds (`Catalog::finish_held`)
         // rather than opening a second one, and the identity that comes back is the
         // same one this process would have computed. `ops-I4` does not depend on which
@@ -31,7 +26,7 @@ pub fn run(
         // not depend on a storage engine to be told what a fingerprint is, so the two
         // shapes are the same fields under different names, and this is where they meet.
         Route::Server(mut server) => {
-            let sealed = server.finish(name, allow_zero_facts)?;
+            let sealed = server.finish(&target.database, allow_zero_facts)?;
             Ok(Finished {
                 fingerprint: sealed.fingerprint,
                 facts: sealed.facts,
@@ -41,7 +36,7 @@ pub fn run(
         }
 
         Route::Local(catalog, _lock) => {
-            let selector = aperture_store::catalog::Selector::parse(name)?;
+            let selector = aperture_store::catalog::Selector::parse(&target.database)?;
             Ok(catalog.finish(&selector, &code_index::schema(), allow_zero_facts)?)
         }
     }

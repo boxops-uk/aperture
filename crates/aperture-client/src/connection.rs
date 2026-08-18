@@ -245,6 +245,18 @@ impl Connection {
         Connection::connect(socket, "", schema, Mode::ReadWrite, true)
     }
 
+    /// A control session wherever `endpoint` says.
+    ///
+    /// # Errors
+    ///
+    /// As [`open`](Connection::open).
+    pub fn control_at(
+        endpoint: &crate::Endpoint,
+        schema: Arc<Schema>,
+    ) -> Result<Connection, ClientError> {
+        Connection::open(endpoint, "", schema, Mode::ReadWrite, true)
+    }
+
     fn establish(
         socket: Transport,
         database: &str,

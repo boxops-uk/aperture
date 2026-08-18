@@ -10,14 +10,11 @@
 //! aligned table, which cannot know its column widths until the last row — see
 //! [`crate::rows`], and use `--format raw` or `--format count` when that matters.
 
-use std::{path::Path, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use aperture_client::{ClientError, Connection, Expander, Mode};
 
-use crate::{CliError, cli::RowFormat, code_index, rows::Sink};
-
-/// §2's remote address form: `aperture://host:port/database`.
-pub(crate) const ADDRESS_SCHEME: &str = "aperture://";
+use crate::{CliError, cli::RowFormat, code_index, commands::Target, rows::Sink};
 
 /// Why a query stopped before the server said it was done.
 ///
@@ -101,14 +98,13 @@ pub struct Limits {
 /// # Errors
 ///
 /// As [`run`].
-pub fn count(socket: &Path, name: &str, query: &str) -> Result<u64, CliError> {
-    let mut connection = connect(socket, name, Mode::ReadOnly)?;
+pub fn count(target: &Target, query: &str) -> Result<u64, CliError> {
+    let mut connection = connect(target, Mode::ReadOnly)?;
     Ok(connection.count(query)?)
 }
 
 pub fn run(
-    socket: &Path,
-    name: &str,
+    target: &Target,
     query: &str,
     rendering: Rendering,
     limits: Limits,
@@ -120,7 +116,7 @@ pub fn run(
     // ([I13](../../docs/invariants.md#i13)), and a tool that refused to *read* a
     // database because its own built-in copy had moved on would be refusing the one
     // thing that still works.
-    let mut connection = connect(socket, name, Mode::ReadOnly)?;
+    let mut connection = connect(target, Mode::ReadOnly)?;
 
     // **Asked for only when expanding**, and it is the *served* schema rather than this
     // tool's built-in one. A fetch reply is schema-driven — each key encoded against its
@@ -313,37 +309,20 @@ pub fn render_profile(profile: &aperture_client::QueryProfile, rows: u64) -> Str
 
 /// Connect, turning "nothing is listening" into the error §2 asks for.
 ///
-/// **§2's address resolution for readers, stated once.** A bare name means the local
-/// server on the derived socket; `aperture://host:port/db` means that server, over TCP.
-/// Both `query` and `shell` come through here, so neither can invent its own rule — and
-/// there is still no silent fallback to opening a directory, because a server may be
-/// holding it (`ops-I1`).
-pub(crate) fn connect(socket: &Path, database: &str, mode: Mode) -> Result<Connection, CliError> {
+/// **The reader path, stated once.** `query` and `shell` both come through here, so
+/// neither can invent its own rule — and there is still no silent fallback to opening a
+/// directory, because a server may be holding it (`ops-I1`). Where the target came from
+/// is already settled by the time it arrives: see [`Target`](crate::commands::Target).
+pub(crate) fn connect(target: &Target, mode: Mode) -> Result<Connection, CliError> {
     use std::io::ErrorKind;
 
-    let opened = match database.strip_prefix(ADDRESS_SCHEME) {
-        Some(rest) => {
-            let (authority, name) = rest.split_once('/').ok_or_else(|| CliError::Address {
-                address: database.to_owned(),
-            })?;
-
-            if authority.is_empty() || name.is_empty() {
-                return Err(CliError::Address {
-                    address: database.to_owned(),
-                });
-            }
-
-            Connection::connect_tcp(authority, name, Arc::new(code_index::schema()), mode, false)
-        }
-
-        None => Connection::connect(
-            socket,
-            database,
-            Arc::new(code_index::schema()),
-            mode,
-            false,
-        ),
-    };
+    let opened = Connection::open(
+        &target.endpoint,
+        &target.database,
+        Arc::new(code_index::schema()),
+        mode,
+        false,
+    );
 
     match opened {
         Ok(connection) => Ok(connection),
@@ -355,7 +334,7 @@ pub(crate) fn connect(socket: &Path, database: &str, mode: Mode) -> Result<Conne
             ) =>
         {
             Err(CliError::NoServer {
-                socket: socket.to_path_buf(),
+                target: target.endpoint.clone(),
             })
         }
 
@@ -367,7 +346,7 @@ pub(crate) fn connect(socket: &Path, database: &str, mode: Mode) -> Result<Conne
 mod tests {
     use std::{sync::atomic::AtomicBool, time::Duration};
 
-    use super::{Limits, Rendering, Stopped, run};
+    use super::{Limits, Rendering, Stopped, Target, run};
     use crate::{cli::RowFormat, testing::serving};
 
     const FILES: usize = 600;
@@ -379,8 +358,7 @@ mod tests {
         interrupted: &AtomicBool,
     ) -> super::Summary {
         run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             "F where src.File F",
             // Counted rather than rendered: what these tests are about is *how many*
             // rows crossed the socket before the cancel landed, and a table would put
@@ -490,8 +468,7 @@ mod tests {
         let quiet = AtomicBool::new(false);
 
         let summary = run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             "X where src.File X; src.File _; src.File _",
             Rendering::plain(RowFormat::Count),
             Limits {
@@ -513,8 +490,7 @@ mod tests {
         // And the same query, allowed to finish, does report one — otherwise the
         // assertion above would hold for a build that never sent a profile at all.
         let whole = run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             "F where src.File F",
             Rendering::plain(RowFormat::Count),
             Limits::default(),
@@ -531,7 +507,7 @@ mod tests {
 mod catalogue {
     use std::sync::atomic::AtomicBool;
 
-    use super::{Limits, Rendering, Stopped, run};
+    use super::{Limits, Rendering, Stopped, Target, run};
     use crate::{cli::RowFormat, testing::serving};
 
     /// Run a query against the seeded server and capture what it printed.
@@ -544,8 +520,7 @@ mod catalogue {
         // count is what is asserted on, and the shell's own tests cover the rendering.
         let quiet = AtomicBool::new(false);
         let summary = run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             query,
             Rendering::plain(RowFormat::Count),
             Limits::default(),
@@ -604,8 +579,7 @@ mod catalogue {
         let quiet = AtomicBool::new(false);
 
         let summary = run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             "I where aperture.db.List {name = \"code\", instance = I}",
             Rendering::plain(RowFormat::Count),
             Limits::default(),
@@ -647,7 +621,10 @@ mod catalogue {
 mod over_tcp {
     use std::sync::atomic::AtomicBool;
 
-    use super::{Limits, Rendering, Stopped, run};
+    use aperture_client::{ClientError, Endpoint};
+
+    use super::{Limits, Rendering, Stopped, Target, run};
+
     use crate::{CliError, cli::RowFormat, testing::serving_on_tcp};
 
     /// **The same protocol, over a different pipe** — which is the whole claim
@@ -655,16 +632,19 @@ mod over_tcp {
     /// implementation.
     ///
     /// Asked through both doors of one server, so a difference would be the transport's
-    /// and could be nothing else.
+    /// and could be nothing else. Both go through the real resolution path, so this is
+    /// also what checks that `host:port//db` reaches TCP and a bare name does not.
     #[test]
     fn the_same_question_answers_the_same_over_either_door() {
         let (serving, address) = serving_on_tcp(9);
         let quiet = AtomicBool::new(false);
 
-        let ask = |name: &str| {
+        let local = Endpoint::Unix(serving.socket.clone());
+
+        let ask = |address: &str| {
+            let target = Target::resolve(address, &local, true).expect("an address");
             run(
-                &serving.socket,
-                name,
+                &target,
                 "F where src.File F",
                 Rendering::plain(RowFormat::Count),
                 Limits::default(),
@@ -675,7 +655,7 @@ mod over_tcp {
         };
 
         let unix = ask("code");
-        let tcp = ask(&format!("aperture://{address}/code"));
+        let tcp = ask(&format!("{address}//code"));
 
         assert_eq!(unix.rows, 9);
         assert_eq!(
@@ -685,27 +665,17 @@ mod over_tcp {
         assert_eq!(tcp.stopped, Stopped::No);
     }
 
-    /// An address that is not one is refused by shape, not by whatever failed to
-    /// resolve.
+    /// An address that is not one is refused by shape, before anything is dialled.
     #[test]
     fn a_malformed_address_says_what_an_address_looks_like() {
         let (serving, _address) = serving_on_tcp(0);
-        let quiet = AtomicBool::new(false);
+        let local = Endpoint::Unix(serving.socket.clone());
 
-        for bad in ["aperture://", "aperture://host:1234", "aperture:///code"] {
-            let error = run(
-                &serving.socket,
-                bad,
-                "F where src.File F",
-                Rendering::plain(RowFormat::Count),
-                Limits::default(),
-                false,
-                &quiet,
-            )
-            .expect_err("it cannot connect to that");
+        for bad in ["box/nested//code", "box//a/b"] {
+            let error = Target::resolve(bad, &local, true).expect_err("that is not an address");
 
             assert!(
-                matches!(error, CliError::Address { .. }),
+                matches!(error, CliError::Client(ClientError::BadAddress(_))),
                 "`{bad}` should be refused as an address: {error}"
             );
         }
@@ -716,7 +686,7 @@ mod over_tcp {
 mod mixed {
     use std::sync::atomic::AtomicBool;
 
-    use super::{Limits, Rendering, Stopped, run};
+    use super::{Limits, Rendering, Stopped, Target, run};
     use crate::{cli::RowFormat, testing::serving};
 
     /// Rows a query answers with, counted server-side.
@@ -724,8 +694,7 @@ mod mixed {
         let quiet = AtomicBool::new(false);
 
         run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             query,
             Rendering::plain(RowFormat::Count),
             Limits::default(),
@@ -873,8 +842,7 @@ mod mixed {
         // one of whose levels is not backed by a keyspace at all.
         let quiet = AtomicBool::new(false);
         let paged = run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             query,
             Rendering::plain(RowFormat::Count),
             Limits {
@@ -926,6 +894,7 @@ mod mixed {
 mod surface {
     use std::sync::atomic::AtomicBool;
 
+    use super::Target;
     use super::{Limits, Rendering, run};
     use crate::{
         cli::RowFormat,
@@ -938,8 +907,7 @@ mod surface {
         let quiet = AtomicBool::new(false);
 
         run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             query,
             Rendering::plain(RowFormat::Count),
             Limits::default(),
@@ -967,8 +935,7 @@ mod surface {
         let quiet = AtomicBool::new(false);
 
         let expanded = run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             "D where src.Decl D",
             Rendering {
                 format: RowFormat::Count,
@@ -993,8 +960,7 @@ mod surface {
 
         // Off, nothing is read at all — the flag is the whole difference.
         let plain = run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             "D where src.Decl D",
             Rendering::plain(RowFormat::Count),
             Limits::default(),
@@ -1008,8 +974,7 @@ mod surface {
 
         // One hop reads the modules and not their files.
         let shallow = run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             "D where src.Decl D",
             Rendering {
                 format: RowFormat::Count,
@@ -1041,8 +1006,7 @@ mod surface {
         let quiet = AtomicBool::new(false);
 
         let summary = run(
-            &serving.socket,
-            "code",
+            &Target::at(&serving.socket, "code"),
             "X where X = aperture.db.List _",
             Rendering {
                 format: RowFormat::Count,
@@ -1092,8 +1056,8 @@ mod surface {
         use aperture_wire::protocol::Found;
 
         let serving = serving(FILES);
-        let mut connection =
-            super::connect(&serving.socket, "code", Mode::ReadOnly).expect("a connection");
+        let mut connection = super::connect(&Target::at(&serving.socket, "code"), Mode::ReadOnly)
+            .expect("a connection");
 
         let schema = std::sync::Arc::new(connection.served_schema().expect("the schema"));
         let catalogue = crate::code_index::catalogue_id();

@@ -17,13 +17,86 @@ pub mod shell;
 
 use std::{path::Path, sync::Arc};
 
-use aperture_client::{ClientError, Connection};
+use aperture_client::{Address, ClientError, Connection, Endpoint};
 use aperture_store::{
     catalog::{Catalog, RootLock},
     error::StoreError,
 };
 
 use crate::{CliError, code_index};
+
+/// Where a command is going, and which database it is about.
+///
+/// The resolved form of an [`Address`]: the target filled in from whatever layer
+/// supplied it, and the selector left as the string the catalog will parse.
+#[derive(Debug, Clone)]
+pub struct Target {
+    /// Where the server is.
+    pub endpoint: Endpoint,
+    /// `name`, or `name@instance`, or empty for a control session.
+    pub database: String,
+    /// Whether this process may do the work itself when no server answers.
+    ///
+    /// **True only when nobody named a target.** Having asked for a particular server,
+    /// "it is not there" is an answer rather than an invitation to open some other
+    /// root — so `box//code` and `APERTURE_TARGET=box` both take the offline path away,
+    /// and only the plain local socket keeps it. That is the same reasoning as §2's
+    /// no-silent-fallback rule, applied one level up: the rule forbids reaching past a
+    /// server that might be holding the root, and reaching past a server somebody
+    /// *named* is worse.
+    pub offline: bool,
+}
+
+impl Target {
+    /// Resolve `text` against a default target.
+    ///
+    /// # Errors
+    ///
+    /// [`CliError::Client`] if `text` is not an address.
+    pub fn resolve(
+        text: &str,
+        default: &Endpoint,
+        default_is_local: bool,
+    ) -> Result<Target, CliError> {
+        let address = Address::parse(text)?;
+        let named = address.endpoint().is_some();
+
+        Ok(Target {
+            endpoint: address
+                .endpoint()
+                .cloned()
+                .unwrap_or_else(|| default.clone()),
+            database: address.database().to_owned(),
+            offline: !named && default_is_local,
+        })
+    }
+
+    /// A target at `socket`, for a caller that already holds one.
+    ///
+    /// Tests only: everything in the binary arrives here through
+    /// [`resolve`](Target::resolve), which is where the layering lives.
+    #[cfg(test)]
+    #[must_use]
+    pub fn at(socket: impl Into<std::path::PathBuf>, database: impl Into<String>) -> Target {
+        Target {
+            endpoint: Endpoint::Unix(socket.into()),
+            database: database.into(),
+            offline: false,
+        }
+    }
+
+    /// The socket this target names, if it is one.
+    ///
+    /// Which is what the offline path needs: a root is a directory on *this* machine, so
+    /// the question only arises for a socket.
+    #[must_use]
+    pub fn socket(&self) -> Option<&Path> {
+        match &self.endpoint {
+            Endpoint::Unix(path) => Some(path),
+            Endpoint::Tcp(_) => None,
+        }
+    }
+}
 
 /// Where a lifecycle command's work is going to happen.
 pub enum Route {
@@ -49,7 +122,12 @@ pub enum Route {
 /// # Errors
 ///
 /// [`CliError::RootHeld`] if no server is listening and something else holds the root.
-pub fn route(root: &Path, socket: &Path) -> Result<Route, CliError> {
+pub fn route(root: &Path, target: &Target) -> Result<Route, CliError> {
+    // A target somebody named has no offline half — see [`Target::offline`].
+    let Some(socket) = target.socket().filter(|_| target.offline) else {
+        return Ok(Route::Server(control(&target.endpoint)?));
+    };
+
     match connect(socket)? {
         Some(server) => Ok(Route::Server(server)),
         None => {
@@ -57,6 +135,34 @@ pub fn route(root: &Path, socket: &Path) -> Result<Route, CliError> {
             Ok(Route::Local(catalog, lock))
         }
     }
+}
+
+/// A control session at `endpoint`, or the failure to open one.
+///
+/// Unlike [`connect`], a refused socket is *reported*: this is the path taken when
+/// somebody named where to go, and answering "no server" by quietly doing something else
+/// is exactly what §2 forbids.
+///
+/// # Errors
+///
+/// [`CliError::NoServer`] if nothing is listening, which is the message that says what
+/// to do about it.
+fn control(endpoint: &Endpoint) -> Result<Connection, CliError> {
+    let schema = Arc::new(code_index::schema());
+
+    Connection::control_at(endpoint, schema).map_err(|error| match error {
+        ClientError::Io(io)
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            CliError::NoServer {
+                target: endpoint.clone(),
+            }
+        }
+        other => other.into(),
+    })
 }
 
 /// Open a control session, or answer that no server is listening.

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     CliError, code_index,
-    commands::{self, Route},
+    commands::{self, Route, Target},
 };
 
 /// A database that now exists, however it was made.
@@ -28,8 +28,7 @@ pub struct Created {
 /// or whatever the server or the catalog reports.
 pub fn run(
     root: &Path,
-    socket: &Path,
-    name: &str,
+    target: &Target,
     schema: Option<&Path>,
     schema_path: &[PathBuf],
 ) -> Result<Created, CliError> {
@@ -46,7 +45,7 @@ pub fn run(
         |file| file.display().to_string(),
     );
 
-    let instance = match commands::route(root, socket)? {
+    let instance = match commands::route(root, target)? {
         Route::Server(mut server) => {
             // The resolved schema as source rather than the entry file's text: what
             // the server embeds must be the union, or a database built through the
@@ -56,17 +55,17 @@ pub fn run(
                 .map(aperture_schema::syntax::print::print)
                 .unwrap_or_default();
 
-            server.create(name, &source)?
+            server.create(&target.database, &source)?
         }
 
         Route::Local(catalog, _lock) => {
             let schema = resolved.unwrap_or_else(code_index::schema);
-            catalog.create(name, &schema)?.meta.instance
+            catalog.create(&target.database, &schema)?.meta.instance
         }
     };
 
     Ok(Created {
-        name: name.to_owned(),
+        name: target.database.clone(),
         instance,
         schema: described,
     })

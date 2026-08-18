@@ -59,7 +59,7 @@
 
 use std::{
     io::{IsTerminal, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -81,7 +81,10 @@ use codespan_reporting::term::{
 use crate::{
     CliError,
     cli::RowFormat,
-    commands::query::{connect, render_profile},
+    commands::{
+        Target,
+        query::{connect, render_profile},
+    },
     prompt::{self, Command, FocusHelper},
     rows::Sink,
 };
@@ -243,11 +246,10 @@ pub struct Repl {
     /// Kept whole because it is what a *reconnect* needs: a shell started against a
     /// remote server and then told `:connect other` means the other database on that
     /// server, and remembering only the name would quietly answer with the local one.
-    address: String,
+    target: Target,
     /// The database's own name, which is what the prompt says. For a bare address the
     /// two are the same string.
     database: String,
-    socket: PathBuf,
     /// **The schema the server said it serves**, not the one this tool was built with.
     ///
     /// Everything local is compiled and described against it: a query before it is
@@ -284,10 +286,10 @@ impl Repl {
     /// # Errors
     ///
     /// [`CliError::NoServer`] if nothing is listening, or whatever the handshake says.
-    pub fn connect(socket: &Path, address: &str) -> Result<Repl, CliError> {
+    pub fn connect(target: &Target) -> Result<Repl, CliError> {
         // Read-only, for the reason `query` is: a reader has no claim to make about the
         // schema, and the database's is the one that counts.
-        let mut connection = connect(socket, address, Mode::ReadOnly)?;
+        let mut connection = connect(target, Mode::ReadOnly)?;
 
         // **Asked, not assumed.** Everything this shell does locally is against this
         // schema, and a database created with `--schema` has one this tool has never
@@ -296,9 +298,8 @@ impl Repl {
 
         Ok(Repl {
             connection,
-            address: address.to_owned(),
-            database: named(address).to_owned(),
-            socket: socket.to_path_buf(),
+            database: target.database.clone(),
+            target: target.clone(),
             expander: Expander::new(Arc::clone(&schema)),
             schema,
             held: None,
@@ -427,8 +428,7 @@ impl Repl {
                 if argument.is_empty() {
                     writeln!(out, "  :connect needs a database name")?;
                 } else {
-                    let wanted = sibling(&self.address, argument);
-                    self.reconnect(&wanted, out)?;
+                    self.reconnect(argument, out)?;
                 }
             }
 
@@ -887,7 +887,15 @@ impl Repl {
         // person has stopped looking at.
         let had = self.held.is_some();
 
-        match Repl::connect(&self.socket, database) {
+        // The same server, another database — which is what `:connect` means, and
+        // somebody who reached a server over TCP did not stop meaning that server.
+        let wanted = Target {
+            endpoint: self.target.endpoint.clone(),
+            database: database.to_owned(),
+            offline: false,
+        };
+
+        match Repl::connect(&wanted) {
             Ok(fresh) => {
                 let (timing, profiling, page, format, expand) = (
                     self.timing,
@@ -985,26 +993,6 @@ fn format_name(format: RowFormat) -> &'static str {
     }
 }
 
-/// The address of another database **on the same server** as `address`.
-///
-/// A bare name stays a bare name; a remote address keeps its host and swaps the
-/// database, because `:connect` means "the one next to this" and somebody who reached a
-/// server over TCP did not stop meaning that server.
-fn sibling(address: &str, database: &str) -> String {
-    match address.rsplit_once('/') {
-        Some((prefix, _)) if address.starts_with(crate::commands::query::ADDRESS_SCHEME) => {
-            format!("{prefix}/{database}")
-        }
-        _ => database.to_owned(),
-    }
-}
-
-/// The database an address names — everything after the last `/`, or the whole of a
-/// bare name.
-fn named(address: &str) -> &str {
-    address.rsplit_once('/').map_or(address, |(_, name)| name)
-}
-
 fn predicate_named(schema: &Schema, index: usize) -> Option<&str> {
     schema.get(PredicateId(index as u32))?.name()
 }
@@ -1066,10 +1054,10 @@ fn help(out: &mut impl Write) -> Result<(), CliError> {
 ///
 /// Whatever ends the session and cannot be reconnected around, or a readline failure
 /// that is not an interrupt.
-pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
+pub fn run(target: &Target) -> Result<(), CliError> {
     use rustyline::{Editor, error::ReadlineError, history::DefaultHistory};
 
-    let mut repl = Repl::connect(socket, database)?;
+    let mut repl = Repl::connect(target)?;
 
     // **Two lines, and the second one is the only reason for the first.** A shell that
     // says nothing leaves a person to guess whether `\?` or `:help` or `help` is the
@@ -1077,8 +1065,7 @@ pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
     // the last one did not, and pages. Each of those is a sentence long.
     println!(
         "aperture shell — `{}` on {}",
-        repl.database,
-        socket.display()
+        repl.database, target.endpoint
     );
     println!(
         "  {} predicate(s) · rows print as jsonl · :help for commands",
@@ -1172,7 +1159,7 @@ pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
             Err(error) => {
                 eprintln!("aperture: {error}");
 
-                match Repl::connect(&repl.socket.clone(), &repl.address.clone()) {
+                match Repl::connect(&repl.target.clone()) {
                     Ok(fresh) => {
                         eprintln!("aperture: reconnected to `{}`", fresh.database);
                         let interrupt = Arc::clone(&repl.interrupt);
@@ -1202,10 +1189,13 @@ pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::{Control, Repl};
-    use crate::testing::{Serving, serving};
+    use crate::{
+        commands::Target,
+        testing::{Serving, serving},
+    };
 
     fn repl(serving: &Serving) -> Repl {
-        Repl::connect(&serving.socket, "code").expect("a session")
+        Repl::connect(&Target::at(&serving.socket, "code")).expect("a session")
     }
 
     fn typed(repl: &mut Repl, line: &str) -> String {
@@ -1593,18 +1583,22 @@ mod tests {
 
     /// **`:connect` means the database next to this one**, which for a session opened
     /// over TCP is on that server rather than on this machine.
+    ///
+    /// It used to be string surgery on the address — find the last `/`, keep the prefix
+    /// — and is now the only thing it ever meant: keep the endpoint, swap the database.
+    /// The endpoint here is a socket because a unit test can start one, but nothing in
+    /// the path being tested knows which transport it is holding.
     #[test]
-    fn a_sibling_keeps_the_server_it_was_reached_through() {
-        use super::{named, sibling};
+    fn connecting_keeps_the_server_it_was_reached_through() {
+        let serving = serving(1);
+        let mut repl = repl(&serving);
+        let mut out = Vec::new();
 
-        assert_eq!(sibling("code", "other"), "other");
-        assert_eq!(
-            sibling("aperture://box:7000/code", "other"),
-            "aperture://box:7000/other"
-        );
+        let before = repl.target.endpoint.clone();
+        repl.reconnect("code", &mut out).expect("it reconnects");
 
-        assert_eq!(named("code"), "code");
-        assert_eq!(named("aperture://box:7000/code"), "code");
+        assert_eq!(repl.target.endpoint, before);
+        assert_eq!(repl.target.database, "code");
     }
 
     /// **`:clear` asks the loop, and the loop asks rustyline.**

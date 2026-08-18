@@ -23,6 +23,15 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub data_dir: Option<PathBuf>,
 
+    /// A config file: `target` and `data_dir`, as JSON.
+    ///
+    /// Without this, `./aperture.json` is read if it happens to be there. **The working
+    /// directory only** — no search of parent directories, because a connection target
+    /// inherited from a directory nobody was thinking about is the same invisible state
+    /// a global registry would be, only harder to notice.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+
     /// Where a schema's imports are looked for. Repeatable; first match wins.
     ///
     /// Also `APERTURE_SCHEMA_PATH`, separated the way `PATH` is. An entry file's own
