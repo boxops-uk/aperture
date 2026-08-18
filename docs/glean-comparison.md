@@ -344,4 +344,14 @@ of these are places Glean's source shows the cost of *not* having done it.
 
 ---
 
-> [← Open decisions](open-decisions.md) · [Index](../README.md) · [Glossary →](glossary.md)
+**The other axis:** this file asks where each idea *came from*.
+[`glean-capabilities.md`](glean-capabilities.md) asks what each system can be **asked** to do,
+what it **spends** doing it, and what it **charges** — and it is the one that holds the
+cross-database identity answer, the ranked list of efficiency mechanisms worth taking, and two
+corrections to rows above (the continuation *does* carry a version and a hash, and a Glean
+resume costs a point read per open iterator).
+
+---
+
+> [← Open decisions](open-decisions.md) · [Index](../README.md) ·
+> [Capabilities, efficiency & cost →](glean-capabilities.md)

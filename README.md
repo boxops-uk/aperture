@@ -88,6 +88,11 @@ about one subsystem.
   deliberately changed and why, which invariants are **ours** rather than inherited, and the
   capabilities we have **neither built nor ruled out**. Read it before proposing a feature Glean
   has, and before claiming a design here came from there.
+- [**Capabilities, efficiency & cost vs Glean**](docs/glean-capabilities.md) — the other axis:
+  what each system can be *asked* to do, what each *spends* doing it, and what each *charges*.
+  Holds the cross-database identity answer (how Glass handles fact ids from different DBs), a
+  ranked list of efficiency mechanisms worth taking, and the one place our cost model is
+  genuinely thinner rather than differently shaped.
 - [**Glossary**](docs/glossary.md) — every term of art in one place.
 
 ---

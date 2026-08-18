@@ -1471,7 +1471,7 @@ down. **Measurement, not optimisation.**
 **target** every number is reported against. The phase's own working notes, including the
 eight hypotheses read out of the code before any of it was measured, are
 [`docs/phase-10-capacity.md`](docs/phase-10-capacity.md); the register of what was
-measured is [`bench/FINDINGS.md`](../bench/FINDINGS.md). **Read those; don't restate them.**
+measured is [`bench/FINDINGS.md`](bench/FINDINGS.md). **Read those; don't restate them.**
 
 **Invariants in scope:** *makes green:* none. *upholds:* all of them — measurement adds no
 behaviour on any data path. The production edits this phase made are counters, a feature
@@ -1587,6 +1587,85 @@ two *non-additive* constructs — derived facts (Phase 6) and the now-resolved `
 [Phase 8](#phase-8--schema-parsing-new-grammar). What they had in common as bullets was no
 acceptance criteria and no invariant accounting — while one of them changes the resume token
 and one of them freezes bytes on disk.
+
+### From the Glean capability review — agreed, unscheduled
+
+A [capability, efficiency and cost review against Glean's source](docs/glean-capabilities.md)
+produced ten candidates; the list below is what a read-through of it agreed to, and the doc's
+§4 holds the reasoning and the citations for each. None is scheduled. Every one is additive and
+none reshapes the machine — the two that come closest are called out.
+
+**The write path is where the efficiency gap actually is**, and these two are the whole of it:
+
+- **A lookup cache in front of `fact_at`.** Interning does two live LSM point reads per fact and
+  caches nothing, where Glean has a sharded, lossy-buffer LRU built specifically for its write
+  path. Ours would be *simpler* than Glean's: a sealed-once database makes an entry permanently
+  valid, so there is no coherence story. Guard: an ingest read-count probe, not a timing test.
+- **Skip the `entities` read when the declared value type is empty.** Provably redundant on
+  key-only predicates, which is most of `code_index`. It doubles as an
+  [I12](docs/invariants.md#i12) check today, so giving it up has to be a stated decision rather
+  than a silent one.
+
+**A capability gap that was previously mis-recorded as a non-issue:**
+
+- **`distinct`.** Our projections can collapse distinct witnesses — *which files reference this
+  symbol* answers one row per reference. Deduplicating on the **witness tuple is provably a
+  no-op** (levels advance monotonically, so no tuple repeats), and deduplicating on the projected
+  row needs a set that survives a suspend, which would put O(distinct rows) in a cursor whose
+  whole property is being small. The way out is **adjacency**, which
+  [I1](docs/invariants.md#i1) already bought: when the projected fields are a prefix of the
+  output order, every duplicate is adjacent and one row of cursor state suffices. Compile under
+  that condition, **refuse with a diagnostic otherwise** — a code and a corpus entry, not a
+  silent fallback. `QUERY_COUNT` with distinct is the same mechanism.
+
+**Things that already exist and are not being read:**
+
+- **Per-predicate stats, and a `:stat` command.** An **exact O(1)** count per predicate is
+  available today: per-predicate keyspaces plus insert-only make fjall's `approximate_len()`
+  reliable rather than approximate, and it is unused. This is better than Glean, which maintains
+  a stats column family incrementally and still returns bounds. Surface it as a **virtual
+  predicate** with a `:stat` alias — the shape `aperture.db.List` established and the home
+  [`stats.rs`](crates/aperture-server/src/stats.rs)'s module doc already names, so it needs no
+  new frame kind. Spend it on **pruning**, not join ordering.
+- **`hasRefs` precomputed per predicate**, consulted before walking a fact's references. Glean's
+  traversal generator skips subtrees that cannot contain a reference; ours walks everything.
+  A prerequisite for the next item rather than an alternative to it.
+
+**Expansion, and the two dials it should have:**
+
+- **Server-side reference expansion, predicate-scoped.** A **flag on the query message, not a
+  fourth query kind** — expansion stays orthogonal to paging, profiling and counting, which is
+  why it was not one. Collapses depth-many round trips into one, which is what makes `--expand`
+  usable over TCP. The predicate allowlist is the better dial than depth for a code-search page.
+  The client-side path stays: it is what makes `:expand` retroactive on a page already fetched,
+  and the only one that works against a server without the flag.
+
+**The cost model's one genuine hole:**
+
+- **A deadline on the cancellation stride, and a byte budget in the chunk accumulator.** Glean
+  charges four runtime budgets; we charge one (rows per page). A pathological query can only be
+  stopped by whoever holds the token, which on a shared server is an availability hole. A coarse
+  monotonic read every 4096 rows is free at our row costs.
+
+**Gated on infrastructure, deliberately:**
+
+- **fjall keyspace tuning** — `expect_point_read_hits(true)` on `entities`, and a block-size or
+  KV-separation decision. **Measure, do not assume.** Two constraints this puts on the bench
+  harness: keyspace options are fixed at *creation*, so a comparison must **build a database per
+  setting** rather than toggle a knob; and the effect is on point-read latency at a size where
+  filters matter, so it needs an `ap-runtime`-scale corpus rather than a fixture. Until that
+  exists, fjall's defaults are the right answer — they already do most of what Glean sets by
+  hand.
+
+**Backlog:**
+
+- **Row polymorphism in the typechecker.** Glean's `HasTy` constrains a variable to any record or
+  sum containing at least the named fields. An inference capability with no invariant attached
+  and no phase waiting on it.
+- **Fair round-robin write scheduling across databases**, and **a fair-interleave merge policy**
+  for a fan-out (Glass's `takeFairN`, not `concat`). Both arrive with the multi-database work.
+  Note that the fairness we already have is the reverse axis — `outbound` interleaves streams
+  within one connection, and Glean has no equivalent.
 
 ### Reaching a fact through a reference — three sizes, listed apart ✅ (Phase 5)
 

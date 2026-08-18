@@ -15,7 +15,7 @@ invariants by number, and where to read the rest. It is deliberately tight.
 - Measurement method, and the capacity **target** every number is read against: [`docs/performance.md`](docs/performance.md); what has been measured: [`bench/FINDINGS.md`](bench/FINDINGS.md)
 - Conventions & anti-patterns: [`docs/conventions.md`](docs/conventions.md)
 - What's unsettled: [`docs/open-decisions.md`](docs/open-decisions.md)
-- Where we diverge from Glean, and what we have not decided: [`docs/glean-comparison.md`](docs/glean-comparison.md)
+- Where we diverge from Glean, and what we have not decided: [`docs/glean-comparison.md`](docs/glean-comparison.md); what each system can be *asked* to do, what it *spends*, and what it *charges*: [`docs/glean-capabilities.md`](docs/glean-capabilities.md)
 - The build sequence: [`PLAN.md`](PLAN.md)
 
 **Module map — a workspace, bottom to top.** Each crate depends only on the ones above it in

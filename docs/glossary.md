@@ -245,4 +245,4 @@ values. [ch2](02-tuple-codec.md).
 
 ---
 
-> [← Aperture vs Glean](glean-comparison.md) · [Index](../README.md)
+> [← Capabilities, efficiency & cost](glean-capabilities.md) · [Index](../README.md)
