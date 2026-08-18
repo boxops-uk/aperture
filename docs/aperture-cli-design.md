@@ -220,9 +220,11 @@ These are the cross-cutting rules; individual commands reference them by number.
   terminator / tunnel for TCP). This is safe *only because binding is default-closed*: the
   server binds the **Unix socket only** by default, and TCP is an explicit operator opt-in
   expected to sit behind a gateway. The failure mode to prevent is a server that binds a network
-  interface by default and becomes an unauthenticated DB open to the world. The handshake keeps
-  a **reserved credential slot** (accepted-as-anonymous in P0) so transport/identity auth can
-  later be a handshake extension, not a wire redesign.
+  interface by default and becomes an unauthenticated DB open to the world. A credential slot in the
+  handshake is **reserved in this document and does not exist in the protocol** — `protocol.rs`
+  has no such field — so transport/identity auth would be a handshake extension when it is
+  wanted, and is not "accepted as anonymous" today because there is nothing to accept. §2's
+  addressing dropped `user@` for the same reason: syntax with nothing behind it.
   **`ops-I9` is the mechanism this one would need, so the two are a single decision.** Per-fact
   authorization in Glean *is* ownership with different units: ACL groups are allocated as
   ownership units and ANDed into the same slices (`glean/rts/ownership/slice.h:78-86`).
@@ -234,69 +236,112 @@ These are the cross-cutting rules; individual commands reference them by number.
 
 ## 2. Addressing & connection resolution
 
-Postgres-shaped: the client **always connects to a server** (Unix socket locally, TCP remotely);
-direct directory access is a distinct, explicit, opt-in mode.
+A client **always connects to a server** (Unix socket locally, TCP remotely). One address
+says where and which database, and nothing else does:
 
-**Address forms**
+```
+[where//]name[@instance]
+```
 
-| Form | Meaning |
+| Address | Means |
 |---|---|
-| `mydb` | DB `mydb` via the local server's Unix socket (socket path derived from store root / config) |
-| `aperture://[user@]host:port/mydb` | explicit remote over TCP |
-| `--embedded <path>` (or a path-shaped address) | open the DB directory in-process, no server |
+| `code`, `code@01M0B3D` | the default target |
+| `//code` | the same thing, said explicitly |
+| `box:7280//code` | TCP |
+| `box//code` | TCP, port **7280** |
+| `/run/user/1000/aperture.sock//code` | a Unix socket |
+| `./dev.sock//code` | a relative socket path |
+| `box:7280//` | that server, no database — a control session |
+
+**Two rules carry it, and both are derived rather than invented.** Split at the *last*
+`//`, because a database name may not contain `/` (`check_name` refuses one) and a socket
+path may — which is what makes `/tmp//sockets//code` parse instead of misread, and why
+there is no "everything before the final slash" rule to learn. And a relative socket path
+needs `./`, because `dev.sock//code` is otherwise indistinguishable from a host called
+`dev.sock`; it is the rule a shell already imposes on `./script`.
+
+**What is deliberately absent.** No scheme: `//` announces where the target is, and
+nothing needs to announce that an Aperture address is an Aperture address — `aperture://`
+and `unix://` carry those slashes only because a generic URL parser needs an empty
+authority before it will read a path, and we write the parser. No names to look up: a
+`where` is always literal, never an alias resolved through a registry, because a named
+target whose meaning lives in ambient machine state is how `kubectl delete` reaches the
+wrong cluster. No credentials: `user@host` was specified here for years and the handshake
+has no credential field, so it was syntax with nothing behind it (`ops-I10` is unchanged —
+the transport is the trust boundary).
+
+**Where the default target comes from** is [§3](#3-configuration)'s layering. The address
+is the top layer, because it is the argument.
 
 **Resolution rules**
 
-1. Bare name → local socket. If nothing is listening: fail with a psql-style actionable error
-   ("could not connect: is the server running on socket …?"). **Never** fall back to opening
-   the directory (ops-I1).
-2. URI → connect as specified.
-3. Embedded → allowed only when the fjall lock is free (no server holds it). Embedded
-   **read-only** requires status Complete. Embedded **read-write** is the offline
-   ingest/derivation path (CI merge step) and requires exclusive access to a Writable DB.
-   Attempting embedded access to a held DB fails with a clear message, never a lock fight.
-4. The socket *is* the server-detection mechanism. No other autodetect.
-
-**Least-surprise contract:** a bare name always means "ask the local server"; a path or URI
-means exactly what it says; the tool never guesses between them.
+1. An address naming no target goes to the default one. If nothing is listening: a
+   psql-style actionable error naming the target. **Never** a fallback to opening the
+   directory (`ops-I1`).
+2. An address naming a target goes there, and **has no offline half**. §2's rule forbids
+   reaching past a server that *might* be holding the root; reaching past one somebody
+   named is worse. `APERTURE_TARGET` and a config file's `target` count as naming one.
+3. The socket *is* the server-detection mechanism. No other autodetect.
 
 **Amended at 9d, and the amendment is to rule 1 for *lifecycle* commands only.** `create`,
-`finish` and `db rm` resolve as: a server listening on the derived socket takes the command;
-nothing listening means this process does the work itself, under the root lock. Rule 1 as
-written would refuse them outright with no server up, which would make the tool unusable
-offline for the one job — building an artifact in CI — the offline path exists for.
+`finish` and `db rm` resolve as: a server listening on the default socket takes the
+command; nothing listening means this process does the work itself, under the root lock.
+Rule 1 as written would refuse them outright with no server up, which would make the tool
+unusable offline for the one job — building an artifact in CI — the offline path exists
+for.
 
 It does not weaken `ops-I1`, and the ordering is why. What that rule forbids is trying the
 server, failing, and opening the directory *anyway*, because a server might be holding it.
-Here nothing is opened until the socket has already answered that none is — rule 4's "the
+Here nothing is opened until the socket has already answered that none is — rule 3's "the
 socket *is* the server-detection mechanism", used as the detection it says it is — and the
-root lock remains the authority behind it: a root held by something not listening is refused
-by name rather than opened. Reads (`list`, `describe`) never faced the question, since
-`ops-I7` means they take no lock and open no store.
+root lock remains the authority behind it: a root held by something not listening is
+refused by name rather than opened. Reads (`list`, `describe`) never faced the question,
+since `ops-I7` means they take no lock and open no store.
 
-Query and write sessions are unchanged: those bind a database, and rule 1 governs them as
-written.
+**`--embedded` was specified here and is now dropped.** It was never built, and under this
+grammar it has no address form: a path in the `where` slot is a socket. The offline
+lifecycle path above is a different thing and stays.
+
+**Every client uses this grammar**, not only the CLI — `aperture-viewer` takes it
+positionally, and the .NET indexer and demo take it as `--at`, with `ApertureAddress`
+implementing it a second time in C# so the two implementations can disagree in a test
+rather than in production.
 
 ---
 
 ## 3. Configuration
 
-Layered, .NET-style, using the figment pattern from the CLI groundwork
-(defaults → config file → env (`APERTURE_` prefix) → CLI flags; every clap field `Option<T>` +
-`#[serde(skip_serializing_if = "Option::is_none")]` so unset flags don't clobber lower layers).
+Layered, .NET-style: **default → config file → env (`APERTURE_` prefix) → CLI flag**, every
+field optional so an unset layer cannot clobber a lower one. The address argument sits above
+all of it, because it is the argument.
+
+Hand-rolled rather than figment: the file layer holds two scalars, and `serde_json` is
+already in the build. The *pattern* was the specification; the crate was never the point.
+
+**The file is `./aperture.json`, or `--config <path>`. The working directory only, with no
+walk upwards** — cargo and git search parents, and a connection target inherited from a
+directory nobody was thinking about is the same invisible state a global registry would be,
+only harder to notice. CI writes the file where it runs. What a file may set is *where*,
+never *which database*: that would be the same problem one level down, where it would decide
+what a command operates on.
 
 | Key | Used by | Notes |
 |---|---|---|
-| `data_dir` | server, embedded | store root; also determines default socket path |
+| `target` | client commands | where a server is — a host, a `host:port`, or a socket path. Also `APERTURE_TARGET`. Never a database name |
+| `data_dir` | server, offline lifecycle | store root. A **named** root keeps its socket beside it (`<root>/aperture.sock`); the default root uses `$XDG_RUNTIME_DIR/aperture.sock`, which is short on purpose — a socket path has a hard length limit and one derived from a deep data directory is a path the kernel refuses |
 | `listen` | server | **default-closed (ops-I10): Unix socket only.** TCP is an explicit opt-in expected behind an authenticated gateway, and is a **flag only** — `--listen-tcp host:port`, with no config-file or environment form, so that opening a port is always something somebody typed. Never binds a network interface by default. |
 | `cache_size` | server, embedded | fjall unified cache |
 | `max_connections` | server | |
-| `host` / `port` / `default_db` | client commands | assembled into an address when no explicit one given |
 | `schema_path` | schema commands, `create` | ordered roots used to resolve a *named* schema to its entry file; also `APERTURE_SCHEMA_PATH`, first-match-wins. `mod` edges within a schema resolve relative to the referencing file (§7), not via this path. |
 | `format` | `query`, `shell` | client-side rendering (see I/O note in §5 `query`) |
 
-Global flags on every command: `--config <file>`, `--verbose/-v` (repeatable), and where
-relevant `--data-dir`, `--host/--port` overrides. All `#[arg(global = true)]`.
+Global flags on every command: `--config <file>`, `--data-dir <path>`, `--schema-path`, and
+`--verbose/-v` (repeatable). All `#[arg(global = true)]`.
+
+**There are no addressing flags.** `--host` and `--port` were specified here and are dropped:
+the address says where, and a flag that said it too would be a second way to disagree. Nothing
+but a server needs `--data-dir` at all — a client finds the default socket without being told
+where the data is, which was the point of the exercise.
 
 ---
 
@@ -343,11 +388,12 @@ Run the server owning a store root.
   responsible for putting it behind an authenticated gateway. Never binds a network interface
   implicitly. **Built**, both halves: the flag has *no* config-file entry and no environment
   variable, deliberately, so a port can only appear because somebody typed one — and the client
-  grew a `Transport` enum plus §2's `aperture://host:port/db` form, since a door nothing here
-  could knock on would be a door nothing here could test.
-- No authn/authz in the server (ops-I10): the handshake accepts the reserved credential slot as
-  anonymous. Access control is entirely the transport's job (socket permissions, or the gateway
-  in front of opted-in TCP).
+  grew a `Transport` enum plus §2's `host:port//db` form, since a door nothing here could
+  knock on would be a door nothing here could test.
+- No authn/authz in the server (ops-I10): the handshake carries no credential field at all —
+  the slot §1 reserves is still unbuilt, which is why §2's addressing has no `user@` in it.
+  Access control is entirely the transport's job (socket permissions, or the gateway in front
+  of opted-in TCP).
 - Implements the wire protocol (§6): PG-shaped handshake, then framed messages
   `[type:u8][stream_id:u32][len:u32][payload]` with **stream-level multiplexing**.
 - **Per-connection single writer task** that fairly interleaves ready streams (round-robin over
@@ -485,8 +531,8 @@ Seal a Writable DB.
 
 One-shot query.
 
-- Opens a read-only session (any address form; embedded read-only requires Complete + lock
-  free, per §2.3).
+- Opens a read-only session at any address form (§2). There is no offline half: a reader
+  always goes through a server.
 - Streams results incrementally — never buffers a full result set; large results must not
   monopolize the connection (chunked DataRows + fair writer interleaving on the server side).
 - **Rendering is client-side.** The wire carries the binary format; the CLI optionally
