@@ -43,6 +43,14 @@ pub enum ClientError {
     /// fail: a script that asked for expanded rows must not silently receive ids.
     #[error("{0}")]
     Unsupported(String),
+
+    /// An address that is not one — see [`address`](crate::address) for the grammar.
+    ///
+    /// Its own variant rather than folded into [`Protocol`](ClientError::Protocol),
+    /// because nothing has been sent yet: this is a refusal to try, and the remedy is
+    /// to type something else.
+    #[error("not an address: {0}")]
+    BadAddress(String),
 }
 
 impl ClientError {

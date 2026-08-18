@@ -170,6 +170,32 @@ impl Connection {
         )
     }
 
+    /// Connect to wherever `endpoint` says, and complete the handshake.
+    ///
+    /// The one entry point a caller holding an [`Address`](crate::Address) wants: the
+    /// transport is a property of the address, so choosing between the two below is
+    /// dispatch rather than a decision.
+    ///
+    /// # Errors
+    ///
+    /// As [`connect`](Connection::connect) and [`connect_tcp`](Connection::connect_tcp).
+    pub fn open(
+        endpoint: &crate::Endpoint,
+        database: &str,
+        schema: Arc<Schema>,
+        mode: Mode,
+        assert_schema: bool,
+    ) -> Result<Connection, ClientError> {
+        match endpoint {
+            crate::Endpoint::Unix(path) => {
+                Connection::connect(path, database, schema, mode, assert_schema)
+            }
+            crate::Endpoint::Tcp(authority) => {
+                Connection::connect_tcp(authority, database, schema, mode, assert_schema)
+            }
+        }
+    }
+
     /// The same handshake, over TCP.
     ///
     /// **What this is not is a different protocol.** The frames, the handshake and the

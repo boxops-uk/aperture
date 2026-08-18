@@ -67,11 +67,13 @@
 //!   several results can be open at once; but one thread drives the socket. A
 //!   background reader is a different design and this one has no need of it yet.
 
+pub mod address;
 pub mod connection;
 pub mod error;
 pub mod expand;
 pub mod rows;
 
+pub use address::{Address, DEFAULT_PORT, Endpoint};
 pub use connection::{Connection, Hello, Sealed, Written};
 pub use error::ClientError;
 pub use expand::{Expander, FULL_DEPTH};
