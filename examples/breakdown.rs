@@ -82,7 +82,12 @@ fn main() {
     let bare = Catalog::open(dir.join("bare")).expect("a second store root");
     bare.create("solo", &schema)
         .expect("a database nobody serves");
-    let store_path = bare.get("solo").expect("it is there").path.clone();
+    let store_path = bare
+        .find("solo")
+        .expect("a listing")
+        .expect("it is there")
+        .path
+        .clone();
 
     let (registry, _listing) = Registry::open(
         catalog,

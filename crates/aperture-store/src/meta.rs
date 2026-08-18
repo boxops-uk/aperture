@@ -272,29 +272,27 @@ pub(crate) fn sync_dir(path: &Path) -> std::io::Result<()> {
 /// nothing behind rather than a half-built database the catalog would list.
 pub(crate) struct Scratch {
     path: PathBuf,
-    armed: bool,
 }
 
 impl Scratch {
     pub(crate) fn new(path: PathBuf) -> Scratch {
-        Scratch { path, armed: true }
+        Scratch { path }
     }
 
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
-
-    /// Keep it — the caller has renamed it into place.
-    pub(crate) fn keep(mut self) {
-        self.armed = false;
-    }
 }
 
 impl Drop for Scratch {
+    /// **Always removed**, and there is no longer a way to disarm it.
+    ///
+    /// There used to be: `create` renamed the scratch directory itself into place and
+    /// had to stop the drop deleting it. Now the finished *instance* directory is
+    /// renamed out from under the scratch, so what is left is always an empty directory
+    /// this owns — on the failure paths and on the happy one alike.
     fn drop(&mut self) {
-        if self.armed {
-            let _ = fs::remove_dir_all(&self.path);
-        }
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -413,18 +411,21 @@ mod tests {
         assert_eq!(Meta::read(dir.path()).expect("it reads"), short);
     }
 
+    /// **A scratch directory is always removed**, and what it holds goes with it.
+    ///
+    /// There used to be a way to keep one, because `create` renamed the scratch itself
+    /// into place. Now the finished instance directory is renamed out from under it, so
+    /// every path — failure and success alike — leaves this to clean up.
     #[test]
-    fn a_scratch_directory_is_removed_unless_kept() {
+    fn a_scratch_directory_is_always_removed() {
         let dir = tempfile::tempdir().expect("a scratch directory");
 
         let doomed = dir.path().join("doomed");
         fs::create_dir(&doomed).expect("it is made");
-        drop(Scratch::new(doomed.clone()));
-        assert!(!doomed.exists(), "an armed scratch is removed");
+        fs::write(doomed.join("half-built"), b"...").expect("it is written");
 
-        let kept = dir.path().join("kept");
-        fs::create_dir(&kept).expect("it is made");
-        Scratch::new(kept.clone()).keep();
-        assert!(kept.exists(), "a kept scratch survives");
+        drop(Scratch::new(doomed.clone()));
+
+        assert!(!doomed.exists(), "the scratch and its contents are removed");
     }
 }

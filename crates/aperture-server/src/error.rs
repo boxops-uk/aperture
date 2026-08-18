@@ -112,9 +112,14 @@ impl ServerError {
             // for a message that is already in its hand.
             ServerError::Store(store) => match store {
                 StoreError::NoSuchDatabase(_) => ErrorCode::UnknownDatabase,
+                // An instance that names nothing is the same answer as a database that
+                // names nothing: there is no such thing to bind to.
+                StoreError::NoSuchInstance { .. } => ErrorCode::UnknownDatabase,
                 StoreError::NotWritable { .. } => ErrorCode::ModeRefused,
                 StoreError::RootHeld { .. } => ErrorCode::InUse,
-                StoreError::DatabaseExists(_)
+                // Ambiguity is refused rather than guessed at, and the message already
+                // lists the instances the caller may choose between.
+                StoreError::AmbiguousDatabase { .. }
                 | StoreError::BadDatabaseName { .. }
                 | StoreError::EmptyDatabase(_) => ErrorCode::Refused,
                 _ => ErrorCode::Internal,

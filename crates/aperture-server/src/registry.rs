@@ -34,7 +34,7 @@ use aperture_schema::{
     syntax,
 };
 use aperture_store::{
-    catalog::{Catalog, Finished, Listing},
+    catalog::{Catalog, Entry, Finished, Intent, Listing, Selector},
     error::StoreError,
     schema_doc,
     store::FjallDb,
@@ -127,12 +127,14 @@ impl Schemas {
 
     /// The schema of a database named in the root but not open here.
     ///
+    /// Takes the resolved [`Entry`] rather than a name, so that a caller which has
+    /// already chosen among a name's instances cannot re-resolve and drift onto
+    /// another one.
+    ///
     /// # Errors
     ///
-    /// [`StoreError::NoSuchDatabase`] if the root does not hold one, or whatever
-    /// [`of`](Schemas::of) reports.
-    pub fn of_entry(&self, catalog: &Catalog, name: &str) -> Result<Arc<Schema>, StoreError> {
-        let entry = catalog.get(name)?;
+    /// Whatever [`of`](Schemas::of) reports.
+    pub fn of_entry(&self, entry: &Entry) -> Result<Arc<Schema>, StoreError> {
         self.of(&entry.path, entry.meta.schema_fingerprint)
     }
 }
@@ -144,6 +146,9 @@ pub struct Registry {
     /// database sees.
     schemas: Schemas,
     identity: Identity,
+    /// **Keyed by instance id, not by name**, because a name holds several and a map
+    /// keyed by name would silently serve one of them and drop the rest.
+    ///
     /// Sorted, so a listing derived from it is stable; behind a lock, so a `create`
     /// can add to it while connections are being served.
     open: RwLock<BTreeMap<String, Arc<Database>>>,
@@ -181,12 +186,18 @@ impl Registry {
         for entry in &listing.entries {
             let opened = FjallDb::open(&entry.path).and_then(|db| {
                 let schema = schemas.of(&entry.path, entry.meta.schema_fingerprint)?;
-                Ok(Database::new(entry.name(), db, schema, entry.status()))
+                Ok(Database::new(
+                    entry.name(),
+                    &entry.meta.instance,
+                    db,
+                    schema,
+                    entry.status(),
+                ))
             });
 
             match opened {
                 Ok(database) => {
-                    open.insert(entry.name().to_owned(), Arc::new(database));
+                    open.insert(entry.meta.instance.clone(), Arc::new(database));
                 }
                 Err(problem) => listing.problems.push(problem),
             }
@@ -242,10 +253,32 @@ impl Registry {
         &self.schemas.fallback
     }
 
-    /// The database called `name`, if this server is serving one.
+    /// The database `address` names — `name`, or `name@instance`.
+    ///
+    /// **Resolved through the catalog rather than over the open map**, which costs a
+    /// walk of the root's sidecars per bind and buys two things. The rule for what an
+    /// unqualified name means lives in exactly one place ([`Intent`]) instead of being
+    /// restated here over a different element type. And the answer comes from the
+    /// authoritative state on disk, so a database created a moment ago by the offline
+    /// path is bindable without this server having noticed it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever resolution reports — an unknown name, an unknown instance, or an
+    /// ambiguity the caller must settle — and [`ServerError::UnknownDatabase`] for one
+    /// the root holds but this server could not open.
+    pub fn bind(&self, address: &str) -> Result<Arc<Database>, ServerError> {
+        let selector = Selector::parse(address)?;
+        let entry = self.catalog.resolve(&selector, Intent::Read)?;
+
+        self.by_instance(&entry.meta.instance)
+            .ok_or_else(|| ServerError::UnknownDatabase(address.to_owned()))
+    }
+
+    /// The database with this exact instance id, if this server opened it.
     #[must_use]
-    pub fn find(&self, name: &str) -> Option<Arc<Database>> {
-        self.read().get(name).map(Arc::clone)
+    pub fn by_instance(&self, instance: &str) -> Option<Arc<Database>> {
+        self.read().get(instance).map(Arc::clone)
     }
 
     /// How many databases are being served — what `serve` prints, and what a test
@@ -316,9 +349,15 @@ impl Registry {
             .schemas
             .of(&entry.path, entry.meta.schema_fingerprint)?;
 
-        let database = Arc::new(Database::new(entry.name(), db, schema, entry.status()));
+        let database = Arc::new(Database::new(
+            entry.name(),
+            &entry.meta.instance,
+            db,
+            schema,
+            entry.status(),
+        ));
 
-        self.write().insert(entry.name().to_owned(), database);
+        self.write().insert(entry.meta.instance.clone(), database);
 
         Ok(ControlReply::Created {
             instance: entry.meta.instance,
@@ -328,21 +367,29 @@ impl Registry {
     /// Seal a database, and stop taking writes for it.
     async fn finish(
         &self,
-        name: &str,
+        address: &str,
         allow_zero_facts: bool,
     ) -> Result<ControlReply, ServerError> {
-        let Some(database) = self.find(name) else {
+        // **Resolved once, and everything below addresses the instance it chose.**
+        // Re-resolving would let a `create` arriving in between move the answer, and a
+        // seal is the one operation where landing on the wrong instance is unrecoverable.
+        // `Intent::Write` prefers the writable one and falls back to the sole one, which
+        // is what keeps a re-run after a crash able to report "already sealed".
+        let selector = Selector::parse(address)?;
+        let entry = self.catalog.resolve(&selector, Intent::Write)?;
+        let exact = entry.selector();
+
+        let Some(database) = self.by_instance(&entry.meta.instance) else {
             // A database the root holds but this server never opened — one whose store
             // or whose schema copy could not be read at startup. There is no handle to
             // pass, so the offline path is not merely allowed here; it is the only
             // correct one, and it reads that database's own schema rather than this
             // server's, since the content fingerprint is over the facts *it* holds.
             let catalog = self.catalog.clone();
-            let schemas = self.schemas.of_entry(&catalog, name)?;
-            let wanted = name.to_owned();
+            let schemas = self.schemas.of_entry(&entry)?;
 
             let sealed =
-                blocking::run(move || Ok(catalog.finish(&wanted, &schemas, allow_zero_facts)?))
+                blocking::run(move || Ok(catalog.finish(&exact, &schemas, allow_zero_facts)?))
                     .await?;
 
             return Ok(finished(&sealed));
@@ -357,11 +404,10 @@ impl Registry {
 
         let catalog = self.catalog.clone();
         let schema = Arc::clone(&database.schema);
-        let wanted = name.to_owned();
         let held = Arc::clone(&database);
 
         let sealed = blocking::run(move || {
-            Ok(catalog.finish_held(&wanted, held.db.as_ref(), &schema, allow_zero_facts)?)
+            Ok(catalog.finish_held(&exact, held.db.as_ref(), &schema, allow_zero_facts)?)
         })
         .await?;
 
@@ -375,11 +421,17 @@ impl Registry {
     /// The order is the whole of it, and it is the same shape as
     /// [`Catalog::remove`]'s rename-then-delete one level down: make it unreachable
     /// first, destroy it second.
-    async fn remove(&self, name: &str) -> Result<ControlReply, ServerError> {
+    async fn remove(&self, address: &str) -> Result<ControlReply, ServerError> {
+        // `Intent::Sole` rather than `Read`: a delete must not rank and commit, so
+        // `rm code` where `code` holds three instances is a question, not a guess.
+        let selector = Selector::parse(address)?;
+        let entry = self.catalog.resolve(&selector, Intent::Sole)?;
+        let instance = entry.meta.instance.clone();
+
         {
             let mut open = self.write();
 
-            if let Some(database) = open.remove(name) {
+            if let Some(database) = open.remove(&instance) {
                 match Arc::try_unwrap(database) {
                     // The last reference, so the fjall handle closes right here —
                     // before anything deletes the directory it is holding.
@@ -387,19 +439,20 @@ impl Registry {
 
                     // A session still has it. Put it back: a query that is running is
                     // not a reason to hand a client a half-deleted database, and the
-                    // caller can ask again once the session has gone.
+                    // caller can ask again once the session has gone. Reported by the
+                    // address the caller used, since that is what they can act on.
                     Err(shared) => {
-                        open.insert(name.to_owned(), shared);
-                        return Err(ServerError::InUse(name.to_owned()));
+                        open.insert(instance, shared);
+                        return Err(ServerError::InUse(address.to_owned()));
                     }
                 }
             }
         }
 
         let catalog = self.catalog.clone();
-        let wanted = name.to_owned();
+        let exact = entry.selector();
 
-        blocking::run(move || Ok(catalog.remove(&wanted)?)).await?;
+        blocking::run(move || Ok(catalog.remove(&exact)?)).await?;
 
         Ok(ControlReply::Removed)
     }

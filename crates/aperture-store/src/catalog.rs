@@ -19,12 +19,28 @@
 //! Any index or cache over this must be rebuildable from a scan and never
 //! authoritative. There isn't one, and this note is why there shouldn't be.
 //!
+//! # A name is a container, and an instance is a database
+//!
+//! `<name>` holds one directory per **instance**, and `create` adds one rather than
+//! conflicting: a database-per-CI-run needs somewhere to go. This is the
+//! [Glean `Repo`](../../../docs/glean-capabilities.md) shape — a name plus a version of
+//! it — with a generated [ULID](crate::ulid) where Glean takes a caller-supplied
+//! revision.
+//!
+//! Which instance an unqualified name means is [`Intent`]'s answer and depends on what
+//! the caller is about to do, because the cost of being wrong differs: a read ranks the
+//! candidates and commits, a write or a delete refuses and names them. `name@instance`
+//! (or any unambiguous prefix of the instance) says exactly which, and `@` is why a name
+//! may not contain one.
+//!
 //! # Creation is all-or-nothing
 //!
-//! A database is built under a scratch name at the root and **renamed into place**
-//! once it is complete. A rename within one directory is atomic, so a process killed
-//! at any point leaves either nothing under `<name>` or a finished Writable database —
-//! never a half-built one for [`list`](Catalog::list) to find and report as real.
+//! A database is built under a scratch name at the root and the finished **instance
+//! directory is renamed into the name**. A rename is atomic, so a process killed at any
+//! point leaves either no instance directory or a finished Writable one — never a
+//! half-built one for [`list`](Catalog::list) to find and report as real. An empty
+//! `<name>` directory can survive a failure and is inert: the scan looks for instance
+//! ids inside it and finds none.
 //!
 //! The scratch directory is removed on every failure path by
 //! [`Scratch`](crate::meta::Scratch). A hard kill can leave one behind; it starts with
@@ -57,6 +73,129 @@ const SCRATCH_PREFIX: &str = ".create-";
 /// The prefix a database being removed carries, between the rename and the delete.
 const TRASH_PREFIX: &str = ".trash-";
 
+/// The character separating a database's name from an instance of it.
+///
+/// `@` rather than `:` or `/`: a colon collides with `host:port` in an address and a
+/// slash with the path of a URI, and `@` survives inside both
+/// (`aperture://host:port/code@01JQ8F`). It is also the separator Docker tags and Go
+/// module versions trained everyone on, and it reads as *at this version of*.
+pub const INSTANCE_SEPARATOR: char = '@';
+
+/// Which database a caller means: a name, and optionally which instance of it.
+///
+/// This is the [Glean `Repo`](../../../docs/glean-capabilities.md) shape — a name plus a
+/// version of it — with one deliberate difference. Glean's second component is a
+/// caller-supplied hash, usually the revision indexed; ours is a generated
+/// [ULID](crate::ulid), so it is opaque and orders by creation time. Both systems order
+/// instances by a *recorded timestamp* rather than by the id itself, which is why the id
+/// being opaque costs nothing.
+///
+/// An absent instance does not mean "any": it means *let the operation decide*, which is
+/// [`Intent`]'s job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selector {
+    name: String,
+    instance: Option<String>,
+}
+
+impl Selector {
+    /// `name`, with the instance left to [`Intent`].
+    #[must_use]
+    pub fn of(name: impl Into<String>) -> Selector {
+        Selector {
+            name: name.into(),
+            instance: None,
+        }
+    }
+
+    /// `name`, at the instance whose id starts with `instance`.
+    #[must_use]
+    pub fn at(name: impl Into<String>, instance: impl Into<String>) -> Selector {
+        Selector {
+            name: name.into(),
+            instance: Some(instance.into()),
+        }
+    }
+
+    /// Parse `name` or `name@instance`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::BadDatabaseName`] for an empty half or a second separator. The
+    /// error carries the whole text rather than the piece at fault, because the whole
+    /// text is what somebody typed.
+    pub fn parse(text: &str) -> Result<Selector, StoreError> {
+        let bad = |detail| {
+            Err(StoreError::BadDatabaseName {
+                name: text.to_owned(),
+                detail,
+            })
+        };
+
+        let mut halves = text.split(INSTANCE_SEPARATOR);
+        let name = halves.next().unwrap_or_default();
+        let instance = halves.next();
+
+        if halves.next().is_some() {
+            return bad("it names an instance twice");
+        }
+        if name.is_empty() {
+            return bad("it names no database");
+        }
+        match instance {
+            // `code@` asked for an instance and then did not name one. Treating it as
+            // `code` would answer a question that was not asked.
+            Some("") => bad("it ends in `@` without naming an instance"),
+            Some(instance) => Ok(Selector::at(name, instance)),
+            None => Ok(Selector::of(name)),
+        }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The instance id, or the prefix of one, if the caller named it.
+    #[must_use]
+    pub fn instance(&self) -> Option<&str> {
+        self.instance.as_deref()
+    }
+}
+
+impl std::fmt::Display for Selector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)?;
+        if let Some(instance) = &self.instance {
+            write!(f, "{INSTANCE_SEPARATOR}{instance}")?;
+        }
+        Ok(())
+    }
+}
+
+/// What a caller means to do, which is what decides which instance an unqualified name
+/// picks out.
+///
+/// The distinction is about what being wrong costs. Reading the second-best instance
+/// answers oddly and is recoverable, so a read **ranks** and commits. Writing to the
+/// wrong half-built database, or deleting the wrong one, is not recoverable, so both
+/// **refuse** and name the candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intent {
+    /// A query, or anything descriptive. Ranked sealed-before-unsealed, then
+    /// newest-first, and the best is taken — never ambiguous.
+    ///
+    /// Sealed outranks newer on purpose: while a CI run builds instance *n*, queries
+    /// belong to the sealed instance *n-1*, not to the half-written one. The
+    /// newest-first tiebreak is what keeps a root holding a single unsealed database
+    /// readable by name, which is what it was before instances existed.
+    Read,
+    /// A write or a seal: the one [`Writable`](Status::Writable) instance.
+    Write,
+    /// Something destructive: exactly one instance, or a refusal naming them all.
+    Sole,
+}
+
 /// One database found in a store root.
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -74,6 +213,16 @@ impl Entry {
     #[must_use]
     pub fn status(&self) -> Status {
         self.meta.status
+    }
+
+    /// The selector naming *exactly* this instance.
+    ///
+    /// What a caller resolved an unqualified name with once and wants to keep hold of:
+    /// re-resolving the same name later can land somewhere else, because a `create` or
+    /// a `finish` in between changes the ranking.
+    #[must_use]
+    pub fn selector(&self) -> Selector {
+        Selector::at(self.name(), &self.meta.instance)
     }
 }
 
@@ -197,34 +346,132 @@ impl Catalog {
             }
         }
 
-        listing
-            .entries
-            .sort_by(|a, b| (a.name(), &a.meta.instance).cmp(&(b.name(), &b.meta.instance)));
+        // **In resolution order**, which is why `candidates` can filter this without
+        // sorting again: the first row `list` shows for a name is the one an unqualified
+        // read of that name binds. Sorting by instance ascending — the obvious order,
+        // and what this did — put the *oldest* first and quietly contradicted that.
+        listing.entries.sort_by(resolution_order);
 
         Ok(listing)
     }
 
-    /// The database called `name`, if the root holds one.
+    /// Every instance of `name`, **best first** — sealed before unsealed, then newest
+    /// before oldest.
+    ///
+    /// The order is [`Intent::Read`]'s rule, stated once here so that a caller wanting
+    /// to *show* the candidates lists them in the same order resolution would pick from.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Meta`] if the root cannot be read.
+    pub fn candidates(&self, name: &str) -> Result<Vec<Entry>, StoreError> {
+        Ok(self
+            .list()?
+            .entries
+            .into_iter()
+            .filter(|entry| entry.name() == name)
+            .collect())
+    }
+
+    /// The best instance of `name`, or `None` if the root holds none.
+    ///
+    /// The "does this root hold a `code` at all" question, which is a different one from
+    /// [`resolve`](Catalog::resolve)'s "which `code` do I mean" and is worth being able
+    /// to ask without choosing an [`Intent`]. Ranked the same way, so the answer is the
+    /// one an [`Intent::Read`] would have bound.
     ///
     /// # Errors
     ///
     /// [`StoreError::Meta`] if the root cannot be read.
     pub fn find(&self, name: &str) -> Result<Option<Entry>, StoreError> {
-        Ok(self
-            .list()?
-            .entries
-            .into_iter()
-            .find(|entry| entry.name() == name))
+        Ok(self.candidates(name)?.into_iter().next())
     }
 
-    /// The database called `name`, or an error naming it.
+    /// The one database `selector` names, under `intent`'s rule for an unqualified name.
     ///
     /// # Errors
     ///
-    /// [`StoreError::NoSuchDatabase`] if there is none.
-    pub fn get(&self, name: &str) -> Result<Entry, StoreError> {
-        self.find(name)?
-            .ok_or_else(|| StoreError::NoSuchDatabase(name.to_owned()))
+    /// [`StoreError::NoSuchDatabase`] when the name holds nothing;
+    /// [`StoreError::NoSuchInstance`] when a named instance matches nothing;
+    /// [`StoreError::AmbiguousDatabase`] when the choice is the caller's to make;
+    /// [`StoreError::NotWritable`] when [`Intent::Write`] finds only sealed instances.
+    ///
+    /// Note what this does *not* check: a named instance is returned whatever its
+    /// status, even under [`Intent::Write`]. `finish` has to be able to tell an
+    /// already-sealed database from an unwritable one, and that is a distinction only
+    /// the caller holding the entry can draw.
+    pub fn resolve(&self, selector: &Selector, intent: Intent) -> Result<Entry, StoreError> {
+        let candidates = self.candidates(selector.name())?;
+        if candidates.is_empty() {
+            return Err(StoreError::NoSuchDatabase(selector.name().to_owned()));
+        }
+
+        let ambiguous = |among: &[Entry]| StoreError::AmbiguousDatabase {
+            name: selector.name().to_owned(),
+            instances: among
+                .iter()
+                .map(|entry| entry.meta.instance.clone())
+                .collect(),
+        };
+
+        // Exactly one, or a refusal naming them all.
+        let sole = |among: Vec<Entry>| match among.len() {
+            1 => Ok(among.into_iter().next().expect("one candidate")),
+            _ => Err(ambiguous(&among)),
+        };
+
+        if let Some(prefix) = selector.instance() {
+            // Crockford base32 is case-insensitive by construction, so a prefix typed in
+            // either case selects the same instance.
+            let wanted = prefix.to_ascii_uppercase();
+            let matched: Vec<Entry> = candidates
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .meta
+                        .instance
+                        .to_ascii_uppercase()
+                        .starts_with(&wanted)
+                })
+                .collect();
+
+            return match matched.len() {
+                0 => Err(StoreError::NoSuchInstance {
+                    name: selector.name().to_owned(),
+                    instance: prefix.to_owned(),
+                }),
+                1 => Ok(matched.into_iter().next().expect("one match")),
+                _ => Err(ambiguous(&matched)),
+            };
+        }
+
+        match intent {
+            // Ranked, so there is always a best and never a question.
+            Intent::Read => Ok(candidates.into_iter().next().expect("a candidate")),
+
+            Intent::Write => {
+                let writable: Vec<Entry> = candidates
+                    .iter()
+                    .filter(|entry| entry.status().is_writable())
+                    .cloned()
+                    .collect();
+
+                match writable.len() {
+                    1 => Ok(writable.into_iter().next().expect("one writable")),
+                    _ if writable.len() > 1 => Err(ambiguous(&writable)),
+                    // **No writable instance falls through to the sole rule rather than
+                    // failing here**, and that is what keeps `finish` idempotent: a
+                    // re-run after a crash finds one Complete instance and has to be
+                    // able to see it in order to answer "already sealed" instead of
+                    // "not writable". Whether a sealed instance is an error is the
+                    // caller's question, and `open_write` and `finish` answer it
+                    // differently.
+                    _ => sole(candidates),
+                }
+            }
+
+            Intent::Sole => sole(candidates),
+        }
     }
 
     /// Create a Writable database called `name`, against `schema`.
@@ -236,7 +483,7 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::BadDatabaseName`], [`StoreError::DatabaseExists`], or whatever
+    /// [`StoreError::BadDatabaseName`], or whatever
     /// the store or the sidecar reports. On any of them nothing is left behind.
     pub fn create(&self, name: &str, schema: &Schema) -> Result<Entry, StoreError> {
         check_name(name)?;
@@ -259,11 +506,6 @@ impl Catalog {
             name: name.to_owned(),
             detail,
         })?;
-
-        let destination = self.root.join(name);
-        if destination.exists() {
-            return Err(StoreError::DatabaseExists(name.to_owned()));
-        }
 
         let instance = ulid::new();
         let scratch = Scratch::new(self.root.join(format!("{SCRATCH_PREFIX}{instance}")));
@@ -305,20 +547,43 @@ impl Catalog {
                 detail: format!("cannot sync: {source}"),
             })?;
 
-        fs::rename(scratch.path(), &destination).map_err(|source| StoreError::Meta {
+        // **The name directory, which may already hold other instances.** Created here
+        // rather than checked for: a name is a container, and `create` adding the second
+        // instance to it is the ordinary case rather than a conflict. If something that
+        // is not a directory is already at that path, this is where it is reported.
+        let home = self.root.join(name);
+        fs::create_dir_all(&home).map_err(|source| StoreError::Meta {
+            path: home.clone(),
+            detail: format!("cannot create the name directory: {source}"),
+        })?;
+
+        // Still one atomic rename, just one level deeper than it used to be: the
+        // instance directory moves out of the scratch and into the name. A process
+        // killed at any point leaves either no instance directory or a whole one, and
+        // an empty name directory is invisible to [`list`](Catalog::list) because it
+        // holds nothing that parses as an instance id.
+        let destination = home.join(&instance);
+        fs::rename(&built, &destination).map_err(|source| StoreError::Meta {
             path: destination.clone(),
             detail: format!("cannot move into place: {source}"),
         })?;
-        scratch.keep();
 
-        sync_dir(&self.root).map_err(|source| StoreError::Meta {
-            path: self.root.clone(),
-            detail: format!("cannot sync the store root: {source}"),
-        })?;
+        // Deliberately not `scratch.keep()`: what used to be kept was the scratch
+        // directory itself, because it *became* the name directory. Now the instance is
+        // moved out from under it and the empty scratch is ours to remove, which is what
+        // dropping it does.
+        drop(scratch);
+
+        sync_dir(&home)
+            .and_then(|()| sync_dir(&self.root))
+            .map_err(|source| StoreError::Meta {
+                path: self.root.clone(),
+                detail: format!("cannot sync the store root: {source}"),
+            })?;
 
         Ok(Entry {
             meta,
-            path: destination.join(&instance),
+            path: destination,
         })
     }
 
@@ -329,12 +594,12 @@ impl Catalog {
     /// [`StoreError::NotWritable`] unless the database is
     /// [`Writable`](Status::Writable) — `ops-I2` refuses at establishment, so that
     /// immutability is the absence of a handle rather than a check on every write.
-    pub fn open_write(&self, name: &str) -> Result<(Entry, FjallDb), StoreError> {
-        let entry = self.get(name)?;
+    pub fn open_write(&self, selector: &Selector) -> Result<(Entry, FjallDb), StoreError> {
+        let entry = self.resolve(selector, Intent::Write)?;
 
         if !entry.status().is_writable() {
             return Err(StoreError::NotWritable {
-                name: name.to_owned(),
+                name: entry.name().to_owned(),
                 status: entry.status(),
             });
         }
@@ -348,8 +613,8 @@ impl Catalog {
     /// # Errors
     ///
     /// [`StoreError::NoSuchDatabase`], or whatever opening the store reports.
-    pub fn open_read(&self, name: &str) -> Result<(Entry, FjallDb), StoreError> {
-        let entry = self.get(name)?;
+    pub fn open_read(&self, selector: &Selector) -> Result<(Entry, FjallDb), StoreError> {
+        let entry = self.resolve(selector, Intent::Read)?;
         let db = FjallDb::open(&entry.path)?;
         Ok((entry, db))
     }
@@ -382,18 +647,19 @@ impl Catalog {
     /// `allow_zero_facts`; and whatever the store or the identity walk reports.
     pub fn finish(
         &self,
-        name: &str,
+        selector: &Selector,
         schema: &Schema,
         allow_zero_facts: bool,
     ) -> Result<Finished, StoreError> {
-        let entry = self.get(name)?;
+        let entry = self.resolve(selector, Intent::Write)?;
+        let name = entry.name().to_owned();
 
-        if let Some(already) = sealable(name, &entry)? {
+        if let Some(already) = sealable(&name, &entry)? {
             return Ok(already);
         }
 
         let db = FjallDb::open(&entry.path)?;
-        let identity = seal(name, &entry, &db, schema, allow_zero_facts)?;
+        let identity = seal(&name, &entry, &db, schema, allow_zero_facts)?;
 
         // Dropped before the sidecar write for the same reason the sync came first:
         // nothing should be holding a *writable* handle when the database becomes
@@ -422,18 +688,19 @@ impl Catalog {
     /// Exactly [`finish`](Catalog::finish)'s.
     pub fn finish_held(
         &self,
-        name: &str,
+        selector: &Selector,
         db: &FjallDb,
         schema: &Schema,
         allow_zero_facts: bool,
     ) -> Result<Finished, StoreError> {
-        let entry = self.get(name)?;
+        let entry = self.resolve(selector, Intent::Write)?;
+        let name = entry.name().to_owned();
 
-        if let Some(already) = sealable(name, &entry)? {
+        if let Some(already) = sealable(&name, &entry)? {
             return Ok(already);
         }
 
-        let identity = seal(name, &entry, db, schema, allow_zero_facts)?;
+        let identity = seal(&name, &entry, db, schema, allow_zero_facts)?;
         record(&entry, identity)
     }
 
@@ -446,22 +713,34 @@ impl Catalog {
     /// # Errors
     ///
     /// [`StoreError::NoSuchDatabase`], or [`StoreError::Meta`] if the removal fails.
-    pub fn remove(&self, name: &str) -> Result<(), StoreError> {
-        let entry = self.get(name)?;
+    pub fn remove(&self, selector: &Selector) -> Result<(), StoreError> {
+        let entry = self.resolve(selector, Intent::Sole)?;
 
-        let live = self.root.join(name);
         let trash = self
             .root
             .join(format!("{TRASH_PREFIX}{}", entry.meta.instance));
 
-        fs::rename(&live, &trash).map_err(|source| StoreError::Meta {
-            path: live,
+        fs::rename(&entry.path, &trash).map_err(|source| StoreError::Meta {
+            path: entry.path.clone(),
             detail: format!("cannot remove: {source}"),
         })?;
 
         fs::remove_dir_all(&trash).map_err(|source| StoreError::Meta {
             path: trash,
             detail: format!("cannot delete: {source}"),
+        })?;
+
+        // **And the name directory, if that was the last instance under it.**
+        // `remove_dir` succeeds only on an empty directory, which is exactly the
+        // condition being tested for — so the failure when siblings remain is the
+        // answer rather than a fault, and is deliberately dropped. Any other failure
+        // is dropped too: the instance is already gone, so the operation succeeded,
+        // and an empty name directory is invisible to `list`.
+        let _ = fs::remove_dir(self.root.join(entry.name()));
+
+        sync_dir(&self.root).map_err(|source| StoreError::Meta {
+            path: self.root.clone(),
+            detail: format!("cannot sync the store root: {source}"),
         })?;
 
         Ok(())
@@ -589,6 +868,30 @@ fn recoverable(schema: &Schema) -> Result<(), String> {
 /// The rules are about the filesystem rather than about taste: a name becomes a
 /// directory directly under the store root, so anything that could escape it, collide
 /// with the catalog's own dot-prefixed entries, or fail to be a filename is refused.
+/// The order a name's instances are both **listed** and **resolved** in.
+///
+/// Names ascending, so a listing reads alphabetically. Within a name: sealed before
+/// unsealed before broken, then newest before oldest — which is [`Intent::Read`]'s rule,
+/// and the reason it is written here rather than there is that a listing showing a
+/// different order than resolution uses is a listing that misleads.
+///
+/// `Broken` sorts last because it is readable only if it can be, so it is the last thing
+/// an unqualified name should land on.
+fn resolution_order(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+    let rank = |status: Status| match status {
+        Status::Complete => 0,
+        Status::Writable => 1,
+        Status::Broken => 2,
+    };
+
+    a.name()
+        .cmp(b.name())
+        .then_with(|| rank(a.status()).cmp(&rank(b.status())))
+        // Descending: a ULID's leading 48 bits are a millisecond timestamp, so reversing
+        // the id order is reversing chronology.
+        .then_with(|| b.meta.instance.cmp(&a.meta.instance))
+}
+
 fn check_name(name: &str) -> Result<(), StoreError> {
     let bad = |detail| {
         Err(StoreError::BadDatabaseName {
@@ -605,6 +908,9 @@ fn check_name(name: &str) -> Result<(), StoreError> {
     }
     if name.contains(['/', '\\']) {
         return bad("it contains a path separator");
+    }
+    if name.contains(INSTANCE_SEPARATOR) {
+        return bad("`@` separates a name from an instance, so a name may not contain one");
     }
     if name.contains(|c: char| c.is_control()) {
         return bad("it contains a control character");

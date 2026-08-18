@@ -9,7 +9,7 @@ use std::{fs, sync::Arc};
 
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use aperture_store::{
-    catalog::{Catalog, LOCK_FILE},
+    catalog::{Catalog, Intent, LOCK_FILE, Selector},
     error::StoreError,
     meta::{META_FILE, Meta, Status},
     schema_doc, ulid,
@@ -45,6 +45,18 @@ fn schema() -> Schema {
             },
         ]),
     )
+}
+
+/// Seal an instance, allowing zero facts — these tests are about directories, not
+/// about what is in them.
+fn seal(catalog: &Catalog, entry: &aperture_store::catalog::Entry) {
+    catalog
+        .finish(
+            &Selector::at(entry.name(), &entry.meta.instance),
+            &schema(),
+            true,
+        )
+        .expect("it seals");
 }
 
 fn catalog() -> (tempfile::TempDir, Catalog) {
@@ -105,7 +117,9 @@ fn create_materialises_every_predicates_trees() {
     let (_dir, catalog) = catalog();
     catalog.create("code", &schema()).expect("it creates");
 
-    let (_entry, reopened) = catalog.open_read("code").expect("it reopens");
+    let (_entry, reopened) = catalog
+        .open_read(&Selector::of("code"))
+        .expect("it reopens");
 
     assert_eq!(
         reopened.predicate_ids(),
@@ -125,7 +139,9 @@ fn a_listing_works_while_a_database_is_held_open() {
     catalog.create("alpha", &schema()).expect("it creates");
     catalog.create("beta", &schema()).expect("it creates");
 
-    let (_entry, held) = catalog.open_write("alpha").expect("it opens");
+    let (_entry, held) = catalog
+        .open_write(&Selector::of("alpha"))
+        .expect("it opens");
 
     let listing = catalog.list().expect("it lists");
     assert_eq!(
@@ -154,17 +170,6 @@ fn a_name_that_could_escape_the_root_is_refused() {
     }
 }
 
-#[test]
-fn creating_the_same_name_twice_is_refused() {
-    let (_dir, catalog) = catalog();
-    catalog.create("code", &schema()).expect("it creates");
-
-    assert!(matches!(
-        catalog.create("code", &schema()),
-        Err(StoreError::DatabaseExists(_))
-    ));
-}
-
 /// **`ops-I2`: once Complete, no writable handle exists.** Refused at establishment
 /// rather than defended per write, so immutability is the absence of a thing.
 #[test]
@@ -178,7 +183,7 @@ fn a_complete_database_cannot_be_opened_for_writing() {
     meta.status = Status::Complete;
     meta.write(&entry.path).expect("it writes");
 
-    match catalog.open_write("code").map(|_| ()) {
+    match catalog.open_write(&Selector::of("code")).map(|_| ()) {
         Err(StoreError::NotWritable { name, status }) => {
             assert_eq!(name, "code");
             assert_eq!(status, Status::Complete);
@@ -188,7 +193,7 @@ fn a_complete_database_cannot_be_opened_for_writing() {
 
     // ...and reading it is still fine, which is the whole point of sealing one.
     catalog
-        .open_read("code")
+        .open_read(&Selector::of("code"))
         .expect("a Complete database still reads");
 }
 
@@ -202,13 +207,14 @@ fn a_complete_database_cannot_be_opened_for_writing() {
 fn a_failed_create_leaves_nothing_behind() {
     let (_dir, catalog) = catalog();
 
-    // A *file* named `code`: `create`'s existence check sees it and refuses, which
-    // is the near case. The far case is below.
+    // A *file* named `code`: the name directory cannot be created over it, so the
+    // create fails where it touches the filesystem. Not a name clash — a name holding
+    // instances is the ordinary case now — but a directory that cannot exist.
     fs::write(catalog.root().join("code"), b"in the way").expect("it writes");
 
     assert!(matches!(
         catalog.create("code", &schema()),
-        Err(StoreError::DatabaseExists(_))
+        Err(StoreError::Meta { .. })
     ));
 
     // Nothing was built: no scratch directory survives.
@@ -267,35 +273,6 @@ fn a_malformed_sidecar_is_a_problem_rather_than_a_failure() {
     assert!(format!("{}", listing.problems[0]).contains("malformed"));
 }
 
-#[test]
-fn removing_a_database_takes_the_whole_tree() {
-    let (_dir, catalog) = catalog();
-    catalog.create("code", &schema()).expect("it creates");
-
-    catalog.remove("code").expect("it removes");
-
-    assert!(catalog.find("code").expect("it lists").is_none());
-    assert!(!catalog.root().join("code").exists());
-
-    // Nothing pending: the rename-then-delete leaves no trash behind.
-    let strays: Vec<String> = fs::read_dir(catalog.root())
-        .expect("a listing")
-        .map(|e| {
-            e.expect("an entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .filter(|name| name.starts_with(".trash-"))
-        .collect();
-    assert!(strays.is_empty(), "left behind: {strays:?}");
-
-    assert!(matches!(
-        catalog.remove("code"),
-        Err(StoreError::NoSuchDatabase(_))
-    ));
-}
-
 /// **`ops-I1`: one process owns a store root.** A second holder is refused by name
 /// rather than made to wait — the design refuses a lock fight, because the
 /// alternative to failing here is two servers writing one directory.
@@ -337,7 +314,9 @@ fn a_sidecar_round_trips_through_the_catalog() {
     let (_dir, catalog) = catalog();
     let created = catalog.create("code", &schema()).expect("it creates");
 
-    let found = catalog.get("code").expect("it is found");
+    let found = catalog
+        .resolve(&Selector::of("code"), Intent::Read)
+        .expect("it is found");
 
     assert_eq!(found.meta, created.meta);
     assert_eq!(
@@ -447,7 +426,7 @@ fn a_killed_create_leaves_nothing_or_a_whole_database() {
                 );
 
                 let (_entry, db) = catalog
-                    .open_read("code")
+                    .open_read(&Selector::of("code"))
                     .unwrap_or_else(|e| panic!("delay {delay_ms}ms: it must open: {e}"));
 
                 assert_eq!(
@@ -503,4 +482,269 @@ fn crashing_creator_child_process() {
 
     // Keep the process alive long enough for the watchdog even if `create` was fast.
     std::thread::sleep(std::time::Duration::from_millis(delay_ms + 500));
+}
+
+// ---------------------------------------------------------------------------
+// Many instances under one name — the Glean `Repo = (name, hash)` shape, with a
+// generated ULID where Glean takes a caller-supplied revision.
+// ---------------------------------------------------------------------------
+
+/// **A name holds instances, and `create` adds one.** This replaces the old rule that a
+/// second `create` under a live name was refused: the whole point of an instance is that
+/// a database-per-CI-run has somewhere to go.
+#[test]
+fn creating_the_same_name_twice_makes_a_second_instance() {
+    let (_dir, catalog) = catalog();
+
+    let first = catalog.create("code", &schema()).expect("it creates");
+    let second = catalog.create("code", &schema()).expect("it creates again");
+
+    assert_ne!(first.meta.instance, second.meta.instance);
+
+    let listing = catalog.list().expect("it lists");
+    assert_eq!(listing.entries.len(), 2, "{:?}", listing.problems);
+    assert!(listing.entries.iter().all(|entry| entry.name() == "code"));
+
+    // Both live under one name directory, each in its own instance directory.
+    for entry in &listing.entries {
+        assert_eq!(
+            entry.path,
+            catalog.root().join("code").join(&entry.meta.instance)
+        );
+        assert!(entry.path.join(META_FILE).is_file());
+    }
+}
+
+/// **A bare name means the newest instance worth reading.** Ranked sealed-first, then
+/// newest — which is Glean's rule (`filter Complete`, `sortBy created descending`) with
+/// the fallback the single-instance case needs.
+#[test]
+fn a_bare_name_reads_the_newest_sealed_instance() {
+    let (_dir, catalog) = catalog();
+
+    let old = catalog.create("code", &schema()).expect("it creates");
+    seal(&catalog, &old);
+    let new = catalog.create("code", &schema()).expect("it creates again");
+
+    let chosen = catalog
+        .resolve(&Selector::of("code"), Intent::Read)
+        .expect("it resolves");
+
+    assert_eq!(
+        chosen.meta.instance, old.meta.instance,
+        "a sealed instance outranks a newer unsealed one"
+    );
+    assert_ne!(chosen.meta.instance, new.meta.instance);
+}
+
+/// The other half of the ranking: with nothing sealed, newest wins — so a root holding
+/// one Writable database is still readable by name, which is what it was before.
+#[test]
+fn a_bare_name_reads_the_newest_instance_when_none_is_sealed() {
+    let (_dir, catalog) = catalog();
+
+    let _first = catalog.create("code", &schema()).expect("it creates");
+    let second = catalog.create("code", &schema()).expect("it creates again");
+
+    let chosen = catalog
+        .resolve(&Selector::of("code"), Intent::Read)
+        .expect("it resolves");
+
+    assert_eq!(chosen.meta.instance, second.meta.instance);
+}
+
+/// **A writer wants the Writable one, not the newest one.** `ops-I2` makes that
+/// unambiguous when exactly one is unsealed.
+#[test]
+fn a_bare_name_writes_to_the_only_writable_instance() {
+    let (_dir, catalog) = catalog();
+
+    let sealed = catalog.create("code", &schema()).expect("it creates");
+    seal(&catalog, &sealed);
+    let open = catalog.create("code", &schema()).expect("it creates again");
+
+    let chosen = catalog
+        .resolve(&Selector::of("code"), Intent::Write)
+        .expect("it resolves");
+
+    assert_eq!(chosen.meta.instance, open.meta.instance);
+}
+
+/// **Two Writable instances is a question, not a guess.** Reading the wrong one answers
+/// oddly; writing to the wrong one is unrecoverable, so this refuses and names them.
+#[test]
+fn a_bare_name_refuses_to_write_when_two_are_writable() {
+    let (_dir, catalog) = catalog();
+
+    let a = catalog.create("code", &schema()).expect("it creates");
+    let b = catalog.create("code", &schema()).expect("it creates again");
+
+    match catalog.resolve(&Selector::of("code"), Intent::Write) {
+        Err(StoreError::AmbiguousDatabase { name, instances }) => {
+            assert_eq!(name, "code");
+            assert!(instances.contains(&a.meta.instance), "{instances:?}");
+            assert!(instances.contains(&b.meta.instance), "{instances:?}");
+        }
+        other => panic!("expected an ambiguity, got {other:?}"),
+    }
+}
+
+/// A prefix is enough, because a ULID is 26 characters and nobody is typing one.
+#[test]
+fn an_instance_prefix_selects_one() {
+    let (_dir, catalog) = catalog();
+
+    let _other = catalog.create("code", &schema()).expect("it creates");
+    let wanted = catalog.create("code", &schema()).expect("it creates again");
+
+    // A ULID's first ten characters are the millisecond timestamp, so two made in the
+    // same millisecond share them; the entropy that follows is what makes a prefix
+    // selective, and this takes enough of it to be sure.
+    let prefix = &wanted.meta.instance[..14];
+    let chosen = catalog
+        .resolve(&Selector::at("code", prefix), Intent::Read)
+        .expect("it resolves");
+
+    assert_eq!(chosen.meta.instance, wanted.meta.instance);
+}
+
+/// A prefix matching two instances is refused rather than resolved to either.
+#[test]
+fn an_ambiguous_instance_prefix_is_refused() {
+    let (_dir, catalog) = catalog();
+
+    catalog.create("code", &schema()).expect("it creates");
+    catalog.create("code", &schema()).expect("it creates again");
+
+    // The empty prefix matches everything, which is the sharpest form of ambiguous.
+    assert!(matches!(
+        catalog.resolve(&Selector::at("code", ""), Intent::Read),
+        Err(StoreError::AmbiguousDatabase { .. })
+    ));
+}
+
+#[test]
+fn an_unknown_instance_is_refused_by_name() {
+    let (_dir, catalog) = catalog();
+    catalog.create("code", &schema()).expect("it creates");
+
+    match catalog.resolve(&Selector::at("code", "ZZZZ"), Intent::Read) {
+        Err(StoreError::NoSuchInstance { name, instance }) => {
+            assert_eq!((name.as_str(), instance.as_str()), ("code", "ZZZZ"));
+        }
+        other => panic!("expected no-such-instance, got {other:?}"),
+    }
+}
+
+/// **Removing an instance leaves its siblings.** The old rule renamed the whole name
+/// directory, which with two instances would take a database nobody asked about.
+#[test]
+fn removing_one_instance_leaves_the_others() {
+    let (_dir, catalog) = catalog();
+
+    let doomed = catalog.create("code", &schema()).expect("it creates");
+    let spared = catalog.create("code", &schema()).expect("it creates again");
+
+    catalog
+        .remove(&Selector::at("code", &doomed.meta.instance))
+        .expect("it removes");
+
+    let listing = catalog.list().expect("it lists");
+    assert_eq!(listing.entries.len(), 1, "{:?}", listing.problems);
+    assert_eq!(listing.entries[0].meta.instance, spared.meta.instance);
+    assert!(spared.path.is_dir());
+    assert!(!doomed.path.exists());
+
+    // The name directory survives, because something is still under it.
+    assert!(catalog.root().join("code").is_dir());
+}
+
+/// And taking the last one takes the name with it, so an empty directory is not left to
+/// make `code` look like it still exists.
+#[test]
+fn removing_the_last_instance_removes_the_name() {
+    let (_dir, catalog) = catalog();
+    catalog.create("code", &schema()).expect("it creates");
+
+    catalog.remove(&Selector::of("code")).expect("it removes");
+
+    assert!(!catalog.root().join("code").exists());
+    assert!(matches!(
+        catalog.remove(&Selector::of("code")),
+        Err(StoreError::NoSuchDatabase(_))
+    ));
+}
+
+/// Destructive and ambiguous is refused: `rm code` with three instances is a question.
+#[test]
+fn removing_a_bare_name_is_refused_when_several_exist() {
+    let (_dir, catalog) = catalog();
+    catalog.create("code", &schema()).expect("it creates");
+    catalog.create("code", &schema()).expect("it creates again");
+
+    assert!(matches!(
+        catalog.remove(&Selector::of("code")),
+        Err(StoreError::AmbiguousDatabase { .. })
+    ));
+}
+
+/// `@` separates a name from an instance, so a name may not contain one — otherwise
+/// `a@b` names either a database or an instance of one, and nothing can say which.
+#[test]
+fn a_name_containing_the_instance_separator_is_refused() {
+    let (_dir, catalog) = catalog();
+
+    match catalog.create("code@old", &schema()) {
+        Err(StoreError::BadDatabaseName { name, .. }) => assert_eq!(name, "code@old"),
+        other => panic!("expected a bad name, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_selector_round_trips_through_its_text_form() {
+    for text in ["code", "code@01JQ", "aperture.db"] {
+        let selector = Selector::parse(text).expect("it parses");
+        assert_eq!(selector.to_string(), text);
+    }
+
+    // A bare `@` names no instance, and an empty name is not a name.
+    assert!(Selector::parse("code@").is_err());
+    assert!(Selector::parse("@01JQ").is_err());
+    assert!(Selector::parse("a@b@c").is_err());
+}
+
+/// **A listing is in resolution order**, so the first row shown for a name is the one an
+/// unqualified read of that name binds. The two used to be sorted differently, which made
+/// the listing quietly misleading the moment a name held two instances.
+#[test]
+fn a_listing_shows_a_names_instances_in_the_order_resolution_picks_them() {
+    let (_dir, catalog) = catalog();
+
+    let older = catalog.create("code", &schema()).expect("it creates");
+    let newer = catalog.create("code", &schema()).expect("it creates again");
+
+    // Both unsealed: newest first.
+    let listed = catalog.list().expect("it lists");
+    let order: Vec<&str> = listed
+        .entries
+        .iter()
+        .map(|entry| entry.meta.instance.as_str())
+        .collect();
+    assert_eq!(order, vec![&newer.meta.instance, &older.meta.instance]);
+
+    // Seal the older one and it moves to the front, because sealed outranks newer — and
+    // that is exactly where an unqualified read now goes.
+    seal(&catalog, &older);
+
+    let listed = catalog.list().expect("it lists");
+    assert_eq!(listed.entries[0].meta.instance, older.meta.instance);
+    assert_eq!(
+        catalog
+            .resolve(&Selector::of("code"), Intent::Read)
+            .expect("it resolves")
+            .meta
+            .instance,
+        listed.entries[0].meta.instance,
+        "the head of the listing is what a bare name reads"
+    );
 }

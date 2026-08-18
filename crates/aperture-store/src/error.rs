@@ -159,6 +159,27 @@ pub enum StoreError {
     #[error("`{name}` is not a usable database name: {detail}")]
     BadDatabaseName { name: String, detail: &'static str },
 
+    /// A name that holds several instances, where the caller named none and the
+    /// operation must not guess.
+    ///
+    /// Which operations must not guess is [`Intent`](crate::catalog::Intent)'s
+    /// business: a read ranks the candidates and takes the best, because reading the
+    /// second-best answers oddly and is recoverable. A write or a delete refuses,
+    /// because picking wrong there is neither.
+    #[error(
+        "`{name}` has {count} instances; name one with `{name}@<instance>` ({shown})",
+        count = instances.len(),
+        shown = instances.join(", "),
+    )]
+    AmbiguousDatabase {
+        name: String,
+        instances: Vec<String>,
+    },
+
+    /// An instance — or an instance prefix — that names nothing under this database.
+    #[error("`{name}` has no instance matching `{instance}`")]
+    NoSuchInstance { name: String, instance: String },
+
     /// A schema that cannot be written down and read back as itself.
     ///
     /// A database embeds its schema as source and is served from that copy
@@ -169,10 +190,6 @@ pub enum StoreError {
     /// type and reports nothing.
     #[error("the schema for `{name}` cannot be embedded: {detail}")]
     UnwritableSchema { name: String, detail: String },
-
-    /// A database that already exists under this name.
-    #[error("a database named `{0}` already exists")]
-    DatabaseExists(String),
 
     /// A write asked of a database that is not [`Writable`](crate::meta::Status::Writable).
     ///

@@ -156,11 +156,15 @@ fn a_server_refusal_reaches_the_person_who_typed_it() {
     let (_dir, root) = scratch();
     let _serving = serve(&root);
 
+    // Two instances, so a bare-name delete is ambiguous — and the refusal is decided
+    // by the *server*, which is what makes this a test of the server's own words
+    // reaching the person who typed the command rather than of the offline path's.
+    ok(&root, &["create", "code"]);
     ok(&root, &["create", "code"]);
 
-    let stderr = fails(&root, &["create", "code"]);
-    assert!(stderr.contains("already exists"), "{stderr}");
-    assert!(stderr.contains("code"), "{stderr}");
+    let stderr = fails(&root, &["db", "rm", "code", "--yes"]);
+    assert!(stderr.contains("2 instances"), "{stderr}");
+    assert!(stderr.contains("code@"), "{stderr}");
 
     for args in [
         vec!["finish", "nope", "--allow-zero-facts"],

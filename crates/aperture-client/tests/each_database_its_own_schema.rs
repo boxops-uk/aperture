@@ -205,7 +205,7 @@ fn a_copy_that_disagrees_with_the_sidecar_leaves_the_database_unserved() {
     let (registry, listing) =
         Registry::open(catalog, Schemas::new("", schema(LOGS))).expect("a registry");
 
-    assert!(registry.find("logs").is_none(), "it must not be served");
+    assert!(registry.bind("logs").is_err(), "it must not be served");
     assert_eq!(listing.entries.len(), 1, "`list` still shows it (ops-I7)");
     assert_eq!(listing.problems.len(), 1, "and says what is wrong with it");
     assert!(
@@ -236,7 +236,7 @@ fn a_database_with_no_embedded_copy_is_served_with_the_servers_own() {
 
     assert!(listing.problems.is_empty(), "{:?}", listing.problems);
 
-    let served = registry.find("logs").expect("it is served");
+    let served = registry.bind("logs").expect("it is served");
     assert_eq!(served.identity.schema(), fingerprint::of(&schema(LOGS)));
 }
 

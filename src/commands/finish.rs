@@ -41,7 +41,8 @@ pub fn run(
         }
 
         Route::Local(catalog, _lock) => {
-            Ok(catalog.finish(name, &code_index::schema(), allow_zero_facts)?)
+            let selector = aperture_store::catalog::Selector::parse(name)?;
+            Ok(catalog.finish(&selector, &code_index::schema(), allow_zero_facts)?)
         }
     }
 }

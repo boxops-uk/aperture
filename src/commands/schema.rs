@@ -154,7 +154,10 @@ fn side(what: &str, root: &Path, roots: &[PathBuf]) -> Result<(Identity, String)
     }
 
     let catalog = commands::readable(root)?;
-    let entry = catalog.get(what)?;
+    let entry = catalog.resolve(
+        &aperture_store::catalog::Selector::parse(what)?,
+        aperture_store::catalog::Intent::Read,
+    )?;
 
     let Some(schema) = aperture_store::schema_doc::read(&entry.path)? else {
         return Err(CliError::Schema(format!(

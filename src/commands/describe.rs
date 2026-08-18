@@ -3,6 +3,8 @@
 //! Metadata and the schema, both read without opening fjall — the sidecar for one and
 //! the embedded copy for the other. A server holding the database is no obstacle.
 
+use aperture_store::catalog::{Intent, Selector};
+
 use crate::{CliError, cli::Format, commands, output};
 
 /// # Errors
@@ -15,7 +17,7 @@ pub fn run(
     dump_schema: bool,
 ) -> Result<String, CliError> {
     let catalog = commands::readable(root)?;
-    let entry = catalog.get(name)?;
+    let entry = catalog.resolve(&Selector::parse(name)?, Intent::Read)?;
 
     // **`--schema` dumps the copy verbatim**, comments and all, because the thing worth
     // having is the text `create --schema` would take back — not this command's idea of

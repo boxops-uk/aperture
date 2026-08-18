@@ -86,6 +86,10 @@ use crate::{
 /// directory is the lock fight the design refuses.
 pub struct Database {
     pub name: String,
+    /// Which instance of [`name`](Database::name) this is — the store root's unique
+    /// key for a database, and what the registry's map is keyed by, because a name
+    /// holds several.
+    pub instance: String,
     pub db: Arc<FjallDb>,
     pub schema: Arc<Schema>,
     /// This database's schema identity — the whole-schema number a handshake compares
@@ -125,12 +129,14 @@ impl Database {
     #[must_use]
     pub fn new(
         name: impl Into<String>,
+        instance: impl Into<String>,
         db: FjallDb,
         schema: Arc<Schema>,
         status: Status,
     ) -> Database {
         Database {
             name: name.into(),
+            instance: instance.into(),
             db: Arc::new(db),
             identity: aperture_schema::fingerprint::identity(&schema),
             schema,
@@ -273,11 +279,7 @@ where
     let database = if startup.database.is_empty() {
         None
     } else {
-        Some(
-            registry
-                .find(&startup.database)
-                .ok_or_else(|| ServerError::UnknownDatabase(startup.database.clone()))?,
-        )
+        Some(registry.bind(&startup.database)?)
     };
 
     let (identity, predicates) = match &database {

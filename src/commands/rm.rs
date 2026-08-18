@@ -18,6 +18,8 @@ pub fn run(root: &Path, socket: &Path, name: &str) -> Result<(), CliError> {
         // The server closes the store before deleting the directory it was holding;
         // this process has nothing open to close.
         Route::Server(mut server) => Ok(server.remove(name)?),
-        Route::Local(catalog, _lock) => Ok(catalog.remove(name)?),
+        Route::Local(catalog, _lock) => {
+            Ok(catalog.remove(&aperture_store::catalog::Selector::parse(name)?)?)
+        }
     }
 }

@@ -171,9 +171,20 @@ fn several_databases_coexist() {
         "listed by name, not by creation order:\n{listed}"
     );
 
-    // A name is one database: creating it twice is refused rather than making a
-    // second instance nobody asked for.
-    assert!(fails(root, &["create", "alpha"]).contains("already exists"));
+    // **A name is a container, and creating it twice adds an instance.** This is the
+    // rule that changed: `alpha` is now two databases, both listed, and the one a bare
+    // `alpha` means depends on what is being asked of it.
+    ok(root, &["create", "alpha"]);
+
+    let listed = ok(root, &["list"]);
+    let instances = listed.lines().filter(|line| line.contains("alpha")).count();
+    assert_eq!(instances, 2, "both instances are listed:\n{listed}");
+
+    // Destructive and ambiguous is a question. The message names the instances, since
+    // naming one of them is what the caller has to do next.
+    let refused = fails(root, &["db", "rm", "alpha", "--yes"]);
+    assert!(refused.contains("2 instances"), "{refused}");
+    assert!(refused.contains("alpha@"), "{refused}");
 }
 
 /// **`ops-I1` has no silent fallback.** A root held by something that is *not*

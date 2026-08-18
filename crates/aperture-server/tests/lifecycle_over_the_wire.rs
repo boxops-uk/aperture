@@ -24,7 +24,7 @@ use std::{
 
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use aperture_server::{Registry, registry::Schemas, server::Listener};
-use aperture_store::catalog::Catalog;
+use aperture_store::catalog::{Catalog, Intent, Selector};
 use aperture_wire::{
     Control, ControlOp, ControlReply, ErrorCode, FrameHeader, FrameKind, Mode, Startup, StreamId,
     WireFact, WireValue, encode_block, encode_frame, frame,
@@ -274,7 +274,10 @@ fn a_database_lives_and_dies_against_a_running_server() {
 
     // On the disk, and visible to a reader that never opens fjall (`ops-I7`) — which
     // is how `list` and `describe` see a database this server just made.
-    let entry = serving.catalog().get("code").expect("it is on the disk");
+    let entry = serving
+        .catalog()
+        .resolve(&Selector::of("code"), Intent::Read)
+        .expect("it is on the disk");
     assert_eq!(entry.meta.instance, instance);
     assert!(entry.status().is_writable());
 
@@ -307,7 +310,10 @@ fn a_database_lives_and_dies_against_a_running_server() {
     assert!(bytes > 0);
     assert!(!already_complete);
 
-    let entry = serving.catalog().get("code").expect("it is on the disk");
+    let entry = serving
+        .catalog()
+        .resolve(&Selector::of("code"), Intent::Read)
+        .expect("it is on the disk");
     assert_eq!(entry.meta.content_fingerprint, Some(fingerprint));
     assert!(!entry.status().is_writable(), "the sidecar flipped");
 
@@ -416,7 +422,7 @@ fn a_read_only_session_cannot_change_the_lifecycle() {
     assert!(
         serving
             .catalog()
-            .get("code")
+            .resolve(&Selector::of("code"), Intent::Read)
             .expect("still there")
             .status()
             .is_writable()
@@ -502,11 +508,18 @@ fn a_declined_request_says_why() {
     let mut control = Client::control_session(&serving, Mode::ReadWrite);
     control.control(ControlOp::Create, "code", false);
 
-    let (header, payload) = control.control_raw(ControlOp::Create, "code", false);
+    // A second `create` under the same name is not a refusal any more — it is a second
+    // instance — so the refusal exercised here is the one that replaced it: naming a
+    // database that holds two, for an operation that must not guess which. Done under
+    // its own name, so that `code` stays a single instance for everything below.
+    control.control(ControlOp::Create, "twin", false);
+    control.control(ControlOp::Create, "twin", false);
+
+    let (header, payload) = control.control_raw(ControlOp::Remove, "twin", false);
     assert_eq!(header.kind, FrameKind::ERROR);
     let (code, message) = error_of(&payload);
     assert_eq!(code, ErrorCode::Refused);
-    assert!(message.contains("already exists"), "{message}");
+    assert!(message.contains("2 instances"), "{message}");
 
     // An empty database will not seal without being told to, over the wire exactly as
     // it will not offline — a silently-empty sealed artifact is the same CI failure

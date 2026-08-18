@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use aperture_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use aperture_store::{
-    catalog::Catalog,
+    catalog::{Catalog, Intent, Selector},
     error::StoreError,
     fact::{Fact, ToValue, record},
     identity,
@@ -161,13 +161,13 @@ fn write(db: &FjallDb, schema: &Schema, content: Content) {
 fn build(catalog: &Catalog, name: &str, content: Content) -> u64 {
     let schema = schema();
     catalog.create(name, &schema).expect("it creates");
-    let (_entry, db) = catalog.open_write(name).expect("it opens");
+    let (_entry, db) = catalog.open_write(&Selector::of(name)).expect("it opens");
 
     write(&db, &schema, content);
     drop(db);
 
     catalog
-        .finish(name, &schema, false)
+        .finish(&Selector::of(name), &schema, false)
         .expect("it seals")
         .fingerprint
 }
@@ -185,7 +185,9 @@ fn sealing_records_the_identity_and_flips_the_status() {
     let (_dir, catalog) = catalog();
     let fingerprint = build(&catalog, "code", CONTENT);
 
-    let entry = catalog.get("code").expect("it is found");
+    let entry = catalog
+        .resolve(&Selector::of("code"), Intent::Read)
+        .expect("it is found");
 
     assert_eq!(entry.status(), Status::Complete);
     assert_eq!(entry.meta.content_fingerprint, Some(fingerprint));
@@ -210,19 +212,21 @@ fn sealing_through_a_held_handle_is_the_same_artifact() {
     let offline = build(&catalog, "offline", CONTENT);
 
     catalog.create("held", &schema).expect("it creates");
-    let (_entry, db) = catalog.open_write("held").expect("it opens");
+    let (_entry, db) = catalog.open_write(&Selector::of("held")).expect("it opens");
     write(&db, &schema, CONTENT);
 
     // The handle stays open across the seal, which is the whole difference.
     let sealed = catalog
-        .finish_held("held", &db, &schema, false)
+        .finish_held(&Selector::of("held"), &db, &schema, false)
         .expect("it seals");
 
     assert_eq!(sealed.fingerprint, offline, "same content, same identity");
     assert_eq!(sealed.facts, 7);
     assert!(!sealed.already_complete);
 
-    let entry = catalog.get("held").expect("it is found");
+    let entry = catalog
+        .resolve(&Selector::of("held"), Intent::Read)
+        .expect("it is found");
     assert_eq!(entry.status(), Status::Complete);
     assert_eq!(entry.meta.content_fingerprint, Some(offline));
     assert!(entry.meta.bytes.unwrap_or(0) > 0, "a size was measured");
@@ -231,7 +235,7 @@ fn sealing_through_a_held_handle_is_the_same_artifact() {
     // even though the handle that wrote it is still open. Closing the store is how
     // the offline path says so; the server says it by sealing inside the writer lock.
     assert!(matches!(
-        catalog.open_write("held").map(|_| ()),
+        catalog.open_write(&Selector::of("held")).map(|_| ()),
         Err(StoreError::NotWritable {
             status: Status::Complete,
             ..
@@ -249,14 +253,14 @@ fn finishing_a_held_database_twice_is_a_no_op() {
     let schema = schema();
 
     catalog.create("code", &schema).expect("it creates");
-    let (_entry, db) = catalog.open_write("code").expect("it opens");
+    let (_entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
     write(&db, &schema, CONTENT);
 
     let first = catalog
-        .finish_held("code", &db, &schema, false)
+        .finish_held(&Selector::of("code"), &db, &schema, false)
         .expect("it seals");
     let again = catalog
-        .finish_held("code", &db, &schema, false)
+        .finish_held(&Selector::of("code"), &db, &schema, false)
         .expect("it is a no-op");
 
     assert!(!first.already_complete);
@@ -273,14 +277,16 @@ fn a_sealed_database_can_never_be_written_again() {
     build(&catalog, "code", CONTENT);
 
     assert!(matches!(
-        catalog.open_write("code").map(|_| ()),
+        catalog.open_write(&Selector::of("code")).map(|_| ()),
         Err(StoreError::NotWritable {
             status: Status::Complete,
             ..
         })
     ));
 
-    catalog.open_read("code").expect("but it still reads");
+    catalog
+        .open_read(&Selector::of("code"))
+        .expect("but it still reads");
 }
 
 /// Finishing twice is a no-op with a notice rather than an error: a re-run after a
@@ -291,7 +297,7 @@ fn finishing_twice_is_a_no_op() {
     let fingerprint = build(&catalog, "code", CONTENT);
 
     let again = catalog
-        .finish("code", &schema(), false)
+        .finish(&Selector::of("code"), &schema(), false)
         .expect("finishing again is allowed");
 
     assert!(again.already_complete);
@@ -310,22 +316,28 @@ fn an_empty_database_will_not_seal_without_being_told_to() {
     catalog.create("empty", &schema).expect("it creates");
 
     assert!(matches!(
-        catalog.finish("empty", &schema, false),
+        catalog.finish(&Selector::of("empty"), &schema, false),
         Err(StoreError::EmptyDatabase(_))
     ));
 
     // Still Writable: a refused seal changes nothing.
     assert_eq!(
-        catalog.get("empty").expect("it is found").status(),
+        catalog
+            .resolve(&Selector::of("empty"), Intent::Read)
+            .expect("it is found")
+            .status(),
         Status::Writable
     );
 
     let sealed = catalog
-        .finish("empty", &schema, true)
+        .finish(&Selector::of("empty"), &schema, true)
         .expect("with the flag, it seals");
     assert_eq!(sealed.facts, 0);
     assert_eq!(
-        catalog.get("empty").expect("it is found").status(),
+        catalog
+            .resolve(&Selector::of("empty"), Intent::Read)
+            .expect("it is found")
+            .status(),
         Status::Complete
     );
 }
@@ -366,8 +378,12 @@ fn the_same_facts_in_a_different_order_have_the_same_identity() {
     // what the two build orders assign differently. If these agreed byte for byte,
     // the two databases would have been physically identical and the test would have
     // proved nothing about expansion.
-    let (_e, a) = catalog.open_read("forwards").expect("it opens");
-    let (_e, b) = catalog.open_read("backwards").expect("it opens");
+    let (_e, a) = catalog
+        .open_read(&Selector::of("forwards"))
+        .expect("it opens");
+    let (_e, b) = catalog
+        .open_read(&Selector::of("backwards"))
+        .expect("it opens");
 
     let module_rows = |db: &FjallDb| {
         use aperture_store::fact_store::FactStore;
@@ -451,7 +467,7 @@ fn the_identity_is_a_function_of_the_database() {
     let (_dir, catalog) = catalog();
     let sealed = build(&catalog, "code", CONTENT);
 
-    let (entry, db) = catalog.open_read("code").expect("it opens");
+    let (entry, db) = catalog.open_read(&Selector::of("code")).expect("it opens");
     let again =
         identity::compute(&db, &schema(), entry.meta.schema_fingerprint).expect("it recomputes");
 
@@ -467,7 +483,7 @@ fn the_schema_fingerprint_reaches_the_identity() {
     let (_dir, catalog) = catalog();
     build(&catalog, "code", CONTENT);
 
-    let (entry, db) = catalog.open_read("code").expect("it opens");
+    let (entry, db) = catalog.open_read(&Selector::of("code")).expect("it opens");
 
     let as_recorded =
         identity::compute(&db, &schema(), entry.meta.schema_fingerprint).expect("it computes");
@@ -498,7 +514,7 @@ fn sealing_merges_every_tree_into_one_table() {
     let schema = schema();
 
     catalog.create("code", &schema).expect("it creates");
-    let (_entry, db) = catalog.open_write("code").expect("it opens");
+    let (_entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
 
     write(&db, &schema, CONTENT);
     db.flush_to_tables().expect("it flushes");
@@ -515,9 +531,13 @@ fn sealing_merges_every_tree_into_one_table() {
     );
     drop(db);
 
-    catalog.finish("code", &schema, false).expect("it seals");
+    catalog
+        .finish(&Selector::of("code"), &schema, false)
+        .expect("it seals");
 
-    let (_entry, db) = catalog.open_read("code").expect("it reopens");
+    let (_entry, db) = catalog
+        .open_read(&Selector::of("code"))
+        .expect("it reopens");
     let after = db.table_counts();
 
     assert!(
@@ -538,7 +558,7 @@ fn merging_does_not_change_the_identity() {
     let schema = schema();
 
     catalog.create("code", &schema).expect("it creates");
-    let (entry, db) = catalog.open_write("code").expect("it opens");
+    let (entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
 
     write(&db, &schema, CONTENT);
     db.flush_to_tables().expect("it flushes");
@@ -547,14 +567,18 @@ fn merging_does_not_change_the_identity() {
         identity::compute(&db, &schema, entry.meta.schema_fingerprint).expect("it computes");
     drop(db);
 
-    let sealed = catalog.finish("code", &schema, false).expect("it seals");
+    let sealed = catalog
+        .finish(&Selector::of("code"), &schema, false)
+        .expect("it seals");
 
     assert_eq!(sealed.fingerprint, unmerged.fingerprint);
     assert_eq!(sealed.facts, unmerged.facts);
 
     // And the facts are still all there to be read, which a fingerprint over a walk
     // that found nothing would also satisfy.
-    let (entry, db) = catalog.open_read("code").expect("it reopens");
+    let (entry, db) = catalog
+        .open_read(&Selector::of("code"))
+        .expect("it reopens");
     let after =
         identity::compute(&db, &schema, entry.meta.schema_fingerprint).expect("it recomputes");
 
@@ -600,7 +624,7 @@ fn a_killed_finish_leaves_a_re_runnable_database() {
 
         let catalog = Catalog::open(&root).expect("the store root survives");
         let entry = catalog
-            .get("code")
+            .resolve(&Selector::of("code"), Intent::Read)
             .expect("the database is there either way");
 
         match entry.status() {
@@ -616,7 +640,7 @@ fn a_killed_finish_leaves_a_re_runnable_database() {
                 );
 
                 let sealed = catalog
-                    .finish("code", &schema(), false)
+                    .finish(&Selector::of("code"), &schema(), false)
                     .unwrap_or_else(|e| panic!("delay {delay_ms}ms: it must re-run: {e}"));
                 assert!(!sealed.already_complete);
                 assert_eq!(sealed.facts, 7);
@@ -660,7 +684,7 @@ fn crashing_finisher_child_process() {
     // `finish` rather than inside `create`.
     catalog.create("code", &schema).expect("it creates");
     {
-        let (_entry, db) = catalog.open_write("code").expect("it opens");
+        let (_entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
 
         for (path, module, decls) in CONTENT {
             let file = db.put(&schema, &FileFact(path)).expect("a file");
@@ -687,7 +711,7 @@ fn crashing_finisher_child_process() {
         std::process::abort();
     });
 
-    let _ = catalog.finish("code", &schema, false);
+    let _ = catalog.finish(&Selector::of("code"), &schema, false);
 
     std::thread::sleep(std::time::Duration::from_millis(delay_ms + 500));
 }
