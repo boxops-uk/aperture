@@ -96,6 +96,49 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// </remarks>
     private readonly Lock _gate = new();
 
+    /// <summary>Ticks spent waiting to enter <see cref="_gate"/>, summed over all walkers.</summary>
+    /// <remarks>
+    /// The point of measuring it: the gate is the only thing eight walker threads share,
+    /// so it is the ceiling on how much of the walk is actually parallel. Both counters
+    /// are accumulated while the gate is *held*, so neither needs an interlocked add.
+    /// </remarks>
+    private long _gateWaitTicks;
+
+    /// <summary>Ticks the gate was held, summed over all walkers.</summary>
+    private long _gateHeldTicks;
+
+    /// <summary>Total time walkers spent blocked on the gate.</summary>
+    public TimeSpan GateWait => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _gateWaitTicks));
+
+    /// <summary>Total time the gate was held.</summary>
+    public TimeSpan GateHeld => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _gateHeldTicks));
+
+    /// <summary>Enter the gate, timing the wait and the hold.</summary>
+    private Guard Enter() => new(this);
+
+    /// <summary>A timed <see cref="_gate"/> acquisition; dispose to release.</summary>
+    private readonly struct Guard : IDisposable
+    {
+        private readonly Indexer _owner;
+        private readonly long _entered;
+
+        public Guard(Indexer owner)
+        {
+            _owner = owner;
+            var before = Stopwatch.GetTimestamp();
+            owner._gate.Enter();
+            _entered = Stopwatch.GetTimestamp();
+            // Safe unsynchronised: we hold the gate.
+            owner._gateWaitTicks += _entered - before;
+        }
+
+        public void Dispose()
+        {
+            _owner._gateHeldTicks += Stopwatch.GetTimestamp() - _entered;
+            _owner._gate.Exit();
+        }
+    }
+
     /// <summary>
     /// Symbol to declaration, for one compilation.
     /// </summary>
@@ -193,7 +236,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             {
                 IndexTree(compilation.GetSemanticModel(item.Tree), item.Tree, item.Path);
 
-                lock (_gate)
+                using (Enter())
                 {
                     Files++;
                     onFile?.Invoke(item.Path);
@@ -207,7 +250,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         ApertureFact file;
         Module here;
 
-        lock (_gate)
+        using (Enter())
         {
             file = FileOf(path);
 
@@ -281,7 +324,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             facts.Add(CodeIndex.LineFact(file, line.LineNumber + 1, Clip(line.ToString())));
         }
 
-        lock (_gate)
+        using (Enter())
         {
             foreach (var fact in facts)
             {
@@ -296,7 +339,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     {
         if (model.GetDeclaredSymbol(node) is { } symbol)
         {
-            lock (_gate)
+            using (Enter())
             {
                 // The fact is emitted by `DeclFor` the first time the symbol is reached,
                 // by whichever path reaches it first. Here that is its own declaration.
@@ -318,7 +361,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         if (symbol is null)
         {
-            lock (_gate)
+            using (Enter())
             {
                 Unresolved++;
             }
@@ -336,7 +379,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         // The symbol is resolved; from here on it is bookkeeping, and bookkeeping is
         // shared.
-        lock (_gate)
+        using (Enter())
         {
             if (DeclFor(symbol) is not { } target)
             {

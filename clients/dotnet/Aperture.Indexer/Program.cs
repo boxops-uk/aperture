@@ -118,8 +118,10 @@ internal static class Program
                 });
             }
 
-            // Disposing the sink flushes what is left, so the counts below are final.
-            sink.FlushAll();
+            // Drain rather than flush: the writer thread is still draining what
+            // FlushAll queues, and every count below — and the elapsed time they are
+            // divided by — is only final once it has stopped.
+            sink.Drain();
             walking.Stop();
             files = indexer.Files;
 
@@ -182,7 +184,16 @@ internal static class Program
             // working, and it is the number this whole exercise is a measurement of.
             Console.WriteLine($"  {"server",-20}{Count((long)sink.Created),14} created, "
                 + $"{Count((long)sink.Deduped)} deduped");
-            Console.WriteLine($"  {"writing",-20}{sink.Writing.TotalSeconds,14:F1}s of {elapsed.TotalSeconds:F1}s");
+            Console.WriteLine($"  {"writing",-20}{sink.Writing.TotalSeconds,14:F1}s of {elapsed.TotalSeconds:F1}s"
+                + $"  (writer thread, overlapped)");
+            Console.WriteLine($"  {"queueing",-20}{sink.Queueing.TotalSeconds,14:F1}s"
+                + $"  (walk blocked on a full queue)");
+        }
+
+        {
+            Console.WriteLine($"  {"gate wait",-20}{indexer.GateWait.TotalSeconds,14:F1}s"
+                + $"  (walkers blocked on the gate)");
+            Console.WriteLine($"  {"gate held",-20}{indexer.GateHeld.TotalSeconds,14:F1}s");
         }
 
         var rate = sink.Total / Math.Max(elapsed.TotalSeconds, 0.001);
