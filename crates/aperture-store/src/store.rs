@@ -40,12 +40,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 use byteview::ByteView;
+
+use crate::lookup_cache::{Hit, LookupCache};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
 
 use crate::{
@@ -100,15 +102,23 @@ pub struct Interned {
 /// ([I11](../../docs/invariants.md#i11)).
 struct Predicate {
     trees: Trees,
-    /// The next sequence to hand out. Recovered at open from what is actually
-    /// stored, so a restart cannot reissue an id.
+    /// The next sequence to hand out.
     next_sequence: AtomicU64,
+    /// The highest sequence this predicate has **durably claimed the right to use**
+    /// — see [`FjallDb::allocate`].
+    reserved_through: AtomicU64,
+    /// Held only while extending the claim, so the durable write happens once per
+    /// [`RESERVATION_CHUNK`] rather than once per racing writer.
+    reserving: Mutex<()>,
 }
 
 /// The long-lived database handle: the fjall environment, the per-predicate
 /// keyspace handles, and the fact-id allocators.
 pub struct FjallDb {
     db: Database,
+    /// The `meta` keyspace, held open: the format stamp is read from it once, and the
+    /// id reservations are written to it for the life of the database.
+    meta: Keyspace,
     /// `predicate → handles`, materialised at open for what is on disk and
     /// extended on first write to a predicate.
     ///
@@ -120,6 +130,316 @@ pub struct FjallDb {
     /// Readers keep whichever map they were handed, which is the snapshot
     /// semantics a query wants anyway.
     predicates: RwLock<Arc<BTreeMap<u32, Arc<Predicate>>>>,
+    /// **The striped merge frontier**: per-key exclusion, and the cache behind the
+    /// same lock — see [`FjallDb::intern`] and
+    /// [chapter 3](../../docs/03-storage-model.md#the-other-half-of-the-bijection--one-key-one-fact).
+    ///
+    /// One mutex per stripe, held across a whole resolve-or-create. The cache lives
+    /// *inside* it rather than beside it because the two want exactly the same
+    /// critical section: what `(predicate, key)` already names, and the right to
+    /// decide that it names nothing yet.
+    shards: Box<[Mutex<LookupCache>]>,
+    /// What the interning path actually read — see [`InternReads`].
+    intern_reads: InternReads,
+    /// How many writers are in it at once — see [`InFlight`].
+    in_flight: InFlight,
+}
+
+/// Live LSM point reads the interning path has done, per tree.
+///
+/// **The number [Phase 12c](../../../PLAN.md) is judged by, so it is counted rather
+/// than argued.** A cache that is not hitting is indistinguishable from one that is
+/// absent unless something says how many reads survived it, and the two trees are
+/// counted apart because they are two separate claims: the cache removes `keys`
+/// reads, and the key-only fast path removes `entities` reads. One relaxed increment
+/// per read, against a read that touches an LSM — the measurement is free at this
+/// scale and a guard that cannot be written is not.
+#[derive(Default)]
+struct InternReads {
+    /// `keys` lookups — one per resolve the cache did not answer.
+    keys: AtomicU64,
+    /// `entities` lookups — one per *found* fact whose predicate declares a value
+    /// side. Key-only predicates never reach this.
+    entities: AtomicU64,
+}
+
+/// Bytes the lookup cache may hold per generation, so **at most twice this is
+/// resident** (`old` is a whole generation).
+///
+/// **Quoted in bytes because an entry count bounds nothing here.** These keys are
+/// encoded fact keys — a path, a nested reference, a name — so the same count costs
+/// several times as much on one corpus as on another, and a count-based ceiling is a
+/// ceiling on the wrong quantity.
+///
+/// Sized against the hot parent set of a large code index: the 25M-fact
+/// `dotnet/runtime` index nests ~957k distinct files, modules and declarations, whose
+/// keys and overhead come to roughly 100 MB by
+/// [`cost`](crate::lookup_cache::cost)'s reckoning. 128 MiB per generation holds that
+/// set without rotating a live parent out, and bounds the cache at ~256 MiB — well
+/// under the *"almost exactly as much as the facts themselves"* that Glean's own
+/// post-mortem reports for its equivalent maps.
+///
+/// [Phase 12d](../../../PLAN.md) stripes interning, and this budget is then **divided**
+/// across the stripes rather than paid per stripe.
+const LOOKUP_CACHE_BYTES: usize = 128 << 20;
+
+/// How many threads are inside interning, and the most there have ever been at once.
+///
+/// **A gauge rather than a timing test.** [Phase 12e](../../../PLAN.md) retires the server's
+/// per-database writer, and the claim that makes is "two write streams now proceed
+/// together" — which a stopwatch can only argue for and a high-water mark can settle. Two
+/// relaxed atomics and a `fetch_max` per intern, against an intern that measures over a
+/// microsecond.
+#[derive(Default)]
+struct InFlight {
+    now: AtomicU64,
+    peak: AtomicU64,
+}
+
+/// Counts one thread in, and out again however the call leaves.
+struct Interning<'db>(&'db InFlight);
+
+impl<'db> Interning<'db> {
+    fn enter(gauge: &'db InFlight) -> Self {
+        let now = gauge.now.fetch_add(1, Ordering::Relaxed) + 1;
+        gauge.peak.fetch_max(now, Ordering::Relaxed);
+        Interning(gauge)
+    }
+}
+
+impl Drop for Interning<'_> {
+    fn drop(&mut self) {
+        self.0.now.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// **Debug-only proof that a frontier critical section is never entered inside another.**
+///
+/// The striping needs no lock ordering, and the reason is a fact about interning rather
+/// than a discipline anyone has to keep: *a parent's key has no bytes until its children
+/// have ids*, so a worker interns leaf-then-parent and every critical section has closed
+/// before the next opens ([chapter 3](../../docs/03-storage-model.md#interning-a-nested-fact)).
+/// The whole no-deadlock argument is that sentence.
+///
+/// So the sentence is checked. A future change that resolved a child *inside*
+/// `resolve_or_create` would deadlock against itself the moment both keys hashed to one
+/// stripe — intermittently, in production, on a non-reentrant mutex, which is about the
+/// worst way to learn it. In a debug build it panics instead, at the call that did it.
+///
+/// Nothing in release: `SHARDS` mutexes and a thread-local are not worth a counter that
+/// only ever proves what the code already says.
+#[cfg(debug_assertions)]
+struct NotNested;
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static IN_FRONTIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(debug_assertions)]
+impl NotNested {
+    fn enter() -> Self {
+        IN_FRONTIER.with(|held| {
+            assert!(
+                !held.replace(true),
+                "a merge frontier critical section was entered inside another. Interning \
+                 is bottom-up precisely so this cannot happen — a child is resolved \
+                 before its parent's key exists, never during. Whatever now resolves one \
+                 inside `resolve_or_create` has to stop, or the striping needs a lock \
+                 ordering it was designed not to need."
+            );
+        });
+        NotNested
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for NotNested {
+    fn drop(&mut self) {
+        IN_FRONTIER.with(|held| held.set(false));
+    }
+}
+
+#[cfg(not(debug_assertions))]
+struct NotNested;
+
+#[cfg(not(debug_assertions))]
+impl NotNested {
+    fn enter() -> Self {
+        NotNested
+    }
+}
+
+/// Sequences claimed by one durable reservation write.
+///
+/// The trade is gap size against write count. A crash abandons whatever is left of the
+/// current claim, so 1,024 leaves at most that many holes per predicate — invisible, since
+/// [I11](../../docs/invariants.md#i11) asks for unique and never-reused, not dense — and
+/// costs one small write per thousand facts, which is nothing beside the fact writes
+/// themselves.
+const RESERVATION_CHUNK: u64 = 1024;
+
+/// Where a predicate's claim is written in the `meta` keyspace: `seq/` ++ id (BE).
+fn reservation_key(predicate: PredicateId) -> Vec<u8> {
+    let mut key = b"seq/".to_vec();
+    key.extend_from_slice(&predicate.0.to_be_bytes());
+    key
+}
+
+/// Stripes in the merge frontier. **Must be a power of two** — [`shard_of`] masks.
+///
+/// Sized from both directions. Upwards: enough that writers rarely collide, and with W
+/// writers the chance that two are in the same stripe is about W/64 — negligible at the
+/// 8–16 a machine has. Downwards: each stripe holds a 64th of
+/// [`LOOKUP_CACHE_BYTES`], and a 64th of a large index's hot parent set (~957k entries,
+/// ~100 MB) is ~1.5 MB against a 2 MiB slice — so the whole hot set stays resident and no
+/// stripe rotates a live parent out. Raising this trades the second property for the
+/// first; both are load-bearing, so change it with the arithmetic in front of you.
+const SHARDS: usize = 64;
+
+/// Which stripe a key belongs to.
+///
+/// **Any deterministic hash does.** A stripe is a lock, not a location: nothing on disk
+/// depends on this, no cursor encodes it, and two processes never share one
+/// (`ops-I1`). So the only requirement is that one process agrees with itself, and FNV-1a
+/// is three lines.
+///
+/// It hashes the **whole** `predicate ++ key`, which costs about a nanosecond a byte on
+/// top of an intern that measures 1.3–2.2 µs — call it 5%, paid to make the write path
+/// parallel at all. Hashing a bounded prefix would be cheaper and wrong: these keys are
+/// paths and nested records, so they share prefixes by construction and a prefix hash
+/// would pile a directory's files into one stripe. If the 5% ever matters,
+/// `examples/ingest.rs` can now price it, which is why that came first.
+fn shard_of(index_key: &[u8]) -> usize {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = OFFSET;
+    for byte in index_key {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+
+    (hash as usize) & (SHARDS - 1)
+}
+
+/// What a block has staged but not yet committed.
+struct Staging {
+    batch: fjall::OwnedWriteBatch,
+    /// `index key → (id, value)` for facts created in this batch. The trees cannot
+    /// answer for them yet, and the stripe cache is allowed to forget them.
+    pending: std::collections::HashMap<Vec<u8>, (FactId, Vec<u8>)>,
+}
+
+/// **One commit for a whole block** — [12f](../../PLAN.md), and a deliberate trade.
+///
+/// A fact normally becomes durable before its id is returned, which is what lets the
+/// allocator resume from the last `entities` key and what keeps everything on disk in
+/// dependency order. Committing per block breaks both, and buys the largest single term
+/// in the write path: committing is 41% of interning
+/// ([findings §13](../../bench/FINDINGS.md)), one fjall batch per fact through one global
+/// journal mutex.
+///
+/// # What it costs, exactly
+///
+/// An id is handed out while its bytes are still here. Another writer can resolve that
+/// key, take the id, and commit **first** — so a crash can truncate the journal after the
+/// reference and before the fact it names. What survives is a reference to a fact that
+/// was never written.
+///
+/// Two things bound that, and the second is the one that had to be built for this:
+///
+/// - `finish` walks every reference to compute identity, so a dangling one raises
+///   `DanglingFactId` and the database cannot be sealed. It is never shipped.
+/// - The id it named is **never reissued**, because [`FjallDb::allocate`] claims ranges
+///   durably ahead of use. Without that the allocator would resume below the lost id and
+///   hand it to a different fact, and the reference would then resolve — to the wrong
+///   target, silently, through a seal that cannot tell the difference.
+///
+/// So the honest statement of the trade is: *a crash during ingest may cost the index,
+/// never its correctness.* That is why this is a server flag rather than the default, and
+/// why the flag is off unless somebody asks for it.
+pub struct Staged<'db> {
+    db: &'db FjallDb,
+    staging: std::cell::RefCell<Staging>,
+}
+
+impl Staged<'_> {
+    /// Resolve-or-create, with any created fact staged rather than committed.
+    ///
+    /// # Errors
+    ///
+    /// As [`FjallDb::intern`](FjallDb::intern).
+    pub fn intern(
+        &self,
+        predicate: PredicateId,
+        key_fields: &[u8],
+        value: &[u8],
+        keyed_only: bool,
+    ) -> Result<Interned, StoreError> {
+        let mut staging = self.staging.borrow_mut();
+        self.db
+            .intern_into(predicate, key_fields, value, keyed_only, Some(&mut staging))
+    }
+
+    /// Commit everything staged, in one batch.
+    ///
+    /// **Call this even when the block failed.** Ids from the part that succeeded may
+    /// already have been handed to another writer, and throwing the batch away would
+    /// strand every one of them. A partly-written block is what a per-fact ingest leaves
+    /// behind too, and `ops-I5`'s idempotence is what makes re-sending it safe.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if fjall could not commit.
+    pub fn commit(self) -> Result<(), StoreError> {
+        self.staging
+            .into_inner()
+            .batch
+            .commit()
+            .map_err(StoreError::Backend)
+    }
+
+    /// Facts staged and not yet committed.
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        self.staging.borrow().pending.len()
+    }
+}
+
+/// Both of a fact's rows, into one batch — the `keys` index entry and the `entities`
+/// record, which [I12](../../docs/invariants.md#i12) requires to travel together.
+fn stage_rows(
+    batch: &mut fjall::OwnedWriteBatch,
+    handle: &Predicate,
+    fact_id: FactId,
+    index_key: Vec<u8>,
+    key_fields: &[u8],
+    value: &[u8],
+) {
+    let mut entity = Vec::with_capacity(KEY_LEN_LEN + key_fields.len() + value.len());
+    entity.extend_from_slice(&(key_fields.len() as u32).to_be_bytes());
+    entity.extend_from_slice(key_fields);
+    entity.extend_from_slice(value);
+
+    batch.insert(
+        &handle.trees.keys,
+        index_key,
+        fact_id.raw().to_be_bytes().to_vec(),
+    );
+    batch.insert(
+        &handle.trees.entities,
+        fact_id.raw().to_be_bytes().to_vec(),
+        entity,
+    );
+}
+
+/// The `keys` row a fact is indexed under: `predicate_id (BE) ++ encoded_key`.
+fn index_key_for(predicate: PredicateId, key_fields: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(PREDICATE_ID_SIZE + key_fields.len());
+    key.extend_from_slice(&predicate.0.to_be_bytes());
+    key.extend_from_slice(key_fields);
+    key
 }
 
 impl FjallDb {
@@ -147,15 +467,25 @@ impl FjallDb {
         // *create* path.
         Self::stamp_or_check_format(&db, !ids.is_empty())?;
 
+        let meta = db
+            .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
+            .map_err(StoreError::Backend)?;
+
         let mut predicates = BTreeMap::new();
         for id in ids {
             let predicate = PredicateId(id);
-            predicates.insert(id, Arc::new(Self::open_predicate(&db, predicate)?));
+            predicates.insert(id, Arc::new(Self::open_predicate(&db, &meta, predicate)?));
         }
 
         Ok(Self {
             db,
+            meta,
             predicates: RwLock::new(Arc::new(predicates)),
+            shards: (0..SHARDS)
+                .map(|_| Mutex::new(LookupCache::new(LOOKUP_CACHE_BYTES / SHARDS)))
+                .collect(),
+            intern_reads: InternReads::default(),
+            in_flight: InFlight::default(),
         })
     }
 
@@ -290,7 +620,11 @@ impl FjallDb {
     }
 
     /// Open both of a predicate's trees and recover its allocator.
-    fn open_predicate(db: &Database, predicate: PredicateId) -> Result<Predicate, StoreError> {
+    fn open_predicate(
+        db: &Database,
+        meta: &Keyspace,
+        predicate: PredicateId,
+    ) -> Result<Predicate, StoreError> {
         let trees = Trees {
             keys: db
                 .keyspace(
@@ -306,21 +640,55 @@ impl FjallDb {
                 .map_err(StoreError::Backend)?,
         };
 
+        // **The higher of what is stored and what was claimed**, and it needs both.
+        // The stored half is what an older database has, and what a database written
+        // entirely by committed-per-fact writes needs — there may be no claim at all.
+        // The claimed half is what makes an id safe to hand out *before* its fact is
+        // durable, which is the whole of 12f.
         let high_water = Self::recover_high_water(&trees, predicate)?;
+        let reserved = Self::recover_reservation(meta, predicate)?;
+        let resume = high_water.max(reserved);
 
         Ok(Predicate {
             trees,
-            next_sequence: AtomicU64::new(high_water + 1),
+            next_sequence: AtomicU64::new(resume + 1),
+            reserved_through: AtomicU64::new(resume),
+            reserving: Mutex::new(()),
         })
+    }
+
+    /// The highest sequence this predicate has durably claimed, or 0 if it never has.
+    fn recover_reservation(meta: &Keyspace, predicate: PredicateId) -> Result<u64, StoreError> {
+        let Some(bytes) = meta
+            .get(reservation_key(predicate))
+            .map_err(StoreError::Backend)?
+        else {
+            return Ok(0);
+        };
+
+        let claimed: [u8; 8] = bytes.as_ref().try_into().map_err(|_| StoreError::Meta {
+            path: std::path::PathBuf::from(format!("predicate {}", predicate.0)),
+            detail: "the id reservation is not eight bytes".to_owned(),
+        })?;
+
+        Ok(u64::from_be_bytes(claimed))
     }
 
     /// The predicate's highest allocated sequence, or 0 if it holds no facts.
     ///
     /// An `entities` key **is** a fact id, big-endian, so the tree's last key is
-    /// the high-water mark ([I11](../../docs/invariants.md#i11)). Deriving it from
-    /// the data rather than keeping a counter in a sidecar means the allocator
-    /// cannot disagree with what is stored — including after a crash, where a
-    /// separately-persisted counter could be stale and hand out a live id twice.
+    /// the high-water mark ([I11](../../docs/invariants.md#i11)).
+    ///
+    /// **On its own this is not enough, and the reason is worth keeping.** Deriving the
+    /// allocator from the data cannot disagree with what is stored — but only while every
+    /// id handed out is *already* stored, which is true exactly when a fact is committed
+    /// before its id is returned. [12f](../../PLAN.md) breaks that premise on purpose: a
+    /// staged write hands out an id whose bytes are still in an uncommitted batch, another
+    /// writer may reference it and commit first, and a crash then loses the higher entity
+    /// while keeping the reference. Resuming from the data would reissue that id to a
+    /// different fact — a reference that resolves to the **wrong** fact, which `finish`
+    /// cannot catch because it only checks that references resolve. Hence
+    /// [`recover_reservation`](Self::recover_reservation).
     fn recover_high_water(trees: &Trees, predicate: PredicateId) -> Result<u64, StoreError> {
         let Some(row) = trees.entities.last_key_value() else {
             return Ok(0);
@@ -379,7 +747,7 @@ impl FjallDb {
             return Ok(Arc::clone(handle));
         }
 
-        let handle = Arc::new(Self::open_predicate(&self.db, predicate)?);
+        let handle = Arc::new(Self::open_predicate(&self.db, &self.meta, predicate)?);
         Arc::make_mut(&mut predicates).insert(predicate.0, Arc::clone(&handle));
         Ok(handle)
     }
@@ -426,7 +794,14 @@ impl FjallDb {
     /// whatever [`put_fact`](Self::put_fact) reports otherwise.
     pub fn put<F: Fact>(&self, schema: &Schema, fact: &F) -> Result<FactId, StoreError> {
         let (predicate, key, value) = fact::encode(schema, fact)?;
-        Ok(self.intern(predicate, &key, &value)?.id)
+
+        // The schema decides whether there is a value side, exactly as it does on
+        // the ingest path — not the emptiness of the encoded bytes.
+        let keyed_only = schema
+            .get(predicate)
+            .is_some_and(|declared| declared.predicate().value.is_none());
+
+        Ok(self.intern(predicate, &key, &value, keyed_only)?.id)
     }
 
     /// **Resolve or create**: the id of the fact under `(predicate, key_fields)`,
@@ -461,8 +836,81 @@ impl FjallDb {
         predicate: PredicateId,
         key_fields: &[u8],
         value: &[u8],
+        keyed_only: bool,
     ) -> Result<Interned, StoreError> {
-        if let Some(existing) = self.fact_at(predicate, key_fields)? {
+        self.intern_into(predicate, key_fields, value, keyed_only, None)
+    }
+
+    /// [`intern`](Self::intern), with the created fact's bytes going either straight to
+    /// the trees or into a block's batch.
+    fn intern_into(
+        &self,
+        predicate: PredicateId,
+        key_fields: &[u8],
+        value: &[u8],
+        keyed_only: bool,
+        staging: Option<&mut Staging>,
+    ) -> Result<Interned, StoreError> {
+        let _in_flight = Interning::enter(&self.in_flight);
+        let index_key = index_key_for(predicate, key_fields);
+
+        // **This block's own creations, before anything else.** Their bytes are in an
+        // uncommitted batch, so the trees cannot answer for them — and the stripe cache
+        // could, but only until it rotates. Keeping them here rather than relying on the
+        // cache is what stops the cache becoming load-bearing for correctness: an
+        // eviction must cost a point read, never a duplicate key.
+        if let Some((id, stored)) = staging
+            .as_deref()
+            .and_then(|staged| staged.pending.get(&index_key))
+        {
+            return if stored.as_slice() == value {
+                Ok(Interned {
+                    id: *id,
+                    created: false,
+                })
+            } else {
+                Err(StoreError::KeyAlreadyWritten {
+                    predicate,
+                    existing: *id,
+                })
+            };
+        }
+
+        // **The critical section, and it is the whole of the operation.** Look, then
+        // read, then write, holding one stripe throughout — because this is a
+        // read-modify-write and anything less lets two writers both find the key absent
+        // and both create it, stranding one entity under a `keys` row the other
+        // overwrote ([I12](../../docs/invariants.md#i12)).
+        //
+        // Per *key* rather than per database, which is the difference between a
+        // mechanism and a bottleneck: the exclusion is exactly as wide as the thing being
+        // decided.
+        let _not_nested = NotNested::enter();
+        let mut shard = self.shards[shard_of(&index_key)]
+            .lock()
+            .expect("a merge frontier stripe is poisoned");
+
+        // The cache first, because a nested index asks for the same parents in
+        // bursts. A hit is authoritative: a fact never changes once written, so an
+        // entry cannot go stale (`ops-I2`). The comparison happens *inside* the cache
+        // so that a hit hands back an id and never a row — a row would clone its
+        // value on every interned reference, which is the cost this exists to remove.
+        match shard.lookup(&index_key, value) {
+            Some(Hit::Agrees(id)) => {
+                return Ok(Interned { id, created: false });
+            }
+            Some(Hit::Conflicts(existing)) => {
+                return Err(StoreError::KeyAlreadyWritten {
+                    predicate,
+                    existing,
+                });
+            }
+            None => {}
+        }
+
+        if let Some(existing) = self.fact_at(predicate, &index_key, keyed_only)? {
+            shard.insert(&index_key, existing.id, &existing.value);
+
             return if existing.value == value {
                 Ok(Interned {
                     id: existing.id,
@@ -476,10 +924,150 @@ impl FjallDb {
             };
         }
 
-        Ok(Interned {
-            id: self.put_fact(predicate, key_fields, value)?,
-            created: true,
-        })
+        let id = match staging {
+            None => self.put_fact(predicate, key_fields, value)?,
+            Some(staged) => {
+                let (id, _) = self.stage_fact(&mut staged.batch, predicate, key_fields, value)?;
+                staged
+                    .pending
+                    .insert(index_key.clone(), (id, value.to_vec()));
+                id
+            }
+        };
+
+        // Published to the shared stripe either way, because the frontier's one-key-one-
+        // fact rule depends on the *next* resolver seeing this — including one on another
+        // thread. That is what makes a staged id observable before it is durable, and
+        // therefore why [`FjallDb::allocate`] claims its range up front.
+        shard.insert(&index_key, id, value);
+
+        Ok(Interned { id, created: true })
+    }
+
+    /// Writers inside interning right now, and the most there have ever been at once.
+    ///
+    /// The peak is what says the write path is actually parallel: it reaches 1 however
+    /// many streams a serialised server has, and only exceeds it if two of them were
+    /// genuinely interning together.
+    pub fn intern_concurrency(&self) -> (u64, u64) {
+        (
+            self.in_flight.now.load(Ordering::Relaxed),
+            self.in_flight.peak.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Allocate an id and put a fact's two rows into `batch`, without committing.
+    ///
+    /// The staging half of [`put_fact`](Self::put_fact): everything except the commit,
+    /// so a block can pay for one.
+    fn stage_fact(
+        &self,
+        batch: &mut fjall::OwnedWriteBatch,
+        predicate: PredicateId,
+        key_fields: &[u8],
+        value: &[u8],
+    ) -> Result<(FactId, Vec<u8>), StoreError> {
+        let handle = self.predicate(predicate)?;
+        let fact_id = FactId::new(predicate, self.allocate(&handle, predicate)?)?;
+        let index_key = index_key_for(predicate, key_fields);
+
+        stage_rows(
+            batch,
+            &handle,
+            fact_id,
+            index_key.clone(),
+            key_fields,
+            value,
+        );
+        Ok((fact_id, index_key))
+    }
+
+    /// The next sequence for `predicate`, **durably claimed before it is handed out**.
+    ///
+    /// The counter is the only source of sequences, so uniqueness needs no coordination
+    /// between writers: `fetch_add` is the whole of it. A sequence consumed by a write
+    /// that then fails is not handed out again — [I11](../../docs/invariants.md#i11) asks
+    /// for unique and never-reused, not dense.
+    ///
+    /// **What the claim adds is survival across a crash.** The allocator used to resume
+    /// from the last `entities` key, which is exact as long as every id handed out is
+    /// already stored. A staged write breaks that: it returns an id whose bytes sit in an
+    /// uncommitted batch, another writer can reference it and commit *first*, and a crash
+    /// that loses the batch would leave the reference behind while the allocator resumed
+    /// below it — reissuing that id to a different fact, which turns the reference into
+    /// one that resolves to the **wrong** target. `finish` cannot catch that: it checks
+    /// that references resolve, not that they resolve to what they meant.
+    ///
+    /// So a range is written to `meta` *before* any id in it is returned. The write needs
+    /// no `fsync`: it goes through the same journal as the fact batches and is ordered
+    /// before them, so a truncation that loses a batch cannot also have lost the claim
+    /// that preceded it. What a crash costs is the unused tail of the current chunk,
+    /// which is a hole in the sequence and nothing more.
+    fn allocate(&self, handle: &Predicate, predicate: PredicateId) -> Result<u64, StoreError> {
+        let sequence = handle.next_sequence.fetch_add(1, Ordering::Relaxed);
+
+        if sequence <= handle.reserved_through.load(Ordering::Acquire) {
+            return Ok(sequence);
+        }
+
+        // Extending is rare — once per `RESERVATION_CHUNK` — so one lock for it costs
+        // nothing, and it keeps a burst of writers from each writing a claim.
+        let _extending = handle
+            .reserving
+            .lock()
+            .expect("an id reservation lock is poisoned");
+
+        // Re-read under the lock: whoever held it before us may have covered this.
+        let reserved = handle.reserved_through.load(Ordering::Acquire);
+        if sequence <= reserved {
+            return Ok(sequence);
+        }
+
+        // Cover this sequence and the chunk beyond it, so a writer that jumped far
+        // ahead of the claim (many threads allocating at once) still needs one write.
+        let claim = sequence
+            .max(reserved)
+            .saturating_add(RESERVATION_CHUNK)
+            .min(MAX_FACT_SEQUENCE);
+
+        let mut batch = self.db.batch();
+        batch.insert(&self.meta, reservation_key(predicate), claim.to_be_bytes());
+        batch.commit().map_err(StoreError::Backend)?;
+
+        handle.reserved_through.store(claim, Ordering::Release);
+        Ok(sequence)
+    }
+
+    /// Live point reads the interning path has done since open, as
+    /// `(keys, entities)`.
+    ///
+    /// The two claims 12c makes, separately checkable: `keys` should be one per
+    /// *distinct* key an ingest touches rather than one per reference to it, and
+    /// `entities` should be zero for a key-only predicate however often it is found.
+    pub fn intern_read_counters(&self) -> (u64, u64) {
+        (
+            self.intern_reads.keys.load(Ordering::Relaxed),
+            self.intern_reads.entities.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Hits and misses on the ingest lookup cache since open, summed over the stripes.
+    ///
+    /// Not a consistent snapshot: the stripes are read one after another and a writer may
+    /// move a later one while an earlier one is being read. That is the right trade for a
+    /// report — taking every stripe's lock at once to make the sum atomic would let a
+    /// statistics call stall the write path it is reporting on.
+    pub fn lookup_counters(&self) -> (u64, u64) {
+        let mut totals = (0, 0);
+        for shard in &self.shards {
+            let (hits, misses) = shard
+                .lock()
+                .expect("a merge frontier stripe is poisoned")
+                .counters();
+            totals.0 += hits;
+            totals.1 += misses;
+        }
+        totals
     }
 
     /// The fact already stored under `(predicate, key_fields)`, if there is one:
@@ -491,18 +1079,16 @@ impl FjallDb {
     fn fact_at(
         &self,
         predicate: PredicateId,
-        key_fields: &[u8],
+        index_key: &[u8],
+        keyed_only: bool,
     ) -> Result<Option<StoredFact>, StoreError> {
         let handle = self.predicate(predicate)?;
 
-        let mut index_key = Vec::with_capacity(PREDICATE_ID_SIZE + key_fields.len());
-        index_key.extend_from_slice(&predicate.0.to_be_bytes());
-        index_key.extend_from_slice(key_fields);
-
+        self.intern_reads.keys.fetch_add(1, Ordering::Relaxed);
         let Some(id) = handle
             .trees
             .keys
-            .get(&index_key)
+            .get(index_key)
             .map_err(StoreError::Backend)?
         else {
             return Ok(None);
@@ -510,8 +1096,25 @@ impl FjallDb {
 
         let id = decode_fact_id(&id)?;
 
+        // **A key-only predicate needs no second read.** Its declared value type has
+        // no inhabitant but the empty one, so the stored value is empty by
+        // construction and the comparison the caller is about to make is already
+        // decided. 22 of the 27 predicates in a code index are key-only, and this is
+        // one of the two live point reads per interned reference.
+        //
+        // What this gives up is that the `entities` read doubled as an I12 check —
+        // a `keys` row whose `entities` row is missing. That check is kept by the
+        // tests rather than paid for on every reference at ingest.
+        if keyed_only {
+            return Ok(Some(StoredFact {
+                id,
+                value: Vec::new(),
+            }));
+        }
+
         // A `keys` row without its `entities` row is a broken I12, not a fact
         // this key does not have — reported rather than read as "free to write".
+        self.intern_reads.entities.fetch_add(1, Ordering::Relaxed);
         let entity = handle
             .trees
             .entities
@@ -564,12 +1167,7 @@ impl FjallDb {
     ) -> Result<FactId, StoreError> {
         let handle = self.predicate(predicate)?;
 
-        // The counter is the only source of sequences, so uniqueness needs no
-        // coordination between writers. A sequence consumed by a write that then
-        // fails is *not* handed out again: I11 requires ids to be unique and never
-        // reused, not dense, and reissuing one is exactly how a saved cursor could
-        // come to name a different fact.
-        let sequence = handle.next_sequence.fetch_add(1, Ordering::Relaxed);
+        let sequence = self.allocate(&handle, predicate)?;
         let fact_id = FactId::new(predicate, sequence)?;
 
         let mut index_key = Vec::with_capacity(PREDICATE_ID_SIZE + key_fields.len());
@@ -594,25 +1192,25 @@ impl FjallDb {
             );
         }
 
-        let mut entity = Vec::with_capacity(KEY_LEN_LEN + key_fields.len() + value.len());
-        entity.extend_from_slice(&(key_fields.len() as u32).to_be_bytes());
-        entity.extend_from_slice(key_fields);
-        entity.extend_from_slice(value);
-
         let mut batch = self.db.batch();
-        batch.insert(
-            &handle.trees.keys,
-            index_key,
-            fact_id.raw().to_be_bytes().to_vec(),
-        );
-        batch.insert(
-            &handle.trees.entities,
-            fact_id.raw().to_be_bytes().to_vec(),
-            entity,
-        );
+        stage_rows(&mut batch, &handle, fact_id, index_key, key_fields, value);
         batch.commit().map_err(StoreError::Backend)?;
 
         Ok(fact_id)
+    }
+
+    /// A [`Staged`] writer over this database: one batch for a whole block.
+    ///
+    /// See [`Staged`] for what it buys and what it costs.
+    #[must_use]
+    pub fn staged(&self) -> Staged<'_> {
+        Staged {
+            db: self,
+            staging: std::cell::RefCell::new(Staging {
+                batch: self.db.batch(),
+                pending: std::collections::HashMap::new(),
+            }),
+        }
     }
 
     /// How many read snapshots fjall currently considers open.
@@ -1460,12 +2058,22 @@ mod tests {
             }
         }
 
-        // A restart must never hand out an id twice, and the high-water mark is
-        // recovered from the data rather than from a counter that could be stale.
+        // **A restart must never hand out an id twice.** That is the invariant; where
+        // exactly the counter resumes is not, and this used to assert `9` — the sequence
+        // straight after the last row. Since 12f the allocator resumes past the durable
+        // *claim* instead, which is what makes an id safe to hand out before its fact is
+        // committed, and the gap it leaves is a hole this invariant permits. The exact
+        // resumption point is pinned by
+        // `a_reopened_allocator_resumes_past_what_was_claimed_not_past_what_was_written`;
+        // what belongs here is that nothing already issued comes back.
         let db = FjallDb::open(dir.path()).expect("reopen");
         for predicate in predicates {
             let id = db.put_fact(predicate, &[99], &[]).expect("put");
-            assert_eq!(id.sequence(), 9, "the counter resumed below the high water");
+            assert!(
+                id.sequence() > 8,
+                "a reopened allocator must resume above everything it had issued, got {}",
+                id.sequence()
+            );
             assert!(seen.insert(id), "{id:?} was reissued after a reopen");
         }
 
@@ -1498,15 +2106,18 @@ mod tests {
         );
 
         // The bijection must survive the concurrent run too, and the reopened
-        // allocator must resume above what those threads wrote.
+        // allocator must resume above what those threads wrote — above the *claim* they
+        // were drawn from, since 12f, which is a hole rather than a collision.
         assert_bijection(&db);
         drop(db);
         let db = FjallDb::open(dir.path()).expect("reopen");
-        assert_eq!(
-            db.put_fact(predicate, &[0xff], &[])
-                .expect("put")
-                .sequence(),
-            101
+        let after = db
+            .put_fact(predicate, &[0xff], &[])
+            .expect("put")
+            .sequence();
+        assert!(
+            after > 100,
+            "a reopened allocator must resume above the 100 sequences four threads took,              got {after}"
         );
     }
 
@@ -1638,6 +2249,214 @@ mod tests {
 
         // One fact, and the two column families still agree about it — which is
         // the property (I12) the orphaned row broke.
+        assert_eq!(assert_bijection(&db), 1);
+    }
+
+    /// **A sequence that was claimed is never handed out again, even though nothing was
+    /// written with it** — [12f-1](../../PLAN.md), and the thing that makes it safe to
+    /// return an id before its fact is durable.
+    ///
+    /// The allocator used to resume from the last `entities` key, which is exact for as
+    /// long as every id handed out is already stored. Staged writes break that premise on
+    /// purpose, and the failure it opens is not the obvious one: a crash loses a batch,
+    /// the allocator resumes *below* an id another writer already referenced and
+    /// committed, and that id is then reissued to a different fact. The reference now
+    /// resolves — to the wrong target. `finish` cannot catch it, because it checks that
+    /// references resolve and not that they resolve to what they meant.
+    ///
+    /// So this asserts the property that closes it: after a reopen, the next id is past
+    /// the whole claimed range, not past the last row. One fact is written here and 1,024
+    /// sequences are burned, which is exactly the trade — a hole in the sequence, which
+    /// [I11](../../docs/invariants.md#i11) permits, bought against an id meaning two
+    /// different things, which it does not.
+    #[test]
+    fn a_reopened_allocator_resumes_past_what_was_claimed_not_past_what_was_written() {
+        let dir = TempDir::new().expect("tempdir");
+        let predicate = PredicateId(0);
+
+        let first = {
+            let db = FjallDb::open(dir.path()).expect("open");
+            db.put_fact(predicate, &[1], &[]).expect("put")
+        };
+        assert_eq!(first.sequence(), 1, "a fresh predicate starts at 1");
+
+        let db = FjallDb::open(dir.path()).expect("reopen");
+        let second = db.put_fact(predicate, &[2], &[]).expect("put");
+
+        assert_eq!(
+            second.sequence(),
+            RESERVATION_CHUNK + 2,
+            "the reopened allocator must skip the whole claim, not resume above the one \
+             row that was written"
+        );
+
+        // And the claim keeps growing rather than being rewritten from the data.
+        let third = db.put_fact(predicate, &[3], &[]).expect("put");
+        assert_eq!(third.sequence(), RESERVATION_CHUNK + 3);
+    }
+
+    /// One durable write per chunk, not one per fact — otherwise the reservation costs
+    /// more than the commits it was introduced to remove.
+    #[test]
+    fn a_claim_covers_a_chunk_of_ids_rather_than_one() {
+        let dir = TempDir::new().expect("tempdir");
+        let db = FjallDb::open(dir.path()).expect("open");
+        let predicate = PredicateId(0);
+
+        for k in 0..8u8 {
+            db.put_fact(predicate, &[k], &[]).expect("put");
+        }
+
+        // Eight facts, one claim: reopening resumes past that single chunk.
+        drop(db);
+        let db = FjallDb::open(dir.path()).expect("reopen");
+        assert_eq!(
+            db.put_fact(predicate, &[9], &[]).expect("put").sequence(),
+            RESERVATION_CHUNK + 2,
+            "eight facts must have taken one chunk, not eight"
+        );
+    }
+
+    /// **[I12](../../docs/invariants.md#i12)'s other half, mechanically: one key names
+    /// one fact, however many threads reach for it at once.**
+    ///
+    /// The guard this invariant could not have. Until [Phase 12d](../../PLAN.md) the
+    /// write-once rule was held by *there being one thread* — a property no test can
+    /// observe, and the tell that a rule is resting on circumstance rather than a
+    /// mechanism. `resolve_or_create` is a read-modify-write: two workers reaching for the
+    /// same nested target both find the key absent, both allocate, both write, and one
+    /// entity is stranded under a `keys` row the other overwrote. Silent corruption — a
+    /// fact no query can reach, and nothing anywhere says so.
+    ///
+    /// Three assertions, because the failure has three faces and a fix could deliver any
+    /// one without the others: every thread must be handed the **same id** for a key
+    /// (`ops-I5`'s dedup), exactly one **create** may be reported across all of them, and
+    /// the two column families must be in **exact bijection** afterwards (I12 itself).
+    ///
+    /// Many keys rather than one, and every thread racing every key, so the interleaving
+    /// that matters is reached repeatedly rather than hoped for once.
+    #[test]
+    fn concurrent_interning_of_one_key_creates_one_fact() {
+        const THREADS: usize = 8;
+        const KEYS: u8 = 64;
+
+        let dir = TempDir::new().expect("tempdir");
+        let db = FjallDb::open(dir.path()).expect("open");
+        let predicate = PredicateId(0);
+
+        // Built before the race: creating a predicate's trees is ~30 ms and takes a
+        // different lock, so leaving it to the first writer would measure that instead.
+        db.create_predicates([predicate]).expect("the trees");
+
+        let outcomes: Vec<Vec<Interned>> = thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let db = &db;
+                    scope.spawn(move || {
+                        (0..KEYS)
+                            .map(|k| {
+                                db.intern(predicate, &[k], &[], true)
+                                    .expect("a well-formed intern")
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("a writer thread"))
+                .collect()
+        });
+
+        for k in 0..usize::from(KEYS) {
+            let first = outcomes[0][k].id;
+            for (thread, got) in outcomes.iter().enumerate() {
+                assert_eq!(
+                    got[k].id, first,
+                    "thread {thread} was handed a different id for key {k}: one key, one fact"
+                );
+            }
+        }
+
+        let created = outcomes
+            .iter()
+            .flatten()
+            .filter(|interned| interned.created)
+            .count();
+        assert_eq!(
+            created,
+            usize::from(KEYS),
+            "exactly one writer per key may report a create; the rest must dedup"
+        );
+
+        assert_eq!(
+            assert_bijection(&db),
+            usize::from(KEYS),
+            "one fact per key, and both column families agreeing about every one"
+        );
+    }
+
+    /// **Dedup and reject still work against a cold cache**, which is the branch the
+    /// [lookup cache](crate::lookup_cache) took out of every other test's reach.
+    ///
+    /// The test above now proves the *cached* answers: both of its second writes hit
+    /// an entry the first write left behind, so `fact_at`'s own agree and disagree
+    /// arms — a live `keys` read, then the comparison — stopped being exercised
+    /// anywhere the moment the cache went in. A reopen is what makes them reachable
+    /// again: a fresh `FjallDb` has an empty cache and the facts are already on disk.
+    /// Without this, the cache could answer everything correctly and the path under it
+    /// could be wrong, and the suite would be green.
+    #[test]
+    fn a_reopened_store_dedups_and_rejects_from_the_trees() {
+        use crate::{
+            fact::{ToValue, record},
+            fixture,
+        };
+        use aperture_encoding::tuple::Value;
+
+        struct Foo(&'static str);
+        impl crate::fact::Fact for Foo {
+            const PREDICATE: &'static str = "test.Foo";
+            fn key(&self) -> Value {
+                record([("id", 7.to_value()), ("name", "cold".to_value())])
+            }
+            fn value(&self) -> Option<Value> {
+                Some(self.0.to_value())
+            }
+        }
+
+        let dir = TempDir::new().expect("tempdir");
+        let schema = fixture::schema();
+
+        let first = {
+            let db = FjallDb::open(dir.path()).expect("open");
+            db.put(&schema, &Foo("one")).expect("the first write")
+        };
+
+        // A different handle, so nothing is remembered: every answer below has to
+        // come from the trees.
+        let db = FjallDb::open(dir.path()).expect("reopen");
+
+        assert_eq!(
+            db.put(&schema, &Foo("one"))
+                .expect("an identical fact dedups rather than failing"),
+            first,
+            "a cold cache must find the fact on disk, not write a second one"
+        );
+
+        let conflict = db
+            .put(&schema, &Foo("two"))
+            .expect_err("same key, different value");
+        assert!(
+            matches!(
+                conflict,
+                StoreError::KeyAlreadyWritten { existing, .. }
+                    if existing == first
+            ),
+            "got {conflict:?}"
+        );
+
+        // And the miss that populated the cache did not itself write anything.
         assert_eq!(assert_bijection(&db), 1);
     }
 

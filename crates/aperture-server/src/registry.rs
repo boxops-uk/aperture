@@ -159,6 +159,15 @@ pub struct Registry {
     /// the counters on it costs no new plumbing. It is not a claim that counting is a
     /// registry concern: [`ServerStats`] is its own module for that reason.
     stats: Arc<ServerStats>,
+    /// Whether a write stream commits once per block rather than once per fact.
+    ///
+    /// **Off unless asked for, and the asking is operational rather than structural.** It
+    /// is a property of *this run of the server*, not of the artifact — two databases with
+    /// identical content must not differ in their metadata because of how fast somebody
+    /// wanted to write them — so it lives here and not in the sidecar. What it trades is
+    /// on [`Staged`](aperture_store::store::Staged): a crash during ingest may cost the
+    /// index and can never cost its correctness.
+    block_commits: bool,
 }
 
 impl Registry {
@@ -205,6 +214,7 @@ impl Registry {
 
         Ok((
             Registry {
+                block_commits: false,
                 catalog,
                 schemas,
                 identity,
@@ -228,6 +238,23 @@ impl Registry {
     ///
     /// Readable, and read by tests; not *reported* anywhere, which is
     /// [`stats`](crate::stats)'s own note to explain.
+    #[must_use]
+    /// Commit once per block on every write stream this registry serves.
+    ///
+    /// Consuming rather than a setter: it is a startup choice, and a server that changed
+    /// its durability behaviour halfway through a stream would be answering two different
+    /// questions in one ingest.
+    pub fn with_block_commits(mut self, on: bool) -> Registry {
+        self.block_commits = on;
+        self
+    }
+
+    /// Whether write streams commit once per block.
+    #[must_use]
+    pub fn block_commits(&self) -> bool {
+        self.block_commits
+    }
+
     #[must_use]
     pub fn stats(&self) -> &Arc<ServerStats> {
         &self.stats
@@ -395,12 +422,14 @@ impl Registry {
             return Ok(finished(&sealed));
         };
 
-        // **The seal happens inside the per-database writer lock**, and that is what
-        // makes `ops-I2` exact rather than nearly. A block whose session established
-        // while the database was still Writable either takes this lock before the seal
-        // — and the seal waits behind it — or takes it after, and finds the database no
-        // longer writable. There is no third order.
-        let _writing = database.writer.lock().await;
+        // **The seal takes the barrier exclusively**, and that is what makes `ops-I2`
+        // exact rather than nearly. A block whose session established while the database
+        // was still Writable either takes the barrier before the seal — and the seal
+        // waits behind it — or takes it after, and finds the database no longer
+        // writable. There is no third order. Since 12e writers hold that barrier
+        // *shared*, so "waits behind it" means waiting for every in-flight block rather
+        // than for the one that happened to be running.
+        let _sealing = database.sealing.write().await;
 
         let catalog = self.catalog.clone();
         let schema = Arc::clone(&database.schema);

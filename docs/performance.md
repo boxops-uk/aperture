@@ -31,9 +31,21 @@ thing it replaces.
 - **Unbounded queries.** A whole-predicate scan of `src.Line` is 8.6M rows and always
   will be; the generic mix's ~67 q/s is what that costs. Bounding a result is the
   client's job, and `--limit`, `\more` and a paged UI are how.
-- **Write throughput under concurrency.** One writer per database, held across an ingest
-  (`ops-I1`, `ops-I5`), so adding writers adds queueing by design. Indexing is a
-  build-time cost measured in hours, not a serving metric.
+- **Write throughput under concurrency** — *not targeted, and no longer for the reason once given
+  here*. This used to read "one writer per database, held across an ingest (`ops-I1`, `ops-I5`), so
+  adding writers adds queueing by design." Neither invariant asks for that: `ops-I1` is a rule about
+  processes and `ops-I5` about pipelines, not threads ([Operations §1](aperture-cli-design.md)). The
+  serialisation existed because [I12](invariants.md#i12)'s key-to-fact bijection had no primitive and
+  borrowed a single thread instead. **Since Phase 12 it has one**, writers are excluded per key
+  rather than per database, and two connections writing one database
+  ([`two_connections_write_one_database_at_the_same_time`](../crates/aperture-client/tests/against_a_server.rs))
+  genuinely proceed together.
+  It stays off this table because indexing is still a build-time cost measured in hours rather than
+  something a user waits on — and because **there is no target yet and one must not be back-filled
+  from a projection.** What exists is a baseline: 5.2k facts/s on a 25M-fact index
+  ([findings §12](../bench/FINDINGS.md)) and a per-layer breakdown of a synthetic one
+  ([findings §13](../bench/FINDINGS.md)). The number for this table is whatever a re-index measures
+  once 12f has landed.
 - **Anything absolute on this box.** See §4.
 
 ---

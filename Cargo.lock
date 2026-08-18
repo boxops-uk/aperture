@@ -105,6 +105,7 @@ dependencies = [
  "aperture-client",
  "aperture-encoding",
  "aperture-engine",
+ "aperture-ingest",
  "aperture-schema",
  "aperture-server",
  "aperture-store",

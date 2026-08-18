@@ -112,6 +112,108 @@ it.
 
 ## Settled — recorded so they aren't reopened
 
+### Parallel writes to a Writable database — settled: yes, behind a striped merge frontier
+
+**Settled, and unbuilt** — [Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier)
+is the build. Recorded here because it is the first decision in this file that **reverses** a
+constraint four documents stated as forced, and a reversal is exactly the thing that gets
+re-litigated if the reasoning is not written down once.
+
+**The question.** Nothing had ever asked it directly. `ops-I4` derived a chain — reproducibility ⇒
+deterministic reject + one funnel (`ops-I5`) ⇒ no concurrent writers (`ops-I1`) ⇒ no incremental
+append (`ops-I9`) — and called every arrow forced; `docs/performance.md` recorded write throughput
+under concurrency as untargetable "by design"; Phase 7a shipped one writer task per database. So
+"a database takes one writer" was load-bearing in four places and derived in none of them from
+anything that was still true.
+
+**What was still true, and what was not.** The chain's *first* arrow holds: a deterministic reject
+is what makes conflict handling order-independent, and `ignoreRedef` is what happens without it.
+The *second* arrow died when Phase 7 settled
+[what a reference is on the way in](#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline),
+which is the same event that made identity computable: identity is a **multiset hash of each fact's
+logical form**, no physical `FactId` in it, order-independent by construction
+(`crates/aperture-store/src/identity.rs`). Write order cannot move the artifact's identity, so
+reproducibility does not need a serial writer, and never has since that decision.
+
+**What the serial writer was actually doing** — the part worth keeping. [I12](invariants.md#i12)
+requires a key to name exactly one fact. Resolve-or-create is a read-modify-write with no per-key
+exclusion, so two workers interning the same nested target both allocate and one entity is stranded
+under a `keys` row the other overwrote. One thread prevented that by construction. **The decision
+is to replace the construction with a mechanism**: per-key exclusion striped by
+`hash(predicate_id ++ key_fields)`, which is what every ordinary database spells "unique index plus
+row lock". In-process locking suffices *because* of `ops-I1` — one process owns the directory, so
+there is nothing to coordinate across — and needs no lock ordering because interning is bottom-up:
+a parent's key has no bytes until its children have ids, so critical sections are strictly
+leaf-then-parent and never nested.
+
+**Tradeoffs accepted, explicitly, so nobody has to re-derive them:**
+
+- **Fact id *values* stop being a function of the input alone.** Accepted. They already were not —
+  the indexer walks on eight threads, so arrival order already varies run to run — and identity
+  excludes them by construction. The real cost is in the **test surface**: assertions that pin a
+  concrete id (`crates/aperture-client/tests/against_a_server.rs`,
+  `crates/aperture-ingest/tests/against_a_real_store.rs`) hold today only because the funnel is
+  serial. Phase 12 owns rewriting them to assert the *relation* (all references to one target
+  resolve to one id) rather than the number.
+- **Which of two contradictory producers gets refused may vary.** Accepted, and it is not a change
+  in kind: it varies today with arrival order. What must not vary is that one of them fails loudly,
+  and a strict reject holds that under any interleaving. A `--on-conflict` override that picked a
+  winner would not, which is why there still isn't one.
+- **Byte-identical databases across builds are not on offer**, and were not before. Identity-identical
+  is what `ops-I4` promises and all it promises. Wanting the stronger form would need a
+  deterministic renumbering pass (Glean's `Substitution`/`rebase`), which is orthogonal to writer
+  count and is not scheduled.
+- **Commits do not parallelise.** fjall's `Batch::commit` takes one global journal writer mutex, so
+  writer count buys nothing there. Accepted because it is the cheap half — the expensive half is the
+  point reads, 73.6% of them redundant ([findings §12](../bench/FINDINGS.md)) — and because the fix
+  is orthogonal: commit once per block instead of once per fact.
+
+**What this does *not* reopen.** `ops-I2` (Complete is immutable), `ops-I9` (no incremental append)
+and the seal are untouched: this is about a database that is still `Writable`, and `ops-I9` hangs off
+`ops-I2` and the recorded content hash rather than off writer count. `ops-I5` is untouched as
+written — one *pipeline*, no path around the rules — and only the reading that made it mean "one
+thread" is withdrawn.
+
+### Per-block commits — settled: a server flag, off by default, gated on a durable id claim
+
+**Settled and built** as [12f](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier).
+Recorded because the decision is a *durability* trade, which is the kind that gets quietly reversed
+by someone who only sees the throughput number.
+
+**The question.** Committing one `fjall` batch per fact is 41% of interning
+([findings §13](../bench/FINDINGS.md)). Batching a whole block removes almost all of those journal
+acquisitions — but it hands a fact's id out before its bytes are durable, which per-fact commits
+never do.
+
+**What that opens, and the part that was nearly missed.** Another writer can take the id and commit
+first, so a crash can truncate the journal after the reference and before the fact it names. The
+obvious cost is a stranded reference, which `finish` catches — it walks every reference to compute
+identity, and a missing target raises `DanglingFactId`. The *non*-obvious cost was worse: the
+allocator resumed from the last `entities` key, so a lost batch made it resume **below** the
+stranded id and reissue it to a different fact. The reference would then resolve — to the wrong
+target — and the seal would succeed. Silent, shipped corruption, through a check that looks like it
+covers this and does not.
+
+So the flag is gated on the reservation: ids are claimed in `meta` before any of them is returned
+([I11](invariants.md#i11)), and the worst outcome is back to "cannot seal".
+
+**The decision.** `serve --commit-per-block`, **off by default**.
+
+- **A flag, because both answers are legitimate.** A bulk index that takes hours does not need
+  per-fact durability during the build; a long-lived writable database being fed by tools might.
+- **A `serve` flag rather than a property recorded at create**, because it is a choice about *this
+  run of the server*, not a fact about the artifact — and two databases with identical content must
+  not differ in their metadata because of how fast somebody wanted to write them.
+- **Off by default**, because the fast setting trades something a default should not spend on the
+  user's behalf. The honest statement, and the one in `--help`: *a crash during ingest may cost the
+  index, never its correctness.*
+- **Not a config-file entry**, deliberately, on the same reasoning as `ops-I10`'s TCP flag: a
+  durability trade should be something somebody typed.
+
+**What it does not change.** The rules are the pipeline's, unchanged — `ops-I5`'s dedup and reject
+are identical on both paths, which is that invariant being about a pipeline rather than a schedule.
+`committing_once_per_block_writes_the_same_database` asserts the two produce the same content hash.
+
 ### Multiplicity — settled: one fact per element for now, diagnosed by name
 
 **Decided while planning [Phase 8](phase-8-schemas.md), which is where this file said to decide

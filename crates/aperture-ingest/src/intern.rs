@@ -129,7 +129,14 @@ fn intern_one<S: FactSink>(
         }
     };
 
-    let interned = sink.resolve_or_create(fact.predicate, &key_bytes, &value_bytes)?;
+    // `declared.value` is the schema's own statement of whether there is a value
+    // side, which is exactly what lets the store skip its second point read.
+    let interned = sink.resolve_or_create(
+        fact.predicate,
+        &key_bytes,
+        &value_bytes,
+        declared.value.is_none(),
+    )?;
 
     if interned.created {
         counts.created += 1;
@@ -273,6 +280,9 @@ mod tests {
             predicate: PredicateId,
             key_fields: &[u8],
             value: &[u8],
+            // The recorder keeps every value it is given, so it needs no fast path
+            // for the key-only case the store uses this for.
+            _keyed_only: bool,
         ) -> Result<Interned, IngestError> {
             let slot = (predicate.0, key_fields.to_vec());
 

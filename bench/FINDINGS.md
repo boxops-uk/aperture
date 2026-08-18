@@ -784,6 +784,124 @@ the 4.9M-row scan came from.
 
 ---
 
+## 12. Ingest is 5.2k facts/s, and the write path was never the reason — three quarters of the work was re-reading, and half the wall clock was the producer waiting
+
+The one number [glean-capabilities §2.3](../docs/glean-capabilities.md) said "nothing in
+`bench/FINDINGS.md` yet attributes". Attributed here. **Not an S-rung measurement** — there is no
+write-path instrument yet — but read off counters the indexer already reports, on a 25M-fact
+`dotnet/runtime` index: a larger run than §1's `--syntax-only` 18.2M-fact one, reaching the build
+and declaration layers as well as the source layer.
+
+| | |
+|---|---|
+| Facts created | **25.0M** |
+| Facts *interned* to create them | **94.9M** — so **73.6% of the work was re-reading something already present** |
+| Point reads per intern | **2** (`keys` for the id, `entities` to compare the value) |
+| Wall clock | **4,828 s** ⇒ **5.2k facts/s** |
+| Inside the blocking `Write` call | **2,255 s** — 47% of the run |
+| Per block (`--batch 4000`) | **368 ms** |
+
+Derived from those two timings rather than measured separately: ~6,100 blocks, ~24.5M top-level
+facts, ~92 µs per top-level fact, ~24 µs per intern, ~12 µs per point read.
+
+**Two mechanisms, and the bigger one is not in the database.** The `Write` call happened while the
+walk held `Indexer._gate`, so during those 2,255 s the other seven walker threads were blocked:
+the write path was serialised **with** the producer rather than alongside it. That is a pipelining
+defect in the client and it is worth about 1.9× on its own (`4,828 → ~2,600 s`, `5.2k → ~9.7k
+facts/s`) by handing full blocks to a writer thread behind a bounded queue.
+
+The second mechanism is the 73.6%. It is genuine work, not waiting, and it is what a
+[lookup cache](../crates/aperture-store/src/lookup_cache.rs) and skipping the `entities` read on
+key-only predicates (22 of 27) remove.
+
+**What the arithmetic then says, and it is the finding that mattered.** After pipelining, the two
+sides are nearly balanced — ~2,255 s of server intern against ~2,573 s of walk. So the single
+writer is *not* today's binding constraint, and cutting its work further buys headroom rather than
+wall clock. **The reason to make it parallel anyway is not throughput** — it is that the write-once
+half of [I12](../docs/invariants.md#i12) was being held by there being one thread rather than by a
+mechanism, and that only becomes visible when you go looking for the throughput. See
+[Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier).
+
+Two things to fix in how this was measured, before it is measured again:
+
+- **`Writing` stops being comparable to wall clock** once the writer overlaps the walk. The number
+  that answers "is the writer the ceiling?" is then `Queueing` — time producers spent blocked on a
+  full queue — and it did not exist when this was taken.
+- **A hit-rate counter is not optional.** A cache that is not hitting is indistinguishable from
+  one that is absent, except in a line that prints hits and misses.
+
+---
+
+## 13. The write rung: committing is 41% of interning, and the cache is worth 23% of a resolve pass
+
+The instrument finding 12 said was missing. `cargo run --release --example ingest` writes a
+**synthetic** corpus shaped like the source layer of the built-in schema — a reference nests
+a declaration nests a module nests a file — in process, no tokio, no wire, no server. Four
+fanouts set the interns-per-fact ratio, which is the quantity interning's cost is decided
+by; the default sits at 4.63 against the real index's 3.8.
+
+40 files × 2 modules × 20 decls × 5 refs = 9,720 facts, 45,000 interns, best of 2:
+
+| layer | ms | facts/s | interns/s | reads/fact | cache |
+|---|---|---|---|---|---|
+| `commit` | 30.2 | 321,968 | — | 0.00 | — |
+| `create` | 58.2 | 166,914 | 772,750 | 1.00 | 78.4% |
+| `dedup:warm` | 26.5 | — | 1,698,325 | 0.00 | 100.0% |
+| `dedup:cold` | 34.4 | — | 1,309,655 | 0.22 | 78.4% |
+| `block:create` | 76.7 | 126,792 | 587,001 | 1.00 | 78.4% |
+
+The rows are there to be subtracted:
+
+- **Committing is 23.9 ms of `create`'s 58.2 ms — 41%.** `create` resolves and writes;
+  `dedup:cold` resolves the identical corpus against a cold cache and writes *nothing*. The
+  difference is 9,720 `put_fact` calls, each its own fjall batch through one global journal
+  mutex. This is the number [12f](../PLAN.md) exists for, and it is larger than expected.
+- **The cache is worth 7.9 ms of a 34.4 ms resolve pass — 23%.** `dedup:cold` starts with an
+  empty cache and reads the LSM once per distinct key; `dedup:warm` answers all 45,000 from
+  memory. Both do zero commits, so nothing else differs.
+- **Block decode is 18.4 ms per pass, ~32% on top of `create`.** The transport codec is not
+  free at these rates, and it is the one term the read ladder already had an opinion about
+  (finding 9's 1.5× row encoder, in the other direction).
+- **`reads/fact` is 1.00 on both create rows**, which is
+  [12c's guard](../crates/aperture-ingest/tests/against_a_real_store.rs) priced rather than
+  counted: one live `keys` read per distinct key across four levels of nesting, where 4.63
+  interns per fact would otherwise mean 4.63 reads.
+
+Two independent estimates of commit cost agree: the `commit` floor writes 9,720 scalar keys
+in 30.2 ms, and `create − dedup:cold` puts the same 9,720 commits at 23.9 ms. Different
+key shapes, ~25% apart, same order — which is the cross-check that says neither row is
+measuring something else.
+
+**After the striped merge frontier (12d), on the identical command.** `create` 58.2 → 59.0 ms,
+`dedup:warm` 26.5 → 27.5 ms, `dedup:cold` 34.4 → 34.8 ms, `commit` 30.2 → 29.8 ms. So per-key
+exclusion costs **1–4% single-threaded**, and the largest share lands on `dedup:warm` — the row that
+is nothing but hash-and-look-up, with no LSM read and no commit under it. That is the signature the
+theory predicts, since what the frontier adds to a single writer is exactly one FNV pass over the
+key. `commit` is unchanged, as it must be: `put_fact` is below the funnel and takes no stripe. The
+run-to-run spread here is ~1 ms, so read these as "a few percent", not as three significant figures.
+
+**With `--per-block` (12f), on the same command.** `create` 61.1 → **48.4 ms**, 159,026 →
+**200,861 facts/s** — a 21% cut, and the *committing* term halves rather than vanishing (25.8 →
+12.7 ms). Staging is not free: the rows are still built and a pending map is still filled; what goes
+away is 9,720 journal-mutex acquisitions collapsing into one. So the honest headline for the flag is
+**~20% off a create pass**, not the 41% that "committing is 41% of interning" invites — the 41% is
+what committing costs, not what batching removes.
+
+One reading artefact worth knowing: the `cache` column shows **0.0%** on a `--per-block` create.
+Nothing regressed. A staged block answers its own repeats from the batch's pending map, which is
+consulted *before* the stripe cache, so the cache is never asked and its hit counter never moves.
+The two modes' cache columns are not comparable, and the dedup rows — which stage nothing — are.
+
+**What this is not.** It is not finding 12 re-measured: that needs the 25M-fact
+`dotnet/runtime` index rebuilt, which is hours and must not run while anything else is
+being measured. It is a *baseline on a synthetic corpus*, and its value is that the terms
+are now separable — a facts/s number can be attributed to committing, resolving, reading or
+decoding instead of to "the write path". Also absent: the wire and the server. The rung
+stops below them deliberately, and the layer that adds them is what finding 12's 47%-inside-
+`Write` figure belongs to.
+
+---
+
 ## What is still open
 
 - **F6** — the reader head-of-line blocking on a ≥3-block ingest. The only hypothesis left
@@ -805,3 +923,11 @@ the 4.9M-row scan came from.
   indexing that must not run while anything is being measured.
 - **No baseline file.** `bench/baselines/<host>.json` and the `--json` flag are not built;
   these numbers live in this document and are reproduced by re-running the instrument.
+- **The write rung stops below the wire.** Finding 13 built it and it separates committing from
+  resolving from decoding — but in process only. The server, the framing and the per-stream
+  queueing are not in it, so finding 12's "47% of the run inside the blocking `Write` call" is
+  still attributed to a call rather than to a layer. That wants the same treatment S4/S5 gave
+  the read path, over a write stream.
+- **Finding 13 is a synthetic corpus.** The ratio is dialled to bracket the real one, not taken
+  from it. Re-measuring finding 12 through the rung needs a `dotnet/runtime` re-index — hours,
+  and it must not run while anything else is being measured.

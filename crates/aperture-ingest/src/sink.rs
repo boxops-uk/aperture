@@ -14,7 +14,7 @@
 use aperture_schema::schema::PredicateId;
 use aperture_store::{
     error::StoreError,
-    store::{FjallDb, Interned},
+    store::{FjallDb, Interned, Staged},
 };
 
 use crate::error::IngestError;
@@ -37,11 +37,16 @@ pub trait FactSink {
     ///
     /// [`IngestError::Conflict`] if the key is present with a different value — the
     /// same-key-different-value case `ops-I5` rejects.
+    ///
+    /// `keyed_only` says the predicate declares no value side, which lets the store
+    /// skip the `entities` point read it would otherwise do only to compare an empty
+    /// value against an empty value.
     fn resolve_or_create(
         &self,
         predicate: PredicateId,
         key_fields: &[u8],
         value: &[u8],
+        keyed_only: bool,
     ) -> Result<Interned, IngestError>;
 }
 
@@ -51,21 +56,44 @@ impl FactSink for FjallDb {
         predicate: PredicateId,
         key_fields: &[u8],
         value: &[u8],
+        keyed_only: bool,
     ) -> Result<Interned, IngestError> {
-        self.intern(predicate, key_fields, value)
-            .map_err(|err| match err {
-                // A conflict is the **peer's** fault, not the database's, and the
-                // two are answered differently — one fails a stream, the other takes
-                // a database out of service. So it is lifted out of `StoreError`
-                // here rather than folded in with the backend faults.
-                StoreError::KeyAlreadyWritten {
-                    predicate,
-                    existing,
-                } => IngestError::Conflict {
-                    predicate,
-                    existing,
-                },
-                other => IngestError::Store(other),
-            })
+        whose_fault(self.intern(predicate, key_fields, value, keyed_only))
     }
+}
+
+/// **The same funnel, committing once per block instead of once per fact.**
+///
+/// A `Staged` is what `serve --commit-per-block` hands to
+/// [`intern_block`](crate::intern_block), and the only difference visible from here is
+/// which of the two this trait is implemented for — the rules, the dedup and the reject
+/// are the pipeline's, unchanged, which is `ops-I5` being about a pipeline rather than a
+/// schedule. What differs is durability, and that is stated on
+/// [`Staged`](aperture_store::store::Staged) rather than restated here.
+impl FactSink for Staged<'_> {
+    fn resolve_or_create(
+        &self,
+        predicate: PredicateId,
+        key_fields: &[u8],
+        value: &[u8],
+        keyed_only: bool,
+    ) -> Result<Interned, IngestError> {
+        whose_fault(self.intern(predicate, key_fields, value, keyed_only))
+    }
+}
+
+/// A conflict is the **peer's** fault, not the database's, and the two are answered
+/// differently — one fails a stream, the other takes a database out of service. So it is
+/// lifted out of `StoreError` here rather than folded in with the backend faults.
+fn whose_fault(result: Result<Interned, StoreError>) -> Result<Interned, IngestError> {
+    result.map_err(|err| match err {
+        StoreError::KeyAlreadyWritten {
+            predicate,
+            existing,
+        } => IngestError::Conflict {
+            predicate,
+            existing,
+        },
+        other => IngestError::Store(other),
+    })
 }

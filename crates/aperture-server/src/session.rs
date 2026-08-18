@@ -48,7 +48,7 @@ use std::{
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
-    sync::{Mutex, mpsc},
+    sync::{RwLock, mpsc},
 };
 
 use aperture_encoding::tuple::Value;
@@ -100,18 +100,23 @@ pub struct Database {
     /// it, which is nothing next to opening a store and everything next to doing it on
     /// every handshake.
     pub identity: Identity,
-    /// **The per-database single writer** (`ops-I1`, `ops-I5`).
+    /// **The seal barrier** (`ops-I2`) — and, until 12e, the single writer as well.
     ///
-    /// Held across an ingest, so writes to one database are serialised however many
-    /// connections and streams are writing. That is not caution: fjall's
-    /// non-transactional path loses updates on a concurrent read-modify-write, and
-    /// interning *is* one — look the key up, write it if it is not there. `ops-I1`
-    /// gives one server the database and this gives one writer the server's half, so
-    /// serialisation is free rather than a cost, and the transactional keyspace is
-    /// unnecessary.
+    /// This was a `Mutex` doing two jobs, and only one of them was ever this lock's to
+    /// do. The job it has lost: excluding writers from *each other*, because interning
+    /// is a read-modify-write and fjall's non-transactional path loses updates on a
+    /// concurrent one. That is now excluded **per key** by the store's striped merge
+    /// frontier ([I12](../../../docs/invariants.md#i12)), which is as wide as the thing
+    /// actually being decided — so writers no longer need to exclude each other at all,
+    /// and a database takes as many as there are streams.
+    ///
+    /// The job it keeps: a block must not land in a database that has already been
+    /// sealed. So a write takes this **shared** and `finish` takes it **exclusive** —
+    /// which is exactly the asymmetry, since writers are compatible with one another
+    /// and none of them is compatible with the seal.
     ///
     /// Reads take nothing: they run against an immutable snapshot.
-    pub writer: Mutex<()>,
+    pub sealing: RwLock<()>,
 
     /// Whether this database still takes writes (`ops-I2`).
     ///
@@ -119,7 +124,7 @@ pub struct Database {
     /// handshake reads it without the lock, which is `ops-I2`'s "refused at
     /// establishment": a client asking to write a sealed database is told so before it
     /// sends anything, and no session waits on an in-flight ingest to be told. A write
-    /// reads it again *inside* the writer lock, and that reading is the exact one —
+    /// reads it again *inside* the seal barrier, and that reading is the exact one —
     /// see [`Registry::finish`](crate::registry::Registry) for why the pair leaves no
     /// third ordering.
     writable: AtomicBool,
@@ -140,7 +145,7 @@ impl Database {
             db: Arc::new(db),
             identity: aperture_schema::fingerprint::identity(&schema),
             schema,
-            writer: Mutex::new(()),
+            sealing: RwLock::new(()),
             writable: AtomicBool::new(status.is_writable()),
         }
     }
@@ -153,7 +158,7 @@ impl Database {
 
     /// Stop taking writes, forever.
     ///
-    /// `pub(crate)` because it is only correct while the writer lock is held, and the
+    /// `pub(crate)` because it is only correct while the seal barrier is held, and the
     /// registry is the only caller that holds it.
     pub(crate) fn seal(&self) {
         self.writable.store(false, Ordering::SeqCst);
@@ -760,12 +765,12 @@ impl StreamTask {
         let working = Arc::clone(&database);
         let block = payload.to_vec();
 
-        // Serialised per database, not merely per stream: fjall's non-transactional
-        // path loses updates on a concurrent read-modify-write, and interning is
-        // exactly that — look the key up, write it if absent. `ops-I1` gives one
-        // server the database, and this gives one writer the server's half of it.
+        // **Shared, not exclusive** (12e). Concurrent blocks are safe because the store
+        // excludes per *key* rather than per database — the striped merge frontier — so
+        // what is left to exclude here is only the seal. Every writer holds this
+        // together; `finish` waits for all of them and then holds it alone.
         let out: Ingested = {
-            let _writing = database.writer.lock().await;
+            let _writing = database.sealing.read().await;
 
             // **`ops-I2`, exactly.** The establishment check refused every session that
             // began after the seal; this one catches the session that began *before*
@@ -776,12 +781,30 @@ impl StreamTask {
                 return Err(ServerError::Sealed(database.name.clone()));
             }
 
+            let per_block = self.session.registry.block_commits();
             blocking::run(move || {
-                intern_block(working.db.as_ref(), &working.schema, &block)
-                    .map_err(ServerError::from)
+                if !per_block {
+                    return intern_block(working.db.as_ref(), &working.schema, &block)
+                        .map_err(ServerError::from);
+                }
+
+                // **Committed even when the block failed.** Ids from the part that
+                // succeeded may already have been handed to another writer, and dropping
+                // the batch would strand every one of them. A partly-written block is
+                // what the per-fact path leaves behind too, and `ops-I5`'s idempotence is
+                // what makes re-sending it safe.
+                let staged = working.db.staged();
+                let interned = intern_block(&staged, &working.schema, &block);
+                staged.commit()?;
+                interned.map_err(ServerError::from)
             })
             .await?
         };
+
+        self.session
+            .registry
+            .stats()
+            .block_interned(out.created as u64, out.deduped as u64);
 
         let writing = self.writing.as_mut().expect("checked just above");
         writing.created += out.created as u64;

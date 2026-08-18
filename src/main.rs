@@ -147,9 +147,16 @@ fn dispatch(cli: &Cli, root: &std::path::Path, socket: &std::path::Path) -> Resu
             socket: bind,
             listen_tcp,
             ready_file,
+            commit_per_block,
         } => {
             let socket = config::socket_path(root, bind.clone());
-            commands::serve::run(root, &socket, listen_tcp.as_deref(), ready_file.as_deref())
+            commands::serve::run(
+                root,
+                &socket,
+                listen_tcp.as_deref(),
+                ready_file.as_deref(),
+                *commit_per_block,
+            )
         }
 
         Command::Create { name, schema } => {

@@ -18,19 +18,27 @@ use std::sync::Arc;
 
 const FILE: PredicateId = PredicateId(0);
 const DECL: PredicateId = PredicateId(1);
+/// A predicate **with a value side**, which is what makes the key-only fast path a
+/// claim about the schema rather than about emptiness — see
+/// [`a_key_only_predicate_never_reads_the_entities_tree`].
+const DOC: PredicateId = PredicateId(2);
 
 /// `src.File : string` and `src.Decl : { file : src.File, line : int, name : string }`
-/// — a reference in a **key**, which is the case that forces the walk's order.
+/// — a reference in a **key**, which is the case that forces the walk's order — plus
+/// `src.Doc : { decl : src.Decl } -> string`, the one predicate here that declares a
+/// value side.
 fn schema() -> Schema {
     let mut rodeo = Rodeo::new();
-    let (file, decl) = (
+    let (file, decl, doc) = (
         rodeo.get_or_intern("src.File"),
         rodeo.get_or_intern("src.Decl"),
+        rodeo.get_or_intern("src.Doc"),
     );
-    let (f_file, f_line, f_name) = (
+    let (f_file, f_line, f_name, f_decl) = (
         rodeo.get_or_intern("file"),
         rodeo.get_or_intern("line"),
         rodeo.get_or_intern("name"),
+        rodeo.get_or_intern("decl"),
     );
 
     Schema::new(
@@ -52,6 +60,11 @@ fn schema() -> Schema {
                     .into(),
                 ),
                 value: None,
+            },
+            Predicate {
+                name: doc,
+                key: PredicateTy::Record(vec![(f_decl, PredicateTy::Fact(DECL))].into()),
+                value: Some(PredicateTy::Str),
             },
         ]),
     )
@@ -95,6 +108,14 @@ fn decl(file: WireRef, line: i64, name: &str) -> WireFact {
 
 fn nested(path: &str) -> WireRef {
     WireRef::Nested(Box::new(file(path)))
+}
+
+fn doc(decl: WireFact, text: &str) -> WireFact {
+    WireFact {
+        predicate: DOC,
+        key: WireValue::Record(vec![WireValue::Ref(WireRef::Nested(Box::new(decl)))].into()),
+        value: Some(WireValue::Str(text.to_owned())),
+    }
 }
 
 /// **The headline: a producer sends facts holding no ids at all, and they land.**
@@ -302,4 +323,181 @@ fn an_ingest_fault_says_whose_fault_it_is() {
         intern_fact(&db, &schema, &decl(WireRef::Id(wrong), 1, "f")).expect_err("a type mismatch");
 
     assert!(err.is_peers_fault());
+}
+
+/// **[Phase 12c](../../../PLAN.md)'s guard: the point reads are counted, not argued.**
+///
+/// The cache's claim is not "interning got faster" — a timing test would say that and
+/// would say it on a machine that happened to be idle. The claim is arithmetic: a
+/// resolve costs a live `keys` read **once per distinct key**, however many references
+/// name it. On the real corpus that is the difference between 94.9M reads and 25.0M
+/// ([findings §12](../../../bench/FINDINGS.md)); here it is 201 against 400.
+///
+/// Run twice against the same directory, because the two halves are different code:
+/// the first pass never *finds* anything, so it only exercises the miss-then-create
+/// path, and a cache that answered creates correctly while mishandling a found fact
+/// would pass a one-pass version of this.
+#[test]
+fn interning_reads_a_key_once_however_many_references_name_it() {
+    const DECLS: i64 = 200;
+    /// One file plus one declaration each — the distinct keys an ingest touches.
+    const DISTINCT: u64 = DECLS as u64 + 1;
+
+    let (dir, db) = db();
+    let schema = schema();
+
+    let send = |db: &FjallDb| {
+        for line in 0..DECLS {
+            intern_fact(db, &schema, &decl(nested("one.py"), line, "f")).expect("it ingests");
+        }
+    };
+
+    send(&db);
+
+    // 400 interns: a declaration and the file it names, each time round.
+    let (hits, misses) = db.lookup_counters();
+    assert_eq!(hits + misses, (DECLS as u64) * 2, "interns");
+    assert_eq!(
+        hits,
+        DECLS as u64 - 1,
+        "every reference to the file after the first must come from the cache"
+    );
+
+    assert_eq!(
+        db.intern_read_counters(),
+        (DISTINCT, 0),
+        "one `keys` read per distinct key and no `entities` read at all: {} interns \
+         resolved with {} reads",
+        (DECLS as u64) * 2,
+        DISTINCT,
+    );
+
+    // A different handle, so the cache is cold and every fact is already on disk —
+    // the *found* path, which the pass above never took.
+    drop(db);
+    let db = FjallDb::open(dir.path()).expect("reopen");
+    send(&db);
+
+    assert_eq!(
+        db.intern_read_counters(),
+        (DISTINCT, 0),
+        "finding a fact must cost what creating it did, and no more"
+    );
+    let (hits, misses) = db.lookup_counters();
+    assert_eq!((hits, misses), (DECLS as u64 - 1, DISTINCT));
+}
+
+/// **A key-only predicate never touches the `entities` tree**, and one with a value
+/// side does — which is what makes this a claim about the *schema* rather than about
+/// the encoded value happening to be empty.
+///
+/// The contrast is the test. Asserting only the zero would pass against a store that
+/// had stopped reading `entities` altogether, which is how the comparison `ops-I5`
+/// rejects a conflict by would quietly stop happening.
+#[test]
+fn a_key_only_predicate_never_reads_the_entities_tree() {
+    let (dir, db) = db();
+    let schema = schema();
+
+    let one = || doc(decl(nested("one.py"), 1, "f"), "what it does");
+
+    // Creating reads neither tree for a value: nothing is there to compare against.
+    intern_fact(&db, &schema, &one()).expect("it ingests");
+    assert_eq!(
+        db.intern_read_counters(),
+        (3, 0),
+        "three distinct keys — the file, the declaration, the doc"
+    );
+
+    // Cold cache, everything present: now each of the three is *found*, and only the
+    // one predicate declaring a value side pays for the second read.
+    drop(db);
+    let db = FjallDb::open(dir.path()).expect("reopen");
+    intern_fact(&db, &schema, &one()).expect("it ingests again");
+
+    assert_eq!(
+        db.intern_read_counters(),
+        (3, 1),
+        "`src.Doc` declares a value side and must be compared; `src.File` and \
+         `src.Decl` do not and must not be read"
+    );
+}
+
+/// **A staged block resolves against its own uncommitted creations** — [12f](../../../PLAN.md).
+///
+/// Committing once per block means a fact's bytes sit in a batch while later facts in the
+/// same block are still being interned, and the second declaration here names a file that
+/// is not on disk yet. Something has to answer for it, or the block writes the file twice
+/// and strands one of them.
+///
+/// Two things can answer — the batch's own pending map and the stripe cache — and with the
+/// cache at its normal size both do, so this test cannot tell them apart. That is why the
+/// pending map exists rather than being left to the cache: a cache is *allowed* to forget,
+/// and an eviction here would cost a duplicate key rather than a point read. Which of the
+/// two answered is not observable; that one always will is the point.
+#[test]
+fn a_staged_block_resolves_against_its_own_uncommitted_facts() {
+    let (_dir, db) = db();
+    let schema = schema();
+    let staged = db.staged();
+
+    let mut created = 0;
+    let mut deduped = 0;
+    for line in 1..=3 {
+        let out =
+            intern_fact(&staged, &schema, &decl(nested("one.py"), line, "f")).expect("it ingests");
+        created += out.created;
+        deduped += out.deduped;
+    }
+
+    assert_eq!(created, 4, "one file and three declarations");
+    assert_eq!(
+        deduped, 2,
+        "the second and third declarations must find the file the first created, \
+         though it is not on disk yet"
+    );
+
+    // Nothing is durable until the block ends, which is the whole of the trade.
+    let file_id = FactId::new(FILE, 1).expect("an id");
+    assert!(!stored(&db, file_id), "a staged fact is not in the trees");
+
+    staged.commit().expect("the block commits");
+    assert!(stored(&db, file_id), "and it is there once the block ends");
+}
+
+/// **A staged block that fails still commits what it wrote.**
+///
+/// Ids from the part that succeeded may already have been handed to another writer, and
+/// throwing the batch away would strand every one of them — a reference to a fact that
+/// was never written, which is exactly the failure the whole of 12f is arranged to keep
+/// rare and detectable. A partly-written block is what the per-fact path leaves behind
+/// too, and `ops-I5`'s idempotence is what makes re-sending it safe.
+#[test]
+fn a_staged_block_that_fails_keeps_what_it_had_already_written() {
+    let (_dir, db) = db();
+    let schema = schema();
+    let staged = db.staged();
+
+    intern_fact(
+        &staged,
+        &schema,
+        &doc(decl(nested("one.py"), 1, "f"), "first"),
+    )
+    .expect("it ingests");
+
+    // The same doc key with a different value side: `ops-I5`'s reject.
+    let refused = intern_fact(
+        &staged,
+        &schema,
+        &doc(decl(nested("one.py"), 1, "f"), "second"),
+    )
+    .expect_err("a conflict");
+    assert!(matches!(refused, IngestError::Conflict { .. }));
+
+    staged.commit().expect("the block commits anyway");
+
+    assert!(
+        stored(&db, FactId::new(FILE, 1).expect("an id")),
+        "the facts written before the conflict are on disk, not discarded"
+    );
 }

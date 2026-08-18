@@ -39,7 +39,7 @@ green. See [testing](testing.md).
 | [I9](#i9) | Hot path is allocation-free per row. | `exec::scan_is_alloc_free_per_row` | [ch4](04-executor.md) | ✅ green |
 | [I10](#i10) | Union discriminants are stable and append-only. | `schema::discriminants_append_only` | [ch6](06-types-and-schema.md) | Phase 8 (with unions) |
 | [I11](#i11) | `FactId` is stable, unique, never reused within a DB. | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | [ch3](03-storage-model.md) | ✅ green |
-| [I12](#i12) | A fact is written to both column families atomically. | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) | [ch3](03-storage-model.md) | ✅ green |
+| [I12](#i12) | A fact is written to both column families atomically — and a key names exactly one fact. | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) + `concurrent_interning_of_one_key_creates_one_fact` | [ch3](03-storage-model.md) | ✅ green — **write-once half held by the serial funnel, mechanical at Phase 12** |
 | [I13](#i13) | The DB's schema is embedded and frozen at create. | `i13_embedded_schema::ingest_rejects_incompatible_schema` + `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` | [ch6](06-types-and-schema.md) | ✅ green at 8.4 |
 | [I14](#i14) | A derived bind is a pure function of the fact bindings. | `iter::a_derive_is_recomputed_across_every_cut_point` | [ch7](07-compilation.md) | ✅ green (hand-built plans) |
 | [I15](#i15) | A DB says which format wrote it; an unreadable one is refused. | `store::a_database_says_which_format_wrote_it` + `a_corrupt_format_stamp_is_reported` | [ch3](03-storage-model.md) | ✅ green |
@@ -208,9 +208,18 @@ Assigned once as a **snowflake** — predicate id in the high 24 bits, a per-pre
 in the low 40 — so uniqueness across predicates is structural and each predicate allocates
 independently. Monotonic within a predicate, never reused (no deletion), stable for the DB's
 lifetime; sequence 0 is reserved, so `FactId(0)` is never a fact. The high-water mark is
-recovered from the last `entities` key rather than a sidecar counter, which cannot go stale
-across a crash — Glean's persisted `NEXT_ID` cannot go stale either, but it can go *missing*, and
-its error for that is "corrupt database". The scan→point map and resume's integrity check depend on
+recovered from the last `entities` key **and from a durable reservation**, whichever is higher.
+The `entities` half was the whole of it until 12f, on the reasoning that data cannot go stale
+where a counter can — true, but only while every id handed out is already stored, which is exactly
+what committing once per block gives up. Without the reservation a crash resumes *below* an id
+another writer already referenced, reissues it to a different fact, and turns that reference into
+one resolving to the **wrong** target — which `finish` cannot catch, since it checks that
+references resolve rather than what they resolve to. So ranges are claimed in the `meta` keyspace
+before any id in them is returned, needing no `fsync` because they travel the same journal as the
+fact batches and are ordered ahead of them. A crash costs the unused tail of a chunk, which is a
+hole, and holes are permitted: this invariant asks for unique and never-reused, not dense. Glean's
+persisted `NEXT_ID` cannot go stale either, but it can go *missing*, and its error for that is
+"corrupt database". The scan→point map and resume's integrity check depend on
 it. It is a *physical* row id, **not** cross-DB identity (that's the content hash,
 [ops-I4](#ops-i4)). Constrains the schema: a predicate id must fit 24 bits. What the tag trades
 away is **density across predicates**: Glean's ids are documented as *dense*, and five mechanisms
@@ -229,7 +238,10 @@ drop* cannot both hold, because the high-water mark is recovered from the very t
 dropped — [open decision](open-decisions.md#re-derivation-and-what-happens-to-the-high-water-mark).
 *Why & how:* [chapter 3](03-storage-model.md#factid-allocation-i11). *Guards:*
 `store::factid_unique_monotonic` + `store::exhausted_sequence_space_is_an_error` +
-`store::untaggable_predicate_is_rejected`. The reserved sequence is guarded where stored bytes
+`store::untaggable_predicate_is_rejected` +
+`store::a_reopened_allocator_resumes_past_what_was_claimed_not_past_what_was_written` +
+`store::a_claim_covers_a_chunk_of_ids_rather_than_one` (12f's durable reservation).
+The reserved sequence is guarded where stored bytes
 become an id, which is two places and not one:
 `store::a_zeroed_fact_id_is_rejected_at_decode` for a `keys` row, and
 `codec::a_fact_ref_of_the_reserved_sequence_is_rejected` for a reference embedded **in a key** —
@@ -248,13 +260,35 @@ id counter and per-predicate stats rows along with them.
 *same key twice* overwrites the `keys` row and strands the first fact's entity — an orphan the
 batch is innocent of. `FjallDb::put` refuses that in every build (identical fact ⇒ the id
 already assigned; same key, different value ⇒ `KeyAlreadyWritten`); `put_fact` is the bulk
-primitive and still leaves it to its caller, checked by a debug assertion, because Phase 7's
-merge frontier establishes it more cheaply upstream.
+primitive and still leaves it to its caller, checked by a debug assertion, because the merge
+frontier establishes it upstream.
+**And *that* is the one invariant a parallel writer conflicts with** — the whole of it, which is
+worth stating flatly because four other invariants have been blamed for it. Resolve-or-create is
+a read-modify-write with no per-key exclusion anywhere: two workers interning the same nested
+target both miss, both call `put_fact`, and one of the two entities is stranded under a `keys`
+row the other overwrote. Nothing but *there being one thread* prevents it, which is a property no
+test can observe. The answer is a **striped merge frontier** — per-key mutual exclusion by
+`hash(predicate ++ key)`, [Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier)
+— and it makes this half of the bijection **mechanical rather than circumstantial**, which is a
+strengthening of I12 and not a concession by it. Interning's bottom-up rule is what makes the
+striping safe without a lock ordering: a parent's key has no bytes until its children have ids,
+so the critical sections are strictly leaf-then-parent and never nested
+([chapter 3](03-storage-model.md#interning-a-nested-fact)), which a debug-only guard now asserts
+rather than merely claims.
+**And one thing this invariant does *not* say, learned at 12d.** "Written atomically" here means
+atomically *on recovery* — the guards are a bijection check and a crash test, both asking what is on
+disk afterwards. A concurrent reader can still observe the `keys` insert of a batch before its
+`entities` insert, and `fact_at` doing so raises `DanglingFactId` against a database that is not
+corrupt. Nothing about that is new behaviour; it was simply unreachable while one thread wrote. It
+is why per-key exclusion is the **weakest** sufficient mechanism: a lock-free CAS on `keys` would
+prevent the double-create and not this ([chapter 3](03-storage-model.md#and-a-second-job-which-was-not-the-one-it-was-built-for)).
 *Why & how:* [chapter 3](03-storage-model.md#the-atomic-two-cf-write-i12). *Guards:*
 `store::no_half_present_facts_after_writes` (the two CFs in exact bijection over generated
 writes) + `store::no_half_present_facts` (a child process aborted mid-write; the bijection
 must survive recovery) + `store::put_is_write_once_and_says_so_in_release` and
-`store::writing_a_key_twice_is_caught_in_debug` (the two halves of the write-once rule).
+`store::writing_a_key_twice_is_caught_in_debug` (the two halves of the write-once rule) +
+`store::concurrent_interning_of_one_key_creates_one_fact` (Phase 12, pending — N threads
+racing on the same key, the bijection intact and one id handed to all of them).
 
 <a id="i13"></a>
 ### I13 — The DB's schema is embedded and frozen at create
@@ -354,7 +388,8 @@ invariant surface is visible in one place; cite them `ops-Ix`.
 
 <a id="ops-i1"></a>**ops-I1 — Single-process store ownership.** A fjall directory is opened
 by exactly one process; a running server owns every DB under its root; no silent
-connect→open fallback.
+connect→open fallback. **A process, not a thread** — and single-process ownership is what makes
+per-key exclusion inside that process sufficient ([I12](#i12), Phase 12).
 
 <a id="ops-i2"></a>**ops-I2 — Complete = immutable.** Lifecycle `Writable → Complete` (+
 `Broken`). Once Complete, every open-for-write is refused at session establishment —
@@ -370,11 +405,16 @@ identical; identity = `hash(canonical schema, base facts)`. Timestamps/random id
 descriptive, never identity. Conflict handling is order-independent (strict reject — neither
 first- nor last-writer-wins; Glean's default is the same reject, and the paths where it
 disables that rule land on *first*-writer-wins). This is why [I11](#i11) fact-ids are *not*
-cross-DB identity.
+cross-DB identity — and, since the hash is a **multiset** over each fact's logical form, why write
+order and writer count cannot move it. The "⇒ no concurrent writers" arrow once drawn from this
+invariant has been **cut**; what needed the serial writer was [I12](#i12)'s bijection
+([Operations §1](aperture-cli-design.md), Phase 12).
 
 <a id="ops-i5"></a>**ops-I5 — One write funnel.** Every writer (bulk ingest, wire COPY,
 tools) passes the same pipeline: schema-validate → sort/merge → dedup identical → reject
-same-key-different-value. Structural guarantees hold regardless of writer trust.
+same-key-different-value. Structural guarantees hold regardless of writer trust. **One pipeline,
+not one thread:** the requirement is that there be no path around the rules, not that one core
+apply them.
 
 <a id="ops-i6"></a>**ops-I6 — Session modes.** A session declares `read-only` | `read-write`
 at open, resolved once against DB status (Complete ⇒ read-only, full stop).

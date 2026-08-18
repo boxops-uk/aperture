@@ -29,8 +29,19 @@ These are the cross-cutting rules; individual commands reference them by number.
   (`glean/db/Glean/Database/Write/Batch.hs:221-234` — with an open `TODO` asking whether it
   should), while the storage layer beneath simply asserts the property it needs: *"We do **not**
   support concurrent writes"* (`glean/rocksdb/database-impl.cpp:482`). `ops-I1` plus the per-DB
-  single writer task (§5 `serve`) make structural what Glean leaves to lock discipline — and
-  `ops-I4` is what needs it that way.
+  seal barrier (§5 `serve`) make structural what Glean leaves to lock discipline.
+  **What this invariant is and is not about.** It is about a *process*: fjall's directory lock, and
+  the rule that the CLI never reaches around a running server. It says nothing about how many
+  threads that one owning process may write with, and the clause that used to appear here — "and
+  `ops-I4` is what needs it that way" — was wrong: see `ops-I4`, whose identity hash is
+  order-independent by construction. The per-DB single **writer task** is a separate mechanism that
+  happened to be sufficient for [I12](invariants.md#i12)'s key-to-fact bijection, and
+  [Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier) replaces it with
+  per-key exclusion inside the one owning process — which is legitimate *because of* this
+  invariant, not in spite of it: single-process ownership is exactly what makes an in-process lock
+  sufficient and a cross-process protocol unnecessary. Glean's own arrangement is the argument for
+  doing it that way: its try-mutex loser "deduplicates and then writes anyway" is the double-create
+  hazard, live, which is what a per-key primitive removes and a per-database one only hides.
 - **ops-I2 — Complete = immutable.** Lifecycle is `Writable → Complete` (plus `Broken`). Once
   Complete, every open-for-write is refused at session establishment — immutability is
   structural (no writable handle exists), not defended per-write. This is the one rule never
@@ -66,10 +77,26 @@ These are the cross-cutting rules; individual commands reference them by number.
   Conflict handling must be order-independent to preserve this — a strict reject, never a
   pick-one rule of *either* polarity (see `ops-I5`: Glean's escape hatch keeps the fact already
   in the set, i.e. first-writer-wins, which is order-dependent just the same).
-  **The chain, written out, because it is one link longer than it reads:** reproducibility ⇒
-  deterministic reject + one write funnel (`ops-I5`) ⇒ no concurrent independent writers to a DB
-  (`ops-I1`) ⇒ no incremental append (`ops-I9`). Every arrow is forced, so `ops-I9` is a
-  consequence of this invariant rather than an independent preference.
+  **The chain, written out — and its second arrow has been cut.** As first stated it read:
+  reproducibility ⇒ deterministic reject + one write funnel (`ops-I5`) ⇒ no concurrent independent
+  writers to a DB (`ops-I1`) ⇒ no incremental append (`ops-I9`), every arrow forced. The first
+  arrow holds and always will. **The second does not, and stopped holding the moment Phase 7
+  settled what a reference is on the way in** — which is the same event that made this invariant
+  computable at all. Identity is a *multiset* hash of each fact's **logical** form: every reference
+  expanded to its target's key, recursively, each fact hashed alone and the results summed, so no
+  physical `FactId` is hashed and nothing depends on visit order
+  (`crates/aperture-store/src/identity.rs`, whose module doc says outright that a `FactId` is
+  "a number two reproducible builds can legitimately disagree about"). Write order therefore cannot
+  move the identity of the artifact, and reproducibility does **not** require a serial writer.
+  The serial writer was never redundant, though — it was doing a *different* job under this
+  invariant's name, and the job is [I12](invariants.md#i12)'s: a key maps to exactly one fact, which
+  needs per-key exclusion and got it by there being one thread. `ops-I9` accordingly hangs off
+  `ops-I2` and the recorded content hash, which is where it always belonged. See
+  [Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier) for the primitive
+  that replaces the thread, and note what does *not* change: a deterministic **reject** is still
+  required of every writer, and is still order-independent — which of two contradictory producers
+  is the one refused may vary, but "one of them fails, loudly" does not, and that is the property
+  `ignoreRedef` gives up.
   **What Glean pays instead.** A Glean DB is not reproducible, for six independent reasons —
   arrival-order fact ids, a wall-clock completion stamp, `ignoreRedef`, a bounded `LookupCache`
   whose eviction depends on timing, a load-bearing random `glean.guid`, and RocksDB compaction —
@@ -89,6 +116,19 @@ These are the cross-cutting rules; individual commands reference them by number.
   provide (purity / idempotence, so re-derivation reproduces their output) is a *semantic*
   guarantee the implementor owns; the DB does not record or check it (see ops-I6, and `db verify`'s
   changed meaning in §5).
+  **"One funnel" is one *pipeline*, not one thread**, and the two were conflated for long enough
+  that the conflation deserves naming. What this invariant requires is that there be a single set of
+  rules with no path around it — one canonical encoder, one dedup rule, one reject rule — so that no
+  writer can reach the trees having skipped them. How much of that pipeline runs concurrently is an
+  implementation question, and the answer Phase 7a shipped (one writer task per database) was the
+  cheapest sufficient one rather than this invariant speaking. `ops-I5` is satisfied by
+  [Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier)'s striped frontier
+  exactly as it was by the single task: the frontier is still one, still the only way in, and dedup
+  and reject still happen inside it — what changes is how many *keys* it can be deciding about at
+  once. Note which half of the pipeline this frees: the expensive half. Interning's cost is the
+  point reads (73.6% of them redundant on a real index — [findings §12](../bench/FINDINGS.md)), and
+  those parallelise; fjall's commit does not, because `Batch::commit` takes one global journal
+  writer mutex, which is why Phase 12 also stops committing once per fact.
   **The reject rule is adopted from Glean, not a divergence from it.** It is Glean's own default:
   `Define::define` returns `Id::INVALID` on same-key-different-value
   (`glean/rts/define.h:20-30`), `defineBatch` raises `"invalid fact redefinition"`
@@ -320,9 +360,13 @@ Run the server owning a store root.
   + bounded per-stream queues.
 - Session establishment enforces ops-I6/ops-I2: mode declared in the handshake, resolved once
   against DB status.
-- Per-DB wire writes funnel through a **single writer task** (fjall's non-transactional path
-  loses updates on concurrent read-modify-write; a Writable DB is single-server-owned anyway,
-  so serialization is free and the transactional keyspace is unnecessary).
+- Per-DB wire writes funnel through **one pipeline, not one thread** — since 12e a database
+  takes as many concurrent writers as there are streams. What made a single writer task look
+  necessary was that fjall's non-transactional path loses updates on a concurrent
+  read-modify-write, and interning is one; the answer is to exclude per **key** rather than per
+  database (the store's striped merge frontier, [I12](invariants.md#i12)), which is as wide as
+  the thing being decided. What is left at the database level is the **seal barrier**: writers
+  hold it shared, `finish` takes it exclusive, and that is `ops-I2`.
 - Exposes enumeration as the virtual predicate `aperture.db.List` through the normal query
   machinery — no bespoke control message.
 - Reader scaling model: a server owns its snapshot; horizontal scaling = more processes each
@@ -375,26 +419,33 @@ Ingest facts from fact files or stdin.
     **just another stream** — a deriver/tool interleaves read streams and write streams on one
     connection; no separate sub-channel, no second code path.
   - *Embedded:* the offline CI merge path. Requires exclusive access to a Writable DB (ops-I1).
-- **Bulk pipeline (embedded, and server-side for file ingest):**
+- **Bulk pipeline (embedded, and server-side for file ingest) — rewritten after Phase 12:**
   1. Split input into chunks via sync-marker scan (§8) — no serial parse from byte zero.
-  2. Workers in parallel: wire-decode → storage-tuple-encode (order-preserving key) → sort.
-  3. K-way merge across workers per predicate. At the merge frontier: identical keys are
-     colocated ⇒ dedup byte-identical facts silently; **reject the batch** on
-     same-key-different-value (deterministic, order-independent — required by ops-I4).
-     `--on-conflict=reject` is the default; any override must be commutative, never LWW.
-  4. Feed the sorted, deduped, conflict-free ascending stream to fjall bulk `ingest()`
-     (the "hidden unchecked write" — it needs no per-key reads because the merge already
-     established the invariants). One keyspace per predicate ⇒ per-predicate ingests are
-     independent trees and may overlap.
-- **Steps 2 and 3 are still not consistent, and that is now a scheduling problem rather than an
-  unanswered one.** A key may contain a fact **reference**; a reference is interned to a final
-  `FactId` ([chapter 3](03-storage-model.md#interning-a-nested-fact)), and until it is, the key
-  holding it has no bytes and so no sort position at step 2. What a reference *is* is
-  [settled](open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)
-  — the target fact, nested — so what is left is *where interning happens in a parallel
-  pipeline*: a pre-pass over each chunk, or a stratum boundary in the merge. That is a Phase 7b
-  question, and it is asked with the primitive already built and tested by the write stream
-  (§6), which has no such conflict: one writer, one stream, interning as it arrives.
+  2. Workers in parallel: wire-decode → `intern_block`, which resolves nested references
+     bottom-up and writes. Concurrency is safe because the store excludes per **key**
+     ([the striped merge frontier](invariants.md#i12)), which is what the `sort → merge` step
+     below used to be for.
+  3. Per block, optionally one commit instead of one per fact (`serve --commit-per-block`,
+     [open decision](open-decisions.md#per-block-commits--settled-a-server-flag-off-by-default-gated-on-a-durable-id-claim)).
+  Dedup and reject are unchanged and belong to the funnel rather than to this pipeline:
+  identical facts dedup silently, same-key-different-value is **rejected**, deterministically and
+  under any interleaving. `--on-conflict=reject` is the default; any override must be
+  commutative, never LWW.
+- **What this replaced, and why it is recorded rather than deleted.** The original pipeline sorted
+  each chunk, k-way merged across workers per predicate, and fed the ascending stream to fjall's
+  bulk `ingest()` — the "hidden unchecked write", which needs *no per-key reads* because the merge
+  has already established uniqueness. That is genuinely cheaper than resolve-or-create per fact,
+  and it was never reachable as written: a key holding a nested reference has no bytes until
+  interning has run, so there is nothing to sort at step 2. The two ways out were a pre-pass per
+  chunk or a **stratum boundary** in the merge — intern `src.File`, then `src.Module`, then
+  everything keyed on those — and within a stratum every key is ground and the sort *does* work.
+- **So Phase 12 did not answer that question; it removed it from the critical path.** Interning as
+  the decode reaches each fact is now correct under any number of workers, which is what 7b needed
+  to exist at all. The stratum-and-bulk-`ingest()` design remains available as an **optimisation**
+  — worth reaching for only if a measurement says the write path is the ceiling, and
+  `examples/ingest.rs` is what would say so. It is no longer a prerequisite, and it should not be
+  built on the assumption that it is faster: that is an untested claim about a pipeline nobody has
+  written.
 - Schema validation against the DB's embedded schema on every path; a fact file's header
   fingerprint (§8) is checked for compatibility (subset containment, §7) before ingest.
 - Session typing per ops-I6: file ingestion is `ingest`, arbitrary tool sessions are `tool`. Both
@@ -807,9 +858,11 @@ semantics that is now decided.
    DB (ops-I1, ops-I2 refuse otherwise, at establishment rather than per fact).
 2. `CopyData*` — each frame carries one **block**: the same
    `[block header][n facts]` §8 puts in a file, so on-wire and on-disk are one encoding.
-3. Per block, in the DB's single writer task: decode → **validate against the embedded schema**
-   (I13) → **intern** nested references bottom-up → storage-encode → write both column families
-   atomically (I12).
+3. Per block, on the stream's own task and concurrently with every other stream's: decode →
+   **validate against the embedded schema** (I13) → **intern** nested references bottom-up →
+   storage-encode → write both column families atomically (I12). The exclusion is per key, inside
+   the store; what a block holds at the database level is only the shared half of the seal
+   barrier.
 4. `CopyDone` → the server replies with facts written, facts deduped, and the id range per
    predicate. A conflict instead **fails the stream** with the offending key named.
 
@@ -898,8 +951,9 @@ storage and its references are `FactId`s already.
   ([settled](open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)).
   So a file **can** carry a self-contained subgraph, which is what an indexer emitting one
   artifact needs. A block is *not* sortable in isolation, though — a key holding a nested
-  reference has no bytes until interning has run — and that is the §5 scheduling question, not a
-  format one.
+  reference has no bytes until interning has run. That used to be an open scheduling question for
+  §5's pipeline; since Phase 12 it is simply a property of the format, because nothing sorts
+  before interning any more.
 - **Block — built** (`aperture-wire::block`), 30 bytes of framing:
 
   ```text
@@ -914,9 +968,8 @@ storage and its references are `FactId`s already.
   reaches `length` at a fixed offset, and it cannot contribute to a marker for the reason a
   string cannot.
 
-  RLE of the predicate ID: indexers writing in visitation order emit small blocks (bursts);
-  the post-merge writer emits huge ones; blocks coalesce monotonically through k-merges until
-  fully ordered. Same bytes on-wire (a CopyData frame's payload *is* a block) and on disk, and
+  RLE of the predicate ID: indexers writing in visitation order emit small blocks (bursts), and a
+  writer that has grouped its output emits large ones. Same bytes on-wire (a CopyData frame's payload *is* a block) and on disk, and
   that is a test rather than an intention (`tests/one_encoding.rs`). Header fields are
   fixed-width where the payload is varints, because a splitter must read `length` before it can
   trust anything else; little-endian, because nothing here is ordered — big-endian in the
@@ -1020,7 +1073,7 @@ aperture/
 │   │                              # (`take` is the page `\more` resumes) — used by
 │   │                              # CLI, shell, and external tools/derivers
 │   ├── aperture-server/           # listener, per-conn fair writer task, session enforcement
-│   │                              # (ops-I6), per-DB single writer, aperture.db.List
+│   │                              # (ops-I6), per-DB seal barrier, aperture.db.List
 │   └── aperture-cli/              # bin
 │       └── src/
 │           ├── main.rs            # parse → layered config → logging → dispatch

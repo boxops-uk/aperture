@@ -26,6 +26,31 @@ different thing; don't conflate them.
 
 ## Current state, honestly
 
+| Phase | What | State |
+|---|---|---|
+| 0 | Invariant guard matrix + harness | ✅ — one guard still `#[ignore]`d (`schema::discriminants_append_only`, waits on 8.6) |
+| 1 | fjall store, snapshot & identity guards | ✅ |
+| 2 · 3 · 4 | grammar · driver · flatten/reorder | ✅ |
+| 5 | REPL (embedded demo) | ✅ |
+| 6 · 6b | dynamic derivation · the deferred query surface | ✅ |
+| 7a | wire ingestion (write stream, interning) | ✅ |
+| 7b | file ingestion | ☐ — deferred past 9, **now gated on 12** |
+| 8 | schema parsing (8.1–8.5) | ✅ — **unions (8.6) open** |
+| 8b | stored derivation | ☐ — gated on 8 |
+| 9 (a–f) | operations: lifecycle, runtime, client, CLI | ✅ |
+| 10 | capacity: measure it | ✅ — [`bench/FINDINGS.md`](bench/FINDINGS.md) |
+| 11 | code-search site, and what it took | ✅ |
+| **12** | **parallel ingestion: the striped merge frontier** | ✅ — 12a–12g. Write-once is mechanical, a database takes many writers, and 7b is unblocked |
+
+**On phase numbers: they are historical labels, and renumbering them was considered and
+rejected.** The tree is out of chronological order (9 was resequenced ahead of 7b and 8; 12 lands
+after 11 but depends only on 7a) and the letters are uneven (6b, 7a/7b, 8b, 9a–9f, 8.1–8.6). That is
+untidy, but ~330 references across 65 files — commit messages, findings, `#[ignore]` strings, source
+comments citing "Phase 7a's acceptance criterion" — point at these numbers, and a renumber would
+either break the record or require rewriting it, which is worse than untidy. The table above is the
+fix: read it for *what is done*, read the [dependency graph](#dependency-graph) for *what depends on
+what*, and treat a number as a name rather than a position.
+
 The engine spine exists in `crates/aperture-engine/`:
 
 - **Codec** (`tuple.rs`) — heavily property-tested: order-preservation, round-trip, and
@@ -117,9 +142,12 @@ The engine spine exists in `crates/aperture-engine/`:
   fingerprint is gone: identity is chapter 6's, and a client **carries** the number rather than
   computing it. What is left of Phase 8 is **unions** (8.6), which is why
   `schema::discriminants_append_only` is now the *only* `#[ignore]`d guard in the ledger.
-- **Unbuilt:** bulk ingestion (7b), unions (8.6), **stored** derivation
-  ([Phase 8b](#phase-8b--stored-derivation)), and the operational gaps Phase 9 lists as
-  deliberately missing.
+- **Unbuilt:** **parallel ingestion**
+  ([Phase 12](#phase-12--parallel-ingestion-the-striped-merge-frontier) — the write funnel is one
+  thread per database, and that thread is what holds [I12](docs/invariants.md#i12)'s write-once
+  half; it is the only unbuilt item that touches an invariant), bulk ingestion (7b, gated on 12),
+  unions (8.6), **stored** derivation ([Phase 8b](#phase-8b--stored-derivation)), and the
+  operational gaps Phase 9 lists as deliberately missing.
 
 Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the design docs.
 
@@ -134,7 +162,8 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
                                                                                     ├─▶ 6  dynamic derivation ✅ (machine change; I14 green)
                                                                                     │      └─▶ 6b  deferred query surface ✅ (`|`, never, `!`, subquery)
                                                                                     └─▶ 7a wire ingestion ✅ ─▶ 9  operations ✅ ─▶ 8  schema ✅ (8.1–8.5; unions are 8.6) ─▶ 8b  stored derivation
-                                                                                                             └─▶ 7b  file ingestion (deferred past 9)
+                                                                                                             ├─▶ 12 parallel ingestion (striped merge frontier; I12's write-once becomes mechanical)
+                                                                                                             └─▶ 7b  file ingestion (deferred past 9; **now gated on 12**)
 
 Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends on 1 (store + atomic put_fact).
               8b (stored derivation) is gated on **8**: a derived predicate cannot be built before it can be
@@ -145,7 +174,13 @@ Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends 
               Nothing in 7–9 depends on 6b, so its position *before* 7 is a choice, not a constraint.
               **9 was resequenced ahead of 7b and 8** — see the ordering principle. It depended on
               "7–8"; with the schema hardcoded, 8 stops being a dependency and only 7a is needed.
-Gates:        Codec I1–I3 green.  Executor I4–I7, I9 green on MemStore.  I8/I11/I12 at Phase 1.
+              **12 was inserted after 11, and 7b now depends on it.** 7b's one unanswered design
+              question was *where interning happens* in a parallel pipeline; 12 answers it with a
+              per-key primitive, so 7b stops being a design problem and becomes a decode-and-feed
+              one. 12 needs nothing from 8, 8b, 10 or 11 — it is sequenced last only because that
+              is when the measurement that found it existed.
+Gates:        Codec I1–I3 green.  Executor I4–I7, I9 green on MemStore.  I8/I11/I12 at Phase 1
+              (I12's *atomicity* half; its **write-once** half is held by the serial funnel until 12).
               I13 green at 8.4; I10 waits on unions (8.6) and is the last ignored guard in the ledger.
               FactRef marker — resolved (own marker 0x51, already in the codec); no longer gates ingestion.
               Union types gate on the schema DSL (8), not on 6b: a union cannot be declared before it can be written down.
@@ -865,7 +900,7 @@ what a client actually programs against.
 
 **Design of record:** the write stream, the wire fact encoding and what a reference is on the
 way in are [operations §6](docs/aperture-cli-design.md#6-wire-protocol--the-write-stream); the
-parallel decode→sort→k-way-merge→bulk-`ingest()` pipeline and the fact-file format + sync
+parallel decode-and-intern pipeline and the fact-file format + sync
 markers are [operations §5 & §8](docs/aperture-cli-design.md) (`ops-I5` one-write-funnel,
 `ops-I4` reproducibility). Interning is
 [chapter 3](docs/03-storage-model.md#interning-a-nested-fact); the storage-vs-transport codec
@@ -927,10 +962,30 @@ startup; the server and its socket, with the per-DB single writer task (`ops-I1`
 — resolve-or-create a nested fact, bottom-up — and the write stream that funnels through it
 (`ops-I5`); a query stream, so ingest-then-query closes end to end.
 
-**Tasks — 7b, the file pipeline:** `Db` + per-predicate partition handles; the fact-file format
-+ sync-marker chunk splitter; the parallel decode→encode→sort→k-way-merge→bulk-`ingest()`
-pipeline, which is where *where interning happens* gets answered — a per-chunk pre-pass or a
-stratum boundary in the merge. *Done per task:* ingest-then-query returns the ingested facts.
+**Tasks — 7b, the file pipeline:** the fact-file format + sync-marker chunk splitter; a pool of
+workers that decode a chunk's blocks and `intern_block` them, concurrently, against one database.
+That is the whole of it now. *Done per task:* ingest-then-query returns the ingested facts.
+
+**7b's open design question is off the critical path — which is not the same as answered, and the
+difference is worth keeping.** It asked *where interning happens* in a parallel pipeline, because a
+key holding a reference has no bytes until ids are assigned, so there is nothing to sort. The two
+candidates were a per-chunk pre-pass and a **stratum boundary** in the merge, and the point of
+either was to reach fjall's bulk `ingest()` — the unchecked write that needs *no per-key reads*,
+because a merge has already established uniqueness.
+
+[Phase 12](#phase-12--parallel-ingestion-the-striped-merge-frontier) did not pick one. It made the
+*simple* path — intern as the decode reaches each fact — correct under any number of workers, which
+is what 7b needed in order to exist at all. **The stratum design survives as an optimisation**, and
+should be treated as one: it is plausibly cheaper, and that is an untested claim about a pipeline
+nobody has written. Reach for it if `examples/ingest.rs` says the write path is the ceiling, not
+before.
+
+**Two of the acceptance criteria below are now inherited rather than owed.** Shuffle-invariance is
+`writer_count_and_write_order_do_not_change_the_database`; rejection under any interleaving is
+`a_conflict_between_concurrent_writers_fails_exactly_one_of_them`. Both are proven one layer down,
+on the wire path, where 7b would otherwise have had to establish them again for the file path. What
+stays genuinely 7b's is the format, the splitter, and that a file and a socket carry the same
+bytes.
 
 **Acceptance — 7a:**
 - [x] Facts are writable over a socket and queried back on the same connection. Twice over: a Rust client (`aperture-server/tests/over_a_socket.rs`) and a **C# one** (`clients/dotnet`), the second because a client in this repository can agree with the server by accident.
@@ -1595,16 +1650,23 @@ produced ten candidates; the list below is what a read-through of it agreed to, 
 §4 holds the reasoning and the citations for each. None is scheduled. Every one is additive and
 none reshapes the machine — the two that come closest are called out.
 
-**The write path is where the efficiency gap actually is**, and these two are the whole of it:
+**The write path is where the efficiency gap actually is** — and both items it named are now
+**scheduled as [Phase 12](#phase-12--parallel-ingestion-the-striped-merge-frontier)** (12c), along
+with the thing that looking for them turned up, which this review missed because it was costing
+work rather than auditing rules: the write funnel's single thread is what holds
+[I12](docs/invariants.md#i12)'s write-once half. The two items as recorded:
 
 - **A lookup cache in front of `fact_at`.** Interning does two live LSM point reads per fact and
   caches nothing, where Glean has a sharded, lossy-buffer LRU built specifically for its write
   path. Ours would be *simpler* than Glean's: a sealed-once database makes an entry permanently
   valid, so there is no coherence story. Guard: an ingest read-count probe, not a timing test.
+  **Measured since:** 94.9M interns for 25.0M facts — 73.6% redundant
+  ([findings §12](bench/FINDINGS.md)).
 - **Skip the `entities` read when the declared value type is empty.** Provably redundant on
   key-only predicates, which is most of `code_index`. It doubles as an
   [I12](docs/invariants.md#i12) check today, so giving it up has to be a stated decision rather
-  than a silent one.
+  than a silent one. **It now is one** — Phase 12 makes the trade explicitly and hands the property
+  to the tests that already own it.
 
 **A capability gap that was previously mis-recorded as a non-issue:**
 
@@ -1757,6 +1819,207 @@ check is what stands between a caller and a plausible wrong answer),
 borrowed span, no decode and no allocation), [I14](docs/invariants.md#i14) (a derived
 bind is still a pure function of the fact bindings, which is what lets resume recompute
 it).
+
+---
+
+## Phase 12 — Parallel ingestion: the striped merge frontier
+
+**Goal.** Let a `Writable` database take writes from many threads at once, by replacing the
+per-database writer task with **per-key exclusion** — and cut the redundant work the serial funnel
+was hiding. Phase 7's goal line already asked for "efficient *parallel* ingestion"; this is that
+sentence, finally holding a primitive.
+
+**Depends on:** Phase 1 (the store, `put_fact`, the per-predicate allocator), Phase 7a (the write
+funnel and the wire path it arrives on), Phase 10 (the instrument discipline — a change justified by
+a number needs a rung to read it off).
+
+**Why this is a phase and not a patch.** The presenting symptom was throughput
+([findings §12](bench/FINDINGS.md): 5.2k facts/s, 47% of the run inside a blocking write call,
+73.6% of the write path's work re-reading facts already present). Chasing it turned up something
+structural: **[I12](docs/invariants.md#i12)'s write-once half — a key names exactly one fact — was
+being held by there being one thread, not by a mechanism.** No test can observe that. Four
+documents had also recorded "a database takes one writer" as forced by `ops-I4`, `ops-I1` and
+`ops-I5`, and none of the three asks for it — the derivation died when Phase 7 made identity a
+multiset hash of each fact's *logical* form, and nobody went back to cut the arrow. So the phase
+exists to install the missing primitive and to correct the record, and the throughput is what pays
+for it rather than what justifies it.
+
+**Design of record — read these, don't restate them:** the decision, its reversal and every accepted
+tradeoff are
+[open decisions](docs/open-decisions.md#parallel-writes-to-a-writable-database--settled-yes-behind-a-striped-merge-frontier);
+the corrected invariant reasoning is [operations §1](docs/aperture-cli-design.md) (`ops-I1`,
+`ops-I4`, `ops-I5`) and [I12](docs/invariants.md#i12); the mechanism and why it needs no lock
+ordering are [chapter 3](docs/03-storage-model.md#the-other-half-of-the-bijection--one-key-one-fact);
+the measurement is [findings §12](bench/FINDINGS.md); the two work-cutting items and Glean's
+comparable machinery are [glean-capabilities §2.3](docs/glean-capabilities.md).
+
+**Invariants in scope:**
+- *strengthens:* [I12](docs/invariants.md#i12) — write-once becomes mechanical rather than
+  circumstantial. This is the phase's real deliverable, and its new guard
+  (`store::concurrent_interning_of_one_key_creates_one_fact`) is the one that could not be written
+  before.
+- *upholds (and makes testable for the first time):* [ops-I4](docs/invariants.md#ops-i4) — identity
+  is invariant under writer count and arrival order. Asserted since Phase 0, never exercised against
+  a shuffled or concurrent ingest.
+- *upholds:* [I11](docs/invariants.md#i11) (the per-predicate counter already needs no coordination),
+  [ops-I5](docs/invariants.md#ops-i5) (one pipeline, now wider),
+  [ops-I1](docs/invariants.md#ops-i1) (single-process ownership is what *licenses* an in-process
+  lock).
+- *untouched, and must stay so:* [ops-I2](docs/invariants.md#ops-i2), `ops-I3`, `ops-I9`. This phase
+  is about a database that is still `Writable`; nothing here touches the seal.
+
+**What this phase must not do.** Not introduce a `--on-conflict` rule that picks a winner (that is
+the one thing `ops-I4` does forbid, and concurrency is exactly when it would get proposed). Not put
+a `FactId` into identity, or "fix" id nondeterminism by serialising something. Not let the lookup
+cache become the sole record of an uncommitted write before 12f states that constraint — an
+eviction would then strand a fact. Not reshape the read path: readers take snapshots and are not
+party to any of this.
+
+**Tasks.** Ordered so that the two items with no invariant exposure land first, the invariant change
+lands in the middle with the suite green around it, and the item that depends on its guarantees
+lands last.
+
+- **12a — a write rung. ✅** `examples/ingest.rs`, with the corpus stated once in
+  `aperture_cli::workload::Corpus` beside the query catalogue. Five layers — `commit`, `create`,
+  `dedup:warm`, `dedup:cold`, `block:*` — arranged so the *differences* are the answers:
+  committing is 41% of interning, the cache is 23% of a resolve pass, block decode is 32% on top
+  ([findings §13](bench/FINDINGS.md)). Two things it does differently from the read ladder, both
+  forced: a fresh database per iteration (an ingest is not idempotent, so a run cannot repeat
+  against its own output) with `create_predicates` called before the clock starts; and
+  reproduce-or-abort against a **closed form** rather than a probe — `Corpus` states its own
+  `facts()` and `interns()`, and `the_corpus_costs_exactly_what_it_says_it_does` proves that
+  statement against a real store, so the *first* run is checked too. The `eprintln!` probe in
+  `session.rs` is retired into `ServerStats::block_interned`. **Stops below the wire** — the
+  server and the framing are not in it, which is what finding 12's 47% still needs.
+- **12b — stop the producer waiting** (client-side, no invariant exposure). Hand full blocks to a
+  writer thread behind a bounded queue; report `Queueing` — time producers spent blocked — since
+  that, not `Writing`, is what says whether the writer is the ceiling once the two overlap. Worth
+  ~1.9× on its own. **Built in `clients/dotnet`, and the only item here with no test behind it**:
+  its evidence is a re-index, which is hours. The projection stands unverified until someone runs
+  one, and should be labelled that way wherever it is quoted.
+- **12c — cut the redundant work. ✅** The
+  [lookup cache](crates/aperture-store/src/lookup_cache.rs) in front of `fact_at`, and the
+  `entities` read skipped on key-only predicates (22 of the 27 in `code_index`). The trade is
+  stated rather than taken silently: that second read doubled as an I12 spot-check, and it is given
+  up in favour of the tests that already own the property. Guarded by a **read-count probe, not a
+  timing test** — `interning_reads_a_key_once_however_many_references_name_it` and
+  `a_key_only_predicate_never_reads_the_entities_tree` in
+  `aperture-ingest/tests/against_a_real_store.rs`, each run against a cold cache as well as a warm
+  one because creating a fact and *finding* one are different code. Both were proved non-vacuous by
+  neutering the mechanisms and watching the counts go 201 → 400 and (3,1) → (3,3). The cache is
+  bounded in **bytes**, not entries: an entry count bounds nothing when the keys are encoded fact
+  keys, and a hit allocates nothing because the value comparison happens inside the cache.
+- **12d — the striped merge frontier. ✅** Per-key exclusion striped by
+  `hash(predicate_id ++ key_fields)` over `SHARDS = 64` stripes, each holding its own slice of the
+  lookup cache **behind the same mutex** — the two want the same critical section, so they share one.
+  The stripe is held across the whole resolve-or-create: look, read, write. Costs 1–4%
+  single-threaded ([findings §13](bench/FINDINGS.md)), which is one hash of the key.
+  The never-nested argument is now **checked**, not just written down: a debug-only thread-local
+  panics if a critical section is entered inside another, because the failure it prevents is a
+  self-deadlock on a non-reentrant mutex, intermittent and in production.
+  `put_fact`'s debug assertion stays as the backstop for direct callers (tests and fixtures use it);
+  what changed is that everything going through `intern` is now safe by mechanism.
+  **It also turned out to do a second job.** Reopening the race to prove the guard non-vacuous
+  produced `DanglingFactId`, not a double id: a fjall batch is atomic on *recovery*, not isolated
+  from a concurrent reader, so `fact_at` could see a `keys` insert before its `entities` insert. The
+  frontier closes that too — and it is why per-key exclusion is the *weakest* sufficient mechanism
+  rather than a coarse one to be optimised later
+  ([chapter 3](docs/03-storage-model.md#and-a-second-job-which-was-not-the-one-it-was-built-for)).
+- **12e — parallel interning. ✅** The per-database writer task retires — but as a **downgrade, not
+  a removal**, because that mutex was doing two jobs and only one of them was ever the store's to
+  take back. The job it loses is excluding writers from each other, now done per key by the
+  frontier. The job it keeps is `ops-I2`: a block must not land in a sealed database. So it is an
+  `RwLock` named `sealing`, writers take it **shared** and `finish` takes it **exclusive** — the
+  exact asymmetry, since writers are compatible with each other and none is compatible with the
+  seal. No worker pool was needed: the parallelism is the per-stream tasks that already existed,
+  which the mutex had been holding still.
+  Guarded by `two_connections_write_one_database_at_the_same_time`, which asserts a **gauge** rather
+  than a stopwatch — `FjallDb::intern_concurrency` counts threads inside interning, so a peak above
+  one *is* parallelism rather than evidence for it. Non-vacuous: restoring the exclusive lock takes
+  the peak to 1. Plus `a_conflict_between_concurrent_writers_fails_exactly_one_of_them`.
+  **The id-pinning rewrite this task called for was not needed, and the reason it was expected is
+  worth keeping.** The claim was that those tests "hold today only because the funnel is serial".
+  Checked one by one: they are single-*writer* by construction — one thread, one connection — so
+  their determinism never came from the server's serialisation and does not depend on it. Some
+  assert real id assignment (`!stored(&db, FactId::new(FILE, 2))` is "no second file was created",
+  spelled as a sequence). Those stay, and would break loudly and correctly if anyone made them
+  concurrent.
+- **12f — one commit per block, not per fact. ✅ In two parts, because the first was a hazard this
+  task did not see.**
+  - **12f-1 — a durable id reservation.** Batching hands an id out before its bytes are durable, and
+    the allocator resumed from the last `entities` key. The failure that opens is *not* the obvious
+    one: a crash loses a batch, the allocator resumes **below** an id another writer already
+    referenced and committed, and reissues it to a different fact — so the reference resolves, to
+    the wrong target, through a `finish` that cannot tell the difference because it only checks that
+    references resolve. Ranges are now claimed in `meta` ahead of use (`RESERVATION_CHUNK = 1024`),
+    needing no `fsync` since they share the journal with the fact batches and are ordered before
+    them. A crash costs the unused tail of a chunk — a hole, which [I11](docs/invariants.md#i11)
+    permits. With this in place the worst a crash can do is strand a reference, which `finish`
+    **does** catch.
+  - **12f-2 — the batching itself, as `serve --commit-per-block`, off by default.** A `Staged`
+    writer holds one `fjall` batch plus a **pending map** of what it created, consulted before the
+    stripe cache — which is what keeps the cache an optimisation rather than making it load-bearing
+    (an eviction must cost a point read, never a duplicate key). It commits **even when the block
+    failed**, because ids from the successful part may already have gone to another writer.
+  - **Measured: 21% off a create pass** (61.1 → 48.4 ms, 159k → 201k facts/s), with the committing
+    term halved rather than removed — staging still builds rows and fills a map
+    ([findings §13](bench/FINDINGS.md)). Worth stating because "committing is 41% of interning"
+    invites the wrong number: 41% is what committing *costs*, not what batching *removes*.
+  - **Why a flag and not a default.** It trades a durability property, and the honest statement of
+    the trade is *a crash during ingest may cost the index, never its correctness*. That is a
+    reasonable thing to put in front of an operator and a poor thing to impose. It is a `serve`
+    flag rather than a create-time property on purpose: two databases with identical content must
+    not differ in their metadata because of how fast somebody wanted to write them.
+- **12g — unblock 7b. ✅** Folded back, and the folding corrected an overstatement this task itself
+  made. It said the frontier answers 7b's question with "neither". It does not: what the
+  sort-and-merge scheme was reaching for is fjall's bulk `ingest()`, which needs no per-key reads at
+  all, and that is genuinely cheaper than resolve-or-create per fact. What Phase 12 did was make the
+  *simple* path correct, so 7b is no longer blocked on choosing — the stratum design survives as an
+  optimisation to be justified by measurement rather than assumed.
+  Rewritten: [operations §5](docs/aperture-cli-design.md)'s `aperture write` pipeline, which is 7b's
+  design of record and described a scheme that would no longer be built; two stale spots in §8; and
+  7b's own tasks and acceptance above.
+
+**Acceptance:**
+- [x] **`store::concurrent_interning_of_one_key_creates_one_fact`** — N threads racing on one key
+      produce one fact, hand the same id to all of them, and leave the two column families in exact
+      bijection. The guard I12 could not have before. Proved non-vacuous: before 12d it panicked on
+      `put_fact`'s write-once assertion in debug and handed out `FactId(22)` and `FactId(23)` for one
+      key in release.
+- [x] **Identity is invariant under writer count** — `tests/parallel_ingest.rs`. Three arms over one
+      nested corpus: serial forward, serial **reversed**, and eight threads each offering every fact.
+      Same content hash from all three; the reversed arm asserts the ids really did differ, which is
+      what makes the parallel arm mean something rather than hoping an interleaving occurred. Also
+      non-vacuous — with the race reopened it fails, and 7b's shuffle criterion is this property.
+- [x] **Same-key-different-value is rejected under every interleaving**, and the rejection is
+      reported to the producer whose block carried the loser. Which producer that is may vary; that
+      one of them fails must not. — `a_conflict_between_concurrent_writers_fails_exactly_one_of_them`
+      asserts exactly one: never both (which would lose a fact nobody disagreed about) and never
+      neither (which would mean one silently won).
+- [x] **A read-count probe shows point reads per created fact fall**, and the key-only path does one
+      read where it did two. Counted, not timed. — 4.63 interns per fact resolve with 1.00 `keys`
+      reads per fact; `(3,1)` where an unconditional second read gives `(3,3)`.
+- [x] **The crash case still holds with parallel writers and per-block commits.** The bijection is
+      unaffected either way — a batch is all-or-nothing on recovery whether it holds one fact or a
+      block, so `store::no_half_present_facts` needed no extension. What a crash *can* now do is
+      strand a reference to a fact whose batch was lost, and the two things that bound it are
+      guarded instead: `finish` refuses to seal (it walks every reference), and the id is never
+      reissued (`store::a_reopened_allocator_resumes_past_what_was_claimed_not_past_what_was_written`).
+      The second is the one that mattered — without it the reference would resolve to the wrong
+      fact and the seal would succeed.
+- [x] **A write rung exists and attributes a facts/s number to a layer** — `examples/ingest.rs`,
+      [findings §13](bench/FINDINGS.md). **Finding 12 is not yet re-measured through it**: that
+      needs a `dotnet/runtime` re-index, and the rung also stops below the wire, so the 47%
+      inside `Write` is still attributed to a call rather than a layer. Both are carried in
+      FINDINGS' open list rather than left implied here.
+- [ ] The whole suite green, and `cargo test -- --ignored --list` shows no new pending guard beyond
+      unions (8.6).
+
+**What this phase does not buy, stated so the number isn't oversold.** After 12b the walk and the
+writer are nearly balanced (~2,573 s against ~2,255 s on the 25M-fact index), so parallel interning
+buys headroom rather than wall clock until the producer side gets faster too. Commits do not
+parallelise at all — fjall's journal mutex is global. The honest claim for 12d–12f is that it makes
+a rule mechanical and removes a ceiling; the throughput claim belongs to 12b and 12c.
 
 ---
 

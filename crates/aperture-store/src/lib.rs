@@ -25,6 +25,8 @@ pub mod fact;
 pub mod fact_store;
 pub mod format;
 pub mod identity;
+/// The ingest-time lookup cache (see `docs/glean-capabilities.md` §2.3).
+mod lookup_cache;
 pub mod meta;
 pub mod schema_doc;
 pub mod store;

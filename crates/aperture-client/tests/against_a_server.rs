@@ -1259,3 +1259,109 @@ fn a_cancel_inside_a_chunk_completes_rather_than_fails() {
         "the session goes on"
     );
 }
+
+/// **[Phase 12e](../../../PLAN.md): two connections write one database at the same time.**
+///
+/// The server used to hold a per-database mutex across every block, so however many
+/// clients were writing, one was writing. That mutex was doing two jobs and only ever had
+/// the right to one of them — keeping a block out of a database that has been sealed. The
+/// other, keeping writers out of *each other's* way, is now the store's, and is done per
+/// **key** by the striped merge frontier rather than per database.
+///
+/// **The peak gauge rather than a stopwatch.** "They ran at the same time" is exactly the
+/// kind of claim a timing test argues for and never settles — a slow CI box makes two
+/// serialised writers look concurrent and a fast one makes two concurrent writers look
+/// serialised. `intern_concurrency` counts threads inside interning, so a peak above one
+/// is not evidence of parallelism, it *is* parallelism.
+#[test]
+fn two_connections_write_one_database_at_the_same_time() {
+    use std::sync::Barrier;
+
+    const PER_CONNECTION: usize = 4_000;
+
+    let serving = start();
+    let database = serving.registry.bind("code").expect("the database");
+
+    // Both halves overlap in the middle, so the frontier has to decide contended keys
+    // rather than two disjoint sets that would never meet.
+    let facts = |from: usize| -> Vec<WireFact> {
+        (from..from + PER_CONNECTION)
+            .map(|n| file(&format!("shared{n:06}.py")))
+            .collect()
+    };
+
+    let start_together = Barrier::new(2);
+    thread::scope(|scope| {
+        for from in [0, PER_CONNECTION / 2] {
+            let (serving, barrier) = (&serving, &start_together);
+            scope.spawn(move || {
+                let mut connection = serving.open(Mode::ReadWrite);
+                let batch = facts(from);
+                barrier.wait();
+                connection
+                    .write(FILE, &batch)
+                    .expect("the block is written");
+            });
+        }
+    });
+
+    let (_, peak) = database.db.intern_concurrency();
+    assert!(
+        peak >= 2,
+        "the write path is still serialised: never more than {peak} writer interning at once"
+    );
+
+    // And it is correct, not merely concurrent: the overlap was written once.
+    let expected = PER_CONNECTION + PER_CONNECTION / 2;
+    let mut reader = serving.open(Mode::ReadOnly);
+    let mut rows = reader.query("F where src.File F").expect("a result");
+    assert_eq!(
+        reader.take(&mut rows, expected * 2).expect("a page").len(),
+        expected,
+        "two writers overlapping by half must write the overlap once"
+    );
+}
+
+/// **A conflict is still refused when the two writers are concurrent**, and refused to
+/// exactly one of them.
+///
+/// `ops-I5`'s reject is the rule that survives parallelism, and it is the rule
+/// [`ops-I4`](../../../docs/aperture-cli-design.md) actually needs: *which* producer is
+/// told no may vary with the interleaving, but that one of them is told no may not. A
+/// pick-one rule would make the database depend on a race; a reject makes the failure
+/// depend on it, which is a different and acceptable thing.
+#[test]
+fn a_conflict_between_concurrent_writers_fails_exactly_one_of_them() {
+    use std::sync::Barrier;
+
+    let serving = start();
+    let start_together = Barrier::new(2);
+
+    // Same key, different value side — the one shape `ops-I5` refuses.
+    let refused = thread::scope(|scope| {
+        let handles: Vec<_> = ["one", "two"]
+            .into_iter()
+            .map(|text| {
+                let (serving, barrier) = (&serving, &start_together);
+                scope.spawn(move || {
+                    let mut connection = serving.open(Mode::ReadWrite);
+                    let batch = vec![doc("same.py", 1, "f", text)];
+                    barrier.wait();
+                    connection.write(DOC, &batch).is_err()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("a writer"))
+            .filter(|refused| *refused)
+            .count()
+    });
+
+    assert_eq!(
+        refused, 1,
+        "exactly one of two contradictory writers must be refused — never both, which \
+         would lose a fact nobody disagreed about, and never neither, which would mean \
+         one silently won"
+    );
+}

@@ -25,6 +25,7 @@ pub fn run(
     socket: &Path,
     listen: Option<&str>,
     ready_file: Option<&Path>,
+    commit_per_block: bool,
 ) -> Result<(), CliError> {
     // **`--features console`, and a developer's build only.**
     //
@@ -63,7 +64,7 @@ pub fn run(
     // server that had to be stopped before a lifecycle command could run.
     let (registry, listing) =
         Registry::open(catalog, Schemas::new(code_index::CATALOGUE_SOURCE, schema))?;
-    let registry = Arc::new(registry);
+    let registry = Arc::new(registry.with_block_commits(commit_per_block));
 
     println!("aperture serve");
     println!("  data dir   {}", root.display());
@@ -72,6 +73,14 @@ pub fn run(
     println!(
         "  schema     {fingerprint:#018x}  (the built-in one; each database is served with its own)"
     );
+    if commit_per_block {
+        // Printed because it changes what a crash costs, and an operator reading a log
+        // afterwards should not have to reconstruct which flags were passed.
+        println!(
+            "  commits    per block  (faster ingest; a crash mid-ingest may leave a \
+             database that refuses to seal and has to be re-indexed)"
+        );
+    }
 
     if listing.entries.is_empty() {
         // Said plainly rather than served silently: a server with nothing to serve is

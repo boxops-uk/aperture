@@ -372,9 +372,30 @@ Two separable wins, in order of size:
    oversight. Worth reconsidering with a number attached: I12 is guarded by a test, and paying
    for it on every interned reference at ingest is a strange place to buy insurance.
 
-Neither touches an invariant. Both want a measurement first: ingest of the 25M-fact
-`dotnet/runtime` index ran at ~5.2k facts/s, and nothing in
-[`bench/FINDINGS.md`](../bench/FINDINGS.md) yet attributes that number to anything.
+Neither touches an invariant. Both wanted a measurement first, and it has since been taken:
+[findings §12](../bench/FINDINGS.md) attributes the ~5.2k facts/s, and the headline is that
+**94.9M interns produced 25.0M facts — 73.6% of the write path's work was re-reading something
+already present.** Both items are now scheduled, together with the thing looking for them turned
+up: [Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier).
+
+**The third item, which this section did not see because it was looking at cost.** Glean's write
+path is 48 threads over per-repo queues excluded by a *try*-mutex whose loser "deduplicates and
+then writes anyway" (`glean/db/Glean/Database/Write/Batch.hs:221-234`, with an open `TODO` asking
+whether it should) — which is a per-*database* exclusion standing in for a per-*key* one, and the
+double-create hazard is what `ignoreRedef` then has to absorb downstream. Ours had the same shape
+with the count set to one: a single writer task per database, doing the excluding by existing.
+Going parallel is therefore not "adopting Glean's concurrency"; it is taking the primitive Glean's
+own arrangement shows the absence of. That is [Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier)'s
+first task, and it is why the cache below is sharded by the same stripe rather than sitting behind
+one mutex.
+
+**One property of ours worth recording while it is cheap.** Glean lists a bounded `LookupCache`
+whose eviction depends on timing among the six reasons its databases are not reproducible
+(`ops-I4`). Ours cannot inherit that: a miss falls through to an authoritative LSM read, so
+eviction changes *speed* and never *outcome*. It stays true only while that remains the case — a
+cache that ever becomes the sole record of an uncommitted write (which is what batching commits per
+block would make it) is load-bearing for correctness, and its eviction policy becomes an
+[I12](invariants.md#i12) concern. Phase 12 states that as a constraint rather than discovering it.
 
 ### 2.4 Walking a fact's references
 

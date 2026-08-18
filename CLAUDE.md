@@ -26,7 +26,7 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 | `aperture-schema` | the type model (`schema`), the physical row id (`id`), schema **identity** (`fingerprint`: the canonical form, per-predicate and whole-schema numbers, subset containment) and — since Phase 8.2 — the schema DSL's front end (`syntax`: lexer, `lelwel` grammar, parse, lower, `print` and `resolve` (imports), the executable corpus). Depends on no Aperture crate, which is the direction that matters; [operations §10](docs/aperture-cli-design.md) puts "parse → AST → canonical model; imports/resolution; fingerprints" here, so the bottom of the stack has a grammar in it and nothing above needs to know a schema was ever text |
 | `aperture-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
 | `aperture-wire` | the **transport** codec, its framing, and the protocol's message vocabulary — `varint`, the schema-driven `value`/fact encoding, `crc`, `block` (a run of one predicate's facts behind a sync marker), `frame` (`[kind][stream][length]`), and `protocol` (what a startup frame carries, what a stream's life looks like — shared by server and client, **no I/O policy**). A sibling of `aperture-encoding`, not a layer on it: it depends on `aperture-schema` alone and shares no bytes with the storage codec |
-| `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, the errors the storage layer raises — and the **lifecycle**: `catalog` (the store root, `ops-I1`'s lock, `ops-I7`'s filesystem-as-catalog), `meta` (the `APERTURE_META` sidecar), `schema_doc` (the embedded schema copy — **source**, since Phase 8.4, and what a server reads a database's schema back from), `identity` (`ops-I4`'s content hash), `ulid` |
+| `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, the errors the storage layer raises — and the **lifecycle**: `catalog` (the store root, `ops-I1`'s lock, `ops-I7`'s filesystem-as-catalog), `meta` (the `APERTURE_META` sidecar), `schema_doc` (the embedded schema copy — **source**, since Phase 8.4, and what a server reads a database's schema back from), `identity` (`ops-I4`'s content hash), `ulid`, and `lookup_cache` (what `(predicate, key)` already names — interning's point-read cache, [Phase 12](PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier)) |
 | `aperture-ingest` | the **write funnel** (`ops-I5`): `FactSink` (the write seam, as `FactStore` is the read seam), and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up. Sits above `store` and `wire` because it is the crossing between them, and neither should know the other |
 | `aperture-engine` | **focus** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here. `iter::Profile` is what a run *examined*, per step of the body: the counter the cancellation stride already kept, handed back by `enumerate_profiled` instead of thrown away |
 | `aperture-client` | the **client**: `connection` (connect over a Unix socket **or TCP** — one `Transport` enum, since the protocol is the same and only the pipe differs — handshake, the write stream, lifecycle requests, `fetch` (what facts these ids name), and the frame demultiplexer that parks another stream's frames rather than dropping them), `rows` (a query result as a **bookmark** — no borrow of the connection, so several are open at once, and `take` is the page `\more` is built on), `expand` (a reference replaced by the fact it names, recursively — the breadth-first walk, the depth bound and the cache, since how deep to expand is a display decision and the point read behind it is not). Depends on `wire` and nothing else |
@@ -161,13 +161,13 @@ Know these by number — they are the guardrails every change is checked against
 | [I9](docs/invariants.md#i9)  | Hot path is allocation-free per row. | [4](docs/04-executor.md) |
 | [I10](docs/invariants.md#i10) | Union discriminants are stable and append-only. | [6](docs/06-types-and-schema.md) |
 | [I11](docs/invariants.md#i11) | `FactId` is stable, unique, never reused within a DB. | [3](docs/03-storage-model.md) |
-| [I12](docs/invariants.md#i12) | Both column families are written atomically. | [3](docs/03-storage-model.md) |
+| [I12](docs/invariants.md#i12) | Both column families are written atomically — **and a key names exactly one fact**. | [3](docs/03-storage-model.md) |
 | [I13](docs/invariants.md#i13) | The DB's schema is embedded and frozen at create. | [6](docs/06-types-and-schema.md) |
 | [I14](docs/invariants.md#i14) | A derived bind is a pure function of the fact bindings. | [7](docs/07-compilation.md) |
 | [I15](docs/invariants.md#i15) | A DB says which format wrote it; an unreadable one is refused. | [3](docs/03-storage-model.md) |
 
-**Operational invariants `ops-I1`–`ops-I10`** (lifecycle, single-writer, reproducibility,
-one-write-funnel) are a **separate namespace** — always written `ops-Ix` — and live in
+**Operational invariants `ops-I1`–`ops-I10`** (lifecycle, single-*process* ownership,
+reproducibility, one-write-*funnel*) are a **separate namespace** — always written `ops-Ix` — and live in
 [`docs/aperture-cli-design.md §1`](docs/aperture-cli-design.md), summarised in the
 [registry](docs/invariants.md#operational-invariants-ops-i1ops-i10).
 
@@ -204,6 +204,36 @@ decoded data.
 
 ## Scope, phases & open decisions
 
+- **A database takes many writers while it is `Writable` — Phase 12, and it reversed something
+  four documents called forced.** `ops-I1` is a rule about *processes*, `ops-I5` about
+  *pipelines*, and `ops-I4`'s hash is a **multiset over each fact's logical form**, so none of the
+  three asks for a serial writer; the chain that derived one died when Phase 7 made a reference the
+  nested target fact. What the single thread was actually holding is
+  [I12](docs/invariants.md#i12)'s *other* half — a key names exactly one fact — by construction
+  rather than by a mechanism, which is a rule no test can observe. The mechanism is **per-key
+  exclusion striped by `hash(predicate_id ++ key_fields)`**, and it needs no lock ordering because
+  interning is bottom-up: a parent's key has no bytes until its children have ids, so critical
+  sections are strictly leaf-then-parent and never nested. In-process locking suffices *because* of
+  `ops-I1`, and a debug-only guard asserts the never-nested claim rather than trusting it. Two
+  further things to know before touching it: the stripe is held across the LSM read *and* the
+  commit, because a fjall batch is atomic on recovery but **not** isolated from a concurrent reader
+  — so per-key exclusion is the weakest sufficient mechanism and a lock-free CAS would not do; and
+  `put_fact` still carries its debug write-once assertion, which is the backstop for the direct
+  callers that do not go through `intern`. Two things ride on the same phase and are worth knowing
+  before touching the write path: **ids are claimed durably ahead of use** (`meta`, chunks of
+  1,024), because handing one out before its fact is committed would otherwise let a crash reissue
+  it to a different fact and turn a surviving reference into one that resolves to the *wrong*
+  target — silently, through a `finish` that only checks that references resolve; and
+  **`serve --commit-per-block`** is off by default and trades exactly one thing, stated the same
+  way everywhere it appears: *a crash during ingest may cost the index, never its correctness.*
+  Decision and accepted tradeoffs:
+  [open decisions](docs/open-decisions.md#parallel-writes-to-a-writable-database--settled-yes-behind-a-striped-merge-frontier);
+  build: [Phase 12](PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier) and
+  [per-block commits](docs/open-decisions.md#per-block-commits--settled-a-server-flag-off-by-default-gated-on-a-durable-id-claim);
+  the number
+  that found it: [findings §12](bench/FINDINGS.md). **Do not "restore" the single writer to fix an
+  ordering problem** — and do not add a conflict rule that picks a winner, which is the one thing
+  `ops-I4` really does forbid.
 - **Build order and current state:** [`PLAN.md`](PLAN.md). Both sanctioned machine changes are
   **done**: the **`FactRef` marker** (its own marker `0x51` in the codec) and **dynamic
   derivation** ([Phase 6](PLAN.md) — a register holds a `Slot`, a plan's body is a sequence of

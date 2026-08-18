@@ -1,9 +1,8 @@
 //! **Blocks** — the unit a fact travels in, on a socket and on disk alike.
 //!
 //! One block is a run of facts of *one predicate*, so the predicate id is paid once
-//! rather than per fact. An indexer writing in visitation order emits small blocks
-//! in bursts; a post-merge writer emits huge ones; blocks coalesce monotonically
-//! through k-merges until fully ordered
+//! rather than per fact. An indexer writing in visitation order emits small blocks in
+//! bursts; a writer that has grouped its output emits large ones
 //! ([operations §8](../../../docs/aperture-cli-design.md)). The same bytes are a
 //! `CopyData` frame's payload on the wire and a run of a fact file on disk, which is
 //! what makes "one fact encoding, not two" a thing that can be checked.

@@ -105,6 +105,11 @@ ctrlc = "3.5.2"
 # dependency, so the feature is what the batteries here compile against — the
 # cross-crate form of the rule the feature comment above describes.
 aperture-encoding = { path = "crates/aperture-encoding", features = ["proptest"] }
+# The write rung (`examples/ingest.rs`) drives the funnel in-process, below the wire and
+# below the server — which is the whole point of a rung. A dev-dependency rather than a
+# real one because the *tool* writes over a socket like any other client, and adding this
+# to `[dependencies]` would quietly give it a second way in.
+aperture-ingest = { path = "crates/aperture-ingest" }
 aperture-store = { path = "crates/aperture-store", features = ["proptest"] }
 # Allocation-counting global allocator for the I9 hot-path guard
 # (`exec::scan_is_alloc_free_per_row`). Its counters are thread-local, so it

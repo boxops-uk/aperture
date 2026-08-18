@@ -57,6 +57,21 @@ pub enum Command {
         /// Written once the listener is accepting — a signal, not a race.
         #[arg(long, value_name = "PATH")]
         ready_file: Option<PathBuf>,
+
+        /// Commit a write stream's facts once per block instead of once per fact.
+        ///
+        /// **Faster to ingest, and a crash mid-ingest may cost the index.** Committing
+        /// per fact is 41% of interning, so a bulk load pays a large fixed tax for a
+        /// guarantee it may not need. With this on, a fact's id is handed out before its
+        /// bytes are durable — so if the process dies mid-ingest, a database may be left
+        /// holding a reference to a fact that was never written. That is caught at
+        /// `finish`, which walks every reference, and the database refuses to seal: the
+        /// cost is **re-running the index**, never a wrong answer from one that sealed.
+        ///
+        /// Off by default, and deliberately not a config-file entry: it is a decision
+        /// about one run, taken by whoever is running it.
+        #[arg(long)]
+        commit_per_block: bool,
     },
 
     /// Create a Writable database.

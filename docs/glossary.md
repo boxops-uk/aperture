@@ -119,8 +119,12 @@ each result row. [ch4](04-executor.md).
 `Row` and returns `Continue`/`Suspend`. The executor is the enumerator (producer).
 [ch4](04-executor.md).
 
-**k-way merge** — the ingestion step that merges per-worker sorted runs, deduping identical
-facts and rejecting same-key-different-value at the frontier. [Operations](aperture-cli-design.md).
+**k-way merge** — the ingestion step that *was* to merge per-worker sorted runs, deduping and
+rejecting at the frontier. **Not built, and no longer on the path**: a key holding a nested
+reference has no bytes to sort until interning has run, and Phase 12 made interning-as-you-decode
+correct under many writers instead. It survives as an optimisation, not a plan
+([Operations §5](aperture-cli-design.md)). The **merge frontier** the term pointed at is now a
+real thing and a different one — see below.
 
 **keys** — the column family `predicate_id ++ encoded_key → fact_id`; the index; prefix scans
 over it *are* predicate queries; the only CF the scan hot loop touches. [ch3](03-storage-model.md).
@@ -142,8 +146,14 @@ can't exercise [I8](invariants.md#i8)). [ch3](03-storage-model.md), [testing](te
 **NodeId** — stable, cross-phase identity of a node in the `SyntaxTree` store; lets typecheck
 annotate via side tables without mutating the tree. [ch7](07-compilation.md).
 
-**one-write-funnel** — every writer passes the same validate→sort/merge→dedup→reject pipeline
-([ops-I5](invariants.md#ops-i5)). [Operations](aperture-cli-design.md).
+**one-write-funnel** — every writer passes the same validate→intern→dedup→reject pipeline
+([ops-I5](invariants.md#ops-i5)). One *pipeline*, not one thread: it says there is no path around
+the rules, never that one core applies them. [Operations](aperture-cli-design.md).
+
+**merge frontier** — where a key's identity is decided: resolve-or-create, dedup, reject. Since
+Phase 12 it is **striped** — one lock per `hash(predicate ++ key)`, so the exclusion is exactly as
+wide as the thing being decided and a database takes as many writers as it has streams.
+[I12](invariants.md#i12), [ch3](03-storage-model.md#the-other-half-of-the-bijection--one-key-one-fact).
 
 **order-preserving** — `memcmp(encode(a), encode(b)) == cmp(a, b)`; the codec's defining
 property ([I1](invariants.md#i1)). [ch2](02-tuple-codec.md).

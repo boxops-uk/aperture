@@ -401,9 +401,18 @@ Why it must hold:
 
 **`FactId` is a *physical* row id, not cross-DB identity.** Two DBs built from identical
 inputs are considered identical by a *content hash* (`hash(canonical schema, base facts)`,
-[ops-I4](invariants.md#ops-i4)), **not** by fact-id equality. Reproducibility comes from
-the deterministic merge during ingestion, not from fact-ids matching across builds. The
-per-predicate counter is the seam that makes concurrent ingestion safe.
+[ops-I4](invariants.md#ops-i4)), **not** by fact-id equality. Reproducibility comes from that
+hash being a **multiset over each fact's logical form** — order-independent by construction, no
+physical id anywhere in it — and *not* from the merge being serial or from ids matching across
+builds. Two runs of the same indexer over the same tree may legitimately assign different ids and
+are still the same database by the only measure that is checked.
+
+**What the per-predicate counter does and does not buy.** It makes *id allocation* free of
+coordination: `fetch_add` on the predicate's own counter is safe under any number of writers, and
+a sequence consumed by a write that then failed is simply never handed out again (I11 asks for
+unique and never-reused, not dense). What it does **not** buy is the rest of interning. Deciding
+whether a key is already present, and creating it if not, is a read-modify-write, and *that* is
+the part that needs exclusion — per key, and only per key ([I12](invariants.md#i12) below).
 
 ---
 
@@ -429,6 +438,61 @@ is invisible to every query — silent, and undetectable without checking both d
 batch is the only thing standing between "immutable, self-consistent store" and
 "mostly-consistent store." Writing one CF without the other, or outside a batch, is an
 [anti-pattern](conventions.md).
+
+### The other half of the bijection — one key, one fact
+
+Atomicity is the easy half, and the batch delivers it whoever writes. The half a batch is
+innocent of is **write-once**: writing the *same key twice* overwrites the `keys` row and strands
+the first fact's entity, producing exactly the invisible orphan above. `FjallDb::put` refuses it in
+every build; `put_fact` is the bulk primitive and delegates it to the merge frontier upstream, with
+a debug assertion as a backstop.
+
+**This is the whole of what a parallel writer conflicts with**, and it is worth being exact,
+because for a long time four other invariants were credited with it. Two workers interning the
+same nested target both find the key absent, both allocate, both write — one `keys` row survives
+and the other entity is stranded. Neither [I11](invariants.md#i11) (the counter needs no
+coordination) nor I12's atomicity half (each batch is independent) nor
+[ops-I4](invariants.md#ops-i4) (an order-independent hash) nor
+[ops-I1](invariants.md#ops-i1) (a *process* rule) forbids it. What forbids it today is that there
+is one thread — a property no test can observe, which is the tell that the rule is being held by
+circumstance rather than by a mechanism.
+
+**The mechanism is per-key exclusion**, striped by `hash(predicate_id ++ key_fields)`, and the
+reason it needs no lock-ordering discipline is the bottom-up rule two sections above: *a parent's
+key has no bytes until its children have ids*. So a worker's critical sections run strictly
+leaf-then-parent and are never nested — it holds a child's stripe, releases it, then takes the
+parent's. The property that makes interning total is the same property that makes it
+parallelisable, which is the kind of coincidence worth not spending: it is why the striping is a
+lock at all and not a transaction.
+[Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier) builds it, and the
+guard is `store::concurrent_interning_of_one_key_creates_one_fact` — N threads racing on one key,
+one id handed to all of them, the bijection intact. Built at 12d, with `SHARDS = 64` stripes each
+holding its own slice of the lookup cache behind the same mutex, because the two want exactly the
+same critical section: *what this key already names*, and *the right to decide it names nothing
+yet*. Single-threaded that costs one hash of the key — measured at 1–4%
+([findings §13](../bench/FINDINGS.md)).
+
+### And a second job, which was not the one it was built for
+
+Reopening the race window to check the guard was not vacuous produced a failure nobody predicted:
+not two ids for one key, but **`DanglingFactId`** — the error [I12](invariants.md#i12) raises for a
+`keys` row whose `entities` row is missing, on a database that was not corrupt at all.
+
+The explanation matters more than the bug. **A fjall batch is atomic on recovery, not isolated from
+concurrent readers.** I12's guards are a bijection check and a *crash* test — a torn batch must come
+back whole or not at all — and both pass, because both ask what is on disk after the fact. Neither
+asks what a reader sees *during* a commit, and the answer is that it can see the `keys` insert before
+the `entities` insert of the same batch. With one writer that question never arose. So:
+
+- **Interning must not read a `keys` row while another writer is committing one.** The frontier
+  delivers that as a side effect of what it was built for: the only writer of `keys[K]` holds K's
+  stripe, and the only reader of `keys[K]` — `fact_at`, resolving K — holds it too.
+- **This constrains the design space rather than being a detail.** A global write lock would also
+  have closed it; a lock-free compare-and-swap on the `keys` tree would **not**, and neither would
+  any scheme that lets a resolve proceed without excluding the writer of the same key. So the
+  striping is not an optimisation over a coarser lock that could later be replaced by something
+  cleverer — per-key exclusion is the weakest thing that works, and anything weaker is wrong for a
+  reason the double-create story does not mention.
 
 ---
 

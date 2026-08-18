@@ -53,6 +53,9 @@ pub struct ServerStats {
     blocking_dispatches: AtomicU64,
     blocking_wait_micros: AtomicU64,
     queue_full_waits: AtomicU64,
+    blocks_interned: AtomicU64,
+    facts_created: AtomicU64,
+    facts_deduped: AtomicU64,
 }
 
 /// Which gauge a [`Live`] is holding down.
@@ -136,6 +139,19 @@ impl ServerStats {
     ///
     /// Worth its own counter because it is the precondition of the worst bug this
     /// server has had: a producer waiting here when the writer has already died.
+    /// One block interned, and what it did.
+    ///
+    /// **The write path's counters, kept where the read path's are.** These existed for a
+    /// while as an `eprintln!` every hundred blocks in `session.rs`, which was the right
+    /// probe for finding out whether the ingest cache hits at all and the wrong thing to
+    /// leave in a server: a counter belongs beside the other counters, where a test can
+    /// read it and an operator is not grepping stderr for it.
+    pub fn block_interned(&self, created: u64, deduped: u64) {
+        self.blocks_interned.fetch_add(1, Relaxed);
+        self.facts_created.fetch_add(created, Relaxed);
+        self.facts_deduped.fetch_add(deduped, Relaxed);
+    }
+
     pub fn queue_full_wait(&self) {
         self.queue_full_waits.fetch_add(1, Relaxed);
     }
@@ -189,6 +205,25 @@ impl ServerStats {
     #[must_use]
     pub fn blocking_wait_micros(&self) -> u64 {
         self.blocking_wait_micros.load(Relaxed)
+    }
+
+    /// Blocks interned since start.
+    #[must_use]
+    pub fn blocks_interned(&self) -> u64 {
+        self.blocks_interned.load(Relaxed)
+    }
+
+    /// Facts written since start.
+    #[must_use]
+    pub fn facts_created(&self) -> u64 {
+        self.facts_created.load(Relaxed)
+    }
+
+    /// Facts a write stream sent that were already present — `ops-I5`'s silent dedup,
+    /// and the ratio against [`Self::facts_created`] is what says interning is working.
+    #[must_use]
+    pub fn facts_deduped(&self) -> u64 {
+        self.facts_deduped.load(Relaxed)
     }
 
     #[must_use]

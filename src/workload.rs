@@ -24,6 +24,9 @@
 //! unmeasured probe and holds every timed run to it — which is what
 //! `examples/engine.rs` does.
 
+use aperture_schema::schema::{PredicateId, Schema};
+use aperture_wire::{WireFact, WireRef, WireValue};
+
 /// The values a workload seeks for, taken out of the corpus that is loaded.
 #[derive(Debug, Clone)]
 pub struct Pivots {
@@ -352,5 +355,311 @@ mod tests {
     fn escaping_covers_quotes_and_backslashes() {
         assert_eq!(escape(r#"a"b"#), r#"a\"b"#);
         assert_eq!(escape(r"a\b"), r"a\\b");
+    }
+
+    /// **[`Corpus`]'s closed form is what interning actually costs** — checked against a
+    /// real store, because otherwise the write rung's reproduce-or-abort check is
+    /// circular: it would be holding the run to a number derived from the same reasoning
+    /// that produced the run.
+    ///
+    /// Both halves matter and they fail differently. `created` wrong means the corpus does
+    /// not contain what it says (a duplicate key generated twice, or a fanout that
+    /// collides), and every facts/s number would then be divided by the wrong count.
+    /// `interns` wrong means the nesting is not the depth claimed, which is precisely the
+    /// quantity the cache is judged on.
+    #[test]
+    fn the_corpus_costs_exactly_what_it_says_it_does() {
+        let corpus = Corpus {
+            files: 4,
+            modules_per_file: 2,
+            decls_per_module: 3,
+            refs_per_decl: 2,
+        };
+
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let db = aperture_store::store::FjallDb::open(dir.path()).expect("a database");
+        let schema = crate::code_index::schema();
+
+        let (mut created, mut seen) = (0, 0);
+        for emission in corpus.emit(&schema) {
+            let mut interns = 0;
+            for fact in &emission.facts {
+                let out = aperture_ingest::intern_fact(&db, &schema, fact).expect("it ingests");
+                interns += out.seen();
+            }
+
+            assert_eq!(
+                interns as u64, emission.interns,
+                "{} costs {interns} interns, not the {} it claims",
+                emission.name, emission.interns,
+            );
+            created += emission.facts.len();
+            seen += interns;
+        }
+
+        // Every fact is distinct, so a first ingest creates one per emitted fact — and
+        // the interns above it are the repeats the cache exists for.
+        assert_eq!(created as u64, corpus.facts(), "distinct facts");
+        assert_eq!(seen as u64, corpus.interns(), "resolve-or-create calls");
+
+        // The claim the ratio is quoted for: a `keys` read per *distinct* key, not per
+        // intern. Same arithmetic as the ingest crate's guard, one layer up and over a
+        // shape with four levels of nesting rather than two.
+        assert_eq!(
+            db.intern_read_counters().0,
+            corpus.facts(),
+            "one live `keys` read per distinct key"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// The write side: what an ingest instrument sends
+// ---------------------------------------------------------------------------------
+
+/// **The facts a write instrument sends, stated once** — S0 for the write path.
+///
+/// Everything above this line describes *questions asked of a corpus that exists*. A
+/// write rung has the opposite problem: it needs facts that do **not** exist yet, and
+/// the thing under measurement is not their content but their **shape**. Interning's
+/// cost is decided by how many references name the same target — 94.9M interns produced
+/// 25.0M facts on the real index, a ratio of 3.8
+/// ([findings §12](../../bench/FINDINGS.md)) — so a corpus that does not reproduce that
+/// ratio measures a write path nobody has.
+///
+/// The four fanouts below are what set it. They are the source layer of the built-in
+/// schema, nested exactly as [`aperture_cli::code_index`](crate::code_index) declares
+/// it: a reference names a declaration, which names a module, which names a file. So one
+/// `src.Ref` carries a four-deep subgraph, and the thousandth reference to a declaration
+/// re-sends the whole chain — which is the redundancy, and is *not* a flaw in the
+/// producer. It is what a syntax walk has in hand.
+///
+/// # Why the counts are predicted rather than probed
+///
+/// `examples/engine.rs` fixes its row counts with one unmeasured run and holds every
+/// timed run to them, because what a real corpus answers is not knowable in advance.
+/// Here it is: the arithmetic below is a closed form, so an instrument can assert that
+/// the store agrees with the corpus's own statement of itself. A run whose `created`
+/// differs from [`Corpus::facts`] did not write the corpus described — a stronger check
+/// than reproducibility between runs, because the first run is checked too.
+#[derive(Debug, Clone, Copy)]
+pub struct Corpus {
+    pub files: u64,
+    pub modules_per_file: u64,
+    pub decls_per_module: u64,
+    pub refs_per_decl: u64,
+}
+
+/// One predicate's worth of facts, ready to send.
+///
+/// A block is a run of **one** predicate ([`aperture_wire::block`]), and a producer
+/// emits per predicate, so this is the unit both the in-process rung and a wire client
+/// hand onward.
+pub struct Emission {
+    pub predicate: PredicateId,
+    pub name: &'static str,
+    pub facts: Vec<WireFact>,
+    /// Interns this run of facts costs — itself plus every nested target, counted with
+    /// repeats. What the cache is judged against.
+    pub interns: u64,
+}
+
+impl Corpus {
+    /// The default shape: 24,300 facts at 4.6 interns each.
+    ///
+    /// Chosen so the interns-per-fact ratio brackets the real index's 3.8 rather than
+    /// matching it exactly — a corpus that reproduced the number by construction could
+    /// not be used to ask what moves it.
+    #[must_use]
+    pub fn standard() -> Corpus {
+        Corpus {
+            files: 100,
+            modules_per_file: 2,
+            decls_per_module: 20,
+            refs_per_decl: 5,
+        }
+    }
+
+    /// Distinct facts, which is what a first ingest **creates**.
+    #[must_use]
+    pub fn facts(&self) -> u64 {
+        self.files + self.modules() + self.decls() + self.refs()
+    }
+
+    /// Resolve-or-create calls a first ingest makes, repeats included.
+    ///
+    /// A file costs 1; a module 2 (itself and its file); a declaration 3; a reference 5
+    /// — itself, the declaration chain of three, and the file it also names directly.
+    #[must_use]
+    pub fn interns(&self) -> u64 {
+        self.files + self.modules() * 2 + self.decls() * 3 + self.refs() * 5
+    }
+
+    fn modules(&self) -> u64 {
+        self.files * self.modules_per_file
+    }
+
+    fn decls(&self) -> u64 {
+        self.modules() * self.decls_per_module
+    }
+
+    fn refs(&self) -> u64 {
+        self.decls() * self.refs_per_decl
+    }
+
+    /// A one-line statement of the shape, for the run's header.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "{} files × {} modules × {} decls × {} refs\n         \
+             {} facts, {} interns ({:.2} per fact)",
+            self.files,
+            self.modules_per_file,
+            self.decls_per_module,
+            self.refs_per_decl,
+            self.facts(),
+            self.interns(),
+            self.interns() as f64 / self.facts() as f64,
+        )
+    }
+
+    /// The corpus as blocks, in the order a producer would reach them.
+    ///
+    /// Emitted parents-first because that is what a walk does, **not** because interning
+    /// needs it: every fact here carries its targets nested, so any order works and the
+    /// last block would create the whole graph on its own. Reversing this is a legitimate
+    /// thing for an instrument to try, and the created count must not change.
+    ///
+    /// # Panics
+    ///
+    /// If `schema` does not declare the source layer this describes.
+    #[must_use]
+    pub fn emit(&self, schema: &Schema) -> Vec<Emission> {
+        let id = |name: &str| {
+            schema
+                .find_position(name)
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| panic!("the schema declares no `{name}`"))
+        };
+        let (file_id, module_id, decl_id, ref_id) = (
+            id("src.File"),
+            id("src.Module"),
+            id("src.Decl"),
+            id("src.Ref"),
+        );
+
+        // `src.File : string`
+        let file = |f: u64| WireFact {
+            predicate: file_id,
+            key: WireValue::Str(format!("src/dir{}/file{f}.cs", f % 16)),
+            value: None,
+        };
+        // `src.Module : { file : File, name : string }`
+        let module = |f: u64, m: u64| WireFact {
+            predicate: module_id,
+            key: WireValue::Record(
+                vec![
+                    WireValue::Ref(WireRef::Nested(Box::new(file(f)))),
+                    WireValue::Str(format!("Ns{m}")),
+                ]
+                .into(),
+            ),
+            value: None,
+        };
+        // `src.Decl : { module : Module, name : string, line : int } -> string`
+        let decl = |f: u64, m: u64, d: u64| WireFact {
+            predicate: decl_id,
+            key: WireValue::Record(
+                vec![
+                    WireValue::Ref(WireRef::Nested(Box::new(module(f, m)))),
+                    WireValue::Str(format!("Member{d}")),
+                    WireValue::Int(i64::try_from(d * 7 + 1).unwrap_or(i64::MAX)),
+                ]
+                .into(),
+            ),
+            value: Some(WireValue::Str("method".to_owned())),
+        };
+        // `src.Ref : { to : Decl, file : File, at : { line, col, length } }` — the target
+        // leads, which is findings §2's key order and the reason find-references seeks.
+        // `at` is a **record**, not an int: a span has the three fields the schema says
+        // it has, and getting that wrong here is what the test below caught.
+        let reference = |f: u64, m: u64, d: u64, r: u64| WireFact {
+            predicate: ref_id,
+            key: WireValue::Record(
+                vec![
+                    WireValue::Ref(WireRef::Nested(Box::new(decl(f, m, d)))),
+                    WireValue::Ref(WireRef::Nested(Box::new(file((f + r) % self.files)))),
+                    WireValue::Record(
+                        vec![
+                            WireValue::Int(i64::try_from(r * 13 + 2).unwrap_or(i64::MAX)),
+                            WireValue::Int(i64::try_from(r + 4).unwrap_or(i64::MAX)),
+                            WireValue::Int(8),
+                        ]
+                        .into(),
+                    ),
+                ]
+                .into(),
+            ),
+            value: None,
+        };
+
+        let each = |count: u64, mut build: Box<dyn FnMut(u64) -> WireFact + '_>| {
+            (0..count).map(&mut *build).collect::<Vec<_>>()
+        };
+
+        vec![
+            Emission {
+                predicate: file_id,
+                name: "src.File",
+                facts: each(self.files, Box::new(&file)),
+                interns: self.files,
+            },
+            Emission {
+                predicate: module_id,
+                name: "src.Module",
+                facts: each(
+                    self.modules(),
+                    Box::new(|n| module(n / self.modules_per_file, n % self.modules_per_file)),
+                ),
+                interns: self.modules() * 2,
+            },
+            Emission {
+                predicate: decl_id,
+                name: "src.Decl",
+                facts: each(
+                    self.decls(),
+                    Box::new(|n| {
+                        let d = n % self.decls_per_module;
+                        let module = n / self.decls_per_module;
+                        decl(
+                            module / self.modules_per_file,
+                            module % self.modules_per_file,
+                            d,
+                        )
+                    }),
+                ),
+                interns: self.decls() * 3,
+            },
+            Emission {
+                predicate: ref_id,
+                name: "src.Ref",
+                facts: each(
+                    self.refs(),
+                    Box::new(|n| {
+                        let r = n % self.refs_per_decl;
+                        let decl = n / self.refs_per_decl;
+                        let d = decl % self.decls_per_module;
+                        let module = decl / self.decls_per_module;
+                        reference(
+                            module / self.modules_per_file,
+                            module % self.modules_per_file,
+                            d,
+                            r,
+                        )
+                    }),
+                ),
+                interns: self.refs() * 5,
+            },
+        ]
     }
 }
