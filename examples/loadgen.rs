@@ -229,9 +229,14 @@ fn reference(file_index: usize, n: usize, files: usize) -> WireFact {
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(decl(file_index, n)))),
             WireValue::Ref(WireRef::Nested(Box::new(file((file_index + 1) % files)))),
+            // `{line, col, length}` — three fields, because `at.length` is in the *key*
+            // (it is what a viewer draws a link over, and a key field is already in the
+            // register the scan holds). A two-field span is what this file carried until
+            // the schema gained one, and the arity check refused every block.
             WireValue::Record(Box::from([
                 WireValue::Int((n * 13 + 2) as i64),
                 WireValue::Int(4),
+                WireValue::Int(12),
             ])),
         ])),
         value: None,
