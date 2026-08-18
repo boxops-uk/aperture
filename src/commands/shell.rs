@@ -48,7 +48,7 @@
 //! shell is a hiccup rather than the end of an afternoon.
 
 use std::{
-    io::Write,
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -968,8 +968,33 @@ pub fn run(socket: &Path, database: &str) -> Result<(), CliError> {
 
             // rustyline's, so that it clears the screen *and* forgets where it had
             // drawn — the two halves that make the next prompt appear at the top.
+            //
+            // **And then the scrollback, which rustyline does not touch.** Its
+            // `clear_screen` writes `ESC[H ESC[J`: home the cursor, erase from there to
+            // the end of the *display*. That empties the viewport and leaves everything
+            // above it in the scrollback, so on a terminal showing any of that region the
+            // shell that launched this one is still on screen, directly above a prompt
+            // drawn at row one — two prompts arguing about the same line. `clear(1)` does
+            // not stop there either: `ESC[2J` erases the display wherever the cursor
+            // happens to be, and `ESC[3J` drops the scrollback, which is the half that
+            // makes "cleared" mean there is nothing above.
+            //
+            // Written after rustyline's own call rather than instead of it, and that is
+            // what keeps the warning above satisfied: neither sequence *moves* the cursor,
+            // so the position rustyline just recorded — row one, column one — is still
+            // true when the next prompt is drawn. Flushed here, since an escape with no
+            // newline in it would otherwise reach the terminal behind the next thing
+            // printed.
             Ok(Control::Clear) => {
                 let _ = editor.clear_screen();
+
+                // Only at a terminal. Down a pipe these are four bytes of noise in
+                // somebody's file, and there is no screen to clear.
+                if std::io::stdout().is_terminal() {
+                    let mut out = stdout.lock();
+                    let _ = out.write_all(b"\x1b[2J\x1b[3J");
+                    let _ = out.flush();
+                }
             }
 
             // The conversation is broken rather than the request refused — see the
