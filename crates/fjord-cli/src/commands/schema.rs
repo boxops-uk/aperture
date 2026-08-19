@@ -1,4 +1,4 @@
-//! `fjord schema check | fingerprint | diff` — [operations §5](../../docs/fjord-cli-design.md).
+//! `fjord schema check | fingerprint | diff` — [operations §5](../../../../docs/fjord-cli-design.md).
 //!
 //! The three questions a schema can be asked **before any database holds one**, which
 //! is what makes them worth having: a schema is a build artifact long before it is an

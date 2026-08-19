@@ -636,7 +636,7 @@ Interactive psql-like REPL.
   Ctrl-C cancels the active stream in-band).
 - **`\more` — hold the cursor and resume it. This is the highest-value item on the page, by a
   distance.** The Phase 5 REPL discards the resume token at both call sites
-  (`Iteratee::Suspended(rows, _)`, `src/main.rs`), so [I4](invariants.md#i4) and
+  (`Iteratee::Suspended(rows, _)`), so [I4](invariants.md#i4) and
   [I8](invariants.md#i8) — a bytes-only cursor, an entire resume battery, the most heavily tested
   machinery in the project — have **no interactive exerciser at all**. A wire client *can* hold a
   `Cursor`; that is the whole point of a bytes-only continuation, and Glean's shell threads this

@@ -29,7 +29,7 @@
 //! does not: which project a file is compiled by and into which assembly, what a type
 //! extends, what a member overrides, what a parameter's type is spelled as, what the doc
 //! comment says. Those are written by
-//! [`Fjord.Indexer`](../../clients/dotnet/Fjord.Indexer/README.md), which has Roslyn and
+//! [`Fjord.Indexer`](../../../clients/dotnet/Fjord.Indexer/README.md), which has Roslyn and
 //! MSBuild to answer them with. A predicate nobody fills is an empty keyspace pair, which
 //! costs the ~30 ms it takes to create it and nothing after that.
 //!
@@ -37,7 +37,7 @@
 //! because a predicate leads with one field and two questions want different ones:
 //! `src.SearchByName` against `src.Decl`, `src.FileXRef` against `src.Ref`,
 //! `src.AttributeOf` and `src.DerivesFrom` against their originals. Each is what a
-//! *stored derivation* would materialise ([Phase 8b](../../PLAN.md)); until one can be
+//! *stored derivation* would materialise ([Phase 8b](../../../PLAN.md)); until one can be
 //! declared, the producer writes both orders.
 
 use std::sync::LazyLock;
@@ -52,14 +52,14 @@ use fjord_schema::{
 /// **The file is the schema**, and it is a file a person can read, diff, and pass to
 /// `fjord create --schema` — which is exactly what the scripts and the two integration
 /// suites do. Compiled in here so a bench does not have to find it on disk.
-const SOURCE: &str = include_str!("../schemas/code.sigla");
+const SOURCE: &str = include_str!("../../../schemas/code.sigla");
 
 /// The schema everything here resolves names against: **a code index**, which is the
 /// canonical shape for a fact database — one fact per thing, and everything about a
 /// thing pointing at it rather than repeating it.
 ///
 /// **There are no id constants, and that is the point.** An id is a *position*, and
-/// positions come from sorting the schema's names ([D1](../../docs/phase-8-schemas.md)),
+/// positions come from sorting the schema's names ([D1](../../../docs/phase-8-schemas.md)),
 /// so a constant would be a second statement of something the schema already decides —
 /// wrong the first time somebody adds a predicate that sorts earlier. Ask [`id`] by
 /// name. Nothing outside this process ever sees one anyway: a block header carries the
@@ -217,7 +217,7 @@ mod tests {
     /// purpose; both sides move together, which is the point.
     #[test]
     fn the_dotnet_clients_schema_is_this_one() {
-        const GOLDEN: &str = include_str!("../clients/dotnet/golden/blocks.txt");
+        const GOLDEN: &str = include_str!("../../../clients/dotnet/golden/blocks.txt");
 
         let recorded = GOLDEN
             .lines()
@@ -288,7 +288,7 @@ mod tests {
     /// alphabetical, and everywhere else it enforced the accident: `src.Decl` led with a
     /// line number and `src.Ref` with a column, which cost 56,274 rows examined per row
     /// produced on an ordinary join and made find-references unanswerable
-    /// ([findings §2 and §11](../bench/FINDINGS.md)). A guard that pins the *intended*
+    /// ([findings §2 and §11](../../../bench/FINDINGS.md)). A guard that pins the *intended*
     /// order catches the same swap and cannot enforce an accident, because somebody has
     /// to write the intention down.
     #[test]

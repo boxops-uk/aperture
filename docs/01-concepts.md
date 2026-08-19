@@ -199,12 +199,12 @@ convention any more — the compiler refuses the other direction.
   - test support: `fixtures.rs` (the plan runners, re-exporting the store-shaped half) and
     `corpus.rs` (the language surface as data — the acceptance gate for the grammar, which
     runs each supported entry against a real store and compares its rows).
-- **`src/`** — the root package, `fjord-cli`: the clap tree, the commands, and the **wire
+- **`crates/fjord-cli/`** — the tool: the clap tree, the commands, and the **wire
   shell**, which lexes, parses, lowers, typechecks and compiles what you type *on your machine*
   — against the schema the server says it serves — and runs it over the socket. `:plan` and
   `:type` therefore answer without running anything, which a client holding no compiler could
   not do. Not a place to put logic: the plan renderer it needs lives in the engine's `print.rs`.
-  The target layout calls this `crates/fjord-cli` ([operations §10](fjord-cli-design.md)).
+  This is where [operations §10](fjord-cli-design.md) always said it belonged.
 - **`schemas/code.sigla`** — the sample code index, and the shape every client in this
   repository writes. Its `src.SearchByName` is the interesting predicate: the declaration names
   keyed *by name*, because `src.Decl`'s key begins with its module and a name prefix can

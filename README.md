@@ -124,6 +124,6 @@ cargo fmt
 - [`PLAN.md`](PLAN.md) — the living phase tree: the build sequence and current state.
 
 Module map: `crates/fjord-engine/` is the live engine and language — all new work lands there.
-`src/` is the `fjord` command-line tool, whose `shell` compiles what you type on *your* machine
+`crates/fjord-cli/` is the `fjord` command-line tool, whose `shell` compiles what you type on *your* machine
 against the schema the server says it serves, and runs it over the wire.
 `crates/fjord-engine/src/lib.rs` is a commented-out graveyard. See [Concepts](docs/01-concepts.md) for detail.

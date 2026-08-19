@@ -3,7 +3,7 @@
 //!
 //! Every rung S1–S7 measures reading, against a sealed corpus. That left the one number
 //! the write path is judged by — facts per second — attributable to nothing:
-//! [findings §12](../bench/FINDINGS.md) had to be read off the .NET indexer's own report,
+//! [findings §12](../../../bench/FINDINGS.md) had to be read off the .NET indexer's own report,
 //! which bundles Roslyn, a socket, the server's framing and the funnel into one figure.
 //! This separates them, in process, with no tokio and no wire.
 //!
@@ -20,7 +20,7 @@
 //! Read the differences rather than the rows:
 //!
 //! - `create` − `dedup:cold` is what **committing** costs inside interning, which is the
-//!   term [12f](../PLAN.md) proposes to cut by batching per block instead of per fact.
+//!   term [12f](../../../PLAN.md) proposes to cut by batching per block instead of per fact.
 //! - `dedup:cold` − `dedup:warm` is what the **cache removes** — the same claim
 //!   `interning_reads_a_key_once_however_many_references_name_it` makes as a count, priced.
 //! - `block` − `create` is the transport codec, which is the only part of the write path

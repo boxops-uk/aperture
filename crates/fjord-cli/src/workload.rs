@@ -188,7 +188,7 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
         // here, at 56,274 rows examined per row produced. It is the fast arm now, and
         // the slow one is a real query that still cannot narrow: `src.SearchByName` is
         // keyed for lookup *by name*, so reaching it by `to` is the same trap on a
-        // predicate whose own order is right ([findings §2](../bench/FINDINGS.md)).
+        // predicate whose own order is right ([findings §2](../../../bench/FINDINGS.md)).
         Workload::new(
             "join on a leading field",
             "L where F = src.File _; src.Line {file = F, line = L}".to_owned(),
@@ -423,7 +423,7 @@ mod tests {
 /// the thing under measurement is not their content but their **shape**. Interning's
 /// cost is decided by how many references name the same target — 94.9M interns produced
 /// 25.0M facts on the real index, a ratio of 3.8
-/// ([findings §12](../../bench/FINDINGS.md)) — so a corpus that does not reproduce that
+/// ([findings §12](../../../bench/FINDINGS.md)) — so a corpus that does not reproduce that
 /// ratio measures a write path nobody has.
 ///
 /// The four fanouts below are what set it. They are the source layer of the built-in

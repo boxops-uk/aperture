@@ -43,8 +43,8 @@ pub struct Summary {
     /// this and the references printed is what the cache saved. Zero when not expanding.
     pub fetched: u64,
     /// References that named no fact. Not an absence but a **damaged database**, since
-    /// both column families are written together ([I12](../../docs/invariants.md#i12))
-    /// and ids are never reused ([I11](../../docs/invariants.md#i11)) — so it is reported
+    /// both column families are written together ([I12](../../../../docs/invariants.md#i12))
+    /// and ids are never reused ([I11](../../../../docs/invariants.md#i11)) — so it is reported
     /// rather than left looking like a field somebody chose not to expand.
     pub unresolved: u64,
     /// What expansion could not do, in words — a predicate this server will not resolve
@@ -113,7 +113,7 @@ pub fn run(
 ) -> Result<Summary, CliError> {
     // **Read-only, and asserting nothing.** A reader has no claim to make about the
     // schema: the database's is the one that matters, it is frozen at create
-    // ([I13](../../docs/invariants.md#i13)), and a tool that refused to *read* a
+    // ([I13](../../../../docs/invariants.md#i13)), and a tool that refused to *read* a
     // database because its own built-in copy had moved on would be refusing the one
     // thing that still works.
     let mut connection = connect(target, Mode::ReadOnly)?;
@@ -707,7 +707,7 @@ mod mixed {
 
     /// **The write path's counters, answered as facts.**
     ///
-    /// [`bench/FINDINGS.md` §15](../../bench/FINDINGS.md) priced our interning at four
+    /// [`bench/FINDINGS.md` §15](../../../../bench/FINDINGS.md) priced our interning at four
     /// times Glean's and could not say whether the ingest lookup cache was even hitting,
     /// because the counters that would say were reachable only from a debugger. This is
     /// the guard on the answer to that: they are a virtual predicate, so asking is a
@@ -858,7 +858,7 @@ mod mixed {
         );
     }
 
-    /// **Paging across a mixed plan**, which is [I4](../../docs/invariants.md#i4) over a
+    /// **Paging across a mixed plan**, which is [I4](../../../../docs/invariants.md#i4) over a
     /// cursor whose levels came from two different row sources.
     ///
     /// The corpus is sized to cross the server's 256-row chunk several times, so the
@@ -1084,8 +1084,8 @@ mod surface {
     /// seam's own promise false one layer up, and broke an ordinary query.
     ///
     /// The second half is the distinction that replaced the refusal. A stored fact that is
-    /// not there is corruption ([I11](../../docs/invariants.md#i11),
-    /// [I12](../../docs/invariants.md#i12)); a *catalogue* row that is not there is a
+    /// not there is corruption ([I11](../../../../docs/invariants.md#i11),
+    /// [I12](../../../../docs/invariants.md#i12)); a *catalogue* row that is not there is a
     /// listing that has moved on, since these ids are positions in a view materialised per
     /// query rather than durable identities. Only the server can tell those apart, so it
     /// says which.

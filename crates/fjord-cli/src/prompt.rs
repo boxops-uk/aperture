@@ -1,7 +1,7 @@
 //! **The prompt itself** — what both shells share, and nothing either of them means.
 //!
 //! There are two shells and there will go on being two
-//! ([operations §5](../docs/fjord-cli-design.md)): [`crate::commands::shell`] is the
+//! ([operations §5](../../../docs/fjord-cli-design.md)): [`crate::commands::shell`] is the
 //! product one, always over the wire, and [`crate::shell`] is Phase 5's embedded demo
 //! over a scratch database it seeds itself. What they have in common is a *terminal* —
 //! the same highlighter over the same lexer, the same rule for where a line's sigla

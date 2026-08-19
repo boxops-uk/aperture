@@ -1,0 +1,98 @@
+[package]
+name = "fjord-cli"
+version = "0.1.0"
+edition = "2024"
+
+# The binary is `fjord`; the package is named for its place in operations §10.
+[[bin]]
+name = "fjord"
+path = "src/main.rs"
+
+[features]
+# Exposes the per-domain `proptest` support modules (named `arb_*` strategies,
+# shared fixtures) to consumers outside `cfg(test)` — integration tests and, later,
+# the workspace crates. Under `cargo test` the modules are active via `cfg(test)`
+# regardless; this feature is for everything that isn't the crate's own unit tests.
+#
+# `dep:proptest` is what keeps the strategies' own dependency out of an ordinary
+# build: the modules that need the crate are exactly the ones this feature (or
+# `cfg(test)`, which the dev-dependency covers) turns on.
+proptest = ["dep:proptest", "fjord-engine/proptest"]
+
+# **tokio-console, for looking at tasks rather than counting them.**
+#
+# Off by default and it is a *developer's* feature, not an operator's: it opens a gRPC
+# port, which is exactly the thing `ops-I10`'s default-closed argument is about. What it
+# buys is the view that would have found `bench/FINDINGS.md` §10 in minutes instead of an
+# afternoon — every task, where it is parked, and how long it has been there. The leak
+# was found by hand-rolling a worse version of this.
+#
+# It also needs `--cfg tokio_unstable`, which is why running it is two flags rather than
+# one; `serve`'s docs give the line.
+console = ["dep:console-subscriber", "fjord-server/console"]
+
+[dependencies]
+# Task-level introspection for `--features console`. Optional, and nothing but the
+# feature refers to it.
+console-subscriber = { version = "0.4", optional = true }
+# The tool is a wire client, and an ordinary one: `create`, `finish` and `db rm`
+# against a running server go through the same crate an external tool would use.
+fjord-client = { path = "../fjord-client" }
+fjord-engine = { path = "../fjord-engine" }
+fjord-schema = { path = "../fjord-schema" }
+fjord-server = { path = "../fjord-server" }
+fjord-store = { path = "../fjord-store" }
+# The message vocabulary, for the frames the tool reads and writes through
+# `fjord-client`. That it needs the codec and not the server's session machinery is the
+# seam working: `protocol` says what a message means, `wire` delimits it, and neither
+# requires the other's runtime.
+fjord-wire = { path = "../fjord-wire" }
+
+clap = { version = "4.5", features = ["derive"] }
+codespan-reporting = "0.13.1"
+
+# Optional, and reached only through the `proptest` feature above — never linked
+# into an ordinary build. `cargo test` gets it from `[dev-dependencies]`.
+proptest = { version = "1.11.0", optional = true }
+rustyline = "18"
+serde = { workspace = true }
+# The config file, and `--format json` for every command that renders rows or a
+# schema. Nothing in the engine uses it, and nothing should: JSON is a *rendering*
+# and an indexer's interchange format, never a storage one.
+serde_json = "1.0.150"
+thiserror = { workspace = true }
+
+tokio-util = "0.7.18"
+# Ctrl-C during `query`, so it cancels the stream rather than tearing the connection
+# down. The handler only sets a flag; the query loop is what speaks the protocol.
+ctrlc = "3.5.2"
+
+[dev-dependencies]
+# The codec's `arb_*` strategies and the I5 decode probe live behind that crate's
+# `proptest` feature. `cfg(test)` in this package does not reach into a
+# dependency, so the feature is what the batteries here compile against — the
+# cross-crate form of the rule the feature comment above describes.
+fjord-encoding = { path = "../fjord-encoding", features = ["proptest"] }
+# The write rung (`examples/ingest.rs`) drives the funnel in-process, below the wire and
+# below the server — which is the whole point of a rung. A dev-dependency rather than a
+# real one because the *tool* writes over a socket like any other client, and adding this
+# to `[dependencies]` would quietly give it a second way in.
+fjord-ingest = { path = "../fjord-ingest" }
+fjord-store = { path = "../fjord-store", features = ["proptest"] }
+# Allocation-counting global allocator for the I9 hot-path guard
+# (`exec::scan_is_alloc_free_per_row`). Its counters are thread-local, so it
+# survives the parallel test harness; it installs its own `#[global_allocator]`
+# unconditionally, so keeping it a dev-dependency is what confines the counting
+# allocator to test binaries.
+allocation-counter = "0.8.1"
+# The `arb_*` strategies are active under `cfg(test)` whether or not the
+# `proptest` feature is on, so the crate has to be here as well as being an
+# optional dependency.
+proptest = "1.11.0"
+# Scratch directories for the fjall store batteries (PLAN 1a+).
+tempfile = "3.24.0"
+# `examples/breakdown.rs` times the server's own hop off the reactor, which means
+# taking that hop itself. Nothing the tool ships needs a runtime, which is why this
+# is a dev-dependency and `fjord` still links none.
+tokio = { version = "1", features = ["rt-multi-thread"] }
+

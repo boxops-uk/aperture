@@ -1,4 +1,4 @@
-//! **The bottom of the [capacity ladder](../docs/phase-10-capacity.md): the executor,
+//! **The bottom of the [capacity ladder](../../../docs/phase-10-capacity.md): the executor,
 //! the compiler and the store, each measured alone.**
 //!
 //! ```text
@@ -641,7 +641,7 @@ fn page_comparison(
 
 /// **The per-row cost the executor does not pay** — projection, wire conversion, encoding.
 ///
-/// S1 counts rows and touches no field ([I5](../docs/invariants.md#i5) is why that is
+/// S1 counts rows and touches no field ([I5](../../../docs/invariants.md#i5) is why that is
 /// cheap: a register holds the whole row and decodes lazily). The server cannot: for every
 /// row it calls `to_value`, then [`rows::to_wire`], then `encode_value` into **a fresh
 /// `Vec` per row** (`session.rs:863`). That is what F4 predicts dominates above ~100k

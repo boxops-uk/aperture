@@ -22,7 +22,7 @@ use std::{
 /// `create` requires a schema, and this is the file the instruments, the .NET clients and
 /// the viewer all build against. Absolute, so a test does not depend on the working
 /// directory it was launched from.
-const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/schemas/code.sigla");
+const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas/code.sigla");
 
 /// Run `fjord` against a store root.
 fn fjord(root: &Path, args: &[&str]) -> (bool, String, String) {

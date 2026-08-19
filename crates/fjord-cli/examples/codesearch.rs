@@ -46,7 +46,7 @@
 //!
 //! Roughly linear in rows *delivered*, because the per-row cost that dominates is not the
 //! executor's — it is one frame each through the outbound mutex, the socket and the client's
-//! decoder ([findings §9](../bench/FINDINGS.md)), and a cancel stops paying it. Bigger pages
+//! decoder ([findings §9](../../../bench/FINDINGS.md)), and a cancel stops paying it. Bigger pages
 //! are cheaper per row (245k row/s at page 50, 1.05M at page 500) and dearer per query, so
 //! the page size is a latency/throughput dial rather than a free choice.
 //!

@@ -57,7 +57,7 @@ any more — the compiler refuses the other direction, and there is no edge poin
 | `fjord-client` | The client: `address`, `connection`, `rows` (a result as a bookmark), `expand`. Depends on `fjord-wire` and nothing else. |
 | `fjord-server` | The protocol over a Unix socket or TCP: `session`, `registry`, `outbound` (the fair writer), `rows`, `blocking`, `server`, `stats`, `catalogue`. |
 | `fjord-viewer` | The code-search site: `query`, `render`, `pool`, and the routes. An ordinary consumer of the client. |
-| root `fjord-cli` | The tool: `cli`, `config`, `commands/`, `output`, `prompt`, `shell`, `code_index`, `workload`. The binary is `fjord`. |
+| `fjord-cli` | The tool: `cli`, `config`, `commands/`, `output`, `prompt`, `sample_schema`, `workload`. The binary is `fjord`. |
 
 Two test-support modules span crates, and the split is load-bearing:
 `fjord_store::fixtures` holds everything store-shaped (probes, model stores,
@@ -73,8 +73,10 @@ wraps; `fjord_engine::fixtures` holds the plan runners and re-exports the rest.
 
 ## Measuring instruments
 
-Deliberately `examples/` rather than subcommands — they are measuring instruments, not
-things anyone should find while looking for how to use the database.
+They live in `crates/fjord-cli/examples/` and are deliberately examples rather than
+subcommands: measuring instruments are not things anyone should find while looking for how to
+use the database. Run them from anywhere in the workspace — `cargo run --release --example
+loadgen -- …`.
 
 | Example | Rung | What it isolates |
 |---|---|---|
@@ -126,10 +128,9 @@ for the same corpus. The Rust test needs no `dotnet`; regenerating the golden do
 
 ```text
 fjord/
-├── src/                 the `fjord` binary: cli, commands, shell, output, config
-├── crates/              the workspace, bottom to top (table above)
+├── crates/              the workspace, bottom to top (table above). `fjord-cli` is
+│                       the `fjord` binary; its examples/ are the instruments
 ├── schemas/             code.sigla, the sample schema every client here builds against
-├── examples/            the measuring instruments
 ├── clients/dotnet/      the C# client, demo producer and real indexer
 ├── docs/                the design book — chapters 1–7 plus operations and references
 ├── bench/FINDINGS.md    what has actually been measured
