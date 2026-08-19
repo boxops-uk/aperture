@@ -27,9 +27,18 @@ backbone:
   specified-but-not-yet-live. A phase is *done* only when the invariants it touches have
   their guards un-ignored and green.
 - A test that is `#[ignore]`d for any *other* reason must say so in its ignore message, so
-  reading the ledger stays unambiguous. There is one today:
-  `store::tests::crashing_writer_child_process` is ignored because it is not a test at all —
-  it is the child process [I12](invariants.md#i12)'s crash guard spawns and aborts.
+  reading the ledger stays unambiguous. **There are three today, and all three are the same
+  thing**: a child process that a crash guard spawns and aborts, which is not a test and must
+  never be run on its own —
+  `store::tests::crashing_writer_child_process` ([I12](invariants.md#i12)'s),
+  `crashing_creator_child_process` and `crashing_finisher_child_process` (`ops-I3`'s, for a
+  killed `create` and a killed `finish`).
+- **An illustrative code block is fenced `text`, not `ignore`.** An `ignore` fence is still a
+  doctest, so it appears here beside the guards — and a sketch counted among them reads as an
+  unbuilt invariant. `fjord_store::fact`'s module docs were the one instance.
+
+  So the ledger reads: three child processes, and **one** genuinely pending guard —
+  [I10](invariants.md#i10)'s `discriminants_append_only`, which unions own.
 
 ### NFR guards are mechanical, not eyeballed
 

@@ -15,7 +15,8 @@ narrower and know it. On efficiency the picture is mixed and mostly not written 
 anywhere — which is why this file exists. On the cost model neither system estimates
 anything, and the two have made *opposite* choices about where to put the safety.
 
-**Verified against Glean at commit `d2c8bdae` (2026-08-16)**, in `/home/ubuntu/glean`.
+**Verified against Glean at commit `d2c8bdae` (2026-08-16)**, from a local checkout of
+`github.com/facebookincubator/Glean`.
 Note that [`glean-comparison.md`](glean-comparison.md) was verified against `95c0fb6`; where
 this file contradicts it, this file is the newer read, and the contradictions are flagged
 inline. Every Glean claim is cited by file and line. Nothing here rests on Glean's prose

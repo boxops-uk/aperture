@@ -41,6 +41,7 @@ different thing; don't conflate them.
 | 10 | capacity: measure it | ✅ — [`bench/FINDINGS.md`](bench/FINDINGS.md) |
 | 11 | code-search site, and what it took | ✅ |
 | **12** | **parallel ingestion: the striped merge frontier** | ✅ — 12a–12g. Write-once is mechanical, a database takes many writers, and 7b is unblocked |
+| 13 | Fjord against Glean, on one corpus | ◐ — the write paths are measured and within 8% ([findings §15–§17](bench/FINDINGS.md)); the read-path comparison is planned with predictions and not yet run |
 
 **On phase numbers: they are historical labels, and renumbering them was considered and
 rejected.** The tree is out of chronological order (9 was resequenced ahead of 7b and 8; 12 lands
@@ -105,7 +106,9 @@ The engine spine exists in `crates/fjord-engine/`:
   [I12](docs/invariants.md#i12) green — the I12 crash case aborts a child process mid-write,
   and the I8 guard cross-checks a drop probe against fjall's own open-snapshot count.
 - **One fixture database** (`fjord_store::fixture`) — the schema, the facts and the example queries
-  the corpus, the batteries and the shell all share, deliberately not test-gated. Before it
+  the corpus and the batteries share. (It is gated `cfg(any(test, feature = "proptest"))`; this
+  line used to say it deliberately was not, which stopped being true when the shell that needed
+  it outside `cfg(test)` went.) Before it
   there were two databases and a corpus entry was not something a person could run.
 - **Writing a fact by hand** (`fjord_store::fact`) — `FjallDb::put(&schema, &fact)` takes a
   **well-typed value** whose key fields are *named* and resolved against the schema, because
@@ -603,7 +606,7 @@ Phase 9; don't build in state a wire shell can't reproduce.
   without running it. The loop, line editing, highlighting and codespan rendering already
   existed from Phase 2.
 - **5b.** ✅ **One fixture database** (`fjord_store::fixture`): the schema, the facts and the example
-  queries the corpus, the batteries and the shell share. Not test-gated, because the shell is
+  queries the corpus and the batteries share. Was not test-gated, because the shell was
   not a test.
 - **5c.** ✅ Rendering a `Plan` for a person, in `fjord_engine::print` beside the two renderings of a
   tree it already owned — fields named from the schema, since `of = r0#` is the answer to "did
@@ -997,7 +1000,7 @@ bytes.
 **7a is done.** The transport codec and its framing (`fjord-wire` — `varint`, `value`, `crc`,
 `block`, `desc`, `frame`), the write funnel (`fjord-ingest` — `FactSink`, `intern_fact`,
 `intern_block`), the protocol and socket (`fjord-server`), a binary to run it
-(`src/bin/fjord-serve.rs`), and a C# client that proves the protocol is implementable from
+(hosted by `fjord serve`), and a C# client that proves the protocol is implementable from
 outside (`clients/dotnet`).
 
 **What 7a deliberately left, each named as deferred in [operations §5](docs/fjord-cli-design.md)
@@ -1238,8 +1241,9 @@ the seam that keeps it cheap.
   `serve` owns.
 - `create` materialises every predicate's keyspaces up front (§9: a keyspace costs ~30 ms) and
   embeds the canonical schema under `schema/` beside the sidecar.
-- **One built-in schema.** It is currently written twice — `src/main.rs` and
-  `src/bin/fjord-serve.rs` — and becomes one definition in the CLI package's lib target. The
+- **One built-in schema.** It is currently written twice and becomes one definition in the
+  CLI package's lib target. (Since 0.0.1 there is no built-in schema at all: `create` requires
+  `--schema`, and what remains is a *sample* the tests and instruments share.) The
   catalog never sees it: `create` takes `&Schema` and records its fingerprint, which is the
   down payment on [I13](docs/invariants.md#i13) that Phase 8 completes.
 

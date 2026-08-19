@@ -56,12 +56,14 @@ to at all is
 **if-then-else** and **element iteration over an array or set** (`X[..]`) — and the second is the
 multiplicity decision above, not this one. sigla has string prefix matching and nothing else.
 
-**Order comparisons are not "deferred with a seam", and this file said they were.** There is no
-pending `ResidualOp` arm — all four are live (`crates/fjord-engine/src/plan.rs`) — and there is no lexer token
-for `<`, `>` or `+` (`crates/fjord-engine/src/lexer.rs`), so `X < 3` is a **parse error**, not a diagnosed
-deferral. That is the one deliberate exception to *permissive grammar, narrow later*
-([conventions](conventions.md)) and to `fjord_engine::corpus`'s claim to parse the full intended surface,
-and it is recorded here because "deferred with a seam" hid it.
+~~**Order comparisons are not "deferred with a seam", and this file said they were.**~~
+**Superseded by Phase 11, which built them.** It read: there is no pending `ResidualOp` arm —
+all four are live — and there is no lexer token for `<`, `>` or `+`, so `X < 3` is a *parse
+error* rather than a diagnosed deferral; that was the one deliberate exception to *permissive
+grammar, narrow later*. `Lt`, `Le`, `Gt`, `Ge` and `Plus` are tokens now
+(`crates/fjord-engine/src/lexer.rs`), comparisons and integer arithmetic are in the language,
+and arithmetic is the first thing in sigla to lower a `Step::Derive`. Kept because the
+paragraph is what the exception looked like while it stood.
 
 Arithmetic, string functions and conditionals are in neither place: not built, not deferred,
 not ruled out. The seam that would carry them **does exist**, once they lex: Phase 6 built derived

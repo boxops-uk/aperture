@@ -764,7 +764,7 @@ Interactive psql-like REPL.
 **This is the primary ingestion API.** Phase 7 builds it before the file pipeline, and §8's file
 format inherits its fact encoding rather than defining a second one.
 
-**Built** — `fjord-server`, over a Unix socket, with `src/bin/fjord-serve.rs` to run it and
+**Built** — `fjord-server`, over a Unix socket, with `fjord serve` to run it and
 a C# client under `clients/dotnet` that speaks it from outside the repository. What is *not* built
 is listed at the end of this section rather than implied by its absence.
 

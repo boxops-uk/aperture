@@ -131,3 +131,4 @@ hundreds of references across the repository point at these numbers.
 | 10 | Capacity: measure it | done |
 | 11 | The code-search site, and what it took | done |
 | 12 | Parallel ingestion: the striped merge frontier | done |
+| 13 | Fjord against Glean, on one corpus | part done — the write paths are measured and within 8%; the read-path comparison is planned and not yet run |
