@@ -2037,3 +2037,29 @@ a rule mechanical and removes a ceiling; the throughput claim belongs to 12b and
 - **`src/lens/`** — the disconnected first-attempt front end, which was the reference for
   re-implementing parse/typecheck/lower/flatten into `focus` (Phases 2–5). **Deleted**, its last
   file retired by hoisting. Recoverable from git history if a later phase wants to look.
+
+## Phase 13 — Aperture against Glean, on one corpus
+
+**Both write paths are measured; the read paths are not.**
+[Findings §15](bench/FINDINGS.md) and [§16](bench/FINDINGS.md) put the same 18,258,385 facts
+into both systems from one Roslyn walk — every predicate agreeing stored-for-stored — and
+priced the ingest. What that buys is the ability to ask the *read* question without arguing
+about whether the two corpora are the same corpus.
+
+The suite is [`docs/phase-13-comparative-benchmark.md`](docs/phase-13-comparative-benchmark.md):
+sixteen families over two rungs (in-process, and over each system's wire), reusing
+`workload::catalogue`'s questions paired with their Angle spellings, and reporting **work
+done beside every timing** — Glean's `facts_searched` against our `Profile.examined` — because
+that is what separates *did more work* from *did the same work slower*.
+
+Three things it is built to answer, each a prediction from a design document rather than a
+hope:
+
+- **the scan curve** against database size (2.4 GB against 886 MB for the same facts);
+- **what a value read costs us** — a second point read per row ([I6](docs/invariants.md#i6))
+  against Glean's inline value, which is the sharpest prediction in the file;
+- **what a missing feature costs** — transitive closure as one recursive Angle query against
+  a client-side loop of round trips, which is the strongest argument for building recursion.
+
+It also closes an item Phase 10 has carried: `bench/baselines/<host>.json`, so a number can
+be re-run rather than re-argued.
