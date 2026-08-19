@@ -1,0 +1,22 @@
+[package]
+name = "fjord-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Fjord DB: an embedded, immutable fact database. The client — construct facts, write them, and query them back"
+readme = "README.md"
+keywords = ["database", "datalog", "facts", "immutable", "client"]
+categories = ["database", "api-bindings"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+# The three crates a consumer would otherwise add by hand, and the only reason this
+# crate exists: `cargo add fjord-db` should be the whole of getting started.
+fjord-client = { path = "../fjord-client", version = "0.0.1" }
+fjord-schema = { path = "../fjord-schema", version = "0.0.1" }
+fjord-wire = { path = "../fjord-wire", version = "0.0.1" }

@@ -611,6 +611,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fjord-db"
+version = "0.0.1"
+dependencies = [
+ "fjord-client",
+ "fjord-schema",
+ "fjord-wire",
+]
+
+[[package]]
 name = "fjord-encoding"
 version = "0.0.1"
 dependencies = [

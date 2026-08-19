@@ -6,6 +6,18 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "A client for Fjord DB, an embedded immutable fact database: connect, write facts, query, page and expand"
+readme = "README.md"
+keywords = ["database", "datalog", "client", "facts", "immutable"]
+categories = ["database", "api-bindings"]
+# **Only what a consumer needs.** Cargo packages every file under the crate root by
+# default, and `tests/` here reaches outside it — the golden is regenerated from the
+# .NET client and lives in the repository, so a test shipped in the package could not
+# run anyway. Naming the contents keeps the package to the library, its licence and
+# its front page.
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 # The schema, because a client must have one: the transport codec sends no names

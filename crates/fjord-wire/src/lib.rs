@@ -109,3 +109,12 @@ pub use protocol::{
     Startup, kinds,
 };
 pub use value::{WireFact, WireRef, WireValue, decode_fact, encode_fact, from_bytes, to_bytes};
+
+/// **The README, compiled.**
+///
+/// `cfg(doctest)` so it costs an ordinary build nothing and appears in no documentation:
+/// what it buys is that the examples on the crate's front page are run by `cargo test`
+/// like any other, rather than being prose that compiled once when it was written.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct Readme;
