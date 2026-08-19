@@ -1,9 +1,9 @@
-//! `fjord create <name> [--schema <file>]`.
+//! `fjord create <name> --schema <file>`.
 
 use std::path::{Path, PathBuf};
 
 use crate::{
-    CliError, code_index,
+    CliError,
     commands::{self, Route, Target},
 };
 
@@ -18,6 +18,9 @@ pub struct Created {
     /// Where its schema came from — what the line this prints says, so a database
     /// built against the wrong file is visible at the moment it is made rather than at
     /// the first query that reads nothing.
+    ///
+    /// Always a path now: there is no longer a built-in schema for this to read "the
+    /// built-in schema".
     pub schema: String,
 }
 
@@ -29,45 +32,27 @@ pub struct Created {
 pub fn run(
     root: &Path,
     target: &Target,
-    schema: Option<&Path>,
+    schema: &Path,
     schema_path: &[PathBuf],
 ) -> Result<Created, CliError> {
     // **Resolved here, on the machine holding the files**, whichever door answers. A
     // server asked to read a path would be a server asked to have the caller's
     // filesystem, and "no such file" on a host the caller cannot see is a worse error
     // than any this avoids.
-    let resolved = schema
-        .map(|file| commands::schema::resolve_for_create(file, schema_path))
-        .transpose()?;
-
-    let described = schema.map_or_else(
-        || "the built-in schema".to_owned(),
-        |file| file.display().to_string(),
-    );
+    let resolved = commands::schema::resolve_for_create(schema, schema_path)?;
+    let described = schema.display().to_string();
 
     let instance = match commands::route(root, target)? {
         Route::Server(mut server) => {
             // The resolved schema as source rather than the entry file's text: what
             // the server embeds must be the union, or a database built through the
             // server would hold less than the same command built locally.
-            //
-            // **Sent explicitly even when nobody named one.** An empty `source` used to
-            // mean "whatever the server has", and a server no longer has anything — so
-            // the default, while there still is one, travels with the request like any
-            // other schema. Which is also the honest shape: the two doors now embed the
-            // same text rather than two things that happened to agree.
-            let source = resolved.as_ref().map_or_else(
-                || fjord_schema::syntax::print::print(&code_index::schema()),
-                fjord_schema::syntax::print::print,
-            );
+            let source = fjord_schema::syntax::print::print(&resolved);
 
             server.create(&target.database, &source)?
         }
 
-        Route::Local(catalog, _lock) => {
-            let schema = resolved.unwrap_or_else(code_index::schema);
-            catalog.create(&target.database, &schema)?.meta.instance
-        }
+        Route::Local(catalog, _lock) => catalog.create(&target.database, &resolved)?.meta.instance,
     };
 
     Ok(Created {

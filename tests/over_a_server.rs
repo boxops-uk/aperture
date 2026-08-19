@@ -17,6 +17,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The sample code-index schema, by absolute path.
+///
+/// `create` requires a schema, and this is the file the instruments, the .NET clients and
+/// the viewer all build against. Absolute, so a test does not depend on the working
+/// directory it was launched from.
+const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/schemas/code.sigla");
+
 /// Run `fjord` against a store root.
 fn fjord(root: &Path, args: &[&str]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_fjord"))
@@ -112,7 +119,7 @@ fn the_lifecycle_works_against_a_running_server() {
     // This is the line that was impossible before 9d. The server holds the root lock,
     // so opening the directory here would be refused by name; it succeeds because it
     // went over the socket.
-    let created = ok(&root, &["create", "code"]);
+    let created = ok(&root, &["create", "code", "--schema", SAMPLE]);
     assert!(created.starts_with("created code ("), "{created}");
 
     let listed = ok(&root, &["list"]);
@@ -156,8 +163,8 @@ fn a_server_refusal_reaches_the_person_who_typed_it() {
     // Two instances, so a bare-name delete is ambiguous — and the refusal is decided
     // by the *server*, which is what makes this a test of the server's own words
     // reaching the person who typed the command rather than of the offline path's.
-    ok(&root, &["create", "code"]);
-    ok(&root, &["create", "code"]);
+    ok(&root, &["create", "code", "--schema", SAMPLE]);
+    ok(&root, &["create", "code", "--schema", SAMPLE]);
 
     let stderr = fails(&root, &["db", "rm", "code", "--yes"]);
     assert!(stderr.contains("2 instances"), "{stderr}");
@@ -181,7 +188,7 @@ fn what_the_server_made_outlives_it() {
     let (_dir, root) = scratch();
     let serving = serve(&root);
 
-    ok(&root, &["create", "code"]);
+    ok(&root, &["create", "code", "--schema", SAMPLE]);
 
     // The server goes; the scratch directory stays, which is the point.
     drop(serving);
@@ -211,7 +218,7 @@ fn query_speaks_to_the_server_and_renders_client_side() {
     let (_dir, root) = scratch();
     let _serving = serve(&root);
 
-    ok(&root, &["create", "code"]);
+    ok(&root, &["create", "code", "--schema", SAMPLE]);
 
     // A scalar head: one unnamed column.
     let table = ok(&root, &["query", "code", "F where src.File F"]);
@@ -255,7 +262,7 @@ fn a_query_with_no_server_says_so() {
     let (_dir, root) = scratch();
 
     // Created offline, so the database exists and only the server is missing.
-    ok(&root, &["create", "code"]);
+    ok(&root, &["create", "code", "--schema", SAMPLE]);
 
     let stderr = fails(&root, &["query", "code", "F where src.File F"]);
     assert!(stderr.contains("could not connect"), "{stderr}");

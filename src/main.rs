@@ -218,7 +218,7 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
             let created = commands::create::run(
                 root,
                 &context.target(name)?,
-                schema.as_deref(),
+                schema,
                 &config::schema_path(cli.schema_path.clone()),
             )?;
 

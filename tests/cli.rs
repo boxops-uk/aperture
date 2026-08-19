@@ -7,6 +7,13 @@
 
 use std::{path::Path, process::Command};
 
+/// The sample code-index schema, by absolute path.
+///
+/// `create` requires a schema, and this is the file the instruments, the .NET clients and
+/// the viewer all build against. Absolute, so a test does not depend on the working
+/// directory it was launched from.
+const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/schemas/code.sigla");
+
 /// Run `fjord` against a scratch store root.
 fn fjord(root: &Path, args: &[&str]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_fjord"))
@@ -45,7 +52,7 @@ fn a_database_lives_and_dies_through_the_command_tree() {
     // Nothing yet, and saying so rather than printing an empty table.
     assert!(ok(root, &["list"]).contains("no databases"));
 
-    let created = ok(root, &["create", "code"]);
+    let created = ok(root, &["create", "code", "--schema", SAMPLE]);
     assert!(created.starts_with("created code ("), "{created}");
 
     let listed = ok(root, &["list"]);
@@ -104,7 +111,7 @@ fn json_output_is_a_rendering_not_a_different_query() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let root = dir.path();
 
-    ok(root, &["create", "code"]);
+    ok(root, &["create", "code", "--schema", SAMPLE]);
 
     let listed: serde_json::Value =
         serde_json::from_str(&ok(root, &["list", "--format", "json"])).expect("valid JSON");
@@ -156,8 +163,8 @@ fn several_databases_coexist() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let root = dir.path();
 
-    ok(root, &["create", "beta"]);
-    ok(root, &["create", "alpha"]);
+    ok(root, &["create", "beta", "--schema", SAMPLE]);
+    ok(root, &["create", "alpha", "--schema", SAMPLE]);
 
     let listed = ok(root, &["list"]);
     let alpha = listed.find("alpha").expect("alpha is listed");
@@ -171,7 +178,7 @@ fn several_databases_coexist() {
     // **A name is a container, and creating it twice adds an instance.** This is the
     // rule that changed: `alpha` is now two databases, both listed, and the one a bare
     // `alpha` means depends on what is being asked of it.
-    ok(root, &["create", "alpha"]);
+    ok(root, &["create", "alpha", "--schema", SAMPLE]);
 
     let listed = ok(root, &["list"]);
     let instances = listed.lines().filter(|line| line.contains("alpha")).count();
@@ -199,13 +206,13 @@ fn a_held_store_root_refuses_lifecycle_commands() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let root = dir.path();
 
-    ok(root, &["create", "code"]);
+    ok(root, &["create", "code", "--schema", SAMPLE]);
 
     let catalog = fjord_store::catalog::Catalog::open(root).expect("a store root");
     let held = catalog.lock().expect("this process holds it");
 
     for args in [
-        vec!["create", "other"],
+        vec!["create", "other", "--schema", SAMPLE],
         vec!["finish", "code"],
         vec!["db", "rm", "code", "--yes"],
     ] {
@@ -229,7 +236,7 @@ fn a_held_store_root_refuses_lifecycle_commands() {
 
     // Released, and the same command now works — the refusal was contention, not a
     // permanent state.
-    ok(root, &["create", "other"]);
+    ok(root, &["create", "other", "--schema", SAMPLE]);
 }
 
 /// **A schema is a file the tool reads**, and the three questions it can be asked
@@ -316,9 +323,12 @@ fn a_database_is_created_against_a_schema_file_and_carries_it() {
         "it should say what it built against: {created}"
     );
 
-    // The default is still the built-in one, so the two databases under one root hold
-    // different schemas — which is the whole point of the copy being per database.
-    ok(root, &["create", "builtin"]);
+    // A second database against a *different* file, so the two under one root hold
+    // different schemas — which is the whole point of the copy being per database. It
+    // used to be created with no `--schema` at all, against a built-in default; the
+    // premise of this test was then "the default exists and differs from `tiny`", which
+    // made a default the thing being compared against.
+    ok(root, &["create", "sample", "--schema", SAMPLE]);
 
     let described = ok(root, &["describe", "tiny"]);
     assert!(described.contains("log.Line"), "{described}");
@@ -334,7 +344,7 @@ fn a_database_is_created_against_a_schema_file_and_carries_it() {
 
     // Against the other database it is Breaking, with per-predicate reasons — the two
     // fingerprints in `list` say the same thing more briefly.
-    let differs = ok(root, &["schema", "diff", "tiny", "builtin"]);
+    let differs = ok(root, &["schema", "diff", "tiny", "sample"]);
     assert!(differs.contains("Breaking"), "{differs}");
     assert!(differs.contains("- log.Line  (removed)"), "{differs}");
 
@@ -366,6 +376,30 @@ fn a_database_is_created_against_a_schema_file_and_carries_it() {
     assert!(refused.contains("bananas"), "{refused}");
     assert!(
         !ok(root, &["list"]).contains("never"),
+        "nothing was created"
+    );
+}
+
+/// **`create` names a schema or it creates nothing.**
+///
+/// There used to be a built-in code index standing in for a caller who did not say, and
+/// the reason it had to go is not tidiness: a database embeds its schema and is frozen
+/// against it (I13), so a *default* was deciding what every row of somebody's database
+/// meant — and the same command against two builds of the tool made two different
+/// artifacts. Refused by clap, which is why the message names the flag.
+#[test]
+fn create_with_no_schema_is_refused_and_makes_nothing() {
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let root = dir.path();
+
+    let refused = fails(root, &["create", "code"]);
+    assert!(
+        refused.contains("--schema"),
+        "the refusal should name the flag: {refused}"
+    );
+
+    assert!(
+        ok(root, &["list"]).contains("no databases"),
         "nothing was created"
     );
 }

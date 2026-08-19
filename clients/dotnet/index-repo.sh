@@ -43,7 +43,9 @@ fjord="$root/target/release/fjord"
 rm -rf "$scratch"
 mkdir -p "$scratch"
 
-"$fjord" --data-dir "$scratch/db" create "$database"
+# `--schema` is required, and this is the file `CodeIndex.cs` states independently.
+"$fjord" --data-dir "$scratch/db" create "$database" \
+    --schema "$root/schemas/code.sigla"
 
 "$fjord" --data-dir "$scratch/db" serve --ready-file "$scratch/ready" &
 server=$!

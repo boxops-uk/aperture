@@ -90,12 +90,13 @@ pub enum Command {
         /// The schema to create it against — an entry file, whose imports are
         /// resolved from its own directory and then `--schema-path`.
         ///
-        /// The schema is **frozen for the database's lifetime** (I13) and embedded in
-        /// it, so this is the one moment it can be chosen. Without it, the built-in
-        /// code index is used, which is what every database held before there was a
-        /// way to say otherwise.
+        /// **Required.** The schema is frozen for the database's lifetime (I13) and
+        /// embedded in it, so this is the one moment it can be chosen — and a database
+        /// whose schema nobody chose is one nobody can describe. There used to be a
+        /// built-in code index standing in for a caller who did not say, which made a
+        /// *default* decide what every stored row meant.
         #[arg(long, value_name = "FILE")]
-        schema: Option<PathBuf>,
+        schema: PathBuf,
     },
 
     /// Seal a database: Writable → Complete, and immutable thereafter.
