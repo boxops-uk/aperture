@@ -1,9 +1,9 @@
 //! The **format stamp** — what a DB says about the encoding that wrote it.
 //!
-//! [I3](../../docs/invariants.md#i3) freezes the marker table, and the reason it
+//! [I3](../../../docs/invariants.md#i3) freezes the marker table, and the reason it
 //! had to hold *forever* rather than *until a migration* was that nothing a reader
 //! is handed says which encoding wrote it: a migration presupposes detection.
-//! This module is that detection ([I15](../../docs/invariants.md#i15)) — a fixed
+//! This module is that detection ([I15](../../../docs/invariants.md#i15)) — a fixed
 //! block written once at create, in the DB's own metadata keyspace, checked at
 //! every open.
 //!
@@ -11,11 +11,11 @@
 //! change for different reasons:
 //!
 //! - [`FormatVersion::codec`] covers the **tuple codec** — the marker table and
-//!   the encoding of each type ([chapter 2](../../docs/02-tuple-codec.md)). A new
+//!   the encoding of each type ([chapter 2](../../../docs/02-tuple-codec.md)). A new
 //!   type's marker moves this.
 //! - [`FormatVersion::storage`] covers the **physical layout** — how a row is
 //!   framed in each column family, how a keyspace is named, and the `FactId`
-//!   split ([chapter 3](../../docs/03-storage-model.md)). Rows changing shape
+//!   split ([chapter 3](../../../docs/03-storage-model.md)). Rows changing shape
 //!   moves this.
 //!
 //! A codec addition does not reshape a row and a layout change does not touch the
@@ -35,7 +35,7 @@ use std::fmt;
 use crate::error::FormatError;
 
 /// The keyspace holding database-level metadata — the stamp today, the embedded
-/// schema when [I13](../../docs/invariants.md#i13) lands.
+/// schema when [I13](../../../docs/invariants.md#i13) lands.
 ///
 /// Not a predicate keyspace: [`FjallDb::open`](crate::store::FjallDb::open)
 /// recovers predicates by the `keys.`/`entities.` prefixes, which this name does

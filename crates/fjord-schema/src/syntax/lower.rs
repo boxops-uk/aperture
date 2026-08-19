@@ -7,7 +7,7 @@
 //!
 //! # Ids come from the sorted name, and that is D1
 //!
-//! [`phase-8-schemas.md`](../../../../docs/phase-8-schemas.md) settles this: an id is a
+//! [`phase-8-schemas.md`](https://github.com/boxops-uk/fjord/blob/main/docs/phase-8-schemas.md) settles this: an id is a
 //! property of the *database*, assigned by sorted qualified name and then persisted and
 //! append-only, never a function of where a declaration sits in a file. This module does
 //! the assigning half — sort, then enumerate — which is what makes two orderings of one
@@ -66,7 +66,7 @@ struct Declared<'s> {
 
 /// Where a predicate's id comes from.
 ///
-/// Two callers, and the difference between them is [D1](../../../../docs/phase-8-schemas.md)
+/// Two callers, and the difference between them is [D1](https://github.com/boxops-uk/fjord/blob/main/docs/phase-8-schemas.md)
 /// stated as code: a schema being **declared** is numbered by sorted name, so that two
 /// orderings of one schema build the same database; a schema being **recovered** from
 /// the copy a database embedded already has its numbering, frozen in the tag of every
@@ -669,7 +669,7 @@ mod tests {
     }
 
     /// **Two orderings of one schema are the same schema** — the precursor to
-    /// [I13](../../../../docs/invariants.md#i13)'s fingerprint guard, at the level this
+    /// [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)'s fingerprint guard, at the level this
     /// step can already answer.
     ///
     /// Both the ids and the types have to match: ids alone would hold for a lowering

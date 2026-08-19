@@ -216,7 +216,7 @@ fn facts_written_by_this_client_are_queried_back_by_it() {
 /// framing itself — the field is a reference nested two levels deep, so interning has
 /// to reach the file through the declaration before the doc's key has any bytes, and
 /// the fact has a value side that the query reads without matching on
-/// ([I6](../../../docs/invariants.md#i6)).
+/// ([I6](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i6)).
 ///
 /// It is written here rather than only in the encoder's golden because encoding a shape
 /// correctly and *storing* one are different claims.
@@ -380,8 +380,8 @@ fn a_reference_expands_into_the_fact_it_names() {
 /// **An id naming no fact is an absence, and one naming no predicate is a refusal.**
 ///
 /// The first cannot happen for an id out of a row — both column families are written
-/// together ([I12](../../../docs/invariants.md#i12)) and ids are never reused
-/// ([I11](../../../docs/invariants.md#i11)) — so the server answers "nothing" and lets
+/// together ([I12](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i12)) and ids are never reused
+/// ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)) — so the server answers "nothing" and lets
 /// the client decide what that means about where the id came from. The second is a
 /// question about a schema both ends share, so it is refused on the stream that asked,
 /// and the session goes on.
@@ -473,9 +473,9 @@ fn field(value: &WireValue, index: usize) -> &WireValue {
 /// The property `\more` is built on, checked here before there is a shell to check it
 /// in. The result is long enough to cross the server's chunk boundary several times —
 /// so between pages the server is parked mid-result holding a bytes-only cursor, with
-/// its snapshot already released ([I8](../../../docs/invariants.md#i8)) — and the
+/// its snapshot already released ([I8](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i8)) — and the
 /// concatenation of the pages must equal an uninterrupted run of the same query, which
-/// is [I4](../../../docs/invariants.md#i4) seen from a client.
+/// is [I4](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i4) seen from a client.
 #[test]
 fn a_paged_read_equals_an_uninterrupted_one() {
     let serving = start();
@@ -693,7 +693,7 @@ fn the_lifecycle_runs_through_the_client() {
 /// asked for as a question.
 ///
 /// *Disagrees*, not *differs*: a client declaring fewer predicates than the server has
-/// is checked by containment and let in ([I13](../../../docs/invariants.md#i13), and
+/// is checked by containment and let in ([I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13), and
 /// `i13_embedded_schema.rs` for the whole rule). What is refused here is a client whose
 /// `src.File` is a different `src.File`.
 #[test]
@@ -963,7 +963,7 @@ fn within(limit: std::time::Duration, mut f: impl FnMut() -> bool) -> bool {
 /// So this asks for every page on a **new connection**, closing the last one first,
 /// which is the shape a stateless web tier has and the shape nothing here could take
 /// before. The concatenated pages must equal the uninterrupted result exactly: same
-/// rows, same order, no gap and no repeat — [I4](../../../docs/invariants.md#i4)
+/// rows, same order, no gap and no repeat — [I4](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i4)
 /// carried through a token rather than through a session.
 #[test]
 fn pages_taken_on_separate_connections_equal_one_result() {
@@ -1263,7 +1263,7 @@ fn a_cancel_inside_a_chunk_completes_rather_than_fails() {
     );
 }
 
-/// **[Phase 12e](../../../PLAN.md): two connections write one database at the same time.**
+/// **[Phase 12e](https://github.com/boxops-uk/fjord/blob/main/PLAN.md): two connections write one database at the same time.**
 ///
 /// The server used to hold a per-database mutex across every block, so however many
 /// clients were writing, one was writing. That mutex was doing two jobs and only ever had
@@ -1329,7 +1329,7 @@ fn two_connections_write_one_database_at_the_same_time() {
 /// exactly one of them.
 ///
 /// `ops-I5`'s reject is the rule that survives parallelism, and it is the rule
-/// [`ops-I4`](../../../docs/fjord-cli-design.md) actually needs: *which* producer is
+/// [`ops-I4`](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md) actually needs: *which* producer is
 /// told no may vary with the interleaving, but that one of them is told no may not. A
 /// pick-one rule would make the database depend on a race; a reject makes the failure
 /// depend on it, which is a different and acceptable thing.

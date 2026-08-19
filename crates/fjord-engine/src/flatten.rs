@@ -7108,7 +7108,7 @@ mod tests {
     // ---- Phase 6: derived binds (red, pending the `Slot` promotion) ---------
     //
     // Phase 6's acceptance criteria, as tests, written before the machine that
-    // satisfies them ([`PLAN.md`](../../PLAN.md) Phase 6). They are deliberately
+    // satisfies them ([`PLAN.md`](../../../PLAN.md) Phase 6). They are deliberately
     // written **through the driver** — sigla text in, rows out — and name no plan
     // type that does not exist yet, so they compile today, fail today for the
     // right reason (`nyi/value-bind`, reported by `collect`), and go green when
@@ -9463,7 +9463,7 @@ mod battery {
 
     // ---- resume, over plans the compiler produced --------------------------
     //
-    // [I4](../../docs/invariants.md#i4) is guarded over *hand-built* plan shapes
+    // [I4](../../../docs/invariants.md#i4) is guarded over *hand-built* plan shapes
     // (`plan::proptest`), which is where it belongs — the executor is what it is
     // about. But flatten emits shapes that generator never draws: constant seek
     // prefixes, composite seeks of several parts, `ResidualOp::Prefix`, nested
@@ -9789,7 +9789,7 @@ mod battery {
         ///
         /// **The order is drawn, not the identity**, and that is what puts a step
         /// that binds nothing *above* a scan. Phase 6 learned this the expensive
-        /// way: the first [I14](../../docs/invariants.md#i14) guard passed with
+        /// way: the first [I14](../../../docs/invariants.md#i14) guard passed with
         /// resume's recompute deleted, because the derive sat below the scan and
         /// `enumerate` re-entered it from beneath on the way back up. A negation is
         /// the same shape of step and would hide the same fault — written last in

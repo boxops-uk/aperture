@@ -23,7 +23,7 @@ const MAX_SOURCE_LEN: usize = u32::MAX as usize;
 ///
 /// The generated parser is recursive descent and `ty` recurses through records, arrays,
 /// `maybe` and `set`, so deep input would overflow the stack — a panic on a data path,
-/// which [conventions](../../../../docs/conventions.md) does not allow. A schema is
+/// which [conventions](https://github.com/boxops-uk/fjord/blob/main/docs/conventions.md) does not allow. A schema is
 /// written by a person; 64 is far past anything anyone means and far below what would
 /// exhaust a stack.
 const MAX_NEST_DEPTH: usize = 64;
@@ -31,7 +31,7 @@ const MAX_NEST_DEPTH: usize = 64;
 /// Parse `source`, reporting into `diags`.
 ///
 /// `None` is a **refusal** — an unaddressable source, or one nested past
-/// [`MAX_NEST_DEPTH`] — and means there is no tree at all. A tree *with errors in it* is
+/// `MAX_NEST_DEPTH` — and means there is no tree at all. A tree *with errors in it* is
 /// the ordinary case and comes back as `Some` with diagnostics beside it, because
 /// permissive-early needs a reader to get every complaint at once rather than the first.
 pub fn parse<'src>(source: &'src str, diags: &mut Vec<Diagnostic>) -> Option<Cst<'src>> {

@@ -549,7 +549,7 @@ mod tests {
     proptest! {
         /// **A well-typed fact ingests, or contradicts itself — and nothing else.**
         ///
-        /// [Phase 7a's acceptance criterion](../../PLAN.md) — "interning is bottom-up
+        /// [Phase 7a's acceptance criterion](../../../PLAN.md) — "interning is bottom-up
         /// and total on any well-typed nested value: no order in which a parent is
         /// written before the child its key holds". Stated as *no other failure mode*,
         /// because the criterion is about the walk and a conflict is about the

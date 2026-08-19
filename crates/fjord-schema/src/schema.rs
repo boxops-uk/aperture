@@ -214,9 +214,8 @@ impl Schema {
     ///
     /// **What a client carries when it has no claim to make.** The transport codec sends
     /// no names and no types, so both ends supply them — but a reader is served the
-    /// database's own schema and asks for it
-    /// ([`served_schema`](../../fjord-client/src/connection.rs)), and a lifecycle session
-    /// names a database that may not exist yet. Neither has anything to assert, and
+    /// database's own schema and asks for it (a client's `served_schema`), and a lifecycle
+    /// session names a database that may not exist yet. Neither has anything to assert, and
     /// before this each had to invent a schema in order to say so: the tool passed its
     /// built-in one, which is how a *default* schema became load-bearing on a path that
     /// never read it.
@@ -364,10 +363,10 @@ mod tests {
 
 /// Phase-8 invariant guards that are **live**.
 ///
-/// One so far: [I13](../../docs/invariants.md#i13)'s order-independence half, which
+/// One so far: [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)'s order-independence half, which
 /// went green when the canonical form and fingerprints landed at 8.3
 /// ([`fingerprint`](crate::fingerprint)). It sits here rather than beside that module
-/// because the [registry](../../docs/invariants.md) names it `schema::…`, and a guard
+/// because the [registry](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md) names it `schema::…`, and a guard
 /// that moves is a guard the registry stops pointing at.
 #[cfg(test)]
 mod guards {
@@ -466,19 +465,19 @@ mod guards {
 }
 
 /// The one Phase-8 invariant guard still **pending**:
-/// [I10](../../docs/invariants.md#i10), stable union discriminants.
+/// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10), stable union discriminants.
 ///
 /// It needs what 8.6 will build — a `Union` in `PredicateTy` — so it is written up
 /// front as the specification, `#[ignore]`d until its subject exists, and named under
 /// `pending_phase_8` so `cargo test -- --ignored --list` (the coverage ledger) shows
 /// the phase that owns it.
 ///
-/// **[I13](../../docs/invariants.md#i13)'s ingest half went green at 8.4 and left this
+/// **[I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)'s ingest half went green at 8.4 and left this
 /// crate.** Its guard could never have run here: validating an ingest needs a database
 /// to validate it against, a schema that was parsed rather than built, and a write path,
 /// and none of the three is below this crate. It is
 /// `fjord-client/tests/i13_embedded_schema.rs` now, keeping the name the registry
-/// knows it by — which is the rule [testing](../../docs/testing.md) states for a guard
+/// knows it by — which is the rule [testing](https://github.com/boxops-uk/fjord/blob/main/docs/testing.md) states for a guard
 /// whose subject sits above the crate that specified it.
 #[cfg(test)]
 mod pending_phase_8 {

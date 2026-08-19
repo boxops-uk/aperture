@@ -1184,7 +1184,7 @@ mod tests {
 
     /// **Every supported entry answers the same when it is interrupted.**
     ///
-    /// [I4](../../docs/invariants.md#i4) says a resumed run equals an uninterrupted
+    /// [I4](../../../docs/invariants.md#i4) says a resumed run equals an uninterrupted
     /// one, and the property battery in `flatten` says it over generated queries —
     /// but a generator only draws the shapes it was taught, so every construct
     /// added to the language starts outside its reach. The corpus is the place that

@@ -9,10 +9,10 @@
 //! Two implementations meet here: [`FjallDb`](crate::store::FjallStore) on
 //! disk and [`MemStore`](crate::mem_store::MemStore) in memory, held to
 //! each other as a differential oracle
-//! ([testing](../../docs/testing.md)). The executor consumes a `(handle,
+//! ([testing](../../../docs/testing.md)). The executor consumes a `(handle,
 //! snapshot)` and assumes nothing about a connection, which is the cut that lets
 //! the same engine run embedded and served
-//! ([operations §10](../../docs/fjord-cli-design.md)).
+//! ([operations §10](../../../docs/fjord-cli-design.md)).
 
 use byteview::ByteView;
 

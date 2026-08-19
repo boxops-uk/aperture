@@ -1,6 +1,6 @@
 //! [`Schema`] → source — the form a database **embeds**.
 //!
-//! [I13](../../../../docs/invariants.md#i13) asks a database to carry its own schema,
+//! [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13) asks a database to carry its own schema,
 //! and this is the half that makes the copy worth carrying: text in the same language
 //! `fjord create --schema` takes, so a reader needs no second format and the parser
 //! that already exists is the one that reads it back.
@@ -14,12 +14,12 @@
 //! and the fingerprint keeps them honest: an embedded copy that lowers to a different
 //! schema has a different fingerprint from the one the sidecar recorded.
 //!
-//! # Order is the artifact, which is why reading it back is [`recover`]
+//! # Order is the artifact, which is why reading it back is [`recover`](super::recover)
 //!
 //! Predicates are printed **in id order**, because an id is a position and every
 //! [`FactId`](crate::id::FactId) a database holds carries one as its tag. Reading the
 //! copy back with [`lower`](super::lower::lower) would re-assign ids by sorted name
-//! ([D1](../../../../docs/phase-8-schemas.md)) — right for a schema being *declared*,
+//! ([D1](https://github.com/boxops-uk/fjord/blob/main/docs/phase-8-schemas.md)) — right for a schema being *declared*,
 //! and wrong for one being *recovered*, where the numbering is already frozen on disk.
 //! For every schema written down as text the two agree, since lowering sorted them in
 //! the first place; for a hand-built one they need not, and the difference is a database
@@ -48,7 +48,7 @@ pub fn print(schema: &Schema) -> String {
 
 /// Write out **everything a server would answer**, virtual predicates included.
 ///
-/// The difference from [`print`] is the difference between two questions. *What does
+/// The difference from [`print()`] is the difference between two questions. *What does
 /// this database hold* leaves out `fjord.db.List`, because no artifact holds it and
 /// a client made to declare it could never write one. *What can I ask you* puts it in,
 /// because a client that cannot see it cannot compile `fjord.db.List _` — and a

@@ -5,8 +5,8 @@
 //! different questions — [`schema`] is what a predicate *is*, [`id`] is what a
 //! stored row *is called*.
 //!
-//! Design of record: [chapter 6](../../../docs/06-types-and-schema.md) for the
-//! type model, [chapter 3](../../../docs/03-storage-model.md#factid-allocation-i11)
+//! Design of record: [chapter 6](https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md) for the
+//! type model, [chapter 3](https://github.com/boxops-uk/fjord/blob/main/docs/03-storage-model.md#factid-allocation-i11)
 //! for the id.
 
 /// The string interner this crate's public API is built over.

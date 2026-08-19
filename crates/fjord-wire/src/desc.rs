@@ -11,7 +11,7 @@
 //!
 //! The descriptor *is* a type, which is what keeps this from being a second codec:
 //! [`Desc`] converts to a
-//! [`PredicateTy`](fjord_schema::schema::PredicateTy) and rows are then encoded
+//! [`fjord_schema::schema::PredicateTy`] and rows are then encoded
 //! and decoded by exactly the machinery a fact's key is. The only thing a descriptor
 //! adds is that it carries its record field **names** as text — a `PredicateTy` holds
 //! interned symbols, and a peer has no interner.

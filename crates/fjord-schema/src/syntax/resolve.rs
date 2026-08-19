@@ -1,6 +1,6 @@
 //! **Imports** — an entry file, everything it names, and the union they make.
 //!
-//! [Operations §7](../../../../docs/fjord-cli-design.md) settles the rules and this
+//! [Operations §7](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md) settles the rules and this
 //! is the transcription:
 //!
 //! - **An import names a namespace, never a path** (`import lang.rust`). How a namespace

@@ -1,6 +1,6 @@
 # What a branch must prove, and what a release must carry.
 #
-# Three jobs, because they answer different questions and are trusted differently:
+# Four jobs, because they answer different questions and are trusted differently:
 #
 #   test    always runs, including on a pull request from a fork. `PLAN.md`'s
 #           definition of done everywhere is "a task ends in a green test", and
@@ -12,6 +12,11 @@
 #           `cfg(debug_assertions)` — the merge frontier's never-nested
 #           assertion and `put_fact`'s write-once contract among them — so a
 #           release-profile test run would silently not check them.
+#
+#   package always runs. It answers what a *consumer* gets rather than what the tree
+#           does: what each published crate would upload, that crates.io would accept
+#           the bottom of the SDK, and that the documentation docs.rs builds has no
+#           broken link in it.
 #
 #   build   always runs, including on a pull request from a fork. It is a
 #           required status check on `main` and `release/*`, so nothing lands
@@ -76,6 +81,50 @@ jobs:
       # edited by whoever un-ignores one, and the list is what a reviewer reads.
       - name: Invariant coverage ledger
         run: cargo test --locked -- --ignored --list
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-package-${{ hashFiles('Cargo.lock') }}
+      # **What each published crate would actually upload.** `cargo package` obeys
+      # `include`, so this is the check that a package holds the library, its licence
+      # and its front page — and not a test that reads a golden from the repository it
+      # is no longer in.
+      #
+      # `--list` rather than `--dry-run` for the three that have dependencies: a
+      # dry-run resolves them against crates.io, and they are not there until the one
+      # below them is published. `--list` needs no registry, and the build is already
+      # proven by `test` and `build`.
+      - name: What the packages would contain
+        run: |
+          for crate in fjord-schema fjord-wire fjord-client fjord-db; do
+            echo "── $crate"
+            cargo package --locked --list -p "$crate"
+          done
+      # The bottom of the SDK has no Fjord dependencies, so it is the one that *can* be
+      # fully verified — manifest, metadata and a build of the packaged copy — before
+      # anything is uploaded. crates.io refuses a package with no description or licence,
+      # and this is where that is found out.
+      - name: Verify the package crates.io would accept
+        run: cargo publish --locked --dry-run -p fjord-schema
+      # **Documentation is part of the package.** docs.rs has no repository to walk up
+      # into, so a relative link in a published crate is a broken link on the page a
+      # consumer actually reads; `-D warnings` also catches an unresolved intra-doc link
+      # and a public item documented against a private one.
+      - name: Documentation, as docs.rs would build it
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps -p fjord-schema -p fjord-wire -p fjord-client -p fjord-db
 
   build:
     name: build

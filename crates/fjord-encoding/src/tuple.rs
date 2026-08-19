@@ -758,7 +758,7 @@ impl<'a> TupleDecoder<'a> {
         let id = FactId::from_raw(u64::from_be_bytes(buf));
 
         // Sequence 0 is reserved so that zeroed or truncated bytes are
-        // *detectably* not a fact ([I11](../../docs/invariants.md#i11)), and a
+        // *detectably* not a fact ([I11](../../../docs/invariants.md#i11)), and a
         // property nothing checks is only an intention. The stored-`keys`-row
         // decoder (`store::decode_fact_id`) already enforces it; this is the same
         // rule at the decoder that reads a reference embedded **in a key**, which
@@ -979,7 +979,7 @@ pub fn decode_typed(
 /// That asymmetry is the layout, not an accident: a key is stored flat so a seek
 /// can extend a prefix by whole fields and the executor can reach field *k* by
 /// skipping the *k* before it, which is what the field-offset cache holds
-/// ([I2](../../docs/invariants.md#i2)). A *nested* record inside a field keeps its
+/// ([I2](../../../docs/invariants.md#i2)). A *nested* record inside a field keeps its
 /// wrapper, because there it is one value among others and has to be skippable as
 /// one. So [`decode_typed`] reads a field or a value, and this reads a whole key;
 /// handing a record-keyed predicate's key to `decode_typed` looks for a

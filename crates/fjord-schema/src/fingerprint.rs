@@ -1,6 +1,6 @@
 //! **Schema identity** — the canonical form, and the fingerprints taken over it.
 //!
-//! [Chapter 6](../../../docs/06-types-and-schema.md) asks for two things: a form that is
+//! [Chapter 6](https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md) asks for two things: a form that is
 //! independent of how a schema was written down, and a hash over it — one per predicate
 //! and one for the whole schema. What a database embeds and a handshake compares is the
 //! result.
@@ -165,7 +165,7 @@ pub enum Compatibility {
 ///
 /// The number a handshake compares and a sidecar records. It is the same one
 /// `fjord schema fingerprint` prints, which is what lets a client
-/// [carry it rather than derive it](../../../docs/open-decisions.md).
+/// [carry it rather than derive it](https://github.com/boxops-uk/fjord/blob/main/docs/open-decisions.md).
 #[must_use]
 pub fn of(schema: &Schema) -> u64 {
     identity(schema).schema()
@@ -379,7 +379,7 @@ fn references(schema: &Schema, id: PredicateId) -> BTreeSet<PredicateId> {
 ///
 /// Tarjan's, written iteratively: a schema is a data path, and a recursive walk over one
 /// deep enough would be a stack overflow where
-/// [conventions](../../../docs/conventions.md) requires an error. Tarjan emits each
+/// [conventions](https://github.com/boxops-uk/fjord/blob/main/docs/conventions.md) requires an error. Tarjan emits each
 /// component only after everything it reaches, which is exactly the order the
 /// fingerprints need.
 fn components(schema: &Schema, names: &BTreeMap<PredicateId, String>) -> Vec<Vec<PredicateId>> {

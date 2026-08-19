@@ -11,7 +11,7 @@
 //!
 //! Nothing here buffers rows. The place is kept by the *stream* staying open, which
 //! costs the server a suspended query loop and a bytes-only cursor — never a snapshot
-//! ([I8](../../../docs/invariants.md#i8)).
+//! ([I8](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i8)).
 
 use fjord_schema::schema::{LocalInterner, PredicateTy, Schema};
 use fjord_wire::{Desc, QueryProfile, StreamId, WireValue, value::decode_value};

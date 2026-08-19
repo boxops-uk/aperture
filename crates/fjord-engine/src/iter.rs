@@ -47,9 +47,9 @@ impl Register {
 /// What a register holds: a **stored row**, or a **computed value**.
 ///
 /// The fact case is the original register and the one
-/// [I5](../../docs/invariants.md#i5) is about — the whole row, fields decoded
+/// [I5](../../../docs/invariants.md#i5) is about — the whole row, fields decoded
 /// lazily at a read site. The value case is a *derived bind*'s output
-/// ([chapter 7](../../docs/07-compilation.md#derived-facts)): a pure function of
+/// ([chapter 7](../../../docs/07-compilation.md#derived-facts)): a pure function of
 /// the fact slots, which is exactly why the [`Cursor`] does not store one and a
 /// resume recomputes it instead.
 ///
@@ -169,7 +169,7 @@ const FIELD_OFFSETS_CAPACITY: usize = 16;
 ///
 /// `ends[k]` is the offset one past field `k`, so field `k` spans
 /// `ends[k - 1]..ends[k]`. Filled lazily, left to right — the encoding is
-/// self-delimiting ([I2](../../docs/invariants.md#i2)), so finding field `k`
+/// self-delimiting ([I2](../../../docs/invariants.md#i2)), so finding field `k`
 /// means skipping the `k` before it, and caching the boundaries is what stops a
 /// seek splice and a residual on the same register re-walking the row.
 ///
@@ -197,7 +197,7 @@ const FIELD_OFFSETS_CAPACITY: usize = 16;
 /// That turns every executor test, including the generated resume battery, into a
 /// check of this invariant. The witness costs nothing in release, and nothing on
 /// the hot path either way — a `ByteView` clone is a refcount bump
-/// ([I9](../../docs/invariants.md#i9)).
+/// ([I9](../../../docs/invariants.md#i9)).
 #[derive(Debug, Clone)]
 pub struct FieldOffsets {
     ends: ArrayVec<[usize; FIELD_OFFSETS_CAPACITY]>,
@@ -647,8 +647,8 @@ impl<S: FactStore> StackFrame<S> {
 
         // A reference naming no fact is a fault in the data, not a query that
         // answers nothing: `keys` and `entities` are written together
-        // ([I12](../../docs/invariants.md#i12)) and an id is never reused
-        // ([I11](../../docs/invariants.md#i11)), so there is no legitimate way to
+        // ([I12](../../../docs/invariants.md#i12)) and an id is never reused
+        // ([I11](../../../docs/invariants.md#i11)), so there is no legitimate way to
         // arrive here. Dropping the row instead would answer short and say nothing.
         let entity = store
             .point(fact_id)?
@@ -747,12 +747,12 @@ impl<S: FactStore> StackFrame<S> {
     /// against the registers as they stand.
     ///
     /// Each source is opened, asked for one row, and **closed again before this
-    /// returns**, which is what keeps [I8](../../docs/invariants.md#i8) structural:
+    /// returns**, which is what keeps [I8](../../../docs/invariants.md#i8) structural:
     /// the frame holds no iterator between probes, so a suspend at any depth has
     /// nothing of a negation's to release. It also means a probe costs one seek per
     /// row the level above produces, not one per row a scan examines — the same
     /// shape of cost [`Source::Fetch`] pays, and the reason
-    /// [I6](../../docs/invariants.md#i6) is untouched: a probe reads `keys` and
+    /// [I6](../../../docs/invariants.md#i6) is untouched: a probe reads `keys` and
     /// fetches no value.
     ///
     /// Stops at the first witness. "Does one exist" is the question, so a negation
@@ -879,7 +879,7 @@ pub struct Executor<S: FactStore> {
     /// One field-offset cache per register, for projection.
     ///
     /// Owned here rather than made per row: a fresh `Box<[_]>` for each row would
-    /// allocate on the hot path ([I9](../../docs/invariants.md#i9)). Cleared at
+    /// allocate on the hot path ([I9](../../../docs/invariants.md#i9)). Cleared at
     /// the top of [`Row::to_value`], which is the scope over which it is valid —
     /// no register can change while `step` holds the row.
     projection_offsets: Box<[FieldOffsets]>,
@@ -892,7 +892,7 @@ pub struct Executor<S: FactStore> {
 /// level can overlap — the same fact can be reachable from more than one of
 /// them — and the ones after the live source have not run yet, so resuming into
 /// the wrong alternative both re-emits rows and skips rows. It is the whole of
-/// what disjunction adds to the token ([chapter 5](../../docs/05-resume.md)).
+/// what disjunction adds to the token ([chapter 5](../../../docs/05-resume.md)).
 #[derive(Debug, Clone)]
 pub struct Entry {
     source: usize,
@@ -905,7 +905,7 @@ pub struct Entry {
 /// changes what an entry *is* — as disjunction did, adding the source index — must
 /// be able to say so. Without it the next build reads the old layout as the new
 /// one and resumes at a position that means something else
-/// ([chapter 5](../../docs/05-resume.md)).
+/// ([chapter 5](../../../docs/05-resume.md)).
 ///
 /// Separate from the [DB format stamp](fjord_store::format): that says what is on
 /// disk and this says what is in flight, they move for different reasons, and a
@@ -918,7 +918,7 @@ pub const CURSOR_VERSION: u16 = 1;
 /// The entries are what resume replays; the version and the fingerprint are what
 /// make replaying them safe, since the entries are paired with the plan's levels by
 /// order and are otherwise indistinguishable from another plan's
-/// ([chapter 5](../../docs/05-resume.md)).
+/// ([chapter 5](../../../docs/05-resume.md)).
 pub struct Cursor {
     version: u16,
     plan: PlanFingerprint,
@@ -1126,11 +1126,11 @@ pub enum Stream<A> {
 }
 
 /// How a run stopped. Every variant is reached by *consuming* the executor, which
-/// is what enforces [I8](../../docs/invariants.md#i8): the store handle, its
+/// is what enforces [I8](../../../docs/invariants.md#i8): the store handle, its
 /// snapshot and every open scan are dropped before the caller gets the answer.
 ///
 /// A resumable stop carries only a bytes-only [`Cursor`]
-/// ([chapter 5](../../docs/05-resume.md)); to continue, rebuild with
+/// ([chapter 5](../../../docs/05-resume.md)); to continue, rebuild with
 /// [`Executor::resume`] against a fresh snapshot.
 pub enum Iteratee<A> {
     Done(A),
@@ -1308,11 +1308,11 @@ impl<S: FactStore> Executor<S> {
                 // **A test is not re-run on restore, and that is sound rather than
                 // thrifty.** It binds nothing, so there is no state to rebuild; the
                 // row it passed was handed out before the suspend; and the base is
-                // frozen ([ops-I2](../../docs/fjord-cli-design.md)), so a second
+                // frozen ([ops-I2](../../../docs/fjord-cli-design.md)), so a second
                 // probe could only agree. Re-running it could therefore never
                 // *correct* anything and could only fail spuriously — against a
                 // different database, which is a case the token cannot detect at all
-                // ([chapter 5](../../docs/05-resume.md)).
+                // ([chapter 5](../../../docs/05-resume.md)).
                 //
                 // Marked produced all the same: without the bit the machine would
                 // arrive here from below, probe, pass, and ascend into a row it has
@@ -1331,7 +1331,7 @@ impl<S: FactStore> Executor<S> {
     /// `step` asks to suspend.
     ///
     /// **Takes `self` by value, and that is load-bearing**
-    /// ([I8](../../docs/invariants.md#i8)). A fjall scan pins a read snapshot, and
+    /// ([I8](../../../docs/invariants.md#i8)). A fjall scan pins a read snapshot, and
     /// a pinned snapshot keeps LSM blocks — and a whole superseded generation —
     /// alive; an idle portal must hold neither. Consuming the executor makes that
     /// structural instead of a discipline: *every* exit path from here (done,
@@ -1339,7 +1339,7 @@ impl<S: FactStore> Executor<S> {
     /// so there is no shape of caller that can park a live iterator across a
     /// suspend. Resuming is `Executor::resume` with the returned [`Cursor`] and a
     /// fresh snapshot, which is exactly what the wire path does when a portal
-    /// wakes up ([chapter 5](../../docs/05-resume.md)).
+    /// wakes up ([chapter 5](../../../docs/05-resume.md)).
     pub fn enumerate<A>(
         self,
         init: A,
@@ -1426,7 +1426,7 @@ impl<S: FactStore> Executor<S> {
 
             // Descending or backtracking is not a variable the loop carries — it is
             // read off the frame, which is what keeps this a defunctionalised state
-            // machine ([I7](../../docs/invariants.md#i7)). A scan reads it from
+            // machine ([I7](../../../docs/invariants.md#i7)). A scan reads it from
             // whether its iterator is open; a derive step, having no iterator, needs
             // the one bit below.
             match &self.plan.body[self.depth] {
@@ -1558,7 +1558,7 @@ impl<S: FactStore> Executor<S> {
 /// **Pure, and that is the invariant the resume path depends on**: no store, no
 /// iteration, nothing but the bindings already in `state`. It is called again after
 /// a restore and must produce what it produced before
-/// ([chapter 7](../../docs/07-compilation.md#derived-facts)) — which is why the
+/// ([chapter 7](../../../docs/07-compilation.md#derived-facts)) — which is why the
 /// registers it reads are only ones bound by *earlier* steps, and why a cursor
 /// stores nothing for it.
 ///
@@ -1595,7 +1595,7 @@ fn compute(value: &Computed, state: &MachineState) -> Result<Value, FjordError> 
 /// One integer field of a bound row, decoded.
 ///
 /// A fixed-width read from the row's own bytes: nothing allocated, and no value
-/// fetched ([I6](../../docs/invariants.md#i6)) — a derived bind reads the *key*.
+/// fetched ([I6](../../../docs/invariants.md#i6)) — a derived bind reads the *key*.
 fn field_i64(register: &Register, path: &FieldPath) -> Result<i64, FjordError> {
     let key = register.key();
     let mut offsets = FieldOffsets::new();
@@ -2740,11 +2740,11 @@ mod tests {
     /// the *same fact*, and when it does not, resume must refuse rather than carry
     /// on against a row it never saw.
     ///
-    /// This is what [I11](../../docs/invariants.md#i11) buys the executor: ids are
+    /// This is what [I11](../../../docs/invariants.md#i11) buys the executor: ids are
     /// never reused, so a key that now names a different id means the cursor and
     /// the store disagree about the world — a stale portal against a rebuilt DB.
     /// Resuming anyway would emit a row the uninterrupted run never produced,
-    /// which is exactly the failure [I4](../../docs/invariants.md#i4) forbids and
+    /// which is exactly the failure [I4](../../../docs/invariants.md#i4) forbids and
     /// the one the row-sequence comparison cannot see, because the run it is
     /// compared against no longer exists.
     #[test]
@@ -3127,7 +3127,7 @@ mod tests {
         );
     }
 
-    /// **[I4](../../docs/invariants.md#i4) across a disjunction.** Suspending
+    /// **[I4](../../../docs/invariants.md#i4) across a disjunction.** Suspending
     /// while a later source is the live one and resuming must reproduce the
     /// uninterrupted run exactly.
     ///
@@ -4149,7 +4149,7 @@ mod tests {
         ));
     }
 
-    /// **[I4](../../docs/invariants.md#i4) across a fetch.** A fetch level saves an
+    /// **[I4](../../../docs/invariants.md#i4) across a fetch.** A fetch level saves an
     /// ordinary cursor entry and is re-read on resume, which is sound because the
     /// row it produces is a function of the registers outside it — replaying those
     /// puts it back exactly where it was.
@@ -5167,7 +5167,7 @@ mod tests {
     // re-seeks by exactly those bytes, so what matters is that a *real* store —
     // LSM iterators, a snapshot per segment, rows arriving as `Slice`s rather
     // than cloned `Vec`s — reproduces the run identically. This is also the only
-    // place [I8](../../docs/invariants.md#i8) is testable at all; its guard lives
+    // place [I8](../../../docs/invariants.md#i8) is testable at all; its guard lives
     // in `store` alongside the drop probe.
 
     /// Seed a fjall DB with the spec's facts, in the spec's order.
@@ -5361,7 +5361,7 @@ mod tests {
         );
     }
 
-    /// [I6](../../docs/invariants.md#i6) over a **negation**, which is the one step
+    /// [I6](../../../docs/invariants.md#i6) over a **negation**, which is the one step
     /// that reads the store without producing a row.
     ///
     /// A probe asks whether a key exists, so it belongs in `keys` and nowhere near
@@ -5420,7 +5420,7 @@ mod tests {
         let p = PredicateId(0);
 
         // Sequences are 1-based: sequence 0 is reserved, so `FactId::new` rejects
-        // it ([I11](../../docs/invariants.md#i11)).
+        // it ([I11](../../../docs/invariants.md#i11)).
         let store_n = FrozenStore::from_keys(p, (1..=64u64).map(|i| (i64_field(i as i64), i)));
         let store_2n = FrozenStore::from_keys(p, (1..=128u64).map(|i| (i64_field(i as i64), i)));
 
