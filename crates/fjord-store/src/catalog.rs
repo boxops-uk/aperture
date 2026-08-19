@@ -60,6 +60,7 @@ use crate::{
     error::StoreError,
     identity,
     meta::{Meta, Scratch, Status, sync_dir},
+    schema_doc,
     store::FjallDb,
     ulid,
 };
@@ -640,15 +641,31 @@ impl Catalog {
     /// set, rather than an error: a re-run after a crash cannot tell whether it is the
     /// re-run or the original, and both should succeed.
     ///
+    /// **The schema is read from the database, not taken from the caller.**
+    ///
+    /// [`identity::compute`] looks a predicate up by its `PredicateId`, which is a
+    /// *position*, so a schema that is not this database's does not fail — it decodes
+    /// every stored key against whatever type happens to sit at that position and hashes
+    /// the result. The caller used to supply it, and the offline `fjord finish` supplied
+    /// the tool's built-in schema regardless of what the database embedded, so sealing a
+    /// database built against any other schema recorded an `ops-I4` identity over
+    /// misread rows. Reading the embedded copy here is what makes that unstateable rather
+    /// than merely fixed.
+    ///
+    /// [`finish_held`](Catalog::finish_held) still takes one, because the server has
+    /// already read and fingerprint-checked the copy and holds the composed form; the
+    /// two agree because a virtual predicate has no trees and
+    /// [`identity::compute`] walks trees.
+    ///
     /// # Errors
     ///
     /// [`StoreError::NoSuchDatabase`]; [`StoreError::NotWritable`] if it is `Broken`;
+    /// [`StoreError::Meta`] if it embeds no schema copy, or one that no longer lowers;
     /// [`StoreError::EmptyDatabase`] for a database with no facts unless
     /// `allow_zero_facts`; and whatever the store or the identity walk reports.
     pub fn finish(
         &self,
         selector: &Selector,
-        schema: &Schema,
         allow_zero_facts: bool,
     ) -> Result<Finished, StoreError> {
         let entry = self.resolve(selector, Intent::Write)?;
@@ -657,6 +674,18 @@ impl Catalog {
         if let Some(already) = sealable(&name, &entry)? {
             return Ok(already);
         }
+
+        let schema = schema_doc::read(&entry.path)?.ok_or_else(|| StoreError::Meta {
+            path: entry
+                .path
+                .join(schema_doc::SCHEMA_DIR)
+                .join(schema_doc::SCHEMA_FILE),
+            detail: "it embeds no schema copy, so its facts cannot be described — \
+                         and an identity computed over rows read through a guess would \
+                         be recorded as this database's"
+                .to_owned(),
+        })?;
+        let schema = &schema;
 
         let db = FjallDb::open(&entry.path)?;
         let identity = seal(&name, &entry, &db, schema, allow_zero_facts)?;

@@ -5,7 +5,7 @@ use std::path::Path;
 use fjord_store::catalog::Finished;
 
 use crate::{
-    CliError, code_index,
+    CliError,
     commands::{self, Route, Target},
 };
 
@@ -36,8 +36,15 @@ pub fn run(root: &Path, target: &Target, allow_zero_facts: bool) -> Result<Finis
         }
 
         Route::Local(catalog, _lock) => {
+            // **No schema passed, because this is where the wrong one used to be.** This
+            // arm handed `catalog.finish` the tool's built-in schema regardless of what
+            // the database embedded, and `identity::compute` looks a predicate up by
+            // position — so sealing a database built against any other schema decoded
+            // every stored key against whatever type sat at that position and recorded
+            // an `ops-I4` identity over the result. `Catalog::finish` reads the embedded
+            // copy itself, which is the only statement of it either door can reach.
             let selector = fjord_store::catalog::Selector::parse(&target.database)?;
-            Ok(catalog.finish(&selector, &code_index::schema(), allow_zero_facts)?)
+            Ok(catalog.finish(&selector, allow_zero_facts)?)
         }
     }
 }

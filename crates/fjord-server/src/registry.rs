@@ -521,11 +521,16 @@ impl Registry {
             // correct one, and it reads that database's own schema rather than this
             // server's, since the content fingerprint is over the facts *it* holds.
             let catalog = self.catalog.clone();
-            let schemas = self.schemas.of_entry(&entry)?;
+
+            // Read for its **check** rather than for its result: `Catalog::finish` reads
+            // the embedded copy itself now, and this is what still refuses a database
+            // whose copy disagrees with the fingerprint its sidecar records. Sealing that
+            // would record an `ops-I4` identity over content described by a schema one of
+            // whose two statements has been edited.
+            self.schemas.of_entry(&entry)?;
 
             let sealed =
-                blocking::run(move || Ok(catalog.finish(&exact, &schemas, allow_zero_facts)?))
-                    .await?;
+                blocking::run(move || Ok(catalog.finish(&exact, allow_zero_facts)?)).await?;
 
             return Ok(finished(&sealed));
         };
