@@ -81,8 +81,8 @@ fields are named, resolved against the schema (`FjallDb::put`), because `put_fac
 and three of its preconditions fail silently — see
 [chapter 3](docs/03-storage-model.md#writing-a-fact-by-hand). `fjord_store::fixture` is the
 fixture database the corpus and the batteries share.
-`fjord-engine/src/lib.rs` is the module list plus a commented-out graveyard (~20 live lines;
-only the transport-codec sketch is worth keeping). See [chapter 1](docs/01-concepts.md).
+`fjord-engine/src/lib.rs` is the module list and nothing else. See
+[chapter 1](docs/01-concepts.md).
 
 **Test support spans two crates, and the split is load-bearing.** `fjord_store::fixtures`
 holds everything store-shaped — the probes, the model stores, the scan-contract assertions,

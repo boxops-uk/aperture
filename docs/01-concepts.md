@@ -210,9 +210,9 @@ convention any more — the compiler refuses the other direction.
   keyed *by name*, because `src.Decl`'s key begins with its module and a name prefix can
   therefore only filter that scan, not narrow it. Derived data written by hand, which is what a
   deriver does until [Phase 8b](../PLAN.md) can declare one.
-- **`crates/fjord-engine/src/lib.rs`** — the module list, and then a **graveyard of
-  commented-out prototype code** (~20 live lines out of ~1,250). Kept only for the
-  transport-codec sketch. Don't add code here.
+- **`crates/fjord-engine/src/lib.rs`** — the module list, and nothing else. It used to
+  carry 1,222 lines of commented-out prototype below it, kept for a transport-codec sketch;
+  that codec shipped as `fjord-wire` in Phase 7a, and git remembers the rest.
 
 ---
 
