@@ -59,7 +59,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use fjord_cli::{
-    code_index,
+    sample_schema,
     workload::{Pivots, Workload, catalogue},
 };
 use fjord_encoding::tuple::Value;
@@ -101,7 +101,7 @@ fn main() {
         }
     };
 
-    let schema = Arc::new(code_index::schema());
+    let schema = Arc::new(sample_schema::schema());
     let db = match FjallDb::open(&store) {
         Ok(db) => db,
         Err(error) => {

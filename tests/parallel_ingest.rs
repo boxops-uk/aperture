@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use fjord_cli::{code_index, workload::Corpus};
+use fjord_cli::{sample_schema, workload::Corpus};
 use fjord_ingest::intern_fact;
 use fjord_schema::{fingerprint, schema::Schema};
 use fjord_store::{identity, store::FjallDb};
@@ -130,7 +130,7 @@ fn ids(db: &FjallDb) -> Vec<u64> {
 
 #[test]
 fn writer_count_and_write_order_do_not_change_the_database() {
-    let schema = code_index::schema();
+    let schema = sample_schema::schema();
     let facts = facts(&schema);
     let expected = corpus().facts();
 
@@ -219,7 +219,7 @@ fn writer_count_and_write_order_do_not_change_the_database() {
 /// self-consistent.
 #[test]
 fn committing_once_per_block_writes_the_same_database() {
-    let schema = code_index::schema();
+    let schema = sample_schema::schema();
     let facts = facts(&schema);
 
     let (_per_fact_dir, per_fact) = scratch(&schema);

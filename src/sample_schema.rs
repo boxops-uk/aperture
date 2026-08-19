@@ -1,43 +1,44 @@
-//! **The built-in schema** — a code index, now *read* rather than written.
+//! **The sample code index** — `schemas/code.sigla`, parsed, and the name lookups the
+//! rest of this crate's tests, benchmarks and instruments resolve against it.
 //!
 //! One fact per thing, and everything about a thing pointing at it by
-//! [`FactId`](fjord_schema::id::FactId) rather than repeating it. It is the shape
-//! `example/index.py` emits ([`example/README.md`](../../example/README.md)), the
-//! shape the shell queries, and the shape a client writes against — which is the
-//! point of it living here rather than in either binary.
+//! [`FactId`](fjord_schema::id::FactId) rather than repeating it. It is the shape the
+//! .NET demo and the real Roslyn indexer write, the shape the viewer reads, and the
+//! shape every number in `bench/FINDINGS.md` was measured over.
 //!
-//! **Nothing here states a schema any more.** Until Phase 8.4 this file *was* the
-//! schema: twenty-two predicates of hand-written Rust, with six id constants beside
-//! them written down a second time. Both are gone. `schemas/code.sigla` is the single
-//! statement, in the language `fjord create --schema` takes, and this module is the
-//! two lines that parse it plus the lookups that used to be constants. What is left to
-//! guard is therefore not "does the vector still say what it said" but "does the *file*
-//! still declare what the rest of the tree names" — which is what `tests` below asks.
+//! **It is not a default, and there is no longer such a thing.** Until 0.0.1 this was
+//! *the built-in schema*: what a database got when `create` was not given a path. That
+//! made a default decide how every stored row of somebody's database decoded, and made
+//! the artifact a property of which build of the tool created it. `--schema` is required
+//! now, and what is left here is a **fixture** — one worked example, in one place, so an
+//! instrument cannot declare its own and end up measuring a database it could not have
+//! written.
 //!
-//! **Three layers plus a viewer's, and the joins between them are the point.** Eight
-//! predicates are the source layer every indexer here fills — files, modules,
-//! declarations, references, their spans and the two search indexes — and `src.Line` is
-//! the file's text beside them. Fifteen more are what a
-//! *compiler* and a *build system* know and a syntax walk does not: which project a
-//! file is compiled by and into which assembly, what a type extends, what a member
-//! overrides, what a parameter's type is spelled as, what the doc comment says.
-//! They are written by
-//! [`Fjord.Indexer`](../../clients/dotnet/Fjord.Indexer/README.md), which has
-//! Roslyn and MSBuild to answer them with; `example/index.py` fills only the first six
-//! and says so. A predicate nobody fills is an empty keyspace pair, which costs the
-//! ~30 ms it takes to create it and nothing after that.
+//! **Nothing here states a schema.** Until Phase 8.4 this file *was* one: twenty-two
+//! predicates of hand-written Rust, with six id constants beside them written down a
+//! second time. Both are gone. `schemas/code.sigla` is the single statement, in the
+//! language `fjord create --schema` takes, and this module is the two lines that parse it
+//! plus the lookups that used to be constants. What is left to guard is therefore not
+//! "does the vector still say what it said" but "does the *file* still declare what the
+//! rest of the tree names" — which is what `tests` below asks.
 //!
-//! **Three of the twenty-seven are the same data keyed a second way**, and they are
-//! here because a predicate leads with one field and two questions want different ones:
+//! **Three layers, and the joins between them are the point.** Nine predicates are the
+//! source layer any syntax walk can fill — files, modules, declarations, references,
+//! their spans, the two search indexes — with `src.Line` holding the file's text beside
+//! them. Fifteen more are what a *compiler* and a *build system* know and a syntax walk
+//! does not: which project a file is compiled by and into which assembly, what a type
+//! extends, what a member overrides, what a parameter's type is spelled as, what the doc
+//! comment says. Those are written by
+//! [`Fjord.Indexer`](../../clients/dotnet/Fjord.Indexer/README.md), which has Roslyn and
+//! MSBuild to answer them with. A predicate nobody fills is an empty keyspace pair, which
+//! costs the ~30 ms it takes to create it and nothing after that.
+//!
+//! **Three of the twenty-seven are the same data keyed a second way**, and they are here
+//! because a predicate leads with one field and two questions want different ones:
 //! `src.SearchByName` against `src.Decl`, `src.FileXRef` against `src.Ref`,
 //! `src.AttributeOf` and `src.DerivesFrom` against their originals. Each is what a
 //! *stored derivation* would materialise ([Phase 8b](../../PLAN.md)); until one can be
 //! declared, the producer writes both orders.
-//!
-//! **This module is still not the end state.** A database carries its own canonical
-//! schema ([I13](../../docs/invariants.md#i13)), so once `create --schema <path>` is the
-//! ordinary way in, what remains here is a *default* rather than a definition — the
-//! schema you get when you did not name one.
 
 use std::sync::LazyLock;
 
@@ -48,9 +49,9 @@ use fjord_schema::{
 
 /// The schema itself, as text.
 ///
-/// **This file is the schema.** It was twenty-two predicates of hand-written Rust until
-/// Phase 8.4; `schemas/code.sigla` is now the only statement of it in this crate, and it
-/// is a file a person can read, diff, and pass to `fjord create --schema`.
+/// **The file is the schema**, and it is a file a person can read, diff, and pass to
+/// `fjord create --schema` — which is exactly what the scripts and the two integration
+/// suites do. Compiled in here so a bench does not have to find it on disk.
 const SOURCE: &str = include_str!("../schemas/code.sigla");
 
 /// The schema everything here resolves names against: **a code index**, which is the
@@ -113,7 +114,7 @@ pub fn schema() -> Schema {
     SCHEMA.clone()
 }
 
-/// The predicate a name denotes in the built-in schema.
+/// The predicate a name denotes in the sample schema.
 ///
 /// # Panics
 ///
@@ -124,7 +125,7 @@ pub fn id(name: &str) -> PredicateId {
     schema()
         .find_position(name)
         .map(|(id, _)| id)
-        .unwrap_or_else(|| panic!("the built-in schema declares no `{name}`"))
+        .unwrap_or_else(|| panic!("`schemas/code.sigla` declares no `{name}`"))
 }
 
 /// Parse a schema, or explain why the build is broken.
@@ -136,16 +137,16 @@ fn parse_or_panic(source: &str, _path: Option<&str>) -> Schema {
     let mut diags = vec![];
 
     let Some(cst) = syntax::parse::parse(source, &mut diags) else {
-        panic!("the built-in schema does not parse: {diags:#?}");
+        panic!("`schemas/code.sigla` does not parse: {diags:#?}");
     };
 
     let Some(lowered) = syntax::lower::lower(&cst, &mut diags) else {
-        panic!("the built-in schema does not lower: {diags:#?}");
+        panic!("`schemas/code.sigla` does not lower: {diags:#?}");
     };
 
     assert!(
         diags.is_empty(),
-        "the built-in schema is not clean: {diags:#?}"
+        "`schemas/code.sigla` is not clean: {diags:#?}"
     );
 
     lowered.schema
@@ -170,7 +171,7 @@ mod tests {
         assert_eq!(
             schema.len(),
             27,
-            "the built-in schema is twenty-seven predicates"
+            "`schemas/code.sigla` is twenty-seven predicates"
         );
 
         for name in [

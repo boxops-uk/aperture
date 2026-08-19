@@ -14,7 +14,7 @@ use std::{sync::Arc, time::Instant};
 
 use fjord_client::{ClientError, Connection, Expander, Mode};
 
-use crate::{CliError, cli::RowFormat, code_index, commands::Target, rows::Sink};
+use crate::{CliError, cli::RowFormat, commands::Target, rows::Sink, sample_schema};
 
 /// Why a query stopped before the server said it was done.
 ///
@@ -319,7 +319,7 @@ pub(crate) fn connect(target: &Target, mode: Mode) -> Result<Connection, CliErro
     let opened = Connection::open(
         &target.endpoint,
         &target.database,
-        Arc::new(code_index::schema()),
+        Arc::new(sample_schema::schema()),
         mode,
         false,
     );

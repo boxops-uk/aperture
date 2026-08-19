@@ -4,8 +4,8 @@
 //! Not part of the command tree ([operations §4](../docs/fjord-cli-design.md) has no
 //! `bench`), and deliberately so: this is a measuring instrument, not a thing anyone
 //! should find while looking for how to use the database. It lives here rather than in
-//! `fjord-client` because it needs the built-in schema, and there is exactly one
-//! statement of that ([`code_index`](fjord_cli::code_index)) — a bench that declared
+//! `fjord-client` because it needs the sample code index, and there is exactly one
+//! statement of that ([`sample_schema`](fjord_cli::sample_schema)) — a bench that declared
 //! its own would eventually measure a database it could not have written.
 //!
 //! ```text
@@ -35,7 +35,7 @@ use std::{
 };
 
 use fjord_cli::{
-    code_index,
+    sample_schema,
     workload::{self, Workload},
 };
 use fjord_client::{Connection, Mode, WireFact, WireRef, WireValue};
@@ -47,7 +47,7 @@ use fjord_schema::schema::{PredicateId, Schema};
 /// statement of something `schemas/code.sigla` already decides — and wrong the first time a
 /// predicate sorting earlier is added.
 fn p(name: &str) -> PredicateId {
-    code_index::id(name)
+    sample_schema::id(name)
 }
 
 /// Lines written per file, for the one predicate that is large without being about a
@@ -76,7 +76,7 @@ fn main() {
         }
     };
 
-    let schema = Arc::new(code_index::schema());
+    let schema = Arc::new(sample_schema::schema());
 
     if options.seed {
         seed(&options, &schema);

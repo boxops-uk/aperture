@@ -447,27 +447,27 @@ mod tests {
     /// was. The schema is the only thing that knows the shape, so it renders against the
     /// target predicate's key.
     ///
-    /// The chain is the built-in one: a declaration's `module` is a `src.Module`, whose
+    /// The chain is the sample schema's: a declaration's `module` is a `src.Module`, whose
     /// own `file` is a `src.File` — one hop expanded, one left as an id, which is also
     /// what a bounded `:expand 1` produces.
     #[test]
     fn an_expanded_reference_is_named_by_the_schema() {
         use fjord_client::{WireFact, WireRef};
 
-        let schema = Arc::new(crate::code_index::schema());
-        let file =
-            fjord_schema::id::FactId::new(crate::code_index::id("src.File"), 4).expect("a fact id");
+        let schema = Arc::new(crate::sample_schema::schema());
+        let file = fjord_schema::id::FactId::new(crate::sample_schema::id("src.File"), 4)
+            .expect("a fact id");
 
         let desc = Desc::Record(Box::from([
             ("name".to_owned(), Desc::Str),
             (
                 "module".to_owned(),
-                Desc::Fact(crate::code_index::id("src.Module")),
+                Desc::Fact(crate::sample_schema::id("src.Module")),
             ),
         ]));
 
         let module = WireValue::Ref(WireRef::Nested(Box::new(WireFact {
-            predicate: crate::code_index::id("src.Module"),
+            predicate: crate::sample_schema::id("src.Module"),
             key: record(vec![
                 WireValue::Ref(WireRef::Id(file)),
                 WireValue::Str("store".to_owned()),
@@ -489,7 +489,7 @@ mod tests {
         assert_eq!(parsed["module"]["name"], "store", "{parsed}");
         assert_eq!(
             parsed["module"]["file"],
-            format!("#{}:4", crate::code_index::id("src.File").0),
+            format!("#{}:4", crate::sample_schema::id("src.File").0),
             "the hop that was not taken is still an id: {parsed}"
         );
 
@@ -509,7 +509,7 @@ mod tests {
         // a reference — which is what somebody turned expansion on to see.
         assert_eq!(
             render(&module),
-            format!("{{#{}:4, store}}", crate::code_index::id("src.File").0)
+            format!("{{#{}:4, store}}", crate::sample_schema::id("src.File").0)
         );
     }
 

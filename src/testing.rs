@@ -18,7 +18,7 @@ use fjord_server::{Registry, registry::Schemas, server::Listener};
 use fjord_store::catalog::Catalog;
 use fjord_wire::{WireFact, WireRef, WireValue};
 
-use crate::code_index;
+use crate::sample_schema;
 
 /// A running server, and the scratch directory it lives in.
 pub struct Serving {
@@ -38,7 +38,7 @@ pub fn serving(files: usize) -> Serving {
 
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog
-        .create("code", &code_index::schema())
+        .create("code", &sample_schema::schema())
         .expect("a database");
 
     // The **served** schema, as `serve` builds it: the stored predicates plus the
@@ -66,7 +66,7 @@ pub fn serving(files: usize) -> Serving {
 /// A file, by index — the same key the seeder writes, so a test can name one.
 fn file_fact(n: usize) -> WireFact {
     WireFact {
-        predicate: code_index::id("src.File"),
+        predicate: sample_schema::id("src.File"),
         // Zero-padded, so the order rows come back in is the order they were written —
         // which is what lets a paging test compare sequences rather than sets.
         key: WireValue::Str(format!("f{n:05}.py")),
@@ -77,7 +77,7 @@ fn file_fact(n: usize) -> WireFact {
 /// A module in that file, nesting it — so something in this corpus holds a **reference**.
 fn module_fact(n: usize) -> WireFact {
     WireFact {
-        predicate: code_index::id("src.Module"),
+        predicate: sample_schema::id("src.Module"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(file_fact(n)))),
             WireValue::Str(format!("m{n:05}")),
@@ -90,7 +90,7 @@ fn module_fact(n: usize) -> WireFact {
 /// *through* a reference and make the store answer a point read.
 fn decl_fact(n: usize) -> WireFact {
     WireFact {
-        predicate: code_index::id("src.Decl"),
+        predicate: sample_schema::id("src.Decl"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(module_fact(n)))),
             WireValue::Str(format!("d{n:05}")),
@@ -112,7 +112,7 @@ fn seed(serving: &Serving, files: usize) {
     let mut writer = Connection::connect(
         &serving.socket,
         "code",
-        Arc::new(code_index::schema()),
+        Arc::new(sample_schema::schema()),
         Mode::ReadWrite,
         true,
     )
@@ -121,7 +121,7 @@ fn seed(serving: &Serving, files: usize) {
     let facts: Vec<WireFact> = (0..files).map(file_fact).collect();
 
     writer
-        .write(code_index::id("src.File"), &facts)
+        .write(sample_schema::id("src.File"), &facts)
         .expect("the files are written");
 
     // One block per predicate, because a block is a run of one predicate's facts. The
@@ -129,12 +129,12 @@ fn seed(serving: &Serving, files: usize) {
     // than creating — which is the write path a real producer takes.
     let modules: Vec<WireFact> = (0..files).map(module_fact).collect();
     writer
-        .write(code_index::id("src.Module"), &modules)
+        .write(sample_schema::id("src.Module"), &modules)
         .expect("the modules are written");
 
     let decls: Vec<WireFact> = (0..files).map(decl_fact).collect();
     writer
-        .write(code_index::id("src.Decl"), &decls)
+        .write(sample_schema::id("src.Decl"), &decls)
         .expect("the declarations are written");
 }
 
@@ -149,7 +149,7 @@ pub fn serving_on_tcp(files: usize) -> (Serving, String) {
 
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog
-        .create("code", &code_index::schema())
+        .create("code", &sample_schema::schema())
         .expect("a database");
 
     let (registry, _listing) = Registry::open(catalog, Schemas::default()).expect("a registry");
@@ -208,7 +208,7 @@ pub fn create_database(serving: &Serving, name: &str) {
 
     // The source, because `create` requires one: an empty schema no longer means "the
     // server's own", since a server has none.
-    let source = fjord_schema::syntax::print::print(&code_index::schema());
+    let source = fjord_schema::syntax::print::print(&sample_schema::schema());
     control
         .create(name, &source)
         .expect("the database is created");

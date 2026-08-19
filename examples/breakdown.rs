@@ -41,7 +41,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fjord_cli::code_index;
+use fjord_cli::sample_schema;
 use fjord_client::{Connection, Mode};
 use fjord_engine::{
     compile::Compilation,
@@ -68,7 +68,7 @@ fn main() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a scratch directory");
 
-    let schema = Arc::new(code_index::schema());
+    let schema = Arc::new(sample_schema::schema());
     let socket = dir.join("s.sock");
     let root = dir.join("store");
 

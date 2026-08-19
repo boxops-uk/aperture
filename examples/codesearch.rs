@@ -24,7 +24,7 @@
 //! # The model
 //!
 //! Every query is a prefix seek into `src.SearchByName`, whose key leads with `name`
-//! precisely so that this is a range rather than a filter (`code_index.rs` says as much).
+//! precisely so that this is a range rather than a filter (`sample_schema.rs` says as much).
 //! Terms are **sampled from the corpus** and truncated, so a search-as-you-type burst is
 //! short prefixes matching thousands and a considered search is a long one matching a few —
 //! which is the selectivity spread a real population has and a single pivot cannot show.
@@ -74,7 +74,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fjord_cli::code_index;
+use fjord_cli::sample_schema;
 use fjord_client::{Connection, Mode};
 use fjord_schema::schema::Schema;
 
@@ -102,7 +102,7 @@ fn main() {
     // is precisely the mistake this correction exists to avoid.
     let idle_rate = idle_cpu_rate();
 
-    let schema = Arc::new(code_index::schema());
+    let schema = Arc::new(sample_schema::schema());
     let terms = Arc::new(sample_terms(&options, &schema));
 
     println!(

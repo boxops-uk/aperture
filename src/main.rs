@@ -21,7 +21,7 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::Parser;
 
 use cli::{Cli, Command, DbCommand, SchemaCommand};
-pub use fjord_cli::code_index;
+pub use fjord_cli::sample_schema;
 
 /// Why a command could not run.
 ///

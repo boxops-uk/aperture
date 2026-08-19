@@ -183,7 +183,7 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
         // declaration.
         //
         // This pair is why `src.Decl` is declared `{module, name, line}`. It used to be
-        // `{line, module, name}` — alphabetical, by a convention `code_index` imposed on
+        // `{line, module, name}` — alphabetical, by a convention `sample_schema` imposed on
         // itself — so the ordinary "declarations in this module" join was the *slow* arm
         // here, at 56,274 rows examined per row produced. It is the fast arm now, and
         // the slow one is a real query that still cannot narrow: `src.SearchByName` is
@@ -315,7 +315,7 @@ mod tests {
     /// measurement, and the fault is a typo in a string literal.
     #[test]
     fn every_workload_compiles() {
-        let schema = crate::code_index::schema();
+        let schema = crate::sample_schema::schema();
         let pivots = Pivots::new("a/b.py", "encode", "encode");
 
         for workload in catalogue(&pivots) {
@@ -377,7 +377,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("a scratch directory");
         let db = fjord_store::store::FjallDb::open(dir.path()).expect("a database");
-        let schema = crate::code_index::schema();
+        let schema = crate::sample_schema::schema();
 
         let (mut created, mut seen) = (0, 0);
         for emission in corpus.emit(&schema) {
@@ -427,7 +427,7 @@ mod tests {
 /// ratio measures a write path nobody has.
 ///
 /// The four fanouts below are what set it. They are the source layer of the built-in
-/// schema, nested exactly as [`fjord_cli::code_index`](crate::code_index) declares
+/// schema, nested exactly as [`fjord_cli::sample_schema`](crate::sample_schema) declares
 /// it: a reference names a declaration, which names a module, which names a file. So one
 /// `src.Ref` carries a four-deep subgraph, and the thousandth reference to a declaration
 /// re-sends the whole chain — which is the redundancy, and is *not* a flaw in the

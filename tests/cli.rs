@@ -138,7 +138,7 @@ fn json_output_is_a_rendering_not_a_different_query() {
     // the rendering.
     assert_eq!(
         described["schema"]["predicates"].as_array().unwrap().len(),
-        fjord_cli::code_index::schema().len()
+        fjord_cli::sample_schema::schema().len()
     );
 }
 

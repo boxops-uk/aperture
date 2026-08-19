@@ -46,7 +46,7 @@ use std::{
 };
 
 use fjord_cli::{
-    code_index,
+    sample_schema,
     workload::{self, Pivots},
 };
 use fjord_client::{Connection, Mode};
@@ -94,7 +94,7 @@ fn main() {
         }
     };
 
-    let schema = Arc::new(code_index::schema());
+    let schema = Arc::new(sample_schema::schema());
     let pivots = sample(&options, &schema);
     let classes = Arc::new(mix(&pivots));
 

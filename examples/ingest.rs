@@ -46,7 +46,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use fjord_cli::{code_index, workload::Corpus};
+use fjord_cli::{sample_schema, workload::Corpus};
 use fjord_encoding::tuple::{Value, encode_key};
 use fjord_ingest::{intern_block, intern_fact};
 use fjord_schema::schema::{PredicateId, PredicateTy, Schema};
@@ -62,7 +62,7 @@ fn main() {
         }
     };
 
-    let schema = code_index::schema();
+    let schema = sample_schema::schema();
     let corpus = options.corpus;
 
     println!("host     {}", host());
@@ -274,7 +274,7 @@ fn scratch(options: &Options, name: &str, schema: &Schema) -> (PathBuf, FjallDb)
 /// it prices is the part every other row also pays: an id from the allocator, two tree
 /// inserts, one batch commit through fjall's journal.
 fn commit(options: &Options, schema: &Schema) -> Row {
-    let predicate = code_index::id("src.File");
+    let predicate = sample_schema::id("src.File");
     let facts = options.corpus.facts();
     let keys: Vec<Vec<u8>> = (0..facts)
         .map(|n| {
