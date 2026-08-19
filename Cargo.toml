@@ -55,45 +55,30 @@ console-subscriber = { version = "0.4", optional = true }
 # The tool is a wire client, and an ordinary one: `create`, `finish` and `db rm`
 # against a running server go through the same crate an external tool would use.
 fjord-client = { path = "crates/fjord-client" }
-fjord-encoding = { path = "crates/fjord-encoding" }
 fjord-engine = { path = "crates/fjord-engine" }
 fjord-schema = { path = "crates/fjord-schema" }
 fjord-server = { path = "crates/fjord-server" }
 fjord-store = { path = "crates/fjord-store" }
-# The tool is a wire client (`wire.rs`), so it frames its own messages. That it needs
-# the codec and not the server's session machinery is the seam working: `protocol` says
-# what a message means, `wire` delimits it, and neither requires the other's runtime.
+# The message vocabulary, for the frames the tool reads and writes through
+# `fjord-client`. That it needs the codec and not the server's session machinery is the
+# seam working: `protocol` says what a message means, `wire` delimits it, and neither
+# requires the other's runtime.
 fjord-wire = { path = "crates/fjord-wire" }
-byteview = { workspace = true }
+
 clap = { version = "4.5", features = ["derive"] }
 codespan-reporting = "0.13.1"
-# Pinned exactly, not a caret requirement, for two reasons that compound.
-#
-# The on-disk format is frozen (I3 markers, I13 the embedded schema), so moving
-# the storage engine underneath an existing database is a deliberate act with a
-# migration question attached — not something `cargo update` should decide.
-#
-# And the I8 guard reads fjall's snapshot count through a `#[doc(hidden)]` field,
-# which carries no stability promise (see `FjallDb::open_snapshots`). That reach
-# is confined to test builds, so a move breaks the guard rather than the library
-# — but a pin is what makes the break happen when someone chooses to upgrade,
-# with the guard in front of them, instead of on an unrelated `cargo update`.
-fjall = { workspace = true }
-lasso = { workspace = true }
-logos = "0.16.1"
-memchr = { workspace = true }
+
 # Optional, and reached only through the `proptest` feature above — never linked
 # into an ordinary build. `cargo test` gets it from `[dev-dependencies]`.
 proptest = { version = "1.11.0", optional = true }
 rustyline = "18"
 serde = { workspace = true }
-# Reads `example/index.json` — the example indexer's output, which the `fjord`
-# shell compiles in and writes as facts at startup (`example/README.md`). Nothing in
-# the engine uses it, and nothing should: JSON is the *indexer's* format, not a
-# storage one, and Fjord's own ingestion path (PLAN phase 7) is a fact file.
+# The config file, and `--format json` for every command that renders rows or a
+# schema. Nothing in the engine uses it, and nothing should: JSON is a *rendering*
+# and an indexer's interchange format, never a storage one.
 serde_json = "1.0.150"
 thiserror = { workspace = true }
-tinyvec = { version = "1.11.0", features = ["alloc"] }
+
 tokio-util = "0.7.18"
 # Ctrl-C during `query`, so it cancels the stream rather than tearing the connection
 # down. The handler only sets a flag; the query loop is what speaks the protocol.

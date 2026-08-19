@@ -194,14 +194,20 @@ pub enum Command {
 
     /// An interactive REPL.
     ///
-    /// With a database, it is the product shell: **always over the wire**, so the
-    /// format has a permanent exerciser and `\more` holds a real cursor across a real
-    /// round trip. With none, it is Phase 5's embedded demo over a scratch database it
-    /// seeds itself — which is where `:plan` and `:type` live, a plan being a thing a
-    /// client never holds.
+    /// **Always over the wire**, so the format has a permanent exerciser and `\more`
+    /// holds a real cursor across a real round trip. Queries compile *here*, against the
+    /// schema the server says it serves, so `:plan` and `:type` answer without running
+    /// anything and a refusal is a caret under the word.
+    ///
+    /// There used to be a second shell for an argument-less invocation — Phase 5's
+    /// embedded demo, which seeded a scratch database from a Python corpus and a schema
+    /// both compiled into the binary. It was the zero-setup way in, and it went with the
+    /// built-in schema: a database is created against a schema file now, so a demo that
+    /// could not be was the last thing holding a default. `:plan` and `:type` were never
+    /// only its, whatever this comment used to say.
     Shell {
         /// The database to connect to.
-        database: Option<String>,
+        database: String,
     },
 
     /// Read schemas as files, before any database holds one.

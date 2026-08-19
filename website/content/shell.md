@@ -1,23 +1,23 @@
 ---
 title: Shell reference
-description: The two REPLs — the wire shell over a server, and the embedded demo that seeds its own database — with every command and what each one is for.
+description: The wire REPL — every command, what each one is for, and why a query compiles on your machine rather than the server's.
 ---
 
-`fjord shell` is two things depending on whether you name a database.
+```bash
+fjord shell <db>
+```
 
-| Invocation | What it is |
-|---|---|
-| `fjord shell <db>` | The **product shell**. Always over the wire, even against a local server — so the protocol has a permanent exerciser and `:more` holds a real cursor across a real round trip |
-| `fjord shell` | The **embedded demo**. A scratch database it seeds itself with a real index of a small Python corpus — the one thing no wire client can do |
+**Always over the wire**, even against a server on the same machine — so the protocol has a
+permanent exerciser and `:more` holds a real cursor across a real round trip.
 
-Both share the input layer: syntax highlighting from the compiler's own lexer, history,
-completion, and the rule that a line with an unclosed `{` or `(` continues on the next one.
+The input layer is syntax highlighting from the compiler's own lexer, history, completion, and
+the rule that a line with an unclosed `{` or `(` continues on the next one.
 
 Commands are `:`-prefixed. The psql spellings (`\d`, `\l`, `\c`, `\timing`, `\more`) are accepted
 as aliases, because neither prefix can begin a sigla query — so a hand trained on psql costs
 nothing.
 
-## The wire shell
+## A session
 
 ```bash
 fjord --data-dir ./db shell code
@@ -145,60 +145,7 @@ An exact name describes one predicate; anything that does not resolve exactly fa
 Virtual predicates are printed like any other, because the served schema is what may be *asked*
 about. `fjord.db.List` is there, and `:list` is a query over it.
 
-## The embedded demo
-
-```bash
-fjord shell
-```
-
-No server, no store root, no setup: it seeds a scratch database from a **real** index of the
-Python corpus in `example/` — files, modules, declarations, references, imports, and one derived
-search predicate — written through the fact API at startup.
-
-| Command | Does |
-|---|---|
-| `<query>` | Compile and run it against the scratch database |
-| `:type <query>` | The type of its head |
-| `:plan <query>` | The plan, without running it |
-| `:facts <name>` | Rows stored for a predicate, read through the executor |
-| `:schema` | The predicates this shell knows |
-| `:clear`, `:help`, `:quit` | As above |
-
-Its `:help` also prints ten queries worth trying, and they answer with real names:
-
-```text
-sigla> D.name where D = src.Decl {name = "encode"..}
-  : str
-  "encode_int"
-  "encode_key"
-  "encode_str"
-  3 row(s)
-
-sigla> {file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = "encode_str"}}
-  : {file: src.File, line: int}
-  {file = src.File "store/codec.py", line = 38}
-  {file = src.File "store/keys.py", line = 17}
-  2 row(s)
-
-sigla> M.name where M = src.Module _; !src.Import {from = M}
-  : str
-  "store.codec"
-  1 row(s)
-```
-
-Read those against the corpus itself: every row names a file and a line you can go and look at.
-
-Rows here print in sigla's own value syntax rather than as JSON, because this shell renders from
-the engine's values directly — it is the one place in the tool that is not a wire client.
-
-:::note Why both survive
-The wire shell exists so the protocol has a permanent exerciser and so paging holds a real
-cursor. The embedded one exists because it **seeds its own database** — which no wire client can
-do, since writing needs a producer — and because it is the fastest possible way to see the
-system answer a real question.
-:::
-
-## Things worth trying in either
+## Things worth trying
 
 ```sigla
 :plan D where D = src.Decl {name = "encode"..}

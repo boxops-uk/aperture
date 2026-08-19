@@ -48,12 +48,12 @@ every name in the result means, and the facts go down the same socket:
 enough to be worth measuring comes from, and it is the same argument as the demo's made
 at a size where it stops being an argument: a producer holding no fact ids, every
 reference nested, emitting in whatever order a syntax walk reaches things.
-**It is also what the built-in schema's other twenty-one predicates are for.** `code_index`
-holds three layers: the source one `example/index.py` fills, a **build layer** (project,
-assembly, compilation, the two dependency graphs) and a **declaration graph** (member,
-extends, implements, override, parameter, type, doc, attribute) — each answerable only
-by something holding a compiler and a build system, which is what makes this client part
-of the schema rather than a consumer of it.
+**It is also what most of `schemas/code.sigla` is for.** That schema holds three layers: a
+**source** layer any syntax walk can fill, a **build layer** (project, assembly, compilation,
+the two dependency graphs) and a **declaration graph** (member, extends, implements, override,
+parameter, type, doc, attribute) — the last two answerable only by something holding a compiler
+and a build system, which is what makes this client part of the schema rather than a consumer
+of it.
 It is also **a checked-in golden**: `./clients/dotnet/emit-golden.sh` writes the blocks
 it encodes for a fixed corpus, and `fjord-client`'s
 `byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes
@@ -69,12 +69,13 @@ interns an anonymous nested fact exactly as `intern` does — so neither side is
 an easier question, and *emitting is not writing*: the load is a second phase with its own
 clock, and the honest total for Glean is emit plus load.
 
-`src/main.rs` compiles and runs what you type against a real store seeded with a **code index**
-(files → modules → declarations → references), written through the fact API; `:plan` shows the
-plan. The index is a real one — `example/` holds a small Python corpus, the `ast`-based indexer
-that reads it and the JSON it emits, which the shell compiles in and writes as facts at startup
-([`example/README.md`](example/README.md)). Regenerate with `python3 example/index.py`. Keep
-logic out of it — the plan renderer it needed lives in `fjord_engine::print`.
+`fjord shell <db>` compiles what you type **client-side**, against the schema the server says it
+serves, and runs it over the wire; `:plan` and `:type` therefore answer without running anything.
+Keep logic out of it — the plan renderer it needs lives in `fjord_engine::print`.
+There used to be a second, *embedded* shell for an argument-less `fjord shell`, which seeded a
+scratch database from a Python corpus and a schema both compiled into the binary. It went with
+the built-in schema: a database is created against a schema **file** now, and a demo that could
+not be was the last thing holding a default.
 **`fjord_store::fact` is how a fact is written by hand**: a well-typed value whose key
 fields are named, resolved against the schema (`FjallDb::put`), because `put_fact` takes bytes
 and three of its preconditions fail silently — see

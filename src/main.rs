@@ -13,7 +13,6 @@ mod config;
 mod output;
 mod prompt;
 mod rows;
-mod shell;
 #[cfg(test)]
 mod testing;
 
@@ -383,13 +382,11 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
             Ok(())
         }
 
-        // Two shells, and the argument is the whole difference. Named or not, neither
-        // one silently opens a store root a server might hold: the wire shell connects
-        // or says nothing is listening, and the demo makes its own scratch database.
-        Command::Shell { database } => match database {
-            Some(database) => commands::shell::run(&context.target(database)?),
-            None => Ok(shell::main()?),
-        },
+        // **Always over the wire**, and it never silently opens a store root a server
+        // might hold: it connects, or says nothing is listening. There used to be a
+        // second, embedded shell here for an argument-less invocation, which seeded a
+        // scratch database from a corpus compiled into the binary — see `cli.rs`.
+        Command::Shell { database } => commands::shell::run(&context.target(database)?),
 
         // **Files, not databases.** Nothing here opens a store root except `diff`, and
         // that one reads sidecars (`ops-I7`) — so all three work while a server holds

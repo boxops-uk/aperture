@@ -87,16 +87,6 @@ pub fn colours_enabled_on_stderr() -> bool {
         .get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal())
 }
 
-/// Wrap `text` in an ANSI code, or hand it back untouched.
-#[must_use]
-pub fn painted(code: &str, text: &str) -> String {
-    if colours_enabled() {
-        format!("\x1b[{code}m{text}\x1b[0m")
-    } else {
-        text.to_owned()
-    }
-}
-
 /// ANSI colours, chosen by what a token *means* rather than what it is: someone
 /// scanning a query wants predicates, variables and literals to separate.
 #[must_use]
