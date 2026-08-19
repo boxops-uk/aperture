@@ -1,5 +1,0 @@
-<Solution>
-  <Project Path="Fjord.Client/Fjord.Client.csproj" />
-  <Project Path="Fjord.Demo/Fjord.Demo.csproj" />
-  <Project Path="Fjord.Indexer/Fjord.Indexer.csproj" />
-</Solution>

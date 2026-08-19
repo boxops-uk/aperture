@@ -6,7 +6,7 @@ using Buildalyzer.Workspaces;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
-namespace Fjord.Indexer;
+namespace Boxops.Fjord.Indexer;
 
 /// <summary>
 /// A project, and the compilation of it — on demand.

@@ -1,6 +1,6 @@
 using System.Buffers.Binary;
 
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>
 /// A <b>block</b>: a run of facts of one predicate, behind a sync marker and a

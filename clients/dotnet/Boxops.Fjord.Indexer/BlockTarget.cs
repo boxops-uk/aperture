@@ -1,6 +1,6 @@
-using Fjord.Client;
+using Boxops.Fjord.Client;
 
-namespace Fjord.Indexer;
+namespace Boxops.Fjord.Indexer;
 
 /// <summary>
 /// Where a full block goes, once the walk has let go of it.

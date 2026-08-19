@@ -1,6 +1,6 @@
-using Fjord.Client;
+using Boxops.Fjord.Client;
 
-namespace Fjord.Indexer;
+namespace Boxops.Fjord.Indexer;
 
 /// <summary>
 /// The built-in code-index schema, written down a third time — and on purpose.

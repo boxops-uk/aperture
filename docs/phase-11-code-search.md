@@ -123,7 +123,7 @@ already "declaration names, stored keyed the way search wants to read them, writ
 hand until Phase 8b can declare one" (`schemas/code.sigla`), and `src.Implements` is
 already the *transitive closure* of the interface graph, written down because "there is
 no recursion in sigla to close a transitive relation with afterwards"
-(`Fjord.Indexer/Indexer.cs`). Three hand-written derivations, each with the same
+(`Boxops.Fjord.Indexer/Indexer.cs`). Three hand-written derivations, each with the same
 comment attached, is the strongest available argument that 8b is the next real phase
 rather than a nice-to-have.
 

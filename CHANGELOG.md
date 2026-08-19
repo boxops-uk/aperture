@@ -85,3 +85,6 @@ properties of what *is* built:
   built against another schema. It reads the embedded copy now.
 - The command-line tool moved to `crates/fjord-cli`, and `Connection::control` no longer takes
   a schema.
+- **The .NET namespace is `Boxops.Fjord.Client`**, matching the package id — so
+  `dotnet add package Boxops.Fjord.Client` is followed by `using Boxops.Fjord.Client;` and
+  there is one name rather than two. The projects and the solution are renamed to match.

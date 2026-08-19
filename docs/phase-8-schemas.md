@@ -176,7 +176,7 @@ carries, and the C# side holds one `ulong` it does not compute.
 #### What Fjord should do instead
 
 **Now (8.4): a client carries the number, it does not derive it.** ✅ `fjord schema
-fingerprint` prints it; `Fjord.Demo` and `Fjord.Indexer` each hold it as a `const ulong`
+fingerprint` prints it; `Boxops.Fjord.Demo` and `Boxops.Fjord.Indexer` each hold it as a `const ulong`
 and assert it at the handshake. The C# FNV is gone. A stale constant fails the handshake
 loudly, and — better — fails `the_dotnet_clients_schema_is_this_one` without `dotnet` or a
 running server, because the golden records the constant and the Rust side computes what it
@@ -418,8 +418,8 @@ before anything depends on it, and unions come last because they are the widest 
   and field order is what decides which questions are seeks. What is left of the module is a
   *default* schema rather than a definition: the one you get when `create` was not given a
   path — which is what it is since 8.4, and the reason the module survives at all.
-- **Both .NET schema statements and the golden.** ✅ `Fjord.Indexer/CodeIndex.cs` and
-  `Fjord.Demo/Program.cs` state the schema independently *on purpose* — that is what makes
+- **Both .NET schema statements and the golden.** ✅ `Boxops.Fjord.Indexer/CodeIndex.cs` and
+  `Boxops.Fjord.Demo/Program.cs` state the schema independently *on purpose* — that is what makes
   the byte-identical golden meaningful. What they must **not** do is reimplement the
   fingerprint: they deleted their FNV and carry the number `fjord schema fingerprint`
   prints, per D2. One constant per client, the shapes they already had, no port of the

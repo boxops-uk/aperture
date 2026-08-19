@@ -114,7 +114,7 @@ seeding 1,000 declarations over 200 files, 1,000 facts per block
 ```
 
 The other two are the .NET client's demo (a tiny hand-written index) and
-`Fjord.Indexer`, which runs a real design-time build with Roslyn over a checkout — see
+`Boxops.Fjord.Indexer`, which runs a real design-time build with Roslyn over a checkout — see
 [Clients & the viewer](clients.html). To write facts from your own program, see
 [the client section](clients.html#writing-facts-from-rust).
 

@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 
-using Fjord.Client;
+using Boxops.Fjord.Client;
 
-namespace Fjord.Indexer;
+namespace Boxops.Fjord.Indexer;
 
 /// <summary>
 /// Where facts go: batched by predicate, encoded as blocks, and written.

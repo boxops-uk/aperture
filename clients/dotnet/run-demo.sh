@@ -32,4 +32,4 @@ done
 
 [ -e "$scratch/ready" ] || { echo "the server never became ready" >&2; exit 1; }
 
-dotnet run --project "$root/clients/dotnet/Fjord.Demo" -- --at "$scratch/fjord.sock//code"
+dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Demo" -- --at "$scratch/fjord.sock//code"

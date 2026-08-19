@@ -1,13 +1,13 @@
 using System.Diagnostics;
 using System.Text;
 
-using Fjord.Client;
+using Boxops.Fjord.Client;
 
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
-namespace Fjord.Indexer;
+namespace Boxops.Fjord.Indexer;
 
 /// <summary>
 /// The walk: a compilation in, facts out.

@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>A value in flight, typed against an <see cref="FjordType"/>.</summary>
 /// <remarks>

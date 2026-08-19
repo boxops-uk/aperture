@@ -27,7 +27,7 @@ each side, because a shared statement would make the two agree by construction.
 ## Writing facts
 
 ```csharp
-using Fjord.Client;
+using Boxops.Fjord.Client;
 
 // A predicate id is its **position** in the schema, and a schema is sorted by name.
 const uint File = 0;

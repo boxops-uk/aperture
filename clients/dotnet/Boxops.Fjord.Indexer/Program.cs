@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.Globalization;
 
-using Fjord.Client;
+using Boxops.Fjord.Client;
 
-namespace Fjord.Indexer;
+namespace Boxops.Fjord.Indexer;
 
 /// <summary>
 /// A real indexer for a real language, pointed at a Fjord database.

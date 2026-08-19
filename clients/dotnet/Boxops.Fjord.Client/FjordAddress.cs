@@ -1,4 +1,4 @@
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>
 /// Where a server is, and which database on it: <c>[where//]name[@instance]</c>.

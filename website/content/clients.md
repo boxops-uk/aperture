@@ -13,9 +13,9 @@ frames.
 
 | Project | What it is |
 |---|---|
-| `Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection. Published as `Boxops.Fjord.Client` for `net8.0` and `net10.0`, with no dependencies |
-| `Fjord.Demo` | A console program that writes a small code index and queries it back |
-| `Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is |
+| `Boxops.Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection. Published as `Boxops.Fjord.Client` for `net8.0` and `net10.0`, with no dependencies |
+| `Boxops.Fjord.Demo` | A console program that writes a small code index and queries it back |
+| `Boxops.Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is |
 
 It exists to answer a question the Rust tests cannot: **is the protocol implementable from
 outside?** A client written in the same repository, against the same types, can agree with the

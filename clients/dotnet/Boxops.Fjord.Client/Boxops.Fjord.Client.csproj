@@ -4,15 +4,19 @@
     <!-- **The only packable project here.** Shared metadata is in
          `../Directory.Build.props`; what is specific to the package is below.
 
-         The id carries the `Boxops.` prefix, which is reserved on nuget.org, while the
-         assembly and namespace stay `Fjord.Client` — the code is named for the product,
-         and the package for who publishes it. -->
+         The project, the assembly, the namespace and the package id are all
+         `Boxops.Fjord.Client`, so `dotnet add package Boxops.Fjord.Client` is followed by
+         `using Boxops.Fjord.Client;` and there is one name to learn rather than two. The
+         `Boxops.` prefix is reserved on nuget.org, which is what fixes it. -->
     <!-- **net8.0 as well as net10.0**, because the reach is the point of publishing:
          net8.0 is the current LTS, and this library uses nothing newer than
          `BinaryPrimitives`, ranges and Unix sockets. -->
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
 
     <IsPackable>true</IsPackable>
+    <!-- Stated rather than left to default from the project name, which is the same
+         string. A rename would otherwise change the published id silently, and a package
+         id is the one piece of this that consumers have written down. -->
     <PackageId>Boxops.Fjord.Client</PackageId>
     <Description>A .NET client for Fjord DB, an embedded immutable fact database: construct facts, write them over the wire with references nested inline, and query them back. A second implementation of the protocol, sharing no code with the Rust one.</Description>
     <PackageTags>fjord;database;datalog;facts;immutable;client</PackageTags>

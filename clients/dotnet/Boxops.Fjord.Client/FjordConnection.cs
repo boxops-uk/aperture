@@ -1,7 +1,7 @@
 using System.Net.Sockets;
 using System.Text;
 
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>Which way a session may go, declared once at startup.</summary>
 public enum SessionMode : byte

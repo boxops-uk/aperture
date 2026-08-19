@@ -17,7 +17,7 @@
 //!
 //! `--store` names a **fjall instance directory** — the ULID under a database, the
 //! thing that actually holds `keyspaces/`. Point it at a `.NET` checkout indexed by
-//! `clients/dotnet/Fjord.Indexer`, because uniform synthetic rows flatter seeks and
+//! `clients/dotnet/Boxops.Fjord.Indexer`, because uniform synthetic rows flatter seeks and
 //! understate cache pressure, and because the question this ladder exists to answer is
 //! about a corpus somebody would really keep.
 //!

@@ -1,4 +1,4 @@
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>Somewhere bytes are appended to. Kept minimal so the codec has one seam.</summary>
 public interface IBufferSink

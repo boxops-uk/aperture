@@ -154,7 +154,7 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --no-deps -p fjord-schema -p fjord-wire -p fjord-client -p fjord-db
-      # The .NET half of the same question. `Fjord.Client` is the only packable project
+      # The .NET half of the same question. `Boxops.Fjord.Client` is the only packable project
       # here — the demo producer and the real indexer are console programs — and it
       # multi-targets, so this is also what says the library still builds on the LTS.
       - uses: actions/setup-dotnet@v4
@@ -162,8 +162,8 @@ jobs:
           global-json-file: clients/dotnet/global.json
       - name: What the NuGet package would contain
         run: |
-          dotnet build clients/dotnet/Fjord.slnx -warnaserror
-          dotnet pack clients/dotnet/Fjord.Client -c Release -o /tmp/nupkg
+          dotnet build clients/dotnet/Boxops.Fjord.slnx -warnaserror
+          dotnet pack clients/dotnet/Boxops.Fjord.Client -c Release -o /tmp/nupkg
           ls -l /tmp/nupkg
 
   build:

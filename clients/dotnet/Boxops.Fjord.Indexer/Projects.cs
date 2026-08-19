@@ -1,10 +1,10 @@
 using System.Xml.Linq;
 
-using Fjord.Client;
+using Boxops.Fjord.Client;
 
 using Buildalyzer;
 
-namespace Fjord.Indexer;
+namespace Boxops.Fjord.Indexer;
 
 /// <summary>
 /// One project: where it is, what it builds, and what it builds against.

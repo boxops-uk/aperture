@@ -1,4 +1,4 @@
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>
 /// CRC-32 (IEEE 802.3) — the same polynomial zlib, PNG, gzip and Avro use, and the

@@ -1,4 +1,4 @@
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>
 /// LEB128 varints and zigzag, matching <c>fjord-wire</c>'s <c>varint</c> module

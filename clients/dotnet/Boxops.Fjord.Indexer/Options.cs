@@ -1,6 +1,6 @@
-using Fjord.Client;
+using Boxops.Fjord.Client;
 
-namespace Fjord.Indexer;
+namespace Boxops.Fjord.Indexer;
 
 /// <summary>What to index, where the facts go, and how much of it to do.</summary>
 /// <remarks>

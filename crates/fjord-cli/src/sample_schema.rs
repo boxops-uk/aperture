@@ -29,7 +29,7 @@
 //! does not: which project a file is compiled by and into which assembly, what a type
 //! extends, what a member overrides, what a parameter's type is spelled as, what the doc
 //! comment says. Those are written by
-//! [`Fjord.Indexer`](../../../clients/dotnet/Fjord.Indexer/README.md), which has Roslyn and
+//! [`Boxops.Fjord.Indexer`](../../../clients/dotnet/Boxops.Fjord.Indexer/README.md), which has Roslyn and
 //! MSBuild to answer them with. A predicate nobody fills is an empty keyspace pair, which
 //! costs the ~30 ms it takes to create it and nothing after that.
 //!
@@ -203,7 +203,7 @@ mod tests {
 
     /// **The .NET client states this schema independently, and must still agree.**
     ///
-    /// The golden records the fingerprint `Fjord.Demo` computed from its own
+    /// The golden records the fingerprint `Boxops.Fjord.Demo` computed from its own
     /// twenty-seven declarations. `byte_identical_with_dotnet` compares that against a
     /// *third* statement in Rust, which is what makes the codec argument; what neither
     /// checks is whether either agrees with the schema the **server** actually serves,

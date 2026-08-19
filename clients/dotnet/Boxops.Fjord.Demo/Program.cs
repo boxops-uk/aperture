@@ -1,4 +1,4 @@
-using Fjord.Client;
+using Boxops.Fjord.Client;
 
 // A non-Rust producer writing facts to Fjord over the wire protocol.
 //

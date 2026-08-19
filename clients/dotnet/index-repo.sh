@@ -58,7 +58,7 @@ done
 
 [ -e "$scratch/ready" ] || { echo "the server never became ready" >&2; exit 1; }
 
-dotnet run --project "$root/clients/dotnet/Fjord.Indexer" --configuration Release -- \
+dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Indexer" --configuration Release -- \
     --source "$source_path" \
     --at "$socket//$database" \
     "$@"

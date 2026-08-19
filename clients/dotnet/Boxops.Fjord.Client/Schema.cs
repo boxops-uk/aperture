@@ -1,4 +1,4 @@
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>
 /// A type in the database's schema, mirroring <c>PredicateTy</c>.

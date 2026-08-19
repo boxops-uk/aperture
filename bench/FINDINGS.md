@@ -14,7 +14,7 @@
 > Everything else here is measurement.
 
 **The corpus.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree indexed by
-`clients/dotnet/Fjord.Indexer --syntax-only --jobs 8`: 32,710 files, **18,176,899
+`clients/dotnet/Boxops.Fjord.Indexer --syntax-only --jobs 8`: 32,710 files, **18,176,899
 facts** across 22 predicates, 1.8 GB on disk, 4,613 s to build. This is the first
 database in the project's history large enough for a scaling question to mean anything,
 and every number below is from it.
@@ -959,9 +959,9 @@ cost 20–30% before that. `queueing` on a real index is 1,019.4 s of 3,977.7 s 
 ## 15. Fjord and Glean over one corpus and one producer: the walk is 30%, the tail is 45%, and Glean's write path is 3.5× cheaper
 
 **What was measured.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree, four runs
-of the same producer: `clients/dotnet/Fjord.Indexer --syntax-only --jobs 8`, the line
+of the same producer: `clients/dotnet/Boxops.Fjord.Indexer --syntax-only --jobs 8`, the line
 table on, `--batch 4096`. Three write into Fjord, one writes Glean JSON batches
-(`--glean-out`, [§Into Glean instead](../clients/dotnet/Fjord.Indexer/README.md)) which
+(`--glean-out`, [§Into Glean instead](../clients/dotnet/Boxops.Fjord.Indexer/README.md)) which
 `glean create -j 8 --finish` then loads. **One walk, two sinks**, so what differs between
 the last two rows is the database and not the indexer.
 

@@ -1,4 +1,4 @@
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>The peer sent something this client cannot make sense of.</summary>
 public sealed class FjordProtocolException(string message) : Exception(message);

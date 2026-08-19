@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\Fjord.Client\Fjord.Client.csproj" />
+    <ProjectReference Include="..\Boxops.Fjord.Client\Boxops.Fjord.Client.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

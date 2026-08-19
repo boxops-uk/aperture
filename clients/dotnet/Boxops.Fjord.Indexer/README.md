@@ -5,7 +5,7 @@ A real indexer for a real language, writing into Fjord over the wire protocol:
 what every name in the resulting compilation means, and the facts go straight down the
 socket to a running server.
 
-`Fjord.Demo` shows the protocol works by writing six declarations somebody typed out.
+`Boxops.Fjord.Demo` shows the protocol works by writing six declarations somebody typed out.
 This writes however many a checkout of .NET source contains, which is the other thing a
 database needs shown: that it holds up when the facts were not chosen to be convenient.
 
@@ -14,7 +14,7 @@ database needs shown: that it holds up when the facts were not chosen to be conv
 ./clients/dotnet/index-repo.sh ~/src/OrchardCore
 
 # or by hand, against a server already running
-dotnet run --project clients/dotnet/Fjord.Indexer -- \
+dotnet run --project clients/dotnet/Boxops.Fjord.Indexer -- \
     --source ~/src/OrchardCore --socket /tmp/fj-index/db/fjord.sock --database code
 ```
 
@@ -272,7 +272,7 @@ runs of four thousand:
 
 ```sh
 for i in $(seq 0 8); do
-    dotnet run --project clients/dotnet/Fjord.Indexer -c Release -- \
+    dotnet run --project clients/dotnet/Boxops.Fjord.Indexer -c Release -- \
         --source ~/runtime/src --root ~/runtime --syntax-only --no-smoke \
         --skip-files $((i * 4000)) --max-files 4000 \
         --socket /tmp/fj-runtime/db/fjord.sock --database code

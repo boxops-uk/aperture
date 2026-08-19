@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
 using System.Net.Sockets;
 
-namespace Fjord.Client;
+namespace Boxops.Fjord.Client;
 
 /// <summary>What a frame carries. A byte, not a closed enum — see <see cref="FrameIo"/>.</summary>
 public static class FrameKind
