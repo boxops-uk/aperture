@@ -125,6 +125,13 @@ sealed code: 18176899 facts, 853606008 bytes, identity 0xa0a07894b275e6a0
         4m16s
 ```
 
+:::note The identity is pre-rename and will not reproduce
+`0xa0a07894b275e6a0` was computed when the canonical form's domain separator was
+`aperture-schema-v1`; it is `fjord-schema-v1` now, so every fingerprint in the project moved.
+The fact and byte counts are unaffected — they are over the data — but do not try to reproduce
+this number without re-indexing. Same for `0x462058b7b0671d29` in §15.
+:::
+
 - **1.7 GB → 853 MB**, and that is now the `bytes` the sidecar reports, so `describe` says
   how big the artifact is rather than how big the ingest was.
 - **Every seek 4.2–4.6 µs**, measured on the sealed database: `src.Decl` 646.6 → 4.2 µs,
@@ -491,11 +498,23 @@ A connection pool is exactly the shape that hits the bottom row, and it is the o
 RAM for. What this is *not* is a reason to restart on a schedule: the ceiling is per
 connection and it comes back.
 
-**Costed fix.** Remove the stream from `read_loop`'s map when its task completes, and let the
-client reuse ids. Small, and squarely a correctness fix — 3.5 kB × queries-on-one-connection
-is a real ceiling even if it is a bounded one. What is missing to *verify* one is the phase
-plan's own task 10f: a `live stream tasks` counter would turn "RSS grew" into "N tasks are
-live", and would have made this a five-minute test rather than the afternoon it took.
+**Costed fix — since built, and *not* re-measured.** The fix was to remove a stream from
+`read_loop`'s map when its task completes, and it is in
+`crates/fjord-server/src/session.rs`: a handle whose task has ended has a closed `Sender`, so
+the map is swept on that rather than on a second channel, behind a doubling watermark
+(`MIN_SWEEP_AT = 32`) that keeps it amortised — a connection genuinely holding many live
+streams does not sweep on every frame.
+
+**So the mechanism is gone and the number is not retired.** Nobody has re-run this
+instrument since, so the honest statement of finding 7 today is: the cause was found, a fix
+addressing it has landed, and *the 3.5 kB per query has not been measured at zero*. Anyone
+sizing RAM for a pooled connection should re-run this before trusting either figure, and
+`crates/fjord-viewer`'s pool is exactly the shape that would show it.
+
+What is still missing to verify it cheaply is the phase plan's own task 10f: a
+`live stream tasks` counter would turn "RSS grew" into "N tasks are live", and would have
+made this a five-minute test rather than the afternoon it took — which is also why it is
+still an afternoon to close.
 
 **F2 is refuted.** A cancel landing mid-chunk on the most stride-tripping query available —
 56,274 rows examined per row produced — returns a clean end (256 rows drained), sends no
@@ -968,8 +987,8 @@ the last two rows is the database and not the indexer.
 25,046,499, so 34,009 top-level keys were duplicates; both systems deduplicated exactly
 those, from 94.9M interning attempts, without either being told which.
 
-The two Fjord runs also seal to the **same identity, `0x462058b7b0671d29`** — one writer
-and four, over a real server and four real sockets. That is
+The two Fjord runs also seal to the **same identity, `0x462058b7b0671d29`** (pre-rename — see
+the note in §1) — one writer and four, over a real server and four real sockets. That is
 `writer_count_and_write_order_do_not_change_the_database` at 25M facts rather than in
 process, and it is `ops-I4` meaning what it says.
 
@@ -1191,6 +1210,10 @@ eight threads are queued behind.
 
 ## What is still open
 
+- **Finding 7's number, after its fix.** The per-query retention had a cause, the cause has a
+  fix in the tree, and nobody has re-run the instrument — so "~3.5 kB per query" is what the
+  code used to do and there is no measurement of what it does now. First thing to re-run, and
+  the cheapest: one connection, 200,000 point lookups, watch RSS.
 - **F6** — the reader head-of-line blocking on a ≥3-block ingest. The only hypothesis left
   untouched, and the only one that needs a *write* path: every database measured here is
   `Complete`. It wants a writable database, a slow funnel and a client that sends three
