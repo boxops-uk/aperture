@@ -13,9 +13,27 @@ order.
 
 | Project | What it is |
 |---|---|
-| `Fjord.Client` | the library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection |
+| `Fjord.Client` | the library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection. **The one packable project** — published as `Boxops.Fjord.Client`, targeting `net8.0` and `net10.0`, with no dependencies |
 | `Fjord.Demo` | a console program that writes a small code index and queries it |
 | `Fjord.Indexer` | a **real** indexer — Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is ([its README](Fjord.Indexer/README.md)) |
+
+## As a package
+
+```bash
+dotnet add package Boxops.Fjord.Client
+```
+
+`Fjord.Client/README.md` is the package's front page, and its example is compiled against
+this library rather than written next to it. Shared metadata — version, licence, repository,
+Source Link, deterministic build — is in `Directory.Build.props`, and nothing there is
+packable unless it says so, which is how the two console programs stay out of the feed.
+
+```bash
+dotnet pack clients/dotnet/Fjord.Client -c Release -o ./nupkg
+```
+
+That produces the `.nupkg` and a `.snupkg` of symbols. CI runs the same two commands, so a
+package that would not build is a red branch rather than a discovery at publish time.
 
 ## Running it
 

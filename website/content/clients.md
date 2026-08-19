@@ -13,7 +13,7 @@ frames.
 
 | Project | What it is |
 |---|---|
-| `Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection |
+| `Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection. Published as `Boxops.Fjord.Client` for `net8.0` and `net10.0`, with no dependencies |
 | `Fjord.Demo` | A console program that writes a small code index and queries it back |
 | `Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is |
 

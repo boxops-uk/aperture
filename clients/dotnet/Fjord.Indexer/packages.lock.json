@@ -337,7 +337,7 @@
           "System.Security.Cryptography.Pkcs": "9.0.0"
         }
       },
-      "fjord.client": {
+      "Boxops.Fjord.Client": {
         "type": "Project"
       }
     }
