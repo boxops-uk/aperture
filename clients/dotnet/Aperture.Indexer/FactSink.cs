@@ -61,11 +61,22 @@ internal sealed class FactSink : IDisposable
     private readonly BlockingCollection<(uint Predicate, List<ApertureFact> Facts)> _queue;
     private readonly Thread[] _writers;
 
-    /// <summary>Set if the writer thread died; rethrown from <see cref="Dispose"/>.</summary>
+    /// <summary>Set if a writer thread died; rethrown at the next flush and from <see cref="Drain"/>.</summary>
     /// <remarks>
-    /// A writer that fails silently is a partial index that looks complete, so the
-    /// failure is latched and the queue is closed — which unblocks any producer parked
-    /// on a full queue and makes the next <see cref="Add"/> throw rather than hang.
+    /// <para>
+    /// A writer that fails silently is a partial index that looks complete, so the failure
+    /// is latched and the queue is closed — which unblocks any producer parked on a full
+    /// queue and makes the next <see cref="Flush"/> throw rather than hang.
+    /// </para>
+    /// <para>
+    /// <b>Throwing there rather than only at the end is the whole point, and it was
+    /// learned the expensive way.</b> A <c>dotnet/runtime</c> re-index lost its server 23
+    /// minutes in; the queue closed, every subsequent flush was swallowed as
+    /// "the writer has stopped consuming", and the walk went on producing progress lines
+    /// for another 39 minutes while writing nothing at all. The counters kept climbing
+    /// because they count what was <em>queued</em>. Only <see cref="Drain"/> at the very
+    /// end said so.
+    /// </para>
     /// </remarks>
     private Exception? _failure;
 
@@ -207,8 +218,10 @@ internal sealed class FactSink : IDisposable
         }
         catch (InvalidOperationException)
         {
-            // The writer latched a failure and closed the queue; Dispose rethrows it.
-            return;
+            // The writer latched a failure and closed the queue. Stop the run here: a walk
+            // that keeps filling blocks nobody is draining is an hour of work that reads as
+            // progress and writes nothing. See `_failure`.
+            throw Failed();
         }
 
         Interlocked.Add(ref _queueingTicks, Stopwatch.GetTimestamp() - started);
@@ -290,9 +303,18 @@ internal sealed class FactSink : IDisposable
 
         if (_failure is not null)
         {
-            throw new InvalidOperationException("the fact writer failed", _failure);
+            throw Failed();
         }
     }
+
+    /// <summary>The latched writer failure, as the exception a caller should see.</summary>
+    /// <remarks>
+    /// A queue closes only because a writer latched something first, so this reads the
+    /// latch rather than describing the queue — the cause a person needs is the socket
+    /// that closed or the disk that filled, not the collection that was completed.
+    /// </remarks>
+    private InvalidOperationException Failed() =>
+        new("the fact writer failed", Volatile.Read(ref _failure));
 
     public void Dispose()
     {
