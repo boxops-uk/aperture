@@ -1,10 +1,24 @@
 # What a branch must prove, and what a release must carry.
 #
-# Two jobs, because they answer different questions and are trusted differently:
+# Three jobs, because they answer different questions and are trusted differently:
 #
-#   build   always runs, including on a pull request from a fork. It is the
+#   test    always runs, including on a pull request from a fork. `PLAN.md`'s
+#           definition of done everywhere is "a task ends in a green test", and
+#           this is the only thing that enforces it: fmt, clippy over every
+#           target, the suite, and the invariant coverage ledger printed so a
+#           reviewer can read what is still pending without running anything.
+#
+#           A **debug** build on purpose. Several correctness guards are
+#           `cfg(debug_assertions)` — the merge frontier's never-nested
+#           assertion and `put_fact`'s write-once contract among them — so a
+#           release-profile test run would silently not check them.
+#
+#   build   always runs, including on a pull request from a fork. It is a
 #           required status check on `main` and `release/*`, so nothing lands
-#           anywhere without compiling under the tree's own Cargo.lock.
+#           anywhere without compiling under the tree's own Cargo.lock. Separate
+#           from `test` because it answers a different question — that the
+#           *shipped profile* compiles — and because a release build and a debug
+#           test run share no cache.
 #
 #   attest  builds and signs SLSA provenance naming the binaries. It needs an
 #           OIDC token, which GitHub never issues to a fork's pull request, so
@@ -30,6 +44,39 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
+      # Cheapest first, so a formatting slip does not cost a compile.
+      - name: Formatting
+        run: cargo fmt --all --check
+      # `--all-targets` is the point: without it, tests, examples and benches are
+      # never even compiled, and the six measuring instruments under `examples/`
+      # would rot green.
+      - name: Clippy
+        run: cargo clippy --all-targets --workspace --locked -- -D warnings
+      # `default-members` is the whole workspace, so this means everything.
+      - name: Tests
+        run: cargo test --locked
+      # The coverage ledger (`docs/testing.md`): guards written up front and not
+      # yet live. Printed rather than asserted — a number here would have to be
+      # edited by whoever un-ignores one, and the list is what a reviewer reads.
+      - name: Invariant coverage ledger
+        run: cargo test --locked -- --ignored --list
+
   build:
     name: build
     runs-on: ubuntu-latest
