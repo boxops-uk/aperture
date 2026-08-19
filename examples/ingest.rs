@@ -46,12 +46,12 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use aperture_cli::{code_index, workload::Corpus};
-use aperture_encoding::tuple::{Value, encode_key};
-use aperture_ingest::{intern_block, intern_fact};
-use aperture_schema::schema::{PredicateId, PredicateTy, Schema};
-use aperture_store::store::FjallDb;
-use aperture_wire::encode_block;
+use fjord_cli::{code_index, workload::Corpus};
+use fjord_encoding::tuple::{Value, encode_key};
+use fjord_ingest::{intern_block, intern_fact};
+use fjord_schema::schema::{PredicateId, PredicateTy, Schema};
+use fjord_store::store::FjallDb;
+use fjord_wire::encode_block;
 
 fn main() {
     let options = match parse() {
@@ -156,7 +156,7 @@ fn parse() -> Result<Options, String> {
     let mut options = Options {
         layer: Which::All,
         iterations: 3,
-        scratch: std::env::temp_dir().join("aperture-ingest-rung"),
+        scratch: std::env::temp_dir().join("fjord-ingest-rung"),
         corpus: Corpus::standard(),
         per_block: false,
     };
@@ -351,10 +351,10 @@ fn intern(options: &Options, schema: &Schema, through_blocks: bool) -> Vec<Row> 
     // One pass over the whole corpus, however it is being fed in. A free function
     // rather than a closure because it has to serve two different sinks — the database
     // itself, and a `Staged` writer standing in front of it.
-    fn send<S: aperture_ingest::FactSink>(
+    fn send<S: fjord_ingest::FactSink>(
         sink: &S,
         schema: &Schema,
-        emissions: &[aperture_cli::workload::Emission],
+        emissions: &[fjord_cli::workload::Emission],
         blocks: &[Vec<u8>],
         through_blocks: bool,
     ) -> (u64, u64) {

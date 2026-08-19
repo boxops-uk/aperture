@@ -1,5 +1,0 @@
-<Solution>
-  <Project Path="Aperture.Client/Aperture.Client.csproj" />
-  <Project Path="Aperture.Demo/Aperture.Demo.csproj" />
-  <Project Path="Aperture.Indexer/Aperture.Indexer.csproj" />
-</Solution>

@@ -1,15 +1,15 @@
 //! **A load generator for the server**, driving it over a real socket through
-//! `aperture-client`.
+//! `fjord-client`.
 //!
-//! Not part of the command tree ([operations §4](../docs/aperture-cli-design.md) has no
+//! Not part of the command tree ([operations §4](../docs/fjord-cli-design.md) has no
 //! `bench`), and deliberately so: this is a measuring instrument, not a thing anyone
 //! should find while looking for how to use the database. It lives here rather than in
-//! `aperture-client` because it needs the built-in schema, and there is exactly one
-//! statement of that ([`code_index`](aperture_cli::code_index)) — a bench that declared
+//! `fjord-client` because it needs the built-in schema, and there is exactly one
+//! statement of that ([`code_index`](fjord_cli::code_index)) — a bench that declared
 //! its own would eventually measure a database it could not have written.
 //!
 //! ```text
-//! cargo run --release --example loadgen -- --data-dir /tmp/apbench --files 20000
+//! cargo run --release --example loadgen -- --data-dir /tmp/fjbench --files 20000
 //! ```
 //!
 //! It starts nothing: point it at a running server. `scripts/bench.sh` is the whole
@@ -34,17 +34,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aperture_cli::{
+use fjord_cli::{
     code_index,
     workload::{self, Workload},
 };
-use aperture_client::{Connection, Mode, WireFact, WireRef, WireValue};
-use aperture_schema::schema::{PredicateId, Schema};
+use fjord_client::{Connection, Mode, WireFact, WireRef, WireValue};
+use fjord_schema::schema::{PredicateId, Schema};
 
 /// Ids, **looked up by name** rather than written down.
 ///
 /// A position comes from sorting the schema's names, so a literal here would be a second
-/// statement of something `schemas/code.aps` already decides — and wrong the first time a
+/// statement of something `schemas/code.sigla` already decides — and wrong the first time a
 /// predicate sorting earlier is added.
 fn p(name: &str) -> PredicateId {
     code_index::id(name)
@@ -88,7 +88,7 @@ fn main() {
 const USAGE: &str = "\
 usage: loadgen [options]
 
-  --socket PATH        where the server is listening (default <data-dir>/aperture.sock)
+  --socket PATH        where the server is listening (default <data-dir>/fjord.sock)
   --data-dir PATH      derives the socket path, as the CLI does
   --database NAME      default `code`
   --files N            files to write when seeding (default 10000)
@@ -151,7 +151,7 @@ fn parse() -> Result<Options, String> {
     }
 
     let socket = socket
-        .or_else(|| data_dir.map(|dir| dir.join("aperture.sock")))
+        .or_else(|| data_dir.map(|dir| dir.join("fjord.sock")))
         .ok_or("one of --socket or --data-dir is needed")?;
 
     Ok(Options {
@@ -392,7 +392,7 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
     // **Pivots sampled from whatever is loaded, not computed from `--files`.** This
     // file used to seek `files / 2`, which lands on a real key only in the corpus it
     // seeded itself — point it at somebody's index and every seek workload measured a
-    // miss. Phase 10's S0: the questions and the sampling are `aperture_cli::workload`'s,
+    // miss. Phase 10's S0: the questions and the sampling are `fjord_cli::workload`'s,
     // so this bench and `engine` ask the same thing of the same data.
     let pivots = {
         let mut connection = connect(options, schema, Mode::ReadOnly);
@@ -474,7 +474,7 @@ fn run_workload(options: &Options, schema: &Arc<Schema>, workload: &Workload) ->
     // it answers with — a workload that fails should say so once rather than
     // `connections × runs` times.
     let mut probe = connect(options, schema, Mode::ReadOnly);
-    let mut result = match probe.query(&workload.focus) {
+    let mut result = match probe.query(&workload.sigla) {
         Ok(result) => result,
         Err(error) => {
             eprintln!("loadgen: `{}` did not compile: {error}", workload.name);
@@ -488,7 +488,7 @@ fn run_workload(options: &Options, schema: &Arc<Schema>, workload: &Workload) ->
     // and the data, not of how often it is run — and it is the number that says
     // whether a throughput figure is measuring the query you thought you wrote.
     let examined = probe
-        .query_profiled(&workload.focus)
+        .query_profiled(&workload.sigla)
         .and_then(|mut profiled| {
             probe.drain(&mut profiled)?;
             Ok(profiled.profile().map(|profile| {
@@ -515,7 +515,7 @@ fn run_workload(options: &Options, schema: &Arc<Schema>, workload: &Workload) ->
 
                     for _ in 0..per_connection {
                         let at = Instant::now();
-                        let mut result = connection.query(&workload.focus).expect("it compiles");
+                        let mut result = connection.query(&workload.sigla).expect("it compiles");
 
                         // Pulled and dropped: the rows have to cross the socket and be
                         // decoded — that is the work — but rendering them would be
@@ -564,7 +564,7 @@ fn connect(options: &Options, schema: &Arc<Schema>, mode: Mode) -> Connection {
             "loadgen: cannot connect to {}: {error}",
             options.socket.display()
         );
-        eprintln!("  is a server running? `aperture serve --data-dir <dir>`");
+        eprintln!("  is a server running? `fjord serve --data-dir <dir>`");
         std::process::exit(1);
     })
 }

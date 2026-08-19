@@ -1,9 +1,9 @@
-//! `aperture describe <db>`.
+//! `fjord describe <db>`.
 //!
 //! Metadata and the schema, both read without opening fjall — the sidecar for one and
 //! the embedded copy for the other. A server holding the database is no obstacle.
 
-use aperture_store::catalog::{Intent, Selector};
+use fjord_store::catalog::{Intent, Selector};
 
 use crate::{CliError, cli::Format, commands, output};
 
@@ -24,13 +24,13 @@ pub fn run(
     // how to lay it out.
     if dump_schema {
         return Ok(
-            aperture_store::schema_doc::source(&entry.path)?.unwrap_or_else(|| {
+            fjord_store::schema_doc::source(&entry.path)?.unwrap_or_else(|| {
                 format!("# `{name}` embeds no schema copy — it predates one being kept.\n")
             }),
         );
     }
 
-    let embedded = aperture_store::schema_doc::read(&entry.path);
+    let embedded = fjord_store::schema_doc::read(&entry.path);
 
     Ok(match format {
         Format::Json => {

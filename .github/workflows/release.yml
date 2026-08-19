@@ -14,7 +14,7 @@
 #
 # Verify anything it produced:
 #
-#     gh attestation verify ./aperture --repo boxops-uk/aperture
+#     gh attestation verify ./fjord --repo boxops-uk/fjord
 name: release
 
 on:
@@ -47,7 +47,7 @@ jobs:
       # --locked so this is the Cargo.lock in the tree and not whatever resolves
       # today; the fjall pin in particular is load-bearing.
       - name: Build release binaries
-        run: cargo build --release --locked -p aperture-cli -p aperture-viewer --bins
+        run: cargo build --release --locked -p fjord-cli -p fjord-viewer --bins
 
   attest:
     name: attest
@@ -72,18 +72,18 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
       - name: Build release binaries
-        run: cargo build --release --locked -p aperture-cli -p aperture-viewer --bins
+        run: cargo build --release --locked -p fjord-cli -p fjord-viewer --bins
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            target/release/aperture
-            target/release/aperture-viewer
+            target/release/fjord
+            target/release/fjord-viewer
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: aperture-linux-x86_64
+          name: fjord-linux-x86_64
           path: |
-            target/release/aperture
-            target/release/aperture-viewer
+            target/release/fjord
+            target/release/fjord-viewer
           if-no-files-found: error

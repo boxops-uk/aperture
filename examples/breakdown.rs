@@ -41,17 +41,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aperture_cli::code_index;
-use aperture_client::{Connection, Mode};
-use aperture_engine::{
+use fjord_cli::code_index;
+use fjord_client::{Connection, Mode};
+use fjord_engine::{
     compile::Compilation,
     iter::{Executor, Iteratee, Stream},
     plan::Plan,
 };
-use aperture_schema::schema::Schema;
-use aperture_server::{Registry, registry::Schemas, server::Listener};
-use aperture_store::{catalog::Catalog, store::FjallDb};
-use aperture_wire::{FrameKind, StreamId, encode_desc, encode_frame, frame};
+use fjord_schema::schema::Schema;
+use fjord_server::{Registry, registry::Schemas, server::Listener};
+use fjord_store::{catalog::Catalog, store::FjallDb};
+use fjord_wire::{FrameKind, StreamId, encode_desc, encode_frame, frame};
 
 /// The query whose cost is being taken apart: every binding folds, so it compiles to
 /// no steps and means exactly one row.
@@ -64,7 +64,7 @@ const ITERATIONS: usize = 2000;
 const WARMUP: usize = 200;
 
 fn main() {
-    let dir = std::env::temp_dir().join(format!("ap-breakdown-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("fj-breakdown-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a scratch directory");
 
@@ -172,7 +172,7 @@ fn main() {
     {
         let mut connection = connect(&socket, &schema);
         rows.push(measure("END TO END (bad query)", move || {
-            let error = connection.query("this is not focus");
+            let error = connection.query("this is not sigla");
             std::hint::black_box(error.is_err());
         }));
     }
@@ -196,7 +196,7 @@ fn prepare(source: &str, schema: &Schema) {
     let plan = compilation.plan().expect("it compiles");
 
     let head = compilation.head_ty().expect("a head type");
-    let desc = aperture_server::rows::desc_of(head, compilation.interner()).expect("a descriptor");
+    let desc = fjord_server::rows::desc_of(head, compilation.interner()).expect("a descriptor");
 
     let mut descriptor = vec![];
     encode_desc(&mut descriptor, &desc);
@@ -240,7 +240,7 @@ fn echo_roundtrip() {
         let mut borrowed = pair.borrow_mut();
 
         let stream = borrowed.get_or_insert_with(|| {
-            let path = std::env::temp_dir().join(format!("ap-echo-{}.sock", std::process::id()));
+            let path = std::env::temp_dir().join(format!("fj-echo-{}.sock", std::process::id()));
             let _ = std::fs::remove_file(&path);
 
             let listener = UnixListener::bind(&path).expect("an echo socket");
@@ -511,4 +511,4 @@ fn connect(socket: &Path, schema: &Arc<Schema>) -> Connection {
 }
 
 /// Silence the unused-import warning for a re-export the frame helper needs.
-const _: fn(&[u8]) -> Result<frame::FrameHeader, aperture_wire::WireError> = frame::decode_header;
+const _: fn(&[u8]) -> Result<frame::FrameHeader, fjord_wire::WireError> = frame::decode_header;

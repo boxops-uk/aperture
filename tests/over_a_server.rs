@@ -17,9 +17,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Run `aperture` against a store root.
-fn aperture(root: &Path, args: &[&str]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_aperture"))
+/// Run `fjord` against a store root.
+fn fjord(root: &Path, args: &[&str]) -> (bool, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_fjord"))
         .arg("--data-dir")
         .arg(root)
         .args(args)
@@ -34,17 +34,14 @@ fn aperture(root: &Path, args: &[&str]) -> (bool, String, String) {
 }
 
 fn ok(root: &Path, args: &[&str]) -> String {
-    let (success, stdout, stderr) = aperture(root, args);
-    assert!(success, "`aperture {args:?}` failed:\n{stderr}");
+    let (success, stdout, stderr) = fjord(root, args);
+    assert!(success, "`fjord {args:?}` failed:\n{stderr}");
     stdout
 }
 
 fn fails(root: &Path, args: &[&str]) -> String {
-    let (success, stdout, stderr) = aperture(root, args);
-    assert!(
-        !success,
-        "`aperture {args:?}` was supposed to fail:\n{stdout}"
-    );
+    let (success, stdout, stderr) = fjord(root, args);
+    assert!(!success, "`fjord {args:?}` was supposed to fail:\n{stdout}");
     stderr
 }
 
@@ -72,7 +69,7 @@ fn scratch() -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
-/// Start `aperture serve` over `root` and wait until it is **accepting**.
+/// Start `fjord serve` over `root` and wait until it is **accepting**.
 ///
 /// The readiness file, not a sleep: `Listener::announce` writes it after the bind, so
 /// a client that sees it can connect. A sleep here would be a race dressed as a wait,
@@ -80,7 +77,7 @@ fn scratch() -> (tempfile::TempDir, PathBuf) {
 fn serve(root: &Path) -> Serving {
     let ready = root.join("ready");
 
-    let child = Command::new(env!("CARGO_BIN_EXE_aperture"))
+    let child = Command::new(env!("CARGO_BIN_EXE_fjord"))
         .arg("--data-dir")
         .arg(root)
         .arg("serve")
@@ -202,13 +199,13 @@ fn what_the_server_made_outlives_it() {
     assert!(ok(&root, &["list"]).contains("no databases"));
 }
 
-/// **`aperture query` is always over the wire** (§2's rule 1), streams its rows, and
+/// **`fjord query` is always over the wire** (§2's rule 1), streams its rows, and
 /// renders them client-side in whichever shape was asked for.
 ///
 /// It writes nothing itself — the CLI has no `write` command until 7b — so what it
 /// queries is an empty database. That is enough to check the whole path: connect,
 /// compile on the server, descriptor, zero rows, complete. The *rows* path is checked
-/// where rows exist, in `aperture-client`'s tests and the loadgen.
+/// where rows exist, in `fjord-client`'s tests and the loadgen.
 #[test]
 fn query_speaks_to_the_server_and_renders_client_side() {
     let (_dir, root) = scratch();
@@ -243,7 +240,7 @@ fn query_speaks_to_the_server_and_renders_client_side() {
 
     // A query that does not compile fails with the compiler's own diagnostics, and
     // the exit code says so.
-    let stderr = fails(&root, &["query", "code", "this is not focus"]);
+    let stderr = fails(&root, &["query", "code", "this is not sigla"]);
     assert!(stderr.contains("invalid syntax"), "{stderr}");
 
     // An unknown database is named rather than reported as an empty result.
@@ -262,6 +259,6 @@ fn a_query_with_no_server_says_so() {
 
     let stderr = fails(&root, &["query", "code", "F where src.File F"]);
     assert!(stderr.contains("could not connect"), "{stderr}");
-    assert!(stderr.contains("aperture serve"), "{stderr}");
-    assert!(stderr.contains("aperture.sock"), "{stderr}");
+    assert!(stderr.contains("fjord serve"), "{stderr}");
+    assert!(stderr.contains("fjord.sock"), "{stderr}");
 }

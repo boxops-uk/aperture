@@ -1,6 +1,6 @@
 # 1. Concepts
 
-> [Aperture design book](../README.md) · **Chapter 1** · Next: [2. The tuple codec →](02-tuple-codec.md)
+> [Fjord design book](../README.md) · **Chapter 1** · Next: [2. The tuple codec →](02-tuple-codec.md)
 
 This chapter is the mental model. It introduces every core term at a shallow depth so the
 later chapters can go deep on one thing at a time. Nothing here is load-bearing on its
@@ -9,14 +9,14 @@ own — it's the map, not the territory. Terms in **bold** have full entries in 
 
 ---
 
-## What Aperture is
+## What Fjord is
 
-Aperture is an **embedded, immutable fact database**. Two names to keep straight:
+Fjord is an **embedded, immutable fact database**. Two names to keep straight:
 
-- **Aperture DB** — the database/product.
-- **focus** — its query and schema *language* (and the `aperture-engine` crate that implements
-  the engine and the language). When you read "a focus query," it's a query written in
-  focus and run by Aperture.
+- **Fjord DB** — the database/product.
+- **sigla** — its query and schema *language* (and the `fjord-engine` crate that implements
+  the engine and the language). When you read "a sigla query," it's a query written in
+  sigla and run by Fjord.
 
 It is **inspired by [Glean](https://glean.software/), not a clone** — and the border runs in a
 less obvious place than "the ideas are theirs, the code is ours". The **two-map storage layout
@@ -44,7 +44,7 @@ limitation bolted on; it is the keystone. Because a Complete DB never changes:
 - a suspended query can be resumed from a few saved **bytes** rather than a pinned
   iterator (see [chapter 5](05-resume.md));
 - ingestion can be massively parallel, because facts with different keys can never
-  interfere (see [chapter 3](03-storage-model.md) and [Operations](aperture-cli-design.md)).
+  interfere (see [chapter 3](03-storage-model.md) and [Operations](fjord-cli-design.md)).
 
 Immutability is the assumption almost every invariant leans on.
 
@@ -84,12 +84,12 @@ chapter.
 
 ## The two halves of the system
 
-Aperture has a clean seam in the middle: a **front end** that compiles focus text into a
+Fjord has a clean seam in the middle: a **front end** that compiles sigla text into a
 plan, and a **back end** (the executor + storage) that runs plans. They meet at one data
 structure — the **`Plan` IR** — and otherwise evolve independently.
 
 ```
-   focus text
+   sigla text
       │
       ▼   FRONT END  (chapter 7)
   lex → parse → typecheck → flatten → reorder
@@ -165,14 +165,14 @@ The code is a **Cargo workspace**, and the order of the crates is the architectu
 depends only on those before it, and nothing depends on anything after it. That is not a
 convention any more — the compiler refuses the other direction.
 
-- **`crates/aperture-schema/`** — the bottom, depending on nothing: the type model and
+- **`crates/fjord-schema/`** — the bottom, depending on nothing: the type model and
   interners (`schema.rs`), and the physical row id (`id.rs`) with the two rules that make one
   valid. The id lives here rather than with the plan or the store because all three layers
   above name one.
-- **`crates/aperture-encoding/`** — the order-preserving storage tuple codec (`tuple.rs`) and
+- **`crates/fjord-encoding/`** — the order-preserving storage tuple codec (`tuple.rs`) and
   the faults a decode can raise (`error.rs`). Every variant of that error is "these bytes are
   not what the marker says", which only the crate holding the bytes can say.
-- **`crates/aperture-store/`** — what a fact is on disk:
+- **`crates/fjord-store/`** — what a fact is on disk:
   - the `FactStore` seam (`fact_store.rs`) — its own module, so neither implementation can be
     mistaken for the definition — with the fjall store behind it (`store.rs`) and the
     in-memory test store (`mem_store.rs`);
@@ -188,25 +188,25 @@ convention any more — the compiler refuses the other direction.
   - `fixtures.rs` — the store-shaped half of the test toolbox: the probes, the model stores
     and the scan-contract assertions. Here rather than with the engine's, because a probe has
     to be the *same* `FactStore` as the store it wraps.
-- **`crates/aperture-engine/`** — **focus and the machine.** All new query work lands here:
+- **`crates/fjord-engine/`** — **sigla and the machine.** All new query work lands here:
   - the plan IR (`plan.rs`) — which, since the split, names nothing physical at all: only
     registers, field paths, schema types and values;
   - the executor and resume (`iter.rs`) and the engine's error taxonomy (`error.rs`);
   - the front end, all the way to a plan — `grammar.llw`, `lexer.rs`, `parser.rs`, `cst.rs`,
     `parse.rs`, `lower.rs`, `syntax.rs`, `ty.rs`, `flatten.rs`, `reorder.rs`, driven by
-    `compile.rs` — plus `print.rs`, which renders a tree back to focus source and is what
+    `compile.rs` — plus `print.rs`, which renders a tree back to sigla source and is what
     makes the front end round-trippable ([chapter 7](07-compilation.md));
   - test support: `fixtures.rs` (the plan runners, re-exporting the store-shaped half) and
     `corpus.rs` (the language surface as data — the acceptance gate for the grammar, which
     runs each supported entry against a real store and compares its rows).
-- **`src/main.rs`** — the root package, and now only the binary: an interactive **focus shell** that lexes,
+- **`src/main.rs`** — the root package, and now only the binary: an interactive **sigla shell** that lexes,
   parses, lowers, typechecks, **compiles and runs** what you type against a real store seeded
   with a **code index** — files, modules, declarations, references, imports — which is the
   canonical shape for a fact database and the one that makes reference joins worth watching.
   `:plan` shows the plan without running it. Useful for seeing the whole system behave; not a
   place to put logic — the plan renderer it needed went into the engine's `print.rs`, and its
   facts are written through the store's `fact.rs`. The target layout calls this
-  `aperture-cli` ([operations §10](aperture-cli-design.md)); it keeps its place until it grows
+  `fjord-cli` ([operations §10](fjord-cli-design.md)); it keeps its place until it grows
   a command tree.
 - **`example/`** — what that index is an index *of*: a small Python corpus, a real
   `ast`-based indexer over it, and the JSON the shell compiles in and writes as facts at
@@ -215,7 +215,7 @@ convention any more — the compiler refuses the other direction.
   therefore only filter that scan, not narrow it. Derived data written by hand, which is what a
   deriver does until [Phase 8b](../PLAN.md) can declare one. See
   [`example/README.md`](../example/README.md).
-- **`crates/aperture-engine/src/lib.rs`** — the module list, and then a **graveyard of
+- **`crates/fjord-engine/src/lib.rs`** — the module list, and then a **graveyard of
   commented-out prototype code** (~20 live lines out of ~1,250). Kept only for the
   transport-codec sketch. Don't add code here.
 

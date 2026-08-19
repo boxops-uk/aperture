@@ -1,14 +1,14 @@
 //! **A database does not depend on how many threads wrote it, or in what order.**
 //!
 //! [Phase 12d](../PLAN.md)'s second acceptance criterion, and the one that decides whether
-//! the [striped merge frontier](../crates/aperture-store/src/store.rs) is *correct* rather
+//! the [striped merge frontier](../crates/fjord-store/src/store.rs) is *correct* rather
 //! than merely uncontended. `concurrent_interning_of_one_key_creates_one_fact` proves the
 //! narrow case — every thread reaching for one key gets one fact. This proves the wide
 //! one: run a whole nested corpus three ways and the artifact is the same artifact.
 //!
 //! # Why identity is the assertion and not fact ids
 //!
-//! [`ops-I4`](../docs/aperture-cli-design.md) says a database built twice from identical
+//! [`ops-I4`](../docs/fjord-cli-design.md) says a database built twice from identical
 //! inputs is identical, and it means identical *by content hash* — a multiset over each
 //! fact's logical form, no physical `FactId` anywhere in it. That distinction was
 //! load-bearing enough to reverse a design decision four documents had recorded as forced
@@ -26,11 +26,11 @@
 
 use std::sync::Arc;
 
-use aperture_cli::{code_index, workload::Corpus};
-use aperture_ingest::intern_fact;
-use aperture_schema::{fingerprint, schema::Schema};
-use aperture_store::{identity, store::FjallDb};
-use aperture_wire::WireFact;
+use fjord_cli::{code_index, workload::Corpus};
+use fjord_ingest::intern_fact;
+use fjord_schema::{fingerprint, schema::Schema};
+use fjord_store::{identity, store::FjallDb};
+use fjord_wire::WireFact;
 
 /// Small enough to run three times in a test, deep enough that every level of nesting is
 /// exercised: a reference names a declaration names a module names a file.
@@ -49,7 +49,7 @@ fn scratch(schema: &Schema) -> (tempfile::TempDir, FjallDb) {
     let db = FjallDb::open(dir.path()).expect("a database");
 
     let declared = (0..schema.len())
-        .map(|n| aperture_schema::schema::PredicateId(u32::try_from(n).expect("a schema id fits")))
+        .map(|n| fjord_schema::schema::PredicateId(u32::try_from(n).expect("a schema id fits")))
         .filter(|id| !schema.is_virtual(*id));
     db.create_predicates(declared).expect("the trees");
 
@@ -78,7 +78,7 @@ fn facts(schema: &Schema) -> Vec<WireFact> {
 /// Only sound because nothing here fails: a *failed* write legitimately consumes a
 /// sequence and I11 permits the hole. In this test every intern succeeds.
 fn assert_no_id_was_created_twice(db: &FjallDb) {
-    use aperture_store::fact_store::FactStore;
+    use fjord_store::fact_store::FactStore;
     let reader = db.reader();
 
     for predicate in db.predicate_ids() {
@@ -114,7 +114,7 @@ fn identity_of(db: &FjallDb, schema: &Schema) -> identity::Identity {
 
 /// Ids in creation order, so two arms can be shown to have assigned them differently.
 fn ids(db: &FjallDb) -> Vec<u64> {
-    use aperture_store::fact_store::FactStore;
+    use fjord_store::fact_store::FactStore;
     let reader = db.reader();
     let mut out = Vec::new();
     for predicate in db.predicate_ids() {

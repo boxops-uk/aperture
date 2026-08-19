@@ -1,10 +1,10 @@
-# Aperture
+# Fjord
 
-**Aperture** (the product: *Aperture DB*) is an embedded, immutable **fact database**.
-**focus** is its typed, Datalog-flavoured query and schema language — a small, faithful subset of
+**Fjord** (the product: *Fjord DB*) is an embedded, immutable **fact database**.
+**sigla** is its typed, Datalog-flavoured query and schema language — a small, faithful subset of
 Glean's Angle at the core, and its own thing past that ([what is inherited and what is
 not](docs/glean-comparison.md)). Facts are typed records identified by a `FactId`, grouped by
-predicate, stored in an LSM (fjall) and queried by compiling focus queries to a nested-loop plan
+predicate, stored in an LSM (fjall) and queried by compiling sigla queries to a nested-loop plan
 run by a suspendable, pull-based virtual machine.
 
 The database is **immutable**: a DB is built once (schema → base facts → derivations),
@@ -12,11 +12,11 @@ sealed, and thereafter only read. That single decision is what makes the rest of
 design tractable — snapshots are trivial, resume tokens can be plain bytes, and parallel
 ingestion is "fearless."
 
-> **Status.** Being taken from prototype to production. In `crates/aperture-engine/`: the engine spine
+> **Status.** Being taken from prototype to production. In `crates/fjord-engine/`: the engine spine
 > (codec, executor, resume, projection) and the fjall store are built and guarded, and the
-> **front end reaches the `Plan`** — focus text parses, lowers, typechecks and flattens, with
+> **front end reaches the `Plan`** — sigla text parses, lowers, typechecks and flattens, with
 > every construct deferred to a later phase drawing a diagnostic that names it. A query is now
-> **answerable end to end**: `aperture` compiles what you type and runs it against a real
+> **answerable end to end**: `fjord` compiles what you type and runs it against a real
 > store, joins *through fact references* included, and every supported construct in the corpus
 > is checked against the rows it returns rather than only against the plan it produced. Facts
 > are **written by hand as well-typed values** whose fields are resolved against the schema, so
@@ -43,7 +43,7 @@ about one subsystem.
 
 **Read these in order for the full picture:**
 
-1. [**Concepts**](docs/01-concepts.md) — the fact model, predicates, `FactId`, the focus
+1. [**Concepts**](docs/01-concepts.md) — the fact model, predicates, `FactId`, the sigla
    language at a glance, and the compilation pipeline. The mental model everything else
    refines. *Start here.*
 2. [**The tuple codec**](docs/02-tuple-codec.md) — how values become order-preserving,
@@ -51,7 +51,7 @@ about one subsystem.
 3. [**The storage model**](docs/03-storage-model.md) — the two column families, one
    keyspace per predicate, `FactId` allocation, the atomic two-CF write, the **format
    stamp** that says which encoding wrote a DB, and how a fact is **written by hand** (the
-   three silent traps in `put_fact` that `aperture_store::fact` exists to close). *(I11–I12, I15.)*
+   three silent traps in `put_fact` that `fjord_store::fact` exists to close). *(I11–I12, I15.)*
 4. [**The executor (the VM)**](docs/04-executor.md) — the plan IR, the register file, and
    the `enumerate` nested-loop driver. Why it's a defunctionalised state machine. *(I5–I7,
    I9.)*
@@ -65,7 +65,7 @@ about one subsystem.
    *complete* — and load-bearing for acceptance, not just speed — what flatten defers, folding
    a constant bind, and derived facts — the two kinds, and which of them was the machine
    change. *(I14.)*
-8. [**Operations**](docs/aperture-cli-design.md) — the CLI, the `Writable → Complete`
+8. [**Operations**](docs/fjord-cli-design.md) — the CLI, the `Writable → Complete`
    lifecycle, the parallel ingestion pipeline, the wire protocol, and the operational
    invariants. *(ops-I1–ops-I10.)* The operational design of record.
 
@@ -84,7 +84,7 @@ about one subsystem.
   that look reasonable but are wrong here.
 - [**Open decisions**](docs/open-decisions.md) — what's not yet settled (and where the
   settled ones landed).
-- [**Aperture vs Glean**](docs/glean-comparison.md) — what we take from Glean, what we
+- [**Fjord vs Glean**](docs/glean-comparison.md) — what we take from Glean, what we
   deliberately changed and why, which invariants are **ours** rather than inherited, and the
   capabilities we have **neither built nor ruled out**. Read it before proposing a feature Glean
   has, and before claiming a design here came from there.
@@ -102,7 +102,7 @@ about one subsystem.
 - **Engine invariants `I1`–`I14`** — codec, executor/resume, storage, identity, and
   derived-bind purity. Explained in chapters 2–7, indexed in the [registry](docs/invariants.md).
 - **Operational invariants `ops-I1`–`ops-I10`** — lifecycle, single-writer ownership,
-  reproducibility, the one-write-funnel. Explained in [Operations](docs/aperture-cli-design.md).
+  reproducibility, the one-write-funnel. Explained in [Operations](docs/fjord-cli-design.md).
   Always written `ops-Ix` so they're never mistaken for the engine `Ix`.
 
 ---
@@ -117,13 +117,13 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
-## Working on Aperture
+## Working on Fjord
 
 - [`CLAUDE.md`](CLAUDE.md) — the working contract loaded every session: how to work here,
   the invariants in brief, conventions. *(Will be slimmed to point into this book.)*
 - [`PLAN.md`](PLAN.md) — the living phase tree: the build sequence and current state.
 
-Module map: `crates/aperture-engine/` is the live engine and language — all new work lands there.
-`src/main.rs` is the `aperture` focus shell, which compiles and runs what you type against a
+Module map: `crates/fjord-engine/` is the live engine and language — all new work lands there.
+`src/main.rs` is the `fjord` sigla shell, which compiles and runs what you type against a
 real store — seeded with a real index of the Python corpus in [`example/`](example/README.md).
-`crates/aperture-engine/src/lib.rs` is a commented-out graveyard. See [Concepts](docs/01-concepts.md) for detail.
+`crates/fjord-engine/src/lib.rs` is a commented-out graveyard. See [Concepts](docs/01-concepts.md) for detail.

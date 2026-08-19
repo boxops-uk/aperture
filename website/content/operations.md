@@ -64,9 +64,9 @@ key-to-fact bijection, and it now has a mechanism of its own — see
 
 ```text
 <data_dir>/
-├── aperture.sock                  # the socket; its presence ⇒ a server is here
+├── fjord.sock                     # the socket; its presence ⇒ a server is here
 └── <name>/<instance>/             # instance: a ULID
-    ├── APERTURE_META              # the sidecar: temp + fsync + rename (ops-I3)
+    ├── FJORD_META                 # the sidecar: temp + fsync + rename (ops-I3)
     │     name, instance, status, format version, schema fingerprint,
     │     content fingerprint (at finish), counts, size, created_at
     ├── schema/                    # the embedded canonical schema
@@ -82,7 +82,7 @@ for.
 ## Running a server
 
 ```bash
-aperture --data-dir /var/lib/aperture serve --ready-file /run/aperture.ready
+fjord --data-dir /var/lib/fjord serve --ready-file /run/fjord.ready
 ```
 
 - **Binds a Unix socket only, by default** (`ops-I10`). TCP is `--listen-tcp host:port`, with no
@@ -100,8 +100,8 @@ aperture --data-dir /var/lib/aperture serve --ready-file /run/aperture.ready
 
 ```text
 [Service]
-ExecStart=/usr/local/bin/aperture --data-dir /var/lib/aperture serve \
-         --ready-file /run/aperture/ready
+ExecStart=/usr/local/bin/fjord --data-dir /var/lib/fjord serve \
+         --ready-file /run/fjord/ready
 Restart=on-failure
 ```
 
@@ -115,10 +115,10 @@ without being told where the data is. Access control is the socket's permissions
 The workflow the design assumes is **a fresh sealed artifact per build**:
 
 ```bash
-aperture --data-dir ./out create code --schema ./schemas/code.aps
-aperture --data-dir ./out serve --ready-file ./ready &
+fjord --data-dir ./out create code --schema ./schemas/code.sigla
+fjord --data-dir ./out serve --ready-file ./ready &
 # … a producer writes facts over the socket …
-aperture --data-dir ./out finish code
+fjord --data-dir ./out finish code
 ```
 
 Lifecycle commands work with **no server running** — that is the amendment the offline path exists
@@ -160,7 +160,7 @@ operator is not surprised by one.
 
 | Gap | Where it stands |
 |---|---|
-| `aperture write` from files | Unbuilt. The file format, the block encoding and the sync-marker splitting rule are all defined; the pipeline is not wired to a command |
+| `fjord write` from files | Unbuilt. The file format, the block encoding and the sync-marker splitting rule are all defined; the pipeline is not wired to a command |
 | `db verify` | Unbuilt. Recomputing the content fingerprint is cheap and specified. Structural at-rest validation (the two maps agreeing, scan order holding) is guarded at *write* time and nowhere after a crash-and-recover |
 | Per-predicate statistics | Not recorded. `finish` is the natural place, and nothing feeds the reorderer's selectivity heuristic today — which is why it does not have one |
 | Retention | No policy engine, and the workflow generates the problem: "a fresh artifact per run" means rebuilds accumulate and `db rm` is a manual verb. "Keep the newest *n* Complete instances" is the shape to build |

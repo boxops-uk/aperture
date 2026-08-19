@@ -1,7 +1,7 @@
 //! A server on a socket, in this process, for the tests that need one.
 //!
 //! **Why the tool tests a server in-process at all.** `tests/over_a_server.rs` drives
-//! the real binary against a real `aperture serve`, which is the right shape for the
+//! the real binary against a real `fjord serve`, which is the right shape for the
 //! lifecycle — it proves the frames crossed a socket between two processes. It is the
 //! wrong shape for anything that needs *facts in a database*, because the tool has no
 //! command that writes any (that is Phase 7b), and the wrong shape for anything that
@@ -13,10 +13,10 @@
 
 use std::{path::PathBuf, sync::Arc, thread};
 
-use aperture_client::{Connection, Mode};
-use aperture_server::{Registry, registry::Schemas, server::Listener};
-use aperture_store::catalog::Catalog;
-use aperture_wire::{WireFact, WireRef, WireValue};
+use fjord_client::{Connection, Mode};
+use fjord_server::{Registry, registry::Schemas, server::Listener};
+use fjord_store::catalog::Catalog;
+use fjord_wire::{WireFact, WireRef, WireValue};
 
 use crate::code_index;
 
@@ -34,7 +34,7 @@ pub struct Serving {
 /// dance for something that owns nothing but a socket.
 pub fn serving(files: usize) -> Serving {
     let dir = tempfile::tempdir().expect("a scratch directory");
-    let socket = dir.path().join("aperture.sock");
+    let socket = dir.path().join("fjord.sock");
 
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog
@@ -149,7 +149,7 @@ fn seed(serving: &Serving, files: usize) {
 /// the same protocol, over a different pipe.
 pub fn serving_on_tcp(files: usize) -> (Serving, String) {
     let dir = tempfile::tempdir().expect("a scratch directory");
-    let socket = dir.path().join("aperture.sock");
+    let socket = dir.path().join("fjord.sock");
 
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog
@@ -173,14 +173,14 @@ pub fn serving_on_tcp(files: usize) -> (Serving, String) {
         probe.local_addr().expect("its address").to_string()
     };
 
-    let listener = aperture_server::Listener::bind(&socket).expect("a socket");
+    let listener = fjord_server::Listener::bind(&socket).expect("a socket");
 
     {
         let address = address.clone();
         let socket = socket.clone();
         thread::spawn(move || {
             drop(listener);
-            let _ = aperture_server::server::serve_on(&socket, Some(&address), None, registry);
+            let _ = fjord_server::server::serve_on(&socket, Some(&address), None, registry);
         });
     }
 

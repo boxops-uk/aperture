@@ -3,7 +3,7 @@ title: Status & roadmap
 description: What is built and guarded, what is not built, what is deliberately deferred, and the one decision still open — read this before assuming a feature exists.
 ---
 
-Aperture is being taken from prototype to production. This page is the honest inventory. Where
+Fjord is being taken from prototype to production. This page is the honest inventory. Where
 something is built, the repository has a test that says so; where it is not, it is listed as not
 built rather than described as if it were.
 
@@ -15,14 +15,14 @@ built rather than described as if it were.
 | **Storage layer** | A pair of trees per predicate, atomic two-map writes, snowflake ids recovered from the data, format stamp, snapshots released at suspend |
 | **Executor** | Three step kinds, one driver, lazy field decode, allocation-free scan, in-band cancellation |
 | **Suspend & resume** | A bytes-only cursor with a version, a plan fingerprint and a per-level integrity check — proven against an interruption-schedule generator on both stores |
-| **focus front end** | lex → parse → typecheck → flatten → reorder → `Plan`, round-trippable, span-checked, corpus-gated |
+| **sigla front end** | lex → parse → typecheck → flatten → reorder → `Plan`, round-trippable, span-checked, corpus-gated |
 | **The language** | Generators, joins, records, field access, `.value`, constants and folding, aliases, constraints, denials, four comparisons, integer arithmetic, negation, disjunction, `never`, subqueries, references both ways |
 | **Schema DSL** | Files, namespaces, imports, canonical form, per-predicate and whole-schema fingerprints, subset-containment compatibility, `schema check` / `fingerprint` / `diff` |
 | **Embedded schema** | A database is created against a schema file, embeds it, and is **served from that copy** |
 | **Wire protocol** | Frames, streams, handshake with a per-predicate schema claim, four query kinds, paging, profiling, counting, fetch, control frames, cancellation, a fair writer |
 | **Ingestion over the wire** | Write streams, blocks, interning of nested references, dedup and deterministic conflict rejection |
 | **Parallel ingestion** | Per-key exclusion striped 64 ways; many writers per database, with correctness proven by a racing guard and by wire-level counts |
-| **Server** | Unix socket by default, TCP opt-in, per-connection reader task, per-stream tasks, blocking pool, virtual `aperture.db.List` |
+| **Server** | Unix socket by default, TCP opt-in, per-connection reader task, per-stream tasks, blocking pool, virtual `fjord.db.List` |
 | **Client** | Rust client crate — connect, query, page, count, profile, fetch, expand, write, lifecycle |
 | **CLI** | `serve`, `create`, `finish`, `list`, `describe`, `query`, `shell`, `schema …`, `db rm` |
 | **Shell** | The wire REPL (compiles locally, real cursor paging, expansion, profiling) and the embedded demo |
@@ -38,7 +38,7 @@ built rather than described as if it were.
 | **Union types** | The schema DSL parses a sum and names `nyi/union`. No `maybe`, `enum` or union-typed field yet | Discriminant encoding, and the freeze that comes with it |
 | **Stored derivation** | A derived predicate cannot be *declared*. Derived data is written by hand — which is what four predicates in the built-in schema are | The schema DSL (done) plus the re-derivation decision below |
 | **Arrays and sets** | A one-to-many is one fact per element. Marker bands are reserved | An open design question, not a missing implementation |
-| **`aperture write`, `db backup/restore/verify`, `completions`** | Named in the CLI design, absent from the binary. A Complete database is a directory, so `tar` is the backup | — |
+| **`fjord write`, `db backup/restore/verify`, `completions`** | Named in the CLI design, absent from the binary. A Complete database is a directory, so `tar` is the backup | — |
 | **Per-predicate statistics** | Nothing feeds a selectivity heuristic, which is why the reorderer does not have one | `finish` is the natural place to record them |
 | **Per-stream flow control** | Bounded queues and per-connection backpressure in the meantime | — |
 | **A resumable deadline** | A timeout unwinds terminally instead of handing back a cursor | The token cannot represent a mid-descent position |
@@ -85,7 +85,7 @@ re-argued forever.
 | **Per-block commits** | A server flag, **off by default**, gated on a durable id claim. It trades exactly one thing: a crash during ingest may cost the index, never its correctness |
 | **What a reference is on the way in** | The **target fact, written inline** — so a producer keeps no book. Stored, it is an id and nothing else |
 | **Multiplicity** | **One fact per element** for now, diagnosed by name. An array cannot be prefix-matched, so it is an encoding one-way door as well as a type |
-| **Primitives** | Comparisons and arithmetic are **in the language**. Arithmetic is the first thing in focus to lower a derive step |
+| **Primitives** | Comparisons and arithmetic are **in the language**. Arithmetic is the first thing in sigla to lower a derive step |
 | **Intra-row repeated variables** | **Rejected** by name, rather than adding a residual operator nothing else uses |
 | **`pattern = pattern` unification** | Scope settled — and most of what was filed as unification turned out not to be it. Binding a row a field already named is an *ordering* question; `X = Y` with both bound is a residual; `X = "a"..` is a *constraint* |
 | **Cancellation counts rows examined** | Settled, in the executor |

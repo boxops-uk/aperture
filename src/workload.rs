@@ -17,15 +17,15 @@
 //!
 //! # A workload states what it answers
 //!
-//! `aperture_engine::corpus` makes a `Supported` entry carry the rows it returns, for the
+//! `fjord_engine::corpus` makes a `Supported` entry carry the rows it returns, for the
 //! reason this needs too: a run that returned a different count did not measure what it
 //! thought it did, and should say so rather than print a throughput figure. The rows a
 //! given corpus answers with are not knowable here, so an instrument fixes them with one
 //! unmeasured probe and holds every timed run to it — which is what
 //! `examples/engine.rs` does.
 
-use aperture_schema::schema::{PredicateId, Schema};
-use aperture_wire::{WireFact, WireRef, WireValue};
+use fjord_schema::schema::{PredicateId, Schema};
+use fjord_wire::{WireFact, WireRef, WireValue};
 
 /// The values a workload seeks for, taken out of the corpus that is loaded.
 #[derive(Debug, Clone)]
@@ -82,7 +82,7 @@ impl Pivots {
 #[derive(Debug, Clone)]
 pub struct Workload {
     pub name: &'static str,
-    pub focus: String,
+    pub sigla: String,
     /// What it is here to exercise, printed beside the number so a table row says what
     /// it means without this file open next to it.
     pub about: &'static str,
@@ -96,10 +96,10 @@ pub struct Workload {
 }
 
 impl Workload {
-    fn new(name: &'static str, focus: String, about: &'static str) -> Workload {
+    fn new(name: &'static str, sigla: String, about: &'static str) -> Workload {
         Workload {
             name,
-            focus,
+            sigla,
             about,
             stop_at: None,
         }
@@ -201,7 +201,7 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
         ),
         Workload {
             name: "join on a trailing field",
-            focus: "N where D = src.Decl _; src.SearchByName {to = D, name = N}".to_owned(),
+            sigla: "N where D = src.Decl _; src.SearchByName {to = D, name = N}".to_owned(),
             about: "not seekable: `name` leads the key, and this joins on `to`",
             stop_at: Some(2_000),
         },
@@ -252,19 +252,19 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
 /// answers [`Pivots::unsampled`], which makes every seek workload return nothing rather
 /// than seek for something plausible that is not there.
 pub fn sample(
-    connection: &mut aperture_client::Connection,
-) -> Result<Pivots, aperture_client::ClientError> {
+    connection: &mut fjord_client::Connection,
+) -> Result<Pivots, fjord_client::ClientError> {
     fn first_string(
-        connection: &mut aperture_client::Connection,
-        focus: &str,
+        connection: &mut fjord_client::Connection,
+        sigla: &str,
         depth: usize,
-    ) -> Result<Option<String>, aperture_client::ClientError> {
-        let mut rows = connection.query(focus)?;
+    ) -> Result<Option<String>, fjord_client::ClientError> {
+        let mut rows = connection.query(sigla)?;
         let page = connection.take(&mut rows, depth)?;
         connection.cancel(&mut rows).ok();
 
         Ok(page.iter().rev().find_map(|value| match value {
-            aperture_wire::WireValue::Str(text) => Some(text.clone()),
+            fjord_wire::WireValue::Str(text) => Some(text.clone()),
             _ => None,
         }))
     }
@@ -296,7 +296,7 @@ pub fn named(pivots: &Pivots, name: &str) -> Workload {
         .unwrap_or_else(|| panic!("no workload named `{name}` — the catalogue has moved"))
 }
 
-/// `"` and `\` are the two characters a focus string literal cannot carry raw, and a
+/// `"` and `\` are the two characters a sigla string literal cannot carry raw, and a
 /// sampled path is somebody else's data.
 #[must_use]
 pub fn escape(s: &str) -> String {
@@ -319,15 +319,14 @@ mod tests {
         let pivots = Pivots::new("a/b.py", "encode", "encode");
 
         for workload in catalogue(&pivots) {
-            let mut compilation =
-                aperture_engine::compile::Compilation::new(&workload.focus, &schema);
+            let mut compilation = fjord_engine::compile::Compilation::new(&workload.sigla, &schema);
             let plan = compilation.plan();
 
             assert!(
                 !compilation.diagnostics().has_errors(),
                 "`{}` does not compile:\n{}\n{}",
                 workload.name,
-                workload.focus,
+                workload.sigla,
                 compilation.render_to_string()
             );
             assert!(plan.is_some(), "`{}` has no plan", workload.name);
@@ -350,7 +349,7 @@ mod tests {
         assert!(!flat.directory.is_empty());
     }
 
-    /// Escaping covers exactly the two characters a focus literal cannot carry.
+    /// Escaping covers exactly the two characters a sigla literal cannot carry.
     #[test]
     fn escaping_covers_quotes_and_backslashes() {
         assert_eq!(escape(r#"a"b"#), r#"a\"b"#);
@@ -377,14 +376,14 @@ mod tests {
         };
 
         let dir = tempfile::tempdir().expect("a scratch directory");
-        let db = aperture_store::store::FjallDb::open(dir.path()).expect("a database");
+        let db = fjord_store::store::FjallDb::open(dir.path()).expect("a database");
         let schema = crate::code_index::schema();
 
         let (mut created, mut seen) = (0, 0);
         for emission in corpus.emit(&schema) {
             let mut interns = 0;
             for fact in &emission.facts {
-                let out = aperture_ingest::intern_fact(&db, &schema, fact).expect("it ingests");
+                let out = fjord_ingest::intern_fact(&db, &schema, fact).expect("it ingests");
                 interns += out.seen();
             }
 
@@ -428,7 +427,7 @@ mod tests {
 /// ratio measures a write path nobody has.
 ///
 /// The four fanouts below are what set it. They are the source layer of the built-in
-/// schema, nested exactly as [`aperture_cli::code_index`](crate::code_index) declares
+/// schema, nested exactly as [`fjord_cli::code_index`](crate::code_index) declares
 /// it: a reference names a declaration, which names a module, which names a file. So one
 /// `src.Ref` carries a four-deep subgraph, and the thousandth reference to a declaration
 /// re-sends the whole chain — which is the redundancy, and is *not* a flaw in the
@@ -452,7 +451,7 @@ pub struct Corpus {
 
 /// One predicate's worth of facts, ready to send.
 ///
-/// A block is a run of **one** predicate ([`aperture_wire::block`]), and a producer
+/// A block is a run of **one** predicate ([`fjord_wire::block`]), and a producer
 /// emits per predicate, so this is the unit both the in-process rung and a wire client
 /// hand onward.
 pub struct Emission {

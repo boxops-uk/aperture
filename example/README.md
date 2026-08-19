@@ -1,4 +1,4 @@
-# The example corpus — what the `aperture` shell is an index *of*
+# The example corpus — what the `fjord` shell is an index *of*
 
 The shell (`src/main.rs`) starts with a store full of facts about a small codebase.
 This directory is that codebase, the indexer that reads it, and the facts it produced:
@@ -29,12 +29,12 @@ and a column you can go and look at.
 answer.** The rest — a type's base and interfaces, what a member overrides, a parameter's
 type, which project compiles a file — are questions about *symbols* and about the build,
 and Python's `ast` knows neither. They are filled by
-[`Aperture.Indexer`](../clients/dotnet/Aperture.Indexer/README.md), which has Roslyn and
+[`Fjord.Indexer`](../clients/dotnet/Fjord.Indexer/README.md), which has Roslyn and
 MSBuild to ask. A predicate nobody here fills is an empty keyspace in the shell's scratch
 database and nothing else; `:schema` lists it with no facts under it.
 
 The corpus is Python because its parser ships with it. The exercise is the facts, not
-the front end that finds them. It is deliberately about the same things Aperture is —
+the front end that finds them. It is deliberately about the same things Fjord is —
 a codec, key ranges, a store, a plan, a runner — so a query about it reads as a
 question about this repository.
 
@@ -50,12 +50,12 @@ name instead, the same prefix is a **range**, and the two spellings of one quest
 are worth comparing in the shell:
 
 ```
-focus> :plan X where X = src.SearchByName {name = "encode"..}
-focus> :plan D where D = src.Decl {name = "encode"..}
+sigla> :plan X where X = src.SearchByName {name = "encode"..}
+sigla> :plan D where D = src.Decl {name = "encode"..}
 ```
 
 That is what a derived predicate is for, and writing it by hand here is what a deriver
-does until Aperture can declare one (PLAN phase 8b).
+does until Fjord can declare one (PLAN phase 8b).
 
 `src.Ref` carries the **file the reference is in** alongside the line and column, and that
 file is not the one `to` reaches: a reference and the declaration it names are usually in
@@ -63,7 +63,7 @@ different files, which is the whole reason to record one. A row is a place you c
 `:help`'s find-usages example asks for the file and the line together for that reason.
 
 ```
-focus> {file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = "encode_str"}}
+sigla> {file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = "encode_str"}}
 ```
 
 `index.json` names references **by position**, not by id: a fact id is what a write

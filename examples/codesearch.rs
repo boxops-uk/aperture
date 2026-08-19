@@ -74,9 +74,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aperture_cli::code_index;
-use aperture_client::{Connection, Mode};
-use aperture_schema::schema::Schema;
+use fjord_cli::code_index;
+use fjord_client::{Connection, Mode};
+use fjord_schema::schema::Schema;
 
 /// What the server computes per turn. A page smaller than this is not a cheaper query.
 const CHUNK_ROWS: usize = 256;
@@ -269,8 +269,8 @@ fn classes() -> Vec<Class> {
     ]
 }
 
-/// The focus text for one search.
-fn focus_for(class: &Class, term: &str, prefix: usize) -> String {
+/// The sigla text for one search.
+fn sigla_for(class: &Class, term: &str, prefix: usize) -> String {
     let escaped = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
 
     if class.exact {
@@ -357,10 +357,10 @@ fn run_user(
             class.max_prefix
         };
 
-        let focus = focus_for(class, term, prefix);
+        let sigla = sigla_for(class, term, prefix);
         let started = Instant::now();
 
-        match connection.query(&focus) {
+        match connection.query(&sigla) {
             Ok(mut rows) => {
                 match connection.take(&mut rows, options.page) {
                     Ok(page) => {
@@ -423,7 +423,7 @@ fn sample_terms(options: &Options, schema: &Arc<Schema>) -> Vec<String> {
         .iter()
         .step_by(TERM_STRIDE)
         .filter_map(|value| match value {
-            aperture_wire::WireValue::Str(text) if text.chars().count() >= 2 => Some(text.clone()),
+            fjord_wire::WireValue::Str(text) if text.chars().count() >= 2 => Some(text.clone()),
             _ => None,
         })
         .collect();
@@ -724,7 +724,7 @@ fn parse() -> Result<Options, String> {
 
     options.socket = match (socket, data_dir) {
         (Some(socket), _) => socket,
-        (None, Some(dir)) => dir.join("aperture.sock"),
+        (None, Some(dir)) => dir.join("fjord.sock"),
         (None, None) => return Err("one of --socket or --data-dir is required".to_owned()),
     };
 

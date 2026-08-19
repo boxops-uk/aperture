@@ -1,14 +1,14 @@
 ---
 title: CLI reference
-description: Every command the `aperture` binary has, the address grammar every client shares, and the configuration layering — plus what is deliberately not there yet.
+description: Every command the `fjord` binary has, the address grammar every client shares, and the configuration layering — plus what is deliberately not there yet.
 ---
 
-One binary, `aperture`. Every database-taking command accepts any address form, so "local or
+One binary, `fjord`. Every database-taking command accepts any address form, so "local or
 remote" is a property of the **address**, not of the command — which is why there is no
 `--remote` flag anywhere.
 
 ```text
-aperture
+fjord
 ├── serve                          run the server over a store root
 ├── create   <name>                a new Writable database (the schema is fixed here)
 ├── finish   <name>                seal: Writable → Complete
@@ -30,9 +30,9 @@ Available on every command.
 
 | Flag | Also | Means |
 |---|---|---|
-| `--data-dir <PATH>` | `APERTURE_DATA_DIR` | The store root: where databases live, and what the socket path derives from |
-| `--config <PATH>` | — | A config file. Without it, `./aperture.json` is read if it happens to be there |
-| `--schema-path <PATH>` | `APERTURE_SCHEMA_PATH` | Where a schema's imports are looked for. Repeatable, first match wins |
+| `--data-dir <PATH>` | `FJORD_DATA_DIR` | The store root: where databases live, and what the socket path derives from |
+| `--config <PATH>` | — | A config file. Without it, `./fjord.json` is read if it happens to be there |
+| `--schema-path <PATH>` | `FJORD_SCHEMA_PATH` | Where a schema's imports are looked for. Repeatable, first match wins |
 | `-v`, `--verbose` | — | Say more. Repeatable |
 
 **There are no addressing flags.** `--host` and `--port` were specified once and dropped: the
@@ -55,7 +55,7 @@ One grammar, used by every client — the CLI, the viewer, and the .NET tools:
 | `//code` | The same thing, said explicitly |
 | `box:7280//code` | TCP |
 | `box//code` | TCP, port **7280** |
-| `/run/user/1000/aperture.sock//code` | A Unix socket |
+| `/run/user/1000/fjord.sock//code` | A Unix socket |
 | `./dev.sock//code` | A relative socket path |
 | `box:7280//` | That server, no database — a control session |
 
@@ -69,7 +69,7 @@ Two rules carry it, and both are derived rather than invented:
   `./script`.
 
 What is deliberately absent: **no scheme** (`//` announces where the target is, and nothing needs
-to announce that an Aperture address is one); **no names to look up** (a `where` is always
+to announce that a Fjord address is one); **no names to look up** (a `where` is always
 literal, never an alias resolved through a registry — a named target whose meaning lives in
 ambient machine state is how `kubectl delete` reaches the wrong cluster); **no credentials** (the
 handshake has no credential field, so `user@host` would have been syntax with nothing behind it).
@@ -79,7 +79,7 @@ handshake has no credential field, so `user@host` would have been syntax with no
 1. An address naming **no** target goes to the default one. If nothing is listening: an
    actionable error naming the target. **Never** a silent fallback to opening the directory —
    a server may be holding it.
-2. An address naming a target goes there, and **has no offline half**. `APERTURE_TARGET` and a
+2. An address naming a target goes there, and **has no offline half**. `FJORD_TARGET` and a
    config file's `target` count as naming one.
 3. **The socket is the server-detection mechanism.** There is no other autodetect.
 
@@ -99,27 +99,27 @@ store.
 Layered, every field optional so an unset layer cannot clobber a lower one:
 
 ```text
-default  →  config file  →  environment (APERTURE_…)  →  CLI flag  →  the address argument
+default  →  config file  →  environment (FJORD_…)  →  CLI flag  →  the address argument
 ```
 
 The address is the top layer, because it is the argument.
 
-The file is `./aperture.json`, or `--config <path>` — **the working directory only, with no walk
+The file is `./fjord.json`, or `--config <path>` — **the working directory only, with no walk
 upwards**. Cargo and git search parents, and a connection target inherited from a directory
 nobody was thinking about is the same invisible state a global registry would be, only harder to
 notice. CI writes the file where it runs.
 
 ```json
 {
-  "target": "/run/user/1000/aperture.sock",
-  "data_dir": "/var/lib/aperture"
+  "target": "/run/user/1000/fjord.sock",
+  "data_dir": "/var/lib/fjord"
 }
 ```
 
 | Key | Used by | Notes |
 |---|---|---|
-| `target` | Client commands | Where a server is — a host, a `host:port`, or a socket path. Also `APERTURE_TARGET`. **Never a database name** |
-| `data_dir` | Server, offline lifecycle | The store root. Also `APERTURE_DATA_DIR` |
+| `target` | Client commands | Where a server is — a host, a `host:port`, or a socket path. Also `FJORD_TARGET`. **Never a database name** |
+| `data_dir` | Server, offline lifecycle | The store root. Also `FJORD_DATA_DIR` |
 
 A file may say *where*, never *which database*: that would be the same ambient-state problem one
 level down, where it would decide what a command operates on.
@@ -128,16 +128,16 @@ level down, where it would decide what a command operates on.
 
 | | Default |
 |---|---|
-| Store root | `$APERTURE_DATA_DIR`, else `$XDG_DATA_HOME/aperture`, else `$HOME/.local/share/aperture`, else `./aperture-data` |
-| Socket, root **not** chosen | `$XDG_RUNTIME_DIR/aperture.sock` |
-| Socket, root chosen (`--data-dir`) | `<root>/aperture.sock` |
+| Store root | `$FJORD_DATA_DIR`, else `$XDG_DATA_HOME/fjord`, else `$HOME/.local/share/fjord`, else `./fjord-data` |
+| Socket, root **not** chosen | `$XDG_RUNTIME_DIR/fjord.sock` |
+| Socket, root chosen (`--data-dir`) | `<root>/fjord.sock` |
 
 The runtime-directory default is short **on purpose**: a Unix socket path has a hard limit of 108
 bytes on Linux, and one derived from a deep data directory is a path the kernel refuses.
 
 ---
 
-## `aperture serve`
+## `fjord serve`
 
 Run the server owning a store root. It acquires exclusive ownership of the root and refuses to
 start if another server holds it.
@@ -150,7 +150,7 @@ start if another server holds it.
 | `--commit-per-block` | Commit a write stream's facts once per block instead of once per fact |
 
 ```bash
-aperture --data-dir ./db serve --ready-file ./ready &
+fjord --data-dir ./db serve --ready-file ./ready &
 while [ ! -e ./ready ]; do sleep 0.1; done
 ```
 
@@ -166,11 +166,11 @@ caught at `finish`, which walks every reference, and the database **refuses to s
 re-running the index, never a wrong answer from one that sealed.
 :::
 
-## `aperture create <name>`
+## `fjord create <name>`
 
 ```bash
-aperture --data-dir ./db create code
-aperture --data-dir ./db create people --schema ./people.aps
+fjord --data-dir ./db create code
+fjord --data-dir ./db create people --schema ./people.sigla
 ```
 
 | Flag | Means |
@@ -184,10 +184,10 @@ predicate's storage trees are materialised up front from the schema.
 The directory is `<root>/<name>/<instance>/`, where the instance is a ULID. Content identity does
 not exist yet — it hashes the base facts, so it can only be computed at `finish`.
 
-## `aperture finish <name>`
+## `fjord finish <name>`
 
 ```bash
-aperture --data-dir ./db finish code
+fjord --data-dir ./db finish code
 ```
 
 | Flag | Means |
@@ -209,40 +209,40 @@ Sealing an **empty** database is refused without the flag, because a silently-em
 artifact is the classic CI failure that looks like success. Finishing a Complete database is a
 no-op with a notice; a crash mid-finish leaves it Writable and the command can be re-run.
 
-## `aperture list`
+## `fjord list`
 
 ```bash
-aperture --data-dir ./db list
-aperture --data-dir ./db list --format json
+fjord --data-dir ./db list
+fjord --data-dir ./db list --format json
 ```
 
 ```text
 NAME  INSTANCE                    STATUS    SCHEMA        CONTENT       FACTS  BYTES   CREATED
-code  01M0BNMTQ3RWQFMM755NV1MWA3  complete  08b4c4306f2e  f2c2e86612f5  5200   849350  2026-08-19 00:09:58Z
+code  01M0BNMTQ3RWQFMM755NV1MWA3  complete  b08eea634e86  f2c2e86612f5  5200   849350  2026-08-19 00:09:58Z
 ```
 
 Walks the store root and reads **sidecars only** — it never opens the storage engine, so it works
 while a server holds every database under the root. There is no manifest: the filesystem is the
 catalog, and any index would be rebuildable and never authoritative.
 
-## `aperture describe <name>`
+## `fjord describe <name>`
 
 ```bash
-aperture --data-dir ./db describe code
-aperture --data-dir ./db describe code --schema      # dump the embedded schema itself
-aperture --data-dir ./db describe code --format json
+fjord --data-dir ./db describe code
+fjord --data-dir ./db describe code --schema      # dump the embedded schema itself
+fjord --data-dir ./db describe code --format json
 ```
 
 Prints the sidecar metadata, then every predicate with its type and fingerprint. `--schema` dumps
 the canonical schema source — which is the text `create --schema` would take, so it round-trips.
 
-## `aperture query <name> <query>`
+## `fjord query <name> <query>`
 
 ```bash
-aperture query code 'F where src.File F' --limit 20
-aperture query code 'D where D = src.Decl _' --format jsonl --expand
-aperture query code 'R where R = src.Ref _' --count --timing
-aperture query '/tmp/aperture.sock//code' 'F where src.File F'
+fjord query code 'F where src.File F' --limit 20
+fjord query code 'D where D = src.Decl _' --format jsonl --expand
+fjord query code 'R where R = src.Ref _' --count --timing
+fjord query '/tmp/fjord.sock//code' 'F where src.File F'
 ```
 
 | Flag | Means |
@@ -268,11 +268,11 @@ Three things are worth knowing:
 Rendering is **always** client-side: the wire carries the binary format and the server never
 produces JSON.
 
-## `aperture shell [<name>]`
+## `fjord shell [<name>]`
 
 ```bash
-aperture --data-dir ./db shell code     # the product shell, over the wire
-aperture shell                          # the embedded demo, over a scratch database
+fjord --data-dir ./db shell code     # the product shell, over the wire
+fjord shell                          # the embedded demo, over a scratch database
 ```
 
 With a database it is the product shell and always speaks the protocol, even against a local
@@ -282,13 +282,13 @@ thing no wire client can do.
 
 Full command list: [Shell reference](shell.html).
 
-## `aperture schema …`
+## `fjord schema …`
 
 ```bash
-aperture schema check ./code.aps
-aperture schema fingerprint ./code.aps [--format json] [--canonical]
-aperture schema diff before.aps after.aps
-aperture schema diff before.aps code           # a file against a database
+fjord schema check ./code.sigla
+fjord schema fingerprint ./code.sigla [--format json] [--canonical]
+fjord schema diff before.sigla after.sigla
+fjord schema diff before.sigla code           # a file against a database
 ```
 
 `check` walks the import closure, unions the blocks and lowers the result — so it answers
@@ -301,10 +301,10 @@ when two ends disagree about a schema they believe they share.
 
 `diff` takes schema files **or database names** in any combination.
 
-## `aperture db rm <name>`
+## `fjord db rm <name>`
 
 ```bash
-aperture --data-dir ./db db rm scratch -y
+fjord --data-dir ./db db rm scratch -y
 ```
 
 Routed through the server if it holds the database (the server closes and deletes); offline, it
@@ -316,8 +316,8 @@ Every failure is one sentence naming the tool, except a compiler diagnostic, whi
 it was rendered — with the code, the caret and colour when stderr is a terminal.
 
 ```text
-aperture: could not connect to the Aperture server at /run/user/1000/aperture.sock
-           is one running? `aperture serve` starts one over this data directory
+fjord: could not connect to the Fjord server at /run/user/1000/fjord.sock
+           is one running? `fjord serve` starts one over this data directory
 ```
 
 ```text
@@ -334,10 +334,10 @@ Named here rather than left to be discovered. The operations design specifies al
 
 | Command | Status |
 |---|---|
-| `aperture write <db> [FILE…]` | **Not built.** Facts arrive over the wire from a producer; the file format and block encoding exist, the splitter and pipeline are not wired to a command |
-| `aperture db backup` / `db restore` | Not built. A Complete database is a directory — `tar` it |
-| `aperture db verify` | Not built. Identity is recorded at `finish`; recomputing and comparing it is specified |
-| `aperture completions <shell>` | Not built |
+| `fjord write <db> [FILE…]` | **Not built.** Facts arrive over the wire from a producer; the file format and block encoding exist, the splitter and pipeline are not wired to a command |
+| `fjord db backup` / `db restore` | Not built. A Complete database is a directory — `tar` it |
+| `fjord db verify` | Not built. Identity is recorded at `finish`; recomputing and comparing it is specified |
+| `fjord completions <shell>` | Not built |
 
 Two more are specified and absent from the sidecar rather than from the CLI: **provenance** (what
 the database was built from) and a freeform **properties** map. Both are safe under the

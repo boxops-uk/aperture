@@ -1,20 +1,20 @@
 # 2. The tuple codec
 
-> [Aperture design book](../README.md) · [← 1. Concepts](01-concepts.md) · **Chapter 2** · [3. The storage model →](03-storage-model.md)
+> [Fjord design book](../README.md) · [← 1. Concepts](01-concepts.md) · **Chapter 2** · [3. The storage model →](03-storage-model.md)
 
 The **tuple codec** turns typed values into bytes. It is the foundation the entire storage
 model stands on, and it has three properties that must all hold at once: encodings are
 **order-preserving**, **self-delimiting**, and (once data exists) **frozen**. This chapter
 explains each, why it matters, and the marker table that implements them.
 
-Code: `crates/aperture-encoding/src/tuple.rs`. Tests there are the project's densest — the codec is the most
+Code: `crates/fjord-encoding/src/tuple.rs`. Tests there are the project's densest — the codec is the most
 property-tested subsystem, for the reasons below.
 
 > **Naming.** This is the **tuple codec** (FoundationDB-*inspired*, not FDB-compatible —
 > don't call it "FDB"). It encodes both keys and values (see
 > [chapter 3](03-storage-model.md)). A separate **transport/wire codec** applies to rows
 > *after* they leave the executor and carries none of these constraints — see
-> [Operations](aperture-cli-design.md) and [open decisions](open-decisions.md).
+> [Operations](fjord-cli-design.md) and [open decisions](open-decisions.md).
 
 ---
 
@@ -45,7 +45,7 @@ limited key sizes, and now documents a prefix iterator as returning facts "in no
 order". *Evidence:* [the Glean comparison](glean-comparison.md).
 
 So I1 is **a divergence of this design's own, and the divergent half of it is currently
-unspent**: `ResidualOp` (`crates/aperture-engine/src/plan.rs`) has no ordering arm, and `<` and `>` are not
+unspent**: `ResidualOp` (`crates/fjord-engine/src/plan.rs`) has no ordering arm, and `<` and `>` are not
 lexer tokens, so an order comparison does not even lex. The bet is kept because it costs
 almost nothing to hold and cannot be retrofitted — the marker table freezes the moment data
 exists ([I3](invariants.md#i3)), and the [format stamp](03-storage-model.md#the-format-stamp-i15)
@@ -142,7 +142,7 @@ gets the same ordering argument *locally*, with no dependence on what follows.
 The rest of the string encoding is genuine convergence, arrived at twice: escape NUL,
 terminate, sort by `memcmp` — and build a prefix seek by encoding the prefix and **dropping the
 terminator**, which is what makes `"al"..` a byte range rather than a filter
-(`crates/aperture-engine/src/flatten.rs`; Glean emits the same trick).
+(`crates/fjord-engine/src/flatten.rs`; Glean emits the same trick).
 
 ### Bounded nesting
 

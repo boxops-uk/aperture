@@ -51,7 +51,7 @@ A level's source count is what distinguishes three language features:
 | Sources | Means | Cost in the driver |
 |---|---|---|
 | 0 | `never` — the empty relation | Exhausted the moment it is entered |
-| 1 | An ordinary scan | Every level focus compiles today |
+| 1 | An ordinary scan | Every level sigla compiles today |
 | N | A disjunction, one branch per source | Tried in order, rows concatenated |
 
 They are one node rather than three because the driver's job is identical in all three — open

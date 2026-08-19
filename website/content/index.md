@@ -1,11 +1,11 @@
 ---
-title: Aperture DB
+title: Fjord DB
 description: An embedded, immutable fact database with a typed, Datalog-flavoured query language — and a query engine that can suspend to a handful of bytes and resume exactly.
 ---
 
-Aperture stores **facts**: typed records, grouped by **predicate**, each with a stable
+Fjord stores **facts**: typed records, grouped by **predicate**, each with a stable
 identity. You give it a schema, write facts into a database, seal the database, and from
-then on only read it. Queries are written in **focus** — a small, typed, Datalog-flavoured
+then on only read it. Queries are written in **sigla** — a small, typed, Datalog-flavoured
 language — compiled to a nested-loop plan and run by a pull-based machine that can stop
 mid-result, hand you a few bytes, and pick up exactly where it left off.
 
@@ -18,7 +18,7 @@ number in these docs was measured against.
     <span>Build the binaries, create a database, serve it, ask it something.</span></a>
   <a class="card" href="walkthrough.html"><b>Walkthrough →</b>
     <span>A real session, end to end, with the output it actually printed.</span></a>
-  <a class="card" href="query-language.html"><b>focus reference →</b>
+  <a class="card" href="query-language.html"><b>sigla reference →</b>
     <span>Every construct the language has, with the rows each one returns.</span></a>
   <a class="card" href="query-lifecycle.html"><b>A query, step by step →</b>
     <span>From the text you type to the rows that come back — every layer it crosses.</span></a>
@@ -67,7 +67,7 @@ See [Status & roadmap](status.html) for the honest, per-phase list.
 <span class="pill ok">codec</span>
 <span class="pill ok">executor + resume</span>
 <span class="pill ok">fjall store</span>
-<span class="pill ok">focus front end</span>
+<span class="pill ok">sigla front end</span>
 <span class="pill ok">schema DSL</span>
 <span class="pill ok">wire protocol</span>
 <span class="pill ok">server + client</span>
@@ -83,7 +83,7 @@ See [Status & roadmap](status.html) for the honest, per-phase list.
 
 A schema is a file. Field order is key order, and key order is the index design:
 
-```aps
+```schema
 schema demo {
   predicate Person : string
   predicate Knows  : { from : Person, to : Person }
@@ -93,7 +93,7 @@ schema demo {
 
 A query is a head pattern, `where`, and a list of statements:
 
-```focus
+```sigla
 {a = X, b = Y} where demo.Knows {from = X, to = Y}
 ```
 
@@ -115,7 +115,7 @@ a producer writes:
 
 - **New here?** [Getting started](getting-started.html), then the
   [Walkthrough](walkthrough.html).
-- **Writing queries?** [focus query language](query-language.html) and the
+- **Writing queries?** [sigla query language](query-language.html) and the
   [Shell reference](shell.html).
 - **Designing a schema?** [Schema language](schema-language.html) — read the part about
   field order twice.
@@ -126,7 +126,7 @@ a producer writes:
 - **Operating it?** [CLI reference](cli.html) and [Operations](operations.html).
 
 :::note About these docs
-This site is generated from the design record in the Aperture repository — the design
+This site is generated from the design record in the Fjord repository — the design
 book in `docs/`, the invariant registry, the phase plan and the measured findings. Where
 this site says something is built, the repository has a test that says so; where
 something is not built, it is listed as not built rather than described as if it were.

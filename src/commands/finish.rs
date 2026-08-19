@@ -1,8 +1,8 @@
-//! `aperture finish <db>`.
+//! `fjord finish <db>`.
 
 use std::path::Path;
 
-use aperture_store::catalog::Finished;
+use fjord_store::catalog::Finished;
 
 use crate::{
     CliError, code_index,
@@ -36,7 +36,7 @@ pub fn run(root: &Path, target: &Target, allow_zero_facts: bool) -> Result<Finis
         }
 
         Route::Local(catalog, _lock) => {
-            let selector = aperture_store::catalog::Selector::parse(&target.database)?;
+            let selector = fjord_store::catalog::Selector::parse(&target.database)?;
             Ok(catalog.finish(&selector, &code_index::schema(), allow_zero_facts)?)
         }
     }

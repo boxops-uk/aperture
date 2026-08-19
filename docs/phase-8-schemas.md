@@ -1,6 +1,6 @@
 # Phase 8 — Schemas: the DSL, imports, and identity
 
-> [Aperture design book](../README.md) · **proposed phase plan**, not yet folded into
+> [Fjord design book](../README.md) · **proposed phase plan**, not yet folded into
 > [`PLAN.md`](../PLAN.md). Written on the per-phase template so it can be moved there whole
 > once accepted — the same standing [`phase-10-capacity.md`](phase-10-capacity.md) had.
 >
@@ -13,7 +13,7 @@
 > `if/glean.thrift`, `rts/fact.h`. That reading **reversed D1's recommendation** and roughly
 > halved D3's cost. Where this file quotes Glean it quotes those files; where it diverges it
 > says so. (Note that `code/glean` in this repo is a different thing entirely — an early
-> Rust query-language prototype, the ancestor of `focus`, with no schema system in it.)
+> Rust query-language prototype, the ancestor of `sigla`, with no schema system in it.)
 
 **Goal.** Parse schemas, so predicate and type definitions stop being hardcoded Rust — a
 separate schema DSL feeding the same type model the query compiler already uses — and give a
@@ -24,18 +24,18 @@ can compare.
 permissive-early grammar discipline, and `lelwel`).
 
 **Design of record:** [chapter 6](06-types-and-schema.md) for the type model, canonical form,
-fingerprints, subset containment and the freeze; [operations §7](aperture-cli-design.md) and
+fingerprints, subset containment and the freeze; [operations §7](fjord-cli-design.md) and
 §5's `schema check` / `fingerprint` / `diff` for syntax, imports and the commands. **Read
 those; this file does not restate them.**
 
 **Invariants in scope:**
 - *makes green:* [I13](invariants.md#i13) — `ingest_rejects_incompatible_schema` (which moved
-  to `aperture-client/tests/i13_embedded_schema.rs` to be runnable at all) and
+  to `fjord-client/tests/i13_embedded_schema.rs` to be runnable at all) and
   `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint`;
   [I10](invariants.md#i10) —
   `schema::discriminants_append_only`, once unions are represented. These three are the last
   pending entries in the coverage ledger, and their bodies are already written as the
-  specification (`crates/aperture-schema/src/schema.rs`).
+  specification (`crates/fjord-schema/src/schema.rs`).
 - *upholds:* [I3](invariants.md#i3) (a union marker is **appended**, never renumbered),
   [I11](invariants.md#i11) (a predicate id must fit the 24-bit fact-id tag — and see D1,
   which is a larger claim than width), [I1](invariants.md#i1) (a union's discriminant is part
@@ -97,7 +97,7 @@ Glean splits the two jobs completely:
   end. Existing Pids never move.
 - **Serialized facts do carry the Pid** (`rts/fact.h`: `serialize(binary::Output&, Pid type,
   Clause)`), and a `Batch` carries a `SchemaId` so the receiver can tell which schema the
-  numbers belong to. Glean therefore has Aperture's portability problem too, and answers it
+  numbers belong to. Glean therefore has Fjord's portability problem too, and answers it
   by naming the schema rather than by making the number global.
 
 #### Settled: Glean's split
@@ -119,7 +119,7 @@ What makes this cheap is a property of the format that is easy to miss: a predic
 the write path in **exactly one place**. `WireFact::predicate` is *not encoded* — a top-level
 fact takes its predicate from the block header framing it, and a nested one from the
 `PredicateTy::Fact(p)` of the field it sits in, "so writing it into the fact as well would be
-a second source of truth" (`aperture-wire::value`). `block` already says the id is "paid
+a second source of truth" (`fjord-wire::value`). `block` already says the id is "paid
 once" per run of facts. So the change is 4 bytes to roughly 10, once per block, against
 payloads of hundreds to thousands of facts.
 
@@ -159,7 +159,7 @@ carries, and the C# side holds one `ulong` it does not compute.
 
 **Recommendation, and one part of it was wrong until Glean was read.**
 
-- **Version the algorithm** in `APERTURE_META`, and treat the **stored** fingerprint as
+- **Version the algorithm** in `FJORD_META`, and treat the **stored** fingerprint as
   authoritative — Glean's answer after it hit exactly this (`glean/if/internal.thrift:24-33`).
 - **Specify the canonical form as a byte string**, not as "a hash over the schema" — done at
   8.3, and asserted literally rather than by round-trip.
@@ -173,10 +173,10 @@ carries, and the C# side holds one `ulong` it does not compute.
   **seven** languages beside it (`Cpp, Haskell, Python, OCaml, Rust, HackJson, Thrift`). A
   client neither hashes nor hand-writes shapes.
 
-#### What Aperture should do instead
+#### What Fjord should do instead
 
-**Now (8.4): a client carries the number, it does not derive it.** ✅ `aperture schema
-fingerprint` prints it; `Aperture.Demo` and `Aperture.Indexer` each hold it as a `const ulong`
+**Now (8.4): a client carries the number, it does not derive it.** ✅ `fjord schema
+fingerprint` prints it; `Fjord.Demo` and `Fjord.Indexer` each hold it as a `const ulong`
 and assert it at the handshake. The C# FNV is gone. A stale constant fails the handshake
 loudly, and — better — fails `the_dotnet_clients_schema_is_this_one` without `dotnet` or a
 running server, because the golden records the constant and the Rust side computes what it
@@ -247,10 +247,10 @@ and 8b is what would make it pay.
    D1, and the same reason.
 2. **The unknown tag.** Chapter 6 flags that I10 does not say what a decoder does with a
    discriminant it has never seen, and that a fact file outlives the schema that wrote it.
-   Per errors-not-panics it must be an `ApertureError`. **Recommendation:** decode failure by
+   Per errors-not-panics it must be an `FjordError`. **Recommendation:** decode failure by
    name (`UnknownDiscriminant { predicate, tag }`), not a synthetic `unknown` alternative —
    Glean needs one because it projects between schemas at query time, and
-   [I13](invariants.md#i13) means Aperture never has two schemas to project between.
+   [I13](invariants.md#i13) means Fjord never has two schemas to project between.
 3. **The marker.** `0x52`, appended — `MARK_FACT_REF` is `0x51` and the table stops there.
    Appending is what [I3](invariants.md#i3) permits; the golden marker test is edited
    deliberately. Note for [I1](invariants.md#i1): a union sorts *after* every other type, and
@@ -321,12 +321,12 @@ Operations §7 settles this; the build is a transcription:
   is genuine redeclaration: two different definitions of one fully-qualified name, as against
   the same file reached twice;
 - roots come from `schema_path`, first-match-wins — a new config key, added at 8.5
-  (`--schema-path`, `APERTURE_SCHEMA_PATH`), with an entry file's **own directory searched
+  (`--schema-path`, `FJORD_SCHEMA_PATH`), with an entry file's **own directory searched
   first** so a self-contained directory of schemas needs no configuration at all;
 - transitive visibility is accepted and documented rather than fought.
 
-**Built at 8.5** as `aperture_schema::syntax::resolve`. Two things it decides that §7 left to a
-resolver: a namespace is a path (`lang.rust` → `lang/rust.aps`), and each file is **parsed on
+**Built at 8.5** as `fjord_schema::syntax::resolve`. Two things it decides that §7 left to a
+resolver: a namespace is a path (`lang.rust` → `lang/rust.sigla`), and each file is **parsed on
 its own before the union is lowered** — so a syntax error points at the file it is in, while a
 cross-file reference and a cross-file redeclaration are still answered over the union, which is
 where they are visible. A schema with no imports is lowered under its own name with its own line
@@ -350,7 +350,7 @@ before anything depends on it, and unions come last because they are the widest 
   and D7 are one paragraph each to write into [chapter 6](06-types-and-schema.md).
 - **8.2 — Lexer, grammar, corpus.** Parse the surface, including what is deferred, each with
   its code. *Done when* the schema corpus parses as classified, the way
-  `aperture_engine::corpus` gates the query one.
+  `fjord_engine::corpus` gates the query one.
 - **8.3 — Lower to `Schema`, and identity.** The canonical form as a specified byte string,
   per-predicate and whole-schema fingerprints, D1's id validation, D3's cycle answer. *Done
   when* order-independence is green, **with its negative
@@ -415,10 +415,10 @@ before anything depends on it, and unions come last because they are the widest 
   and field order is what decides which questions are seeks. What is left of the module is a
   *default* schema rather than a definition: the one you get when `create` was not given a
   path — which is what it is since 8.4, and the reason the module survives at all.
-- **Both .NET schema statements and the golden.** ✅ `Aperture.Indexer/CodeIndex.cs` and
-  `Aperture.Demo/Program.cs` state the schema independently *on purpose* — that is what makes
+- **Both .NET schema statements and the golden.** ✅ `Fjord.Indexer/CodeIndex.cs` and
+  `Fjord.Demo/Program.cs` state the schema independently *on purpose* — that is what makes
   the byte-identical golden meaningful. What they must **not** do is reimplement the
-  fingerprint: they deleted their FNV and carry the number `aperture schema fingerprint`
+  fingerprint: they deleted their FNV and carry the number `fjord schema fingerprint`
   prints, per D2. One constant per client, the shapes they already had, no port of the
   canonical form — and the golden's blocks did not move, which is what says this changed
   identity and not the wire format.
@@ -448,4 +448,4 @@ before anything depends on it, and unions come last because they are the widest 
 ---
 
 > [← 6. Types & schema](06-types-and-schema.md) · [Index](../README.md) ·
-> [Operations →](aperture-cli-design.md)
+> [Operations →](fjord-cli-design.md)

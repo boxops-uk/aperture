@@ -1,13 +1,13 @@
 # 4. The executor (the VM)
 
-> [Aperture design book](../README.md) · [← 3. The storage model](03-storage-model.md) · **Chapter 4** · [5. Suspend & resume →](05-resume.md)
+> [Fjord design book](../README.md) · [← 3. The storage model](03-storage-model.md) · **Chapter 4** · [5. Suspend & resume →](05-resume.md)
 
 The executor is a **pull-based virtual machine** that runs a `Plan` as a nested loop, one
 row at a time. This chapter covers the plan IR it consumes, the register file that holds
 bound rows, the `enumerate` driver, and the four invariants that make the hot path fast and
 the machine suspendable. Suspend/resume itself is [chapter 5](05-resume.md).
 
-Code: `crates/aperture-engine/src/plan.rs` (types) and `crates/aperture-engine/src/iter.rs` (the machine).
+Code: `crates/fjord-engine/src/plan.rs` (types) and `crates/fjord-engine/src/iter.rs` (the machine).
 
 ---
 
@@ -36,7 +36,7 @@ ordering, with nothing to say which wins.
 
 Glean compiles to the same shape — one `seek`/`next` level per fact generator, statement order
 becoming loop nesting (`glean/db/Glean/Query/Codegen.hs:994-1042`) — but it *emits* that
-nesting as bytecode, where Aperture emits an ordered `[Step]` for a driver to walk.
+nesting as bytecode, where Fjord emits an ordered `[Step]` for a driver to walk.
 Convergence, not lineage; the [comparison ledger](glean-comparison.md) is where the two are
 told apart.
 
@@ -102,7 +102,7 @@ enum Source {
 
 **The count is the construct.** Zero sources is the **empty relation** — the level is
 exhausted the moment it is entered, which is what `never` means. One is an ordinary scan,
-which is every level focus compiles today. Many is a **disjunction**, one branch per source.
+which is every level sigla compiles today. Many is a **disjunction**, one branch per source.
 They are one node rather than three because `enumerate`'s job is identical in all three —
 open a source, drain it, move to the next, back up when there is no next — so `never` needs
 no arm of its own and no case in the driver. The two ways a level can end are one arm each:
@@ -329,10 +329,10 @@ walked on demand and *not* cached — the cache never heap-spills. This is part 
 The cache itself is a cost of **interpreting** rather than compiling, and worth naming as one:
 a compiler emits a single straight-line forward pass with exactly the `skip`s that query needs
 and never re-walks a row, which is why Glean has no equivalent structure at all
-(`glean/db/Glean/Query/Codegen.hs:1470-1585`). Aperture pays a 16-word inline memo instead of a
+(`glean/db/Glean/Query/Codegen.hs:1470-1585`). Fjord pays a 16-word inline memo instead of a
 code generator.
 
-**Within a scan level Aperture allocates nothing and Glean allocates per row; per descent the
+**Within a scan level Fjord allocates nothing and Glean allocates per row; per descent the
 two are even.** Glean's `ResetOutput` move-assigns a fresh `binary::Output` over the old one,
 freeing the old buffer (`glean/rts/bytecode/subroutine.cpp:97-99`,
 `glean/rts/binary.h:315-321,493-497`), and the buffer carries a 23-byte small-string
@@ -412,7 +412,7 @@ data here and emitted as code there, which is what the next section is about.
 ### Why a state machine and not recursion — [I7](invariants.md#i7)
 
 The obvious way to write a nested loop is native recursion (or nested iterators, or
-`concatMap`). Aperture deliberately does **not**:
+`concatMap`). Fjord deliberately does **not**:
 
 > **I7 — the executor is a defunctionalised state machine, on purpose.** The `enumerate`
 > driver + the frame stack are the explicit reification of recursive `concatMap`, chosen so
@@ -444,7 +444,7 @@ word, every `binary::Output` buffer, and a second `traverse` subroutine
 travels inside the token, the token is **version-locked to the bytecode ABI**
 (`lowestSupportedVersion == version == 15`,
 `glean/bytecode/def/Glean/Bytecode/Generate/Instruction.hs:86-96`), so any bytecode change
-invalidates every in-flight continuation. Aperture's [`Cursor`](05-resume.md) is one detached
+invalidates every in-flight continuation. Fjord's [`Cursor`](05-resume.md) is one detached
 row per open level — roughly two orders of magnitude smaller, plan-shaped rather than
 code-shaped, and therefore able to survive an engine change. The decision stands unchanged; the
 reason is token size and token stability, not impossibility.
@@ -459,7 +459,7 @@ trait.
 
 **The small token has a recurring price, and it is paid one construct at a time.** Because a VM
 saves its whole activation wholesale, disjunction and conditionals need *zero* new continuation
-state — a return address is just another register it was saving anyway. In Aperture each such
+state — a return address is just another register it was saving anyway. In Fjord each such
 feature must **extend** the `Cursor` and re-prove [I4](invariants.md#i4)
 ([`PLAN.md`](../PLAN.md) Phase 6b). Resume state that is small and stable is bought with
 per-feature resume work; that is the honest counterweight to a token measured in tens of bytes,
@@ -481,7 +481,7 @@ enumerate(init, step, cancel) -> Iteratee<A>
 The executor is the **enumerator** (producer); the `step` is the **iteratee** (consumer —
 projection, serialisation, backpressure). A `Row` is a borrowed, one-step-lived view; the
 consumer must copy anything it keeps. This seam is exactly what the wire protocol's
-portals, backpressure, and cancellation are built on ([Operations](aperture-cli-design.md))
+portals, backpressure, and cancellation are built on ([Operations](fjord-cli-design.md))
 — chapter 5 covers `Stream::Suspend`/`Iteratee::Suspended`.
 
 ---

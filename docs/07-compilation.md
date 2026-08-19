@@ -1,15 +1,15 @@
 # 7. Compilation
 
-> [Aperture design book](../README.md) · [← 6. Types & schema](06-types-and-schema.md) · **Chapter 7** · [8. Operations →](aperture-cli-design.md)
+> [Fjord design book](../README.md) · [← 6. Types & schema](06-types-and-schema.md) · **Chapter 7** · [8. Operations →](fjord-cli-design.md)
 
-This is the **front end**: how focus text becomes the [`Plan` IR](04-executor.md) the
+This is the **front end**: how sigla text becomes the [`Plan` IR](04-executor.md) the
 executor runs. It's the other half of the system from chapters 3–5, and the two halves meet
 only at the `Plan`. Covered here: the three tree representations and why each exists, the
 `lex → parse → typecheck → flatten → reorder` pipeline, sargeability, the safety-vs-ordering
 distinction, and **derived facts** — the one place a feature is allowed to change the core
 machine.
 
-> **Status.** The whole pipeline is live in `crates/aperture-engine/`: `lex → parse → lower → typecheck`
+> **Status.** The whole pipeline is live in `crates/fjord-engine/`: `lex → parse → lower → typecheck`
 > ([`PLAN.md`](../PLAN.md) Phase 2), the compilation driver (Phase 3), and **flatten →
 > reorder** (`flatten.rs`, `reorder.rs`, Phase 4) — so `Compilation::plan` produces a `Plan`
 > the executor runs. Two of the three tree representations exist: the boxed ergonomic AST
@@ -52,7 +52,7 @@ fields are sorted `[(Symbol, T)]` slices everywhere, never `HashMap` ([chapter
 
 ### The typed tree prints back to source
 
-`aperture_engine::print` renders the `SyntaxTree` store as focus text, and it is the inverse of
+`fjord_engine::print` renders the `SyntaxTree` store as sigla text, and it is the inverse of
 `parse → lower`: **`parse ∘ print` is the identity on trees.** That is not a convenience — it is
 what lets the front end be *property-tested* rather than only checked against hand-written
 snippets. Generate a tree, print it, parse it, compare; the corpus then says which syntax is
@@ -61,7 +61,7 @@ acceptable, and the round-trip says the pipeline is faithful across all of it
 
 The other direction does not hold, and is not claimed: printing normalises whitespace, drops
 redundant parentheses, and picks its own string escapes. The comparison is therefore between
-*canonical forms* of trees — a separate s-expression rendering, deliberately not focus syntax,
+*canonical forms* of trees — a separate s-expression rendering, deliberately not sigla syntax,
 so the property cannot be satisfied by the printer agreeing with itself.
 
 The whole difficulty is parentheses: printing has to re-insert exactly the ones the grammar's
@@ -101,7 +101,7 @@ lex → parse → typecheck → flatten → reorder → Plan
 
 ### lex / parse — permissive early
 
-The grammar is a **`lelwel` grammar** (`crates/aperture-engine/src/grammar.llw`, compiled by `build.rs`;
+The grammar is a **`lelwel` grammar** (`crates/fjord-engine/src/grammar.llw`, compiled by `build.rs`;
 `parser.rs` is the generated-parser glue). The governing principle is **permissive grammar,
 narrow later**:
 
@@ -216,12 +216,12 @@ Two consequences worth stating, because both look like details and are not:
   not that field's, so a constant record containing one is not a constant at all
   (`Const::Prefix` inside a record is refused, and the field falls back to residuals).
 
-**Reading the decision back.** `aperture_engine::print::plan` — what `:plan` shows — renders a seek as
+**Reading the decision back.** `fjord_engine::print::plan` — what `:plan` shows — renders a seek as
 the key it seeks, one entry per key field in the same declared order the table above is walked
 in, so which row of that table each field took is visible without reasoning about it:
 
 ```
-focus> :plan X where X = src.SearchByName {name = "encode"..}
+sigla> :plan X where X = src.SearchByName {name = "encode"..}
   r0 <- src.SearchByName seek[name = "encode".., to = _]
   head r0#
 ```
@@ -253,12 +253,12 @@ runnable at the next, and emitting one can never strand another. If any valid or
 greedy finds it. That is a completeness claim, and it is property-tested against `antichains()`
 as an independent check — the two must agree on *which* graphs are orderable.
 
-**Completeness is Aperture's own, and Glean cannot claim it.** Glean's `Reorder` is two passes
+**Completeness is Fjord's own, and Glean cannot claim it.** Glean's `Reorder` is two passes
 with different jobs, and the second — the one that checks a statement's bindings can actually be
 compiled — queues a statement it cannot place, tries the next, and, having got all the way
 through the list, **gives up** (`glean/db/Glean/Query/Reorder.hs:575-639`). The difference is
 **nested statement groups** from negation and disjunction, whose own reads depend on how their
-branches are ordered — which is exactly where monotonicity fails. focus has none until Phase 6b,
+branches are ordered — which is exactly where monotonicity fails. sigla has none until Phase 6b,
 so this is a claim to re-prove there rather than one to assume survives.
 
 **A query whose written order already works is returned unchanged**, so this is not a second
@@ -287,7 +287,7 @@ its pipeline is over *derived-predicate* dependencies at schema load, in a diffe
 set — emit every `X = pred …`
 whose `X` is already bound, add whatever that binds, repeat, because such a statement is O(1) and
 unlocks more — then a greedy pass over the tiers, then back to chasing. Beyond the tiers, Glean
-has and focus does not: lookup-chasing itself, any cost model at all, an `Ordered`/`Floating` tag
+has and sigla does not: lookup-chasing itself, any cost model at all, an `Ordered`/`Floating` tag
 distinguishing statements a person put in an order from ones flattening invented, a *semantic*
 rule requiring a negation's non-locals be bound before it runs, synthesis of a generator for an
 otherwise-unbound variable, and a whole optimiser stage
@@ -521,7 +521,7 @@ question*.
 
 Which leaves the variable that is bound **nowhere else**. Its standard reading is existential —
 `!test.Edge {from = X, to = Y}` means "no edge out of `X` at all" — and that is the opposite of
-what every other statement in focus does with a name. The two readings are indistinguishable at a
+what every other statement in sigla does with a name. The two readings are indistinguishable at a
 glance and the existential one is already spellable as `_`, so flatten refuses rather than
 choosing: `reject/unbound-variable`, with a message naming the wildcard.
 
@@ -636,7 +636,7 @@ restriction), `reject/not-a-generator` (a statement that matches nothing), and
 ## The compilation driver
 
 The phases don't thread their own state; they run through one **compilation context**
-(`aperture_engine::compile::Compilation`) that carries the shared plumbing:
+(`fjord_engine::compile::Compilation`) that carries the shared plumbing:
 
 - **One diagnostics sink** for the whole pipeline (parse/typecheck/flatten), accumulating
   errors and **continuing** rather than failing fast (permissive-grammar-narrow-later needs
@@ -727,7 +727,7 @@ The word "derived" covers two features that share a name and almost nothing else
 derivation is macro **inlining**: a derived predicate's defining query is expanded at the call
 site and compiled as part of the caller (`glean/db/Glean/Query/Flatten.hs:264-290`), so no
 derived value ever exists as a *binding* for a continuation to carry, and no purity rule is
-needed to say what happens to one across a suspend. I14 exists because Aperture resumes from
+needed to say what happens to one across a suspend. I14 exists because Fjord resumes from
 **bytes** ([chapter 5](05-resume.md)) — the question it answers is one only a bytes-only cursor
 asks.
 
@@ -749,7 +749,7 @@ than two (`DeriveOnDemand | DerivedAndStored | DeriveIfEmpty`,
 
 **One hazard is worth taking from Glean even though its mechanism is not.** `captureKey`
 (`glean/db/Glean/Query/Flatten.hs:549-586`) is not a derivation mechanism at all — it rewrites
-`X = pred pat` so the **client** gets the key back without a second fetch, which focus needs
+`X = pred pat` so the **client** gets the key back without a second fetch, which sigla needs
 nothing for, because [I5](invariants.md#i5) already puts the whole row in the register. What its
 `Note [query result]` records is the trap underneath: where the key cannot be captured and a real
 fetch is required, that fetch has to be emitted **last**, because the fact may be produced by a
@@ -818,7 +818,7 @@ top-level record itself and emits field by field, so a whole key never reaches `
 because `key` decomposes a whole key into its fields before any of this. Both halves are
 invisible from the fold's own code, so both are pinned by tests.
 
-**What is left unlowered.** Nothing in focus currently produces a `Step::Derive`: a constant
+**What is left unlowered.** Nothing in sigla currently produces a `Step::Derive`: a constant
 folds, and anything else — `Y = X.name`, or `{a = 1, b = Y}` with `Y` captured — is a value that
 differs per row. `Y = X.name` would most likely become another *substitution* (an alias for a
 field of `X`'s register) rather than a value slot, so the first real producer is likely a
@@ -841,12 +841,12 @@ requires constants all the way down. So a stored derived predicate will be syste
 than the query a person would have written by hand until something performs that substitution,
 which is the failure Glean built `Opt` for.
 
-Two things follow, and the second is a trap in advance. Aperture's constant fold is a **proper
+Two things follow, and the second is a trap in advance. Fjord's constant fold is a **proper
 subset** of that stage — `Opt` would fold `X = 42` as one case of general substitution, not as a
 feature. And the pass Glean needs *because* it substitutes, `BindOrder.hs`, is legitimately
 unnecessary here for a reason Glean states about itself: it exists only because substitution and
 statement floating invalidate the bind-versus-match decisions its typechecker already made
-(`glean/db/Glean/Query/BindOrder.hs:38-51`). focus decides capture-versus-read once, at collect
+(`glean/db/Glean/Query/BindOrder.hs:38-51`). sigla decides capture-versus-read once, at collect
 time, and nothing later disturbs it — which stops being true the day an `Opt`-shaped stage lands.
 
 ---
@@ -864,4 +864,4 @@ The front end *enforces* invariants owned elsewhere rather than owning many itse
 
 ---
 
-> **Reading path:** [← 6. Types & schema](06-types-and-schema.md) · **7. Compilation** · [8. Operations →](aperture-cli-design.md)
+> **Reading path:** [← 6. Types & schema](06-types-and-schema.md) · **7. Compilation** · [8. Operations →](fjord-cli-design.md)

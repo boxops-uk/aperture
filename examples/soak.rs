@@ -7,7 +7,7 @@
 //! gracefully or fall over.
 //!
 //! ```text
-//! cargo run --release --example soak -- --data-dir /tmp/ap-bench --clients 64 --seconds 20
+//! cargo run --release --example soak -- --data-dir /tmp/fj-bench --clients 64 --seconds 20
 //! ```
 //!
 //! # What it does
@@ -45,18 +45,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aperture_cli::{
+use fjord_cli::{
     code_index,
     workload::{self, Pivots},
 };
-use aperture_client::{Connection, Mode};
-use aperture_schema::schema::Schema;
+use fjord_client::{Connection, Mode};
+use fjord_schema::schema::Schema;
 
 /// One kind of query a client might ask, and how often.
 struct Class {
     name: &'static str,
     weight: u32,
-    focus: String,
+    sigla: String,
 }
 
 struct Options {
@@ -263,7 +263,7 @@ fn machine_busy_seconds() -> f64 {
 /// cheaper, query than the one the mix is supposed to be weighted around.
 /// One connection, three queries, before any load starts.
 ///
-/// The sampling and the queries it feeds are `aperture_cli::workload`'s — Phase 10's S0 —
+/// The sampling and the queries it feeds are `fjord_cli::workload`'s — Phase 10's S0 —
 /// so this soak, `loadgen` and `engine` seek for the same keys in the same corpus. What
 /// stays here is the *mix*: weights and think time are what a soak is, and no other
 /// instrument has an opinion about them.
@@ -285,22 +285,22 @@ fn mix(pivots: &Pivots) -> Vec<Class> {
         Class {
             name: "point lookup",
             weight: 80,
-            focus: format!("F where src.File F; F = \"{}\"", pivots.file),
+            sigla: format!("F where src.File F; F = \"{}\"", pivots.file),
         },
         Class {
             name: "small scan",
             weight: 15,
-            focus: format!("F where src.File F; F = \"{}\"..", pivots.directory),
+            sigla: format!("F where src.File F; F = \"{}\"..", pivots.directory),
         },
         Class {
             name: "full scan",
             weight: 4,
-            focus: "F where src.File F".to_owned(),
+            sigla: "F where src.File F".to_owned(),
         },
         Class {
             name: "join, whole db",
             weight: 1,
-            focus: "{what = D.name, file = D.module.file} where D = src.Decl _".to_owned(),
+            sigla: "{what = D.name, file = D.module.file} where D = src.Decl _".to_owned(),
         },
     ]
 }
@@ -393,7 +393,7 @@ fn run_client(
 
         let at = Instant::now();
         let answered = connection
-            .query(&classes[index].focus)
+            .query(&classes[index].sigla)
             .and_then(|mut rows| {
                 while connection.next_row(&mut rows)?.is_some() {}
                 Ok(())
@@ -590,7 +590,7 @@ fn parse() -> Result<Options, String> {
     }
 
     let socket = socket
-        .or_else(|| data_dir.map(|dir| dir.join("aperture.sock")))
+        .or_else(|| data_dir.map(|dir| dir.join("fjord.sock")))
         .ok_or("one of --socket or --data-dir is needed")?;
 
     Ok(Options {

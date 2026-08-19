@@ -3,7 +3,7 @@ title: Storage model
 description: Two column families, one keyspace per predicate, an order-preserving codec, snowflake fact ids, the atomic two-map write, and how a nested reference becomes an id.
 ---
 
-Aperture stores every fact twice, in two sorted key–value maps, and the split is the reason
+Fjord stores every fact twice, in two sorted key–value maps, and the split is the reason
 queries are fast at what they are fast at.
 
 ## Two column families
@@ -267,9 +267,9 @@ rather than an impossibility.
 
 ```text
 <data_dir>/
-├── aperture.sock                  # the server's socket; its presence is server detection
+├── fjord.sock                     # the server's socket; its presence is server detection
 └── <name>/<instance>/             # instance: a ULID
-    ├── APERTURE_META              # the sidecar, written temp + fsync + rename
+    ├── FJORD_META                 # the sidecar, written temp + fsync + rename
     │     name, instance, status (Writable|Complete|Broken), format version,
     │     schema fingerprint, content fingerprint (at finish), counts, size, created_at
     ├── schema/                    # the embedded canonical schema — the durable copy

@@ -1,12 +1,12 @@
 ---
-title: focus query language
-description: Every construct focus has — patterns, statements, binds, constraints, denials, comparisons, arithmetic, negation, disjunction, subqueries and references — with the rows each one returns.
+title: sigla query language
+description: Every construct sigla has — patterns, statements, binds, constraints, denials, comparisons, arithmetic, negation, disjunction, subqueries and references — with the rows each one returns.
 ---
 
-focus is a typed, Datalog-flavoured query language. A query is a **head pattern**, the word
+sigla is a typed, Datalog-flavoured query language. A query is a **head pattern**, the word
 `where`, and a list of **statements**:
 
-```focus
+```sigla
 {file = F, line = L} where src.Ref {to = src.Decl {name = "encode"}, file = F, at = {line = L}}
 ```
 
@@ -53,7 +53,7 @@ access. So `test.Foo A | test.Bar B` is a disjunction of two fact patterns, and
 Every "returns" below is what the query actually answers against the fixture database the
 test corpus uses — so each row is checked by a test rather than written down by hand.
 
-```aps
+```schema
 predicate test.Foo    : { id : int, name : string } -> string
 predicate test.Bar    : { id : int }
 predicate test.Edge   : { from : int, to : int }
@@ -88,19 +88,19 @@ predicate test.Boxed  : { id : int } -> { lo : int, hi : int }
 
 A fact pattern on its own is a **generator**: a loop over the rows of one predicate.
 
-```focus
+```sigla
 X where test.Foo {name = X}          → ann; bob; ann
 ```
 
 The key is **mandatory**, so a whole-predicate scan is written with a wildcard:
 
-```focus
+```sigla
 X where X = test.Foo _               → test.Foo#1; test.Foo#2; test.Foo#3
 ```
 
 A scalar key is one field, so a variable may stand for the whole of it:
 
-```focus
+```sigla
 Y where test.Count Y                 → -9223372036854775808; -42; 7; 1000
 Y where test.Foo Y                   → {id = 1, name = ann}; {id = 2, name = bob}; {id = 3, name = ann}
 ```
@@ -110,7 +110,7 @@ narrows or filters.
 
 ### A join is a shared variable
 
-```focus
+```sigla
 X where test.Edge {from = X, to = Y}; test.Node {id = Y}     → 1; 1; 2
 ```
 
@@ -118,7 +118,7 @@ Two levels, and the inner one's seek key is built from the outer row's bytes —
 a join *is* here. Which statement runs first is `reorder`'s decision, not the order you
 typed:
 
-```focus
+```sigla
 P where test.Ref {of = P}; P = test.Foo {id = 1}             → test.Foo#1
 P where P = test.Foo {id = 1}; test.Ref {of = P}             → test.Foo#1
 ```
@@ -138,7 +138,7 @@ takes a register**:
 | `Y = X.name` | an **alias** — a name for a place already in a register | nothing |
 | `X = "a"..`, `X = Y` (both bound) | a **constraint** — what the value has to look like | a seek, or a residual |
 
-```focus
+```sigla
 X where X = 42                               → 42
 Y where X = test.Foo _; Y = X.name           → ann; bob; ann
 Z where test.Bar {id = Z}; Z = 1             → 1
@@ -154,7 +154,7 @@ bind folded has **no levels at all** and means exactly one row.
 A string prefix is a **range**, not a value, so there is nothing for a variable to *be* — it
 says what the value has to look like:
 
-```focus
+```sigla
 X where test.Name X; X = "a"..               → abc; ann; anna
 X where X = "a"..; test.Name X               → abc; ann; anna
 ```
@@ -164,7 +164,7 @@ body before an order is chosen and applied by whichever level captures the varia
 is why writing one first changes nothing. Behind an already-open field there is no seek left
 to narrow, and the same constraint filters instead:
 
-```focus
+```sigla
 X where test.Foo {name = X}; X = "a"..       → ann; ann
 ```
 
@@ -179,7 +179,7 @@ that captures the variable can seek with it.
 The negative of a constraint, and never a seek — "does not start with `a`" is the two ranges
 either side of one, and a seek walks one range.
 
-```focus
+```sigla
 X where test.Name X; X != "a"..              → bob
 X where test.Name X; X != "abc"              → ann; anna; bob
 X where test.Count X; X != 7                 → -9223372036854775808; -42; 1000
@@ -198,7 +198,7 @@ a residual.
 They are **statements**, not expressions — a comparison binds nothing, and reading `X < 3` as
 an expression would need a boolean type the model does not have.
 
-```focus
+```sigla
 X where test.Count X; X < 7                  → -9223372036854775808; -42
 X where test.Count X; X <= 7                 → -9223372036854775808; -42; 7
 X where test.Count X; 7 <= X                 → 7; 1000
@@ -216,7 +216,7 @@ second code path added. Comparisons **filter**; none of them is a seek yet.
 A derived bind: one value per row, computed from the row, in a register of its own. It is not
 a loop level — the cursor stores nothing for it, because it is recomputed on resume.
 
-```focus
+```sigla
 Y where test.Count X; Y = X + 1              → -9223372036854775807; -41; 8; 1001
 Y where test.Count X; Y = X - 1              → 9223372036854775807; -43; 6; 999
 Y where test.Edge {from = A, to = B}; Y = A + B        → 3; 4; 5
@@ -236,7 +236,7 @@ because neither side is a row and there is no level to hang a residual on.
 A statement prefix. It binds nothing, takes no cursor entry, and each source is drained only
 to its **first** row — the question is whether a witness exists, not how many.
 
-```focus
+```sigla
 X where test.Foo {id = X}; !test.Bar {id = X}                        → 3
 X where !test.Bar {id = X}; test.Foo {id = X}                        → 3
 X where test.Foo {id = X}; !(test.Bar {id = X} | test.Edge {from = X, to = _})   → 3
@@ -254,7 +254,7 @@ readings of `!(Q X)` are indistinguishable at a glance.
 One level with an alternative per branch, tried in order, and the rows are the branches'
 concatenated — not merged and not deduplicated.
 
-```focus
+```sigla
 X where test.Foo {id = X} | test.Bar {id = X}     → 1; 2; 3; 1; 2
 ```
 
@@ -265,7 +265,7 @@ sibling conjuncts.
 
 The empty relation: a level with no alternative to open, exhausted the moment it is entered.
 
-```focus
+```sigla
 X where X = never                            → (no rows)
 ```
 
@@ -277,7 +277,7 @@ why `never` needed no special case in the machine.
 A subquery in a generating position **inlines**: its statements become the enclosing query's,
 and its head is the value the bind names.
 
-```focus
+```sigla
 X where X = (Y where test.Foo {id = Y})              → 1; 2; 3
 X where X = (Y where test.Name Y; Y != "a"..)        → bob
 ```
@@ -286,7 +286,7 @@ X where X = (Y where test.Name Y; Y != "a"..)        → bob
 
 ### Records
 
-```focus
+```sigla
 {a = X, b = Y} where test.Foo {name = X, id = Y}     → {a = ann, b = 1}; {a = bob, b = 2}; {a = ann, b = 3}
 X where test.Nested {outer = {inner = X}}            → 1; 7
 X where P = test.Nested _; {inner = X} = P.outer     → 1; 7
@@ -304,7 +304,7 @@ that order is the key order.)
 
 ### Field access, and `.value`
 
-```focus
+```sigla
 X.name where X = test.Foo _                  → ann; bob; ann
 X.value where X = test.Foo _                 → one; two; three
 X.value where X = test.Boxed _               → {lo = 10, hi = 20}; {lo = 30, hi = 40}
@@ -317,7 +317,7 @@ and is refused by name.
 
 ### Literals
 
-```focus
+```sigla
 X where X = test.Count -42                   → test.Count#2
 X where X = test.Count -9223372036854775808  → test.Count#1
 X where X = test.Count 1_000                 → test.Count#4
@@ -337,7 +337,7 @@ operations** on one:
 **Following** a reference is a compare against an id already in a register. It reads
 nothing:
 
-```focus
+```sigla
 P where P = test.Foo {id = 1}; test.Ref {of = P}                 → test.Foo#1
 X where X = test.Ref {of = test.Foo {id = 1}}                    → test.Ref#1
 X where X = test.Deep {via = test.Ref {of = test.Foo {id = 1}}}  → test.Deep#1
@@ -349,7 +349,7 @@ matched by id — recursively, innermost first. That is the idiomatic spelling o
 **Reading through** a reference needs the target fact fetched, because its fields are in
 another fact's key:
 
-```focus
+```sigla
 X.name where test.Ref {of = X}                       → ann; bob
 X.value where test.Ref {of = X}                      → one; two
 N where test.Deep {via = R}; N = R.of.name           → ann; bob
@@ -377,7 +377,7 @@ query one. See [A query, step by step](query-lifecycle.html#expanding-a-referenc
 
 The head is a pattern, projected once per row:
 
-```focus
+```sigla
 X where …                    a variable — the whole row, or the whole value it names
 X.name where …               a field of a bound row
 {a = X, b = Y.name} where …  a record built out of pieces
@@ -401,7 +401,7 @@ is **order-dependent**, which is why `reorder` runs first:
 The moment a key field is *captured* (bound to a variable), the seek prefix closes and
 everything after it filters:
 
-```focus
+```sigla
 X where X = test.Foo {id = 1}                → test.Foo#1        (a seek)
 X where test.Foo {id = X, name = "ann"}      → 1; 3              (a scan, then a filter)
 ```
@@ -482,7 +482,7 @@ remember: **name the intermediate value in a statement of its own.** An alias co
 no register, no step — so `Y = X.name; Y != "a"..` compiles to exactly the plan the refused
 spelling would have wanted.
 
-## What focus does not have
+## What sigla does not have
 
 Not as a gap list — as a design boundary:
 

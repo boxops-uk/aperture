@@ -1,6 +1,6 @@
 # 5. Suspend & resume
 
-> [Aperture design book](../README.md) · [← 4. The executor](04-executor.md) · **Chapter 5** · [6. Types & schema →](06-types-and-schema.md)
+> [Fjord design book](../README.md) · [← 4. The executor](04-executor.md) · **Chapter 5** · [6. Types & schema →](06-types-and-schema.md)
 
 This is the subsystem where a subtle bug is catastrophic and invisible. A query can
 **suspend** mid-stream (for backpressure, a portal going idle, a fair-scheduling yield) and
@@ -10,7 +10,7 @@ resume token that is **only bytes** achieves that, and why it's safe.
 
 It builds directly on [the executor](04-executor.md) — in particular
 [I7](invariants.md#i7), the defunctionalised state machine, which is what makes any of this
-possible. Code: `crates/aperture-engine/src/iter.rs`.
+possible. Code: `crates/fjord-engine/src/iter.rs`.
 
 ---
 
@@ -59,10 +59,10 @@ between them is the whole design problem.
 immutable view**: `FjallDb::reader` takes exactly one `fjall::Snapshot` and every scan of that
 query reads through it, so a run cannot half-see a write that landed under it. Glean has no
 equivalent — `GetSnapshot` appears nowhere in `glean/rocksdb/`, and each `seek` opens a fresh
-iterator at whatever superversion is current — so Aperture's intra-page isolation is the
+iterator at whatever superversion is current — so Fjord's intra-page isolation is the
 *stronger* of the two. The second claim, releasing it at suspend, Glean also satisfies, by the
 trivial route of having nothing to release. So the goal I8 exists for stands exactly as
-argued — **an idle portal must pin no LSM generation** — but Aperture has to arrange it
+argued — **an idle portal must pin no LSM generation** — but Fjord has to arrange it
 deliberately *because* it holds a real snapshot while running, not because anyone else fails
 to.
 
@@ -99,7 +99,7 @@ not negation added a field.
 and that is not recoverable from the row itself. Alternatives can overlap, so one fact is
 reachable from more than one of them; and the sources *after* the live one have not run yet.
 Resuming into the wrong alternative therefore re-emits rows and skips rows at once. A
-single-source level — every level focus compiles today — says `0`, so this is the shape the
+single-source level — every level sigla compiles today — says `0`, so this is the shape the
 token had all along with the part that was implied now written down.
 
 For each level it saves that level's `current` row — but **detached**: `ByteView`
@@ -156,7 +156,7 @@ their head fields are *called* fingerprint the same. Neither positions a scan.
 checks are real, but there is no encoder and **no checksum**. Glean's continuation carries a
 version plus an FNV-1 checksum over the blob and the return type
 (`glean/db/Glean/Query/UserQuery.hs:1258-1283`); the checksum is the half that cannot be
-written before the blob exists, and the transport-codec sketch kept in `crates/aperture-engine/src/lib.rs` is where
+written before the blob exists, and the transport-codec sketch kept in `crates/fjord-engine/src/lib.rs` is where
 it goes. The two versions are on **separate counters** on purpose: this one says what is in
 flight, the [format stamp](03-storage-model.md#the-format-stamp-i15) says what is on disk, and
 a cursor is checked against the build reading it rather than against a database.
@@ -225,7 +225,7 @@ detailed in [chapter 3](03-storage-model.md).
 If the saved key no longer resolves to the saved fact, that's not silent — it's
 `BadResumeKey`, a real error on a data path ([conventions](conventions.md)).
 
-**The *direction* of that check is where the safety lives.** Aperture saves `(key, fact_id)`
+**The *direction* of that check is where the safety lives.** Fjord saves `(key, fact_id)`
 and verifies the row re-read at the key. Glean runs it the other way — save the id, then
 `factById(id)` → key → `seek(…, restart)` (`glean/rts/query.cpp:710-735`) — which is a
 self-consistency check that cannot fail once the id resolves at all. Its token carries no `Repo`
@@ -305,13 +305,13 @@ is blocking CPU/IO, and making it async would only colour the whole codebase for
 **Cancellation converges with Glean; suspend depth does not.** Glean polls in the same place
 and counts the same thing — a timeout/interrupt check at the top of `next`, sampled every 100th
 call (`glean/rts/query.cpp:26-28,304-319`) — i.e. rows **examined**, independently reaching the
-conclusion [open decisions](open-decisions.md) records for Aperture. But Glean's cancellation
+conclusion [open decisions](open-decisions.md) records for Fjord. But Glean's cancellation
 is **global only**: `interruptRunningQueries` aborts every query started before the interrupt.
-A per-query `CancellationToken` is a facility Aperture has and Glean does not.
+A per-query `CancellationToken` is a facility Fjord has and Glean does not.
 
 The gap runs the other way on suspend *depth*. Glean carries a second suspend site *inside*
 the generator loop, so a `max_time_ms` timeout hands back a **resumable** continuation even
-with zero results (`glean/db/Glean/Query/Codegen.hs:1017-1024`). Aperture cannot: a deadline
+with zero results (`glean/db/Glean/Query/Codegen.hs:1017-1024`). Fjord cannot: a deadline
 or a rows-scanned cap unwinds terminally (the table above), and a `Cursor` of one saved row
 per level has no analogue of Glean's per-iterator `first` bit — the flag saying whether the
 position it names has already been consumed — so it cannot *represent* a mid-descent position
@@ -327,7 +327,7 @@ connection layer needs: a **portal** is a suspended query holding a cursor; **ba
 is the consumer returning `Suspend` when its output queue is full; **cross-suspend safety**
 is I8 (nothing pinned while idle). The wire protocol chapter builds portals, chunked result
 streaming, and per-stream cancellation directly on this — see
-[Operations](aperture-cli-design.md).
+[Operations](fjord-cli-design.md).
 
 **The disjunction half of that is now paid.** The per-branch discriminant this section was
 kept for is the `source` on an entry, and [I4](invariants.md#i4) is re-established over

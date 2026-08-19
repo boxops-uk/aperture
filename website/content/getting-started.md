@@ -10,7 +10,7 @@ printed.
 
 | You need | Why | Optional? |
 |---|---|---|
-| A Rust toolchain (edition 2024, stable) | Builds `aperture`, the server and the viewer | no |
+| A Rust toolchain (edition 2024, stable) | Builds `fjord`, the server and the viewer | no |
 | `python3` | Regenerates the example index, and serves these docs | for the example corpus |
 | .NET SDK 8+ | The C# client, the demo producer and the real indexer | yes |
 
@@ -21,14 +21,14 @@ directory.
 ## 1. Build
 
 ```bash
-cargo build --release --bin aperture
+cargo build --release --bin fjord
 ```
 
-That gives you `target/release/aperture`, the one command-line tool. Two other binaries
+That gives you `target/release/fjord`, the one command-line tool. Two other binaries
 are worth knowing about:
 
 ```bash
-cargo build --release --bin aperture-viewer     # the code-search site
+cargo build --release --bin fjord-viewer        # the code-search site
 cargo build --release --example loadgen         # a producer that can fill a database
 ```
 
@@ -41,18 +41,18 @@ Before any of the setup below: the binary carries an **embedded demo** that seed
 database from a real index of a small Python corpus. No server, no store root, no producer.
 
 ```bash
-aperture shell
+fjord shell
 ```
 
 ```text
-focus> D.name where D = src.Decl {name = "encode"..}
+sigla> D.name where D = src.Decl {name = "encode"..}
   : str
   "encode_int"
   "encode_key"
   "encode_str"
   3 row(s)
 
-focus> {file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = "encode_str"}}
+sigla> {file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = "encode_str"}}
   : {file: src.File, line: int}
   {file = src.File "store/codec.py", line = 38}
   {file = src.File "store/keys.py", line = 17}
@@ -70,7 +70,7 @@ predicates describing files, declarations, references, a build graph and a decla
 graph.
 
 ```bash
-aperture --data-dir ./db create code
+fjord --data-dir ./db create code
 ```
 
 ```text
@@ -81,12 +81,12 @@ The name is `code`; the ULID is the **instance**. `--data-dir` is the **store ro
 directory databases live under, and the thing a server owns.
 
 ```bash
-aperture --data-dir ./db list
+fjord --data-dir ./db list
 ```
 
 ```text
 NAME  INSTANCE                    STATUS    SCHEMA        CONTENT  FACTS  BYTES  CREATED
-code  01M0BN4HG1W821VK1R7R9E26P1  writable  08b4c4306f2e  -        -      -      2026-08-19 00:01:04Z
+code  01M0BN4HG1W821VK1R7R9E26P1  writable  b08eea634e86  -        -      -      2026-08-19 00:01:04Z
 ```
 
 `list` reads sidecar files and never opens the storage engine, so it works while a server
@@ -98,16 +98,16 @@ Every client talks to a server — there is no "open the directory directly" pat
 readers. Locally that is a Unix socket.
 
 ```bash
-aperture --data-dir ./db serve --ready-file ./ready &
+fjord --data-dir ./db serve --ready-file ./ready &
 while [ ! -e ./ready ]; do sleep 0.1; done
 ```
 
 ```text
-aperture serve
+fjord serve
   data dir   ./db
-  socket     ./db/aperture.sock
+  socket     ./db/fjord.sock
   protocol   2
-  schema     0x08b4c4306f2ea1b0  (the built-in one; each database is served with its own)
+  schema     0xb08eea634e866a75  (the built-in one; each database is served with its own)
   databases  1
     code                 writable
 ```
@@ -118,13 +118,13 @@ finds a server without being told where the data is.
 
 :::warn Socket paths are short for a reason
 A Unix socket path has a hard length limit of about 100 bytes. If your store root is deep,
-pass `--socket /tmp/aperture.sock` explicitly and name it in the address —
-`/tmp/aperture.sock//code`.
+pass `--socket /tmp/fjord.sock` explicitly and name it in the address —
+`/tmp/fjord.sock//code`.
 :::
 
 ## 5. Put some facts in it
 
-There is no `aperture write` command yet — [file ingestion](status.html) is unbuilt. Facts
+There is no `fjord write` command yet — [file ingestion](status.html) is unbuilt. Facts
 arrive over the wire, from a producer. Three exist today:
 
 ```bash
@@ -138,7 +138,7 @@ seeding 1,000 declarations over 200 files, 1,000 facts per block
 ```
 
 The other two are the .NET client's demo (a tiny hand-written index) and
-`Aperture.Indexer`, which runs a real design-time build with Roslyn over a checkout — see
+`Fjord.Indexer`, which runs a real design-time build with Roslyn over a checkout — see
 [Clients & the viewer](clients.html). To write facts from your own program, see
 [the client section](clients.html#writing-facts-from-rust).
 
@@ -150,7 +150,7 @@ written once and deduplicated 999 times.
 ## 6. Ask it something
 
 ```bash
-aperture --data-dir ./db query code 'F where src.File F' --limit 3
+fjord --data-dir ./db query code 'F where src.File F' --limit 3
 ```
 
 ```text
@@ -159,14 +159,14 @@ src/f0000000.py
 src/f0000001.py
 src/f0000002.py
 3 row(s)
-aperture: stopped at 3 rows; raise or drop --limit to see the rest
+fjord: stopped at 3 rows; raise or drop --limit to see the rest
 ```
 
 A query is a **head pattern**, the word `where`, and statements. Capture fields by name
 and shape the output with a record head:
 
 ```bash
-aperture --data-dir ./db query code \
+fjord --data-dir ./db query code \
   '{name = N, line = L} where src.Decl {module = M, name = N, line = L}' --limit 5
 ```
 
@@ -184,7 +184,7 @@ Find-references — the question a code index exists to answer — is a join thr
 reference, and the schema is laid out so that it seeks:
 
 ```bash
-aperture --data-dir ./db query code \
+fjord --data-dir ./db query code \
   '{f = F, l = L} where src.Ref {to = src.Decl {name = "symbol_0000000_000"}, file = F, at = {line = L}}' \
   --expand
 ```
@@ -202,11 +202,11 @@ it is off unless you ask for it: it costs one point read per distinct reference.
 ## 7. Use the shell
 
 ```bash
-aperture --data-dir ./db shell code
+fjord --data-dir ./db shell code
 ```
 
 ```text
-aperture shell — `code` on ./db/aperture.sock
+fjord shell — `code` on ./db/fjord.sock
   28 predicate(s) · rows print as jsonl · :help for commands
 ```
 
@@ -215,13 +215,13 @@ serves — so a mistake is a caret under the word rather than a round trip, and 
 show you the plan without running anything.
 
 ```text
-focus> :limit 3
-focus> F where src.File F
+sigla> :limit 3
+sigla> F where src.File F
 "src/f0000000.py"
 "src/f0000001.py"
 "src/f0000002.py"
   :more for the next 3 — 3 so far
-focus> :more
+sigla> :more
 ```
 
 `:more` holds a real resume token across a real round trip. Full command list:
@@ -233,7 +233,7 @@ A database is an **artifact**. Sealing flushes and merges every tree, hashes the
 records the identity, and flips the status — after which every write is refused, forever.
 
 ```bash
-aperture --data-dir ./db finish code
+fjord --data-dir ./db finish code
 ```
 
 ```text
@@ -247,7 +247,7 @@ database as `complete`, with that number under `CONTENT`, and any writer is refu
 handshake:
 
 ```text
-loadgen: cannot connect to ./db/aperture.sock: `code` is complete: it takes no more writes
+loadgen: cannot connect to ./db/fjord.sock: `code` is complete: it takes no more writes
 ```
 
 Merging at `finish` is not cosmetic: an unmerged tree was measured seeking at up to 180×
@@ -257,7 +257,7 @@ a merged one, and the artifact roughly halves on disk. See
 ## 9. Browse it
 
 ```bash
-aperture-viewer ./db/aperture.sock//code --bind 127.0.0.1:8088
+fjord-viewer ./db/fjord.sock//code --bind 127.0.0.1:8088
 ```
 
 A code-search site — browse, file view with line-level cross-references, prefix search,
@@ -268,5 +268,5 @@ symbol pages — built entirely out of ordinary queries through the ordinary cli
 
 - [Walkthrough](walkthrough.html) — the same path with more of the interesting corners.
 - [Concepts](concepts.html) — facts, predicates, keys, values, lifecycle.
-- [focus query language](query-language.html) — the whole language, construct by construct.
+- [sigla query language](query-language.html) — the whole language, construct by construct.
 - [CLI reference](cli.html) — every command, flag, address form and config key.

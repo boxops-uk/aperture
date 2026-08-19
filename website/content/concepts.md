@@ -5,9 +5,9 @@ description: Facts, predicates, keys and values; the Writable → Complete lifec
 
 Two names to keep straight:
 
-- **Aperture DB** — the database. Embedded, immutable, fact-shaped.
-- **focus** — its query *and* schema language, and the crate that implements the engine
-  behind it. "A focus query" is a query written in focus and run by Aperture.
+- **Fjord DB** — the database. Embedded, immutable, fact-shaped.
+- **sigla** — its query *and* schema language, and the crate that implements the engine
+  behind it. "A sigla query" is a query written in sigla and run by Fjord.
 
 ## The data model
 
@@ -20,7 +20,7 @@ A predicate's type has two parts:
 - a **key** — the part that identifies the fact, and the part that is *indexed*;
 - an optional **value** — extra data carried by the fact, read only when a query asks.
 
-```aps
+```schema
 predicate File : string
 predicate Module : { file : File, name : string }
 predicate Decl : { module : Module, name : string, line : int } -> string
@@ -101,12 +101,12 @@ Immutability is the assumption almost every invariant leans on. The workflow it 
 
 ## The two halves of the system
 
-There is a clean seam in the middle: a **front end** that compiles focus text into a plan,
+There is a clean seam in the middle: a **front end** that compiles sigla text into a plan,
 and a **back end** that runs plans. They meet at one data structure and otherwise evolve
 independently.
 
 ```text
-   focus text
+   sigla text
       │
       ▼   FRONT END
   lex → parse → typecheck → flatten → reorder
@@ -170,7 +170,7 @@ This is the one asymmetry worth learning early.
 - **Stored**, a reference is a `FactId` and nothing else.
 - **Outbound**, a row therefore carries a number. Asking what it names is a **protocol**
   question (`fetch`), answered with the target's *key* — and the client expands it
-  recursively if you ask. focus cannot ask, because a query names a fact by its key.
+  recursively if you ask. sigla cannot ask, because a query names a fact by its key.
 
 ## Two invariant namespaces
 
@@ -186,10 +186,10 @@ ones it touches are green.
 
 ## Relation to Glean
 
-Aperture is **inspired by [Glean](https://glean.software/), not a clone**. The two-map
+Fjord is **inspired by [Glean](https://glean.software/), not a clone**. The two-map
 storage layout and the nested-loop execution shape are Glean's, down to the names of the
 column families. The machine that runs that shape is not: Glean compiles a query to
-bytecode for a VM; Aperture walks an ordered `[Step]` with one driver, because a bytecode
+bytecode for a VM; Fjord walks an ordered `[Step]` with one driver, because a bytecode
 VM's continuation cannot be made small and a small continuation is what makes stateless
 paging possible.
 

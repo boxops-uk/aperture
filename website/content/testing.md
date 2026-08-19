@@ -95,13 +95,13 @@ quadratic in allocations. Both are exact counts rather than ratios with a thresh
 
 ## The corpus: the language surface as data
 
-`aperture_engine::corpus` is the whole focus surface as a table, each snippet classified:
+`fjord_engine::corpus` is the whole sigla surface as a table, each snippet classified:
 
 | Classification | Means |
 |---|---|
 | `Supported(rows)` | Parses, typechecks, compiles, **and returns exactly these rows** against the shared fixture database |
 | `Diagnosed(code)` | Parses, then draws exactly this diagnostic code |
-| `ParseError` | Not focus at all; a parse diagnostic is correct |
+| `ParseError` | Not sigla at all; a parse diagnostic is correct |
 
 Three gates run over it: every entry parses as classified, every entry draws exactly the codes it
 claims, and **every supported entry runs against a real database and returns the rows it records**.
@@ -153,12 +153,12 @@ production path, as the witness rather than the implementation.
 
 ## Where the fixtures live, and why the split matters
 
-- `aperture_store::fixtures` holds everything store-shaped — the probes, the model stores, the
+- `fjord_store::fixtures` holds everything store-shaped — the probes, the model stores, the
   scan-contract assertions — because a probe has to be **the same** store type as the store it
   wraps.
-- `aperture_engine::fixtures` holds the plan runners and re-exports the rest, so a battery has one
+- `fjord_engine::fixtures` holds the plan runners and re-exports the rest, so a battery has one
   place to import from.
-- `aperture_store::fixture` (singular) is the shared **database**: one schema and one set of facts,
+- `fjord_store::fixture` (singular) is the shared **database**: one schema and one set of facts,
   so a plan shape asserted in one place and an answer asserted in another are about the same rows.
 
 One rule follows from the crate split: a test in a lower crate that needs to run a query belongs in

@@ -1,6 +1,6 @@
 # Glossary
 
-> [Aperture design book](../README.md) · reference doc
+> [Fjord design book](../README.md) · reference doc
 
 Every term of art in one place, with a pointer to the chapter that goes deep. Alphabetical.
 
@@ -13,9 +13,6 @@ answers *whether* a valid order exists, and is the independent witness the reord
 property is checked against — it is **not** on the reorder path, which is a greedy runnable
 frontier. Neither is it Glean's algorithm: `Reorder.hs` has no antichains and no topological sort.
 [ch7](07-compilation.md).
-
-**Aperture DB** — the database / product. Immutable: built once, sealed, then read-only.
-[ch1](01-concepts.md).
 
 **BadResumeKey** — the error raised when a resumed level's re-read row doesn't have the
 saved `fact_id`; the integrity check that makes a bytes-only cursor safe. [ch5](05-resume.md).
@@ -33,9 +30,9 @@ stripped form of a schema; the thing a fingerprint is computed over. [ch6](06-ty
 (identity → key+value). [ch3](03-storage-model.md).
 
 **Complete** — the sealed, immutable lifecycle state; every open-for-write is then refused
-([ops-I2](invariants.md#ops-i2)). Opposite: **Writable**. [Operations](aperture-cli-design.md).
+([ops-I2](invariants.md#ops-i2)). Opposite: **Writable**. [Operations](fjord-cli-design.md).
 
-**corpus** — `aperture_engine::corpus`, the focus language surface as *data*: each snippet classified
+**corpus** — `fjord_engine::corpus`, the sigla language surface as *data*: each snippet classified
 `Supported` / `Diagnosed(code)` / `ParseError`, and the acceptance gate for permissive-early.
 [testing](testing.md).
 
@@ -91,12 +88,15 @@ identity/compatibility are compared by fingerprint. [ch6](06-types-and-schema.md
 **FieldOffsets** — the inline `ArrayVec<[usize;16]>` cache of field boundaries within a
 row's key; never heap-spills ([I9](invariants.md#i9)). [ch4](04-executor.md).
 
-**fjall** — the LSM key–value store backing Aperture. [ch3](03-storage-model.md).
+**fjall** — the LSM key–value store backing Fjord. [ch3](03-storage-model.md).
 
 **FieldPath** — how a plan names a key field: a top-level field, plus one step per record it is
 nested inside. Flat is the fast path the field-offset cache serves; a stored key is *not* one
 field, so a whole record key has no path ([ch3](03-storage-model.md#a-stored-key-is-flat)).
 [ch7](07-compilation.md).
+
+**Fjord DB** — the database / product. Immutable: built once, sealed, then read-only.
+[ch1](01-concepts.md).
 
 **flatten** — the compiler phase that lowers a typed query to the flat `[Step]` + `head`
 plan: collect statements, check range restriction, reorder, then run sargeability.
@@ -106,9 +106,6 @@ plan: collect statements, check range restriction, reorder, then run sargeabilit
 every use, rather than giving it a register and a plan step. A folded bind reaches a key field as
 the literal written in place would, and takes no space in the machine.
 [ch7](07-compilation.md#folding-a-constant-bind).
-
-**focus** — Aperture's query and schema *language* (and the `crates/aperture-engine/` module implementing
-the engine + language). [ch1](01-concepts.md).
 
 **Generator** — one loop level in a plan: `{ access, binds, residuals }`. [ch4](04-executor.md).
 
@@ -123,7 +120,7 @@ each result row. [ch4](04-executor.md).
 rejecting at the frontier. **Not built, and no longer on the path**: a key holding a nested
 reference has no bytes to sort until interning has run, and Phase 12 made interning-as-you-decode
 correct under many writers instead. It survives as an optimisation, not a plan
-([Operations §5](aperture-cli-design.md)). The **merge frontier** the term pointed at is now a
+([Operations §5](fjord-cli-design.md)). The **merge frontier** the term pointed at is now a
 real thing and a different one — see below.
 
 **keys** — the column family `predicate_id ++ encoded_key → fact_id`; the index; prefix scans
@@ -148,7 +145,7 @@ annotate via side tables without mutating the tree. [ch7](07-compilation.md).
 
 **one-write-funnel** — every writer passes the same validate→intern→dedup→reject pipeline
 ([ops-I5](invariants.md#ops-i5)). One *pipeline*, not one thread: it says there is no path around
-the rules, never that one core applies them. [Operations](aperture-cli-design.md).
+the rules, never that one core applies them. [Operations](fjord-cli-design.md).
 
 **merge frontier** — where a key's identity is decided: resolve-or-create, dedup, reject. Since
 Phase 12 it is **striped** — one lock per `hash(predicate ++ key)`, so the exclusion is exactly as
@@ -205,6 +202,9 @@ register-field **splices**. [ch4](04-executor.md).
 **side table** — an auxiliary array indexed by `NodeId` (e.g. `Vec<Ty>`) holding a phase's
 annotations without mutating the tree. [ch7](07-compilation.md).
 
+**sigla** — Fjord's query and schema *language* (and the `crates/fjord-engine/` module implementing
+the engine + language). [ch1](01-concepts.md).
+
 **skip** — advance past one encoded value using only its marker (schema-free), landing
 exactly at the next value ([I2](invariants.md#i2)). [ch2](02-tuple-codec.md).
 
@@ -238,20 +238,20 @@ from cancel and terminal unwind. [ch5](05-resume.md).
 
 **sync marker** — a reserved, structurally-illegal byte sequence marking block boundaries in
 a fact file, so parallel ingest can split without parsing from byte zero (candidate, then
-header-validated). [Operations](aperture-cli-design.md).
+header-validated). [Operations](fjord-cli-design.md).
 
 **SyntaxTree store** — the second tree: a struct-of-arrays, `NodeId`-indexed typed tree the
 compiler phases run on. [ch7](07-compilation.md).
 
 **transport / wire codec** — the post-yield, framed binary format for rows leaving the
 executor; not order-preserving; separate from the storage codec. [ch3](03-storage-model.md),
-[Operations](aperture-cli-design.md).
+[Operations](fjord-cli-design.md).
 
 **tuple codec** — the storage codec: order-preserving, self-delimiting; encodes both keys and
 values. [ch2](02-tuple-codec.md).
 
 **Writable** — the mutable lifecycle state before `finish`; ingestion happens here. Becomes
-**Complete**. [Operations](aperture-cli-design.md).
+**Complete**. [Operations](fjord-cli-design.md).
 
 ---
 

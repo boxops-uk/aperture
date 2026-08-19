@@ -1,6 +1,6 @@
 # The .NET client
 
-A C# implementation of Aperture's wire protocol, and a console program that uses it to
+A C# implementation of Fjord's wire protocol, and a console program that uses it to
 write facts into a real database and query them back.
 
 It exists to answer a question the Rust tests cannot: **is the protocol implementable
@@ -13,28 +13,28 @@ order.
 
 | Project | What it is |
 |---|---|
-| `Aperture.Client` | the library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection |
-| `Aperture.Demo` | a console program that writes a small code index and queries it |
-| `Aperture.Indexer` | a **real** indexer — Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is ([its README](Aperture.Indexer/README.md)) |
+| `Fjord.Client` | the library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection |
+| `Fjord.Demo` | a console program that writes a small code index and queries it |
+| `Fjord.Indexer` | a **real** indexer — Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is ([its README](Fjord.Indexer/README.md)) |
 
 ## Running it
 
 From the repository root:
 
 ```sh
-cargo build --bin aperture
+cargo build --bin fjord
 
-rm -rf /tmp/ap-demo && mkdir -p /tmp/ap-demo
-./target/debug/aperture --data-dir /tmp/ap-demo/db create code
-./target/debug/aperture --data-dir /tmp/ap-demo/db serve \
-    --socket /tmp/ap-demo/aperture.sock \
-    --ready-file /tmp/ap-demo/ready &
+rm -rf /tmp/fj-demo && mkdir -p /tmp/fj-demo
+./target/debug/fjord --data-dir /tmp/fj-demo/db create code
+./target/debug/fjord --data-dir /tmp/fj-demo/db serve \
+    --socket /tmp/fj-demo/fjord.sock \
+    --ready-file /tmp/fj-demo/ready &
 
 # `--ready-file` appears only once the listener is accepting, so waiting on it is a
 # signal rather than a race.
-while [ ! -e /tmp/ap-demo/ready ]; do sleep 0.1; done
+while [ ! -e /tmp/fj-demo/ready ]; do sleep 0.1; done
 
-dotnet run --project clients/dotnet/Aperture.Demo -- --socket /tmp/ap-demo/aperture.sock
+dotnet run --project clients/dotnet/Fjord.Demo -- --socket /tmp/fj-demo/fjord.sock
 ```
 
 Or `./clients/dotnet/run-demo.sh`, which is the above.
@@ -72,7 +72,7 @@ idempotent, which is what makes retrying after a dropped connection safe.
 **It has to have the schema.** The value codec sends no field names, no type markers
 and no record arities: the server has them and so does the client, and sending what the
 reader already has is what a transmission-shaped format declines to do. `Schema.cs` is
-that, written down — mirroring `aperture::code_index` on the Rust side, deliberately,
+that, written down — mirroring `fjord::code_index` on the Rust side, deliberately,
 because two independent statements of one schema is what the fingerprint is *for*.
 
 It has caught that too. When the server moved from a cut-down three-predicate schema to
@@ -100,7 +100,7 @@ The client mirrors the server, so it stops where the server does. Streams are is
 sequentially — the ids are real and the server tags every reply with one, but this
 client sends a stream's frames and reads its replies before starting the next. There is
 no cancellation and no flow control. All three are named as deferred in
-[operations §5](../../docs/aperture-cli-design.md).
+[operations §5](../../docs/fjord-cli-design.md).
 
 There is no test project: the console program *is* the test, and it is a better one
 than a unit suite would be, because it runs against the real server over a real socket.
@@ -109,7 +109,7 @@ constants were copied.
 
 ## The indexer
 
-`Aperture.Indexer` is the demo's argument made at scale: the same client library, the
+`Fjord.Indexer` is the demo's argument made at scale: the same client library, the
 same nested references and the same handshake, driven by **Buildalyzer** (a design-time
 build per project, out of process) and **Roslyn** (what every name in the result means)
 over a checkout of somebody's real .NET source.
@@ -121,15 +121,15 @@ over a checkout of somebody's real .NET source.
 The demo answers *is the protocol implementable from outside*. The indexer answers the
 two questions after it: is it **usable** from outside by a producer with a real workload,
 and does the database hold up when the facts were not chosen to be convenient. It has its
-own [README](Aperture.Indexer/README.md) — what it maps onto the twenty-two predicates,
+own [README](Fjord.Indexer/README.md) — what it maps onto the twenty-two predicates,
 what it resolves, and what the numbers it prints mean.
 
 **It also writes to Glean.** `--glean-out <dir>` puts the same facts into Glean's own JSON
-batch format instead, against [`glean/apbench.angle`](glean/apbench.angle) — a predicate,
-field and *field-order* preserving translation of `schemas/code.aps`:
+batch format instead, against [`glean/fjbench.angle`](glean/fjbench.angle) — a predicate,
+field and *field-order* preserving translation of `schemas/code.sigla`:
 
 ```sh
-./clients/dotnet/index-repo-glean.sh ~/src/SomeSolution apbench --syntax-only
+./clients/dotnet/index-repo-glean.sh ~/src/SomeSolution fjbench --syntax-only
 ```
 
 One walk, two sinks, so a measurement of the two systems is a measurement of the two

@@ -7,8 +7,6 @@ description: Every term of art in one place, with a pointer to the page that goe
 
 **Access** — a level's target: a predicate id plus a seek key. [Executor](executor.html)
 
-**Aperture DB** — the database. Immutable: built once, sealed, then read-only.
-
 **antichain** — a layer of statements with no ordering dependency between them. Used as the
 independent *witness* the reorderer's completeness is checked against — deliberately not on the
 reordering path, which is a greedy runnable frontier.
@@ -30,9 +28,9 @@ Opposite: **Writable**.
 
 **constraint** — a bind whose right side is a pattern rather than a value (`X = "a"..`): collected
 from the whole body and applied by whichever level captures the variable, so it can *seek*.
-[focus](query-language.html#a-constraint-narrows-the-level-that-captures-the-variable)
+[sigla](query-language.html#a-constraint-narrows-the-level-that-captures-the-variable)
 
-**corpus** — the focus language surface as *data*: each snippet classified `Supported(rows)`,
+**corpus** — the sigla language surface as *data*: each snippet classified `Supported(rows)`,
 `Diagnosed(code)` or `ParseError`, and the acceptance gate for permissive-early.
 [Testing](testing.html#the-corpus-the-language-surface-as-data)
 
@@ -46,7 +44,7 @@ version and a plan fingerprint. Pins no iterator and no snapshot.
 plus one driver, so it can suspend to bytes. [I7](invariants.html#i7)
 
 **denial** — `!=`: this row's field does not look like that. A residual, never a seek — as against
-`!`, which says no such row exists. [focus](query-language.html#a-denial)
+`!`, which says no such row exists. [sigla](query-language.html#a-denial)
 
 **derived bind** — a plan step computing a value from bound variables into a value slot. Not a loop
 level; recomputed on resume rather than saved. [I14](invariants.html#i14)
@@ -85,13 +83,13 @@ spills to the heap. [I9](invariants.html#i9)
 **fingerprint (schema)** — a hash over the canonical form; one per predicate and one for the whole
 schema. Identity and compatibility are compared by fingerprint.
 
-**fjall** — the LSM key–value store Aperture is built on.
+**fjall** — the LSM key–value store Fjord is built on.
+
+**Fjord DB** — the database. Immutable: built once, sealed, then read-only.
 
 **flatten** — the compiler phase that lowers a typed query to the flat `[Step]` plus head: collect
 statements, fold constants, collect constraints, check range restriction, hoist nested generators,
 then decide sargeability. [A query, step by step](query-lifecycle.html#7-compilation)
-
-**focus** — Aperture's query and schema *language*.
 
 **folding** — substituting a variable bound to a constant at every use, rather than giving it a
 register and a step. A folded bind reaches a key field exactly as a literal in place would.
@@ -168,6 +166,8 @@ afterwards. Sargeability is **order-dependent**.
 **seek / SeekKey** — the scan start position for a level, built from constant bytes and register
 splices.
 
+**sigla** — Fjord's query and schema *language*.
+
 **slot** — what a register holds: a stored row, or a derived bind's computed value. Kept apart at the
 type level, because splicing one where the other belongs quietly matches nothing.
 
@@ -178,7 +178,7 @@ pins one, so it is dropped at every suspend. [I8](invariants.html#i8)
 rows matching the outer row. This is how a join works.
 
 **stratification** — the evaluation order a negation over a derived relation needs. Not a problem
-for queries here (focus has no recursion and the base is total); it returns under its own name for
+for queries here (sigla has no recursion and the base is total); it returns under its own name for
 stored derivation, as a topological sort of the derivation graph.
 
 **strinc** — the prefix successor: the smallest byte string greater than every string with a given
@@ -200,7 +200,7 @@ storage codec, sharing no bytes with it.
 keys and values.
 
 **virtual predicate** — a predicate answered by whoever is running the query rather than read from a
-keyspace — `aperture.db.List`. Absent from the handshake fingerprint, from a database's embedded
+keyspace — `fjord.db.List`. Absent from the handshake fingerprint, from a database's embedded
 schema and from every artifact's keyspaces, which is why a client that has never heard of it
 connects exactly as before.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Aperture documentation site.
+"""Build the Fjord documentation site.
 
 Reads `content/*.md`, renders each page into one HTML shell, and writes the
 result to `site/`. Standard library only — no toolchain, no lockfile, no
@@ -25,7 +25,7 @@ CONTENT = ROOT / "content"
 ASSETS = ROOT / "assets"
 OUT = ROOT / "site"
 
-SITE_TITLE = "Aperture DB"
+SITE_TITLE = "Fjord DB"
 SITE_TAGLINE = "An embedded, immutable fact database"
 
 # The navigation is the reading order. Each group is (label, [(slug, nav title)]).
@@ -44,7 +44,7 @@ NAV: list[tuple[str, list[tuple[str, str]]]] = [
         [
             ("concepts", "Concepts"),
             ("schema-language", "Schema language"),
-            ("query-language", "focus query language"),
+            ("query-language", "sigla query language"),
         ],
     ),
     (

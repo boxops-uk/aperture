@@ -17,7 +17,7 @@
 //!
 //! `--store` names a **fjall instance directory** — the ULID under a database, the
 //! thing that actually holds `keyspaces/`. Point it at a `.NET` checkout indexed by
-//! `clients/dotnet/Aperture.Indexer`, because uniform synthetic rows flatter seeks and
+//! `clients/dotnet/Fjord.Indexer`, because uniform synthetic rows flatter seeks and
 //! understate cache pressure, and because the question this ladder exists to answer is
 //! about a corpus somebody would really keep.
 //!
@@ -58,18 +58,18 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-use aperture_cli::{
+use fjord_cli::{
     code_index,
     workload::{Pivots, Workload, catalogue},
 };
-use aperture_encoding::tuple::Value;
-use aperture_engine::{
+use fjord_encoding::tuple::Value;
+use fjord_engine::{
     compile::Compilation,
     iter::{Cursor, Executor, Iteratee, Profile, Stream},
     plan::{Plan, SeekKey, Source, Step, Test},
 };
-use aperture_schema::schema::{LocalInterner, PredicateId, Schema};
-use aperture_store::{fact_store::FactStore, store::FjallDb};
+use fjord_schema::schema::{LocalInterner, PredicateId, Schema};
+use fjord_store::{fact_store::FactStore, store::FjallDb};
 
 /// What the server pages at (`session.rs`), and therefore the interval this file
 /// suspends at when it is measuring what paging costs. Stated as its own constant
@@ -227,7 +227,7 @@ fn parse() -> Result<Options, String> {
 /// everything — a plausible-looking run measuring nothing, which is exactly the failure
 /// this ladder is supposed to make impossible.
 ///
-/// [ops]: ../docs/aperture-cli-design.md
+/// [ops]: ../docs/fjord-cli-design.md
 fn resolve_instance(path: &Path) -> Result<PathBuf, String> {
     if path.join("keyspaces").is_dir() {
         return Ok(path.to_path_buf());
@@ -269,7 +269,7 @@ fn resolve_instance(path: &Path) -> Result<PathBuf, String> {
 /// Sample rather than compute: against somebody's checkout there is no arithmetic that
 /// lands on a key which exists.
 ///
-/// The shape and the queries live in [`aperture_cli::workload`] — S0 — so that this
+/// The shape and the queries live in [`fjord_cli::workload`] — S0 — so that this
 /// bench, the load generator and the soak ask the same questions of the same data.
 /// *Where the values come from* stays here, because an in-process bench has a `FjallDb`
 /// and a load generator has a socket, and those are not the same act.
@@ -299,12 +299,12 @@ fn describe(pivots: &Pivots) -> String {
     )
 }
 
-/// Run `focus` and return the string at `index`, or the last row if the scan is shorter.
+/// Run `sigla` and return the string at `index`, or the last row if the scan is shorter.
 ///
 /// Stops there rather than draining: a pivot from row 400,000 of `src.Decl` should cost
 /// 400,000 rows, not 888,292.
-fn sample_str(db: &FjallDb, schema: &Schema, focus: &str, index: u64) -> Option<String> {
-    let plan = compiled(focus, schema);
+fn sample_str(db: &FjallDb, schema: &Schema, sigla: &str, index: u64) -> Option<String> {
+    let plan = compiled(sigla, schema);
     let interner = LocalInterner::new(schema.interner().clone());
     let cancel = CancellationToken::new();
     let mut profile = Profile::for_plan(&plan);
@@ -369,7 +369,7 @@ fn executor(db: &FjallDb, schema: &Schema, options: &Options, pivots: &Pivots) {
             continue;
         }
 
-        let plan = compiled(&workload.focus, schema);
+        let plan = compiled(&workload.sigla, schema);
         let stop_at = workload.stop_at.unwrap_or(u64::MAX);
         let probe = run(db, &plan, stop_at);
 
@@ -671,14 +671,14 @@ fn encode_layer(db: &FjallDb, schema: &Schema, options: &Options, pivots: &Pivot
             continue;
         }
 
-        let plan = compiled(&workload.focus, schema);
+        let plan = compiled(&workload.sigla, schema);
 
         // Exactly what the server's `prepare` builds, so the type a row is encoded
         // against is the one it would really be encoded against.
-        let mut compilation = Compilation::new(&workload.focus, schema);
+        let mut compilation = Compilation::new(&workload.sigla, schema);
         let _ = compilation.plan().expect("it compiled a moment ago");
         let head = compilation.head_ty().expect("a head type").clone();
-        let desc = aperture_server::rows::desc_of(&head, compilation.interner())
+        let desc = fjord_server::rows::desc_of(&head, compilation.interner())
             .expect("the head has a descriptor");
         let mut interner = compilation.into_interner();
         let ty = desc.to_ty(&mut interner);
@@ -700,11 +700,11 @@ fn encode_layer(db: &FjallDb, schema: &Schema, options: &Options, pivots: &Pivot
                         // `expect` rather than `?`: a row this build cannot hand out is a
                         // bug in the instrument or the server, not a slow path, and the
                         // closure's error type is the executor's.
-                        let wire = aperture_server::rows::to_wire(&ty, &value)
+                        let wire = fjord_server::rows::to_wire(&ty, &value)
                             .expect("a row converts to wire");
 
                         buffer.clear();
-                        aperture_wire::value::encode_value(&mut buffer, schema, &ty, &wire)
+                        fjord_wire::value::encode_value(&mut buffer, schema, &ty, &wire)
                             .expect("a row encodes");
 
                         bytes += buffer.len() as u64;
@@ -779,11 +779,11 @@ fn compile_layer(schema: &Schema, options: &Options, pivots: &Pivots) {
         }
 
         let best = best_of(iterations, || {
-            let mut compilation = Compilation::new(&workload.focus, schema);
+            let mut compilation = Compilation::new(&workload.sigla, schema);
             std::hint::black_box(compilation.plan().is_some());
         });
 
-        let plan = compiled(&workload.focus, schema);
+        let plan = compiled(&workload.sigla, schema);
         out.push(row(&[
             workload.name,
             &duration(best),
@@ -804,15 +804,15 @@ fn compile_layer(schema: &Schema, options: &Options, pivots: &Pivots) {
     ])];
 
     for k in [1usize, 2, 4, 8, 16, 32] {
-        let focus = generated(k);
+        let sigla = generated(k);
         let best = best_of(iterations, || {
-            let mut compilation = Compilation::new(&focus, schema);
+            let mut compilation = Compilation::new(&sigla, schema);
             std::hint::black_box(compilation.plan().is_some());
         });
 
         out.push(row(&[
             &k.to_string(),
-            &focus.len().to_string(),
+            &sigla.len().to_string(),
             &duration(best),
             &duration(best / u32::try_from(k).unwrap_or(1)),
         ]));
@@ -825,14 +825,14 @@ fn compile_layer(schema: &Schema, options: &Options, pivots: &Pivots) {
 /// without changing shape, so what moves is the compiler's cost in the number of
 /// statements rather than in what they mean.
 fn generated(k: usize) -> String {
-    let mut focus = String::from("X0 where ");
+    let mut sigla = String::from("X0 where ");
     for i in 0..k {
         if i > 0 {
-            focus.push_str("; ");
+            sigla.push_str("; ");
         }
-        let _ = write!(focus, "src.File X{i}");
+        let _ = write!(sigla, "src.File X{i}");
     }
-    focus
+    sigla
 }
 
 // ---- S3: the store ------------------------------------------------------------------
@@ -1030,12 +1030,12 @@ impl Options {
 ///
 /// A catalogue entry that does not compile is a broken instrument, not a slow query, so
 /// it fails loudly here rather than being skipped into a table with an em dash in it.
-fn compiled(focus: &str, schema: &Schema) -> Plan {
-    let mut compilation = Compilation::new(focus, schema);
+fn compiled(sigla: &str, schema: &Schema) -> Plan {
+    let mut compilation = Compilation::new(sigla, schema);
     match compilation.plan() {
         Some(plan) => plan,
         None => {
-            eprintln!("engine: `{focus}` did not compile:");
+            eprintln!("engine: `{sigla}` did not compile:");
             eprint!("{}", compilation.render_to_string());
             std::process::exit(1);
         }

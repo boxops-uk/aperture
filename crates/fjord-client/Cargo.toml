@@ -1,0 +1,23 @@
+[package]
+name = "fjord-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The schema, because a client must have one: the transport codec sends no names
+# and no types, so both ends supply them (see `fjord-wire`'s module docs).
+fjord-schema = { path = "../fjord-schema" }
+# The codec and the message vocabulary. **Not `fjord-server`** — operations §10
+# is explicit that nothing depends on the server, and a client that needed one to
+# talk to one would be a contradiction with a build time attached.
+fjord-wire = { path = "../fjord-wire" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# A real server to talk to, because a client tested against a mock is a client
+# tested against our idea of the server. Not a cycle: the server does not depend
+# on the client, and a dev-dependency would be allowed even if it did.
+fjord-server = { path = "../fjord-server" }
+fjord-store = { path = "../fjord-store" }
+lasso = { workspace = true }
+tempfile = "3.24.0"

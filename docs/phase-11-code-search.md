@@ -1,17 +1,17 @@
-# Phase 11 — a code-search site, and what Aperture was missing to serve it
+# Phase 11 — a code-search site, and what Fjord was missing to serve it
 
-> [Aperture design book](../README.md) · **built** — the analysis, and what came of it
+> [Fjord design book](../README.md) · **built** — the analysis, and what came of it
 
 **Status: everything below is done except stored derivation.** The five blockers are
 closed, the degradations are answered or recorded as decided-against, and
-[`aperture-viewer`](../crates/aperture-viewer) is the site. The analysis is kept as
+[`fjord-viewer`](../crates/fjord-viewer) is the site. The analysis is kept as
 written, with what happened marked against it — a gap analysis edited to match the
 outcome is one nobody can calibrate against.
 
 The target is Glean's code-navigation demo: browse a repository, open a file, click a
 symbol, land on its definition — plus the things the demo *implies* and Glass actually
 serves, which are search, find-references and a symbol panel. This file decomposes that
-into the queries it needs, runs each one against Aperture, and records what came back.
+into the queries it needs, runs each one against Fjord, and records what came back.
 
 Every plan quoted below was produced by `:plan` against the built-in schema, and the
 row-count claims come from [`bench/FINDINGS.md`](../bench/FINDINGS.md)'s 18.2M-fact
@@ -94,7 +94,7 @@ one that decides whether the demo can be built at all.
 
 ### B1 — "every xref in this file" is a full scan of the largest relational predicate
 
-This is *the* hyperlink demo query, and it is the one Aperture is keyed against:
+This is *the* hyperlink demo query, and it is the one Fjord is keyed against:
 
 ```
 r0 <- src.File seek["store/keys.py"]
@@ -117,13 +117,13 @@ Glean's answer is a **derived stored predicate** —
 same data, stored a second time in the order the reader wants. That is
 [Phase 8b](../PLAN.md), which is not built.
 
-Aperture's answer *today* is to write the second copy from the indexer. That works, and
+Fjord's answer *today* is to write the second copy from the indexer. That works, and
 it is worth naming what it means: **it would be the third time.** `src.SearchByName` is
 already "declaration names, stored keyed the way search wants to read them, written by
-hand until Phase 8b can declare one" (`schemas/code.aps`), and `src.Implements` is
+hand until Phase 8b can declare one" (`schemas/code.sigla`), and `src.Implements` is
 already the *transitive closure* of the interface graph, written down because "there is
-no recursion in focus to close a transitive relation with afterwards"
-(`Aperture.Indexer/Indexer.cs`). Three hand-written derivations, each with the same
+no recursion in sigla to close a transitive relation with afterwards"
+(`Fjord.Indexer/Indexer.cs`). Three hand-written derivations, each with the same
 comment attached, is the strongest available argument that 8b is the next real phase
 rather than a nice-to-have.
 
@@ -134,10 +134,10 @@ the identifier *ends*, and nothing in the index says. `src.Decl` is worse: it ca
 `line` and no column at all, so "highlight the definition" has nothing to highlight.
 
 Glean carries `src.ByteSpan { start, length }` everywhere and its `codemarkup.Location`
-is a `RangeSpan`. The data exists on Aperture's side too — Roslyn hands the indexer a
+is a `RangeSpan`. The data exists on Fjord's side too — Roslyn hands the indexer a
 `TextSpan` and a `FileLinePositionSpan` and both are discarded.
 
-Cost: two fields in `schemas/code.aps`, a few lines in the indexer, and a re-index.
+Cost: two fields in `schemas/code.sigla`, a few lines in the indexer, and a re-index.
 Cheap now, and considerably less cheap once somebody's index is in production — which is
 the same sentence [findings §11](../bench/FINDINGS.md) wrote about the key order, one
 phase too late.
@@ -146,7 +146,7 @@ phase too late.
 
 The resume `Cursor` is real, it is bytes-only, and [I4](invariants.md#i4) says a resumed
 run equals an uninterrupted one. **It never crosses the wire.** The server holds it in
-the session (`aperture-server/src/session.rs`, `next: Option<Cursor>`), keyed by stream
+the session (`fjord-server/src/session.rs`, `next: Option<Cursor>`), keyed by stream
 id, and the client's `Rows` is a bookmark naming that stream — not a token that carries
 the position.
 
@@ -175,7 +175,7 @@ is small.
 
 ### B5 — there is no HTTP surface, and the client is blocking
 
-`aperture-client` is synchronous: `Connection::query(&mut self, …)`. One connection
+`fjord-client` is synchronous: `Connection::query(&mut self, …)`. One connection
 serves one caller at a time, though it can hold several open result bookmarks. Nothing
 in the workspace depends on an HTTP library.
 
@@ -195,7 +195,7 @@ indexer — B1's pattern again.
 
 **No ranking, no counts.** Results arrive in key order, which for a name prefix is
 alphabetical — acceptable for type-ahead, wrong for "best match first". `prim.size (all
-…)` is how Angle counts; focus has no aggregation, so "1,234 results" is unavailable and
+…)` is how Angle counts; sigla has no aggregation, so "1,234 results" is unavailable and
 so is "showing 50 of many".
 
 **Two key orders point the wrong way for the symbol panel.** `src.Attribute` is
@@ -228,7 +228,7 @@ diagnostic attached: the wrong ordering is not an error, it is a 3M-row scan.
 [The comparison](glean-comparison.md#missing-compiler-stages) records the absent cost
 model; this is what it looks like from the product side.
 
-**One language.** The Glean demo indexes React. Aperture's only real indexer is C#
+**One language.** The Glean demo indexes React. Fjord's only real indexer is C#
 (Roslyn + Buildalyzer), plus a toy Python walker for `example/`. Building *the same*
 demo means writing a JS/TS indexer; building an equivalent one means pointing at a C#
 repository, and `dotnet/runtime` is already indexed at 18.2M facts. The second is
@@ -239,9 +239,9 @@ reproduction.
 
 ## 4. What the language is missing, and which of it this site needs
 
-Angle features the `codemarkup` layer uses, against focus:
+Angle features the `codemarkup` layer uses, against sigla:
 
-| Angle | focus | does the site need it? |
+| Angle | sigla | does the site need it? |
 |---|---|---|
 | derived predicates (`P : … where …`) | **none** — `derive` parses, draws `nyi/derivation` | **yes** — B1, search index, closures |
 | `nat` arithmetic (`+`) | not lexed | **yes** — span ends |
@@ -301,18 +301,18 @@ Stated because a gap analysis that only lists gaps is not an analysis.
 [`bench/FINDINGS.md` §4](../bench/FINDINGS.md) says:
 
 > `src.Line` is `{ file, line } -> string` and holds 8,583,810 line texts — 133 MB, the
-> largest predicate in the index. **No focus query can read one.**
+> largest predicate in the index. **No sigla query can read one.**
 
 That is wrong. `.value` is the value side and it projects, in process and over the wire:
 
 ```
-$ aperture query code '{n = D.name, k = D.value} where D = src.Decl _' --limit 5
+$ fjord query code '{n = D.name, k = D.value} where D = src.Decl _' --limit 5
 K      N
 def    key_of
 class  CodecError
 …
 
-focus> :plan L.value where L = src.Line _
+sigla> :plan L.value where L = src.Line _
   r0 <- src.Line scan
   head r0.value
 ```
@@ -340,7 +340,7 @@ a new binary.
    indexer beside `src.Ref`. (B1)
 3. **`src.SearchByLowerName`** — the case-folded search index, same shape. (§3)
 4. Re-index a C# repository. `dotnet/runtime` is ~hours.
-5. An HTTP tier over `aperture-client`: a recycled connection pool, three routes, and
+5. An HTTP tier over `fjord-client`: a recycled connection pool, three routes, and
    the hyperlink splice. (B5)
 
 That produces file browsing, file viewing with working hyperlinks, jump-to-definition,
@@ -375,10 +375,10 @@ Phase A, and none of it needed the engine:
 |---|---|---|
 | A1 | **Spans** | `src.Ref.at` gained `length`, in the *key* so it is in the register the scan holds rather than a point read per row; `src.DeclSpan` carries where a declaration's name starts and where it ends, as a sibling in `src.TypeOf`'s shape rather than folded into an identity |
 | A2 | **`src.FileXRef`** | `src.Ref` keyed `{file, at, to}`, so a file's references seek and arrive in the order a renderer splices them |
-| A3 | **`src.SearchByLowerName`** | the search index case-folded, since focus has no `toLower` |
+| A3 | **`src.SearchByLowerName`** | the search index case-folded, since sigla has no `toLower` |
 | — | **`src.DerivesFrom`, `src.AttributeOf`** | the two key orders a symbol panel wanted and `src.Extends`/`src.Attribute` answer backwards |
 | A4 | **Re-index** | `dotnet/runtime`, 32,710 files, ~25M facts — up from 18.2M, which is what five more predicates cost |
-| A5 | **The site** | [`aperture-viewer`](../crates/aperture-viewer), over `aperture-client` and nothing below it |
+| A5 | **The site** | [`fjord-viewer`](../crates/fjord-viewer), over `fjord-client` and nothing below it |
 
 Phase B, all but the one that is gated on a decision:
 
@@ -386,7 +386,7 @@ Phase B, all but the one that is gated on a decision:
 |---|---|---|
 | B1 | **Stream-map removal** | a stream's task ends when its work does, the reader sweeps dead handles, and the client recycles ids. `streams_live` was already the gauge and nothing was allowed to decrement it |
 | B2 | **A cursor the client holds** | `Cursor::to_bytes`/`from_bytes` and a `QUERY_PAGE` frame, so paging stops needing the connection. Guarded by taking every page on a *new* connection and comparing the concatenation against the uninterrupted result |
-| B3 | **Comparisons and arithmetic** | `<`, `<=`, `>`, `>=` as residuals — a **byte** compare, since the key encoding is order-preserving ([I1](invariants.md#i1)) — and `+`/`-` as the first thing in focus to lower a `Step::Derive` at all |
+| B3 | **Comparisons and arithmetic** | `<`, `<=`, `>`, `>=` as residuals — a **byte** compare, since the key encoding is order-preserving ([I1](invariants.md#i1)) — and `+`/`-` as the first thing in sigla to lower a `Step::Derive` at all |
 | B4 | **Stored derivation** | not built, and the only item here that is *asked* to wait |
 | B5 | **Counts and ordering** | `QUERY_COUNT` is the same plan with a different accumulator and never encodes a row. Ranking is the viewer's, over a bounded window, and §6b says why |
 
@@ -542,7 +542,7 @@ Four things found by building it rather than by reading:
   to be one.
 - **Statement order still decides the plan** where both statements are runnable, and the
   wrong order is still a three-million-row scan with no diagnostic attached.
-- **Stored derivation.** Five predicates in `schemas/code.aps` are now a second key
+- **Stored derivation.** Five predicates in `schemas/code.sigla` are now a second key
   order over data already there. That is five apologies in five comments where there
   used to be two.
 

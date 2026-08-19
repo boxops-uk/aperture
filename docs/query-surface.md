@@ -1,6 +1,6 @@
 # The remaining query surface — an architecture note
 
-> **Status: a proposal, not design of record.** It argues one architecture for everything focus
+> **Status: a proposal, not design of record.** It argues one architecture for everything sigla
 > still parses and cannot run — disjunction, negation, `never`, subqueries — plus the deferred
 > items that would otherwise arrive one machine change at a time (`Source::Fetch`, primitives,
 > comparisons, union select). Sequencing stays the maintainer's ([`PLAN.md`](../PLAN.md) Phase
@@ -24,7 +24,7 @@
 The question it answers is not "can each of these be built" — each can — but **what shape does
 the executor end up in if they all are**. The executor was 989 lines of implementation when this
 was written and is 1,157 after two of the stages below
-([`iter.rs`](../crates/aperture-engine/src/iter.rs)); `enumerate` is still one loop with two arms. The failure mode to
+([`iter.rs`](../crates/fjord-engine/src/iter.rs)); `enumerate` is still one loop with two arms. The failure mode to
 avoid is the one where each feature adds an arm to that loop, an arm to the `Cursor`, and an
 [I4](invariants.md#i4) obligation of its own — six features later the machine is unreviewable
 and the resume proof is a case analysis nobody can hold in their head.
@@ -39,10 +39,10 @@ Three systems, three answers to *what does a paused query hold*:
 |---|---|
 | PostgreSQL | the **executor tree itself** — the plan's operator nodes, live, server-side |
 | Glean | the **whole VM** — bytecode, PC, every register, every output buffer, ABI-locked |
-| Aperture | **positions** — one detached row per open level, and nothing else ([chapter 5](05-resume.md)) |
+| Fjord | **positions** — one detached row per open level, and nothing else ([chapter 5](05-resume.md)) |
 
-Aperture's is the strongest promise and the most expensive to keep, and chapter 4 already prices
-it: *"in Aperture each such feature must extend the `Cursor` and re-prove I4 … the recurring
+Fjord's is the strongest promise and the most expensive to keep, and chapter 4 already prices
+it: *"in Fjord each such feature must extend the `Cursor` and re-prove I4 … the recurring
 price of a token this small"*. That sentence is the whole architecture problem, and the way out
 of paying it six times is to notice that **it is not owed six times**.
 
@@ -311,7 +311,7 @@ and the well-founded and stable-model semantics exist for programs that cannot b
 all. None of that arrives here, and the reason is worth stating so a later reader does not import
 machinery for a problem this design does not have:
 
-**focus has no recursion, and the base is immutable and complete.** Every negation is therefore
+**sigla has no recursion, and the base is immutable and complete.** Every negation is therefore
 evaluated against a relation that is already total, which is the definition of being trivially
 stratified. What survives from the literature is the much older and smaller obligation —
 **range restriction**: every variable in a negated literal must be bound positively elsewhere,
@@ -407,7 +407,7 @@ on its own, and it forces the reads-edge work in §5 while the resume token is s
 - **Whether `Source::Group` is needed in P0 at all.** A corpus question, and the honest way to
   answer it is to write the queries the example index invites and see whether any branch needs a
   join.
-- **Aggregation.** Glean has `FlatAllStatement` (`X = all (P where S)`); focus has no syntax for
+- **Aggregation.** Glean has `FlatAllStatement` (`X = all (P where S)`); sigla has no syntax for
   it. It is the one construct here that *cannot* be made suspend-free — it materialises, which
   breaks I9's per-row allocation claim and has no bounded position to save. If it is ever wanted
   it needs its own decision, not an arm.

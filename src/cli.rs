@@ -1,4 +1,4 @@
-//! The command tree — [operations §4](../docs/aperture-cli-design.md).
+//! The command tree — [operations §4](../docs/fjord-cli-design.md).
 //!
 //! Common lifecycle verbs stay top-level because they are the daily drivers; admin
 //! tooling nests one level. Every database-taking command is meant to accept any
@@ -11,21 +11,21 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 /// An immutable, embedded fact database.
 #[derive(Debug, Parser)]
-#[command(name = "aperture", version, about, long_about = None)]
+#[command(name = "fjord", version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
     /// The store root: where databases live, and what the socket path derives from.
     ///
-    /// Also `APERTURE_DATA_DIR`. Defaults under `$XDG_DATA_HOME` — see
+    /// Also `FJORD_DATA_DIR`. Defaults under `$XDG_DATA_HOME` — see
     /// [`crate::config`].
     #[arg(long, global = true, value_name = "PATH")]
     pub data_dir: Option<PathBuf>,
 
     /// A config file: `target` and `data_dir`, as JSON.
     ///
-    /// Without this, `./aperture.json` is read if it happens to be there. **The working
+    /// Without this, `./fjord.json` is read if it happens to be there. **The working
     /// directory only** — no search of parent directories, because a connection target
     /// inherited from a directory nobody was thinking about is the same invisible state
     /// a global registry would be, only harder to notice.
@@ -34,7 +34,7 @@ pub struct Cli {
 
     /// Where a schema's imports are looked for. Repeatable; first match wins.
     ///
-    /// Also `APERTURE_SCHEMA_PATH`, separated the way `PATH` is. An entry file's own
+    /// Also `FJORD_SCHEMA_PATH`, separated the way `PATH` is. An entry file's own
     /// directory is always searched first, so a directory of schemas that import each
     /// other needs none of this.
     #[arg(long, global = true, value_name = "PATH")]
@@ -49,7 +49,7 @@ pub struct Cli {
 pub enum Command {
     /// Run the server over a store root.
     Serve {
-        /// Where to bind. Defaults to `<data-dir>/aperture.sock`.
+        /// Where to bind. Defaults to `<data-dir>/fjord.sock`.
         #[arg(long, value_name = "PATH")]
         socket: Option<PathBuf>,
 
@@ -213,7 +213,7 @@ pub enum Command {
 }
 
 /// The three questions a schema can be asked away from a database
-/// ([operations §5](../docs/aperture-cli-design.md)).
+/// ([operations §5](../docs/fjord-cli-design.md)).
 ///
 /// All three take **files**, and `diff` takes a database name just as happily: what is
 /// being compared is a schema, and where it was read from is the caller's business.
@@ -315,11 +315,11 @@ pub enum RowFormat {
 mod tests {
     use super::*;
 
-    /// **`--expand`'s bare depth is [`aperture_client::FULL_DEPTH`]**, restated as a
+    /// **`--expand`'s bare depth is [`fjord_client::FULL_DEPTH`]**, restated as a
     /// literal.
     ///
     /// clap needs `default_missing_value` as a string at attribute position, so the
-    /// number is written twice: once in `aperture-client`, where the walk is, and once
+    /// number is written twice: once in `fjord-client`, where the walk is, and once
     /// above. This is the check that they agree — the sort of drift nothing else would
     /// notice, since a wrong number here still expands, just not as far as the flag's own
     /// help says.
@@ -328,13 +328,7 @@ mod tests {
     /// command actually receives.
     #[test]
     fn the_bare_expand_depth_is_the_clients_full_depth() {
-        let parsed = Cli::parse_from([
-            "aperture",
-            "query",
-            "code",
-            "F where src.File F",
-            "--expand",
-        ]);
+        let parsed = Cli::parse_from(["fjord", "query", "code", "F where src.File F", "--expand"]);
 
         let Command::Query { expand, .. } = parsed.command else {
             panic!("that is a query");
@@ -342,13 +336,13 @@ mod tests {
 
         assert_eq!(
             expand,
-            Some(aperture_client::FULL_DEPTH),
+            Some(fjord_client::FULL_DEPTH),
             "`--expand` with no number should follow a chain as far as the expander does"
         );
 
         // And with a number it is that number, which is the form the bare one defaults.
         let parsed = Cli::parse_from([
-            "aperture",
+            "fjord",
             "query",
             "code",
             "F where src.File F",
@@ -361,7 +355,7 @@ mod tests {
         assert_eq!(expand, Some(2));
 
         // Absent is absent: ids, and no point reads.
-        let parsed = Cli::parse_from(["aperture", "query", "code", "F where src.File F"]);
+        let parsed = Cli::parse_from(["fjord", "query", "code", "F where src.File F"]);
         let Command::Query { expand, .. } = parsed.command else {
             panic!("that is a query");
         };

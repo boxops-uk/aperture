@@ -1,6 +1,6 @@
 # What this repository enforces, and what it cannot
 
-Aperture's history is the evidence for its design: every chapter cites commits, and
+Fjord's history is the evidence for its design: every chapter cites commits, and
 [`bench/FINDINGS.md`](../bench/FINDINGS.md) numbers are only worth reading if the tree that
 produced them is the tree recorded. So the rules below are not policy decoration — they are
 what makes a commit citable. All of them are **server-side rulesets with no bypass actors**,
@@ -37,7 +37,7 @@ Every push to `main` or `release/*`, and every `v*` tag, signs provenance naming
 binaries it built:
 
 ```
-gh attestation verify ./aperture --repo boxops-uk/aperture
+gh attestation verify ./fjord --repo boxops-uk/fjord
 ```
 
 A binary the workflow did not build has no attestation and fails this check.

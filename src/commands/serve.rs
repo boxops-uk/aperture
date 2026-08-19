@@ -1,4 +1,4 @@
-//! `aperture serve`.
+//! `fjord serve`.
 //!
 //! Owns the store root (`ops-I1`) and serves every database under it.
 //!
@@ -11,8 +11,8 @@
 
 use std::{path::Path, sync::Arc};
 
-use aperture_server::{Registry, registry::Schemas, server::serve_on};
-use aperture_wire::protocol;
+use fjord_server::{Registry, registry::Schemas, server::serve_on};
+use fjord_wire::protocol;
 
 use crate::{CliError, code_index, commands};
 
@@ -40,7 +40,7 @@ pub fn run(
     //
     // ```text
     // RUSTFLAGS="--cfg tokio_unstable" cargo run --release --features console \
-    //     --bin aperture -- --data-dir PATH serve
+    //     --bin fjord -- --data-dir PATH serve
     // tokio-console
     // ```
     #[cfg(feature = "console")]
@@ -51,12 +51,12 @@ pub fn run(
     let (catalog, _lock) = commands::exclusive(root, socket)?;
 
     // **The served schema, not the stored one**: the same predicates a client declares,
-    // plus `aperture.db.List`, which this process can answer out of the root it owns.
+    // plus `fjord.db.List`, which this process can answer out of the root it owns.
     // The fingerprint is unchanged by that — a virtual predicate is not part of what
     // two ends have to agree about — so a client that has never heard of it still
     // connects ([`code_index::with_catalogue`]).
     let schema = code_index::with_catalogue();
-    let fingerprint = aperture_schema::fingerprint::of(&schema);
+    let fingerprint = fjord_schema::fingerprint::of(&schema);
 
     // The registry takes the catalog with it, because owning the root and owning the
     // databases under it are the same ownership: `create` and `remove` arriving over
@@ -66,7 +66,7 @@ pub fn run(
         Registry::open(catalog, Schemas::new(code_index::CATALOGUE_SOURCE, schema))?;
     let registry = Arc::new(registry.with_block_commits(commit_per_block));
 
-    println!("aperture serve");
+    println!("fjord serve");
     println!("  data dir   {}", root.display());
     println!("  socket     {}", socket.display());
     println!("  protocol   {}", protocol::VERSION);
@@ -86,7 +86,7 @@ pub fn run(
         // Said plainly rather than served silently: a server with nothing to serve is
         // almost always a wrong `--data-dir`, and the fix is one command away — and
         // now the command works without stopping this process first.
-        println!("  databases  none — `aperture create <name>` makes one");
+        println!("  databases  none — `fjord create <name>` makes one");
     } else {
         println!("  databases  {}", registry.len());
         for entry in &listing.entries {
@@ -107,7 +107,7 @@ pub fn run(
     // is a query answering zero rows, which is why this is worth a line at startup
     // rather than a note in a document.
     for entry in &listing.entries {
-        if matches!(aperture_store::schema_doc::source(&entry.path), Ok(None)) {
+        if matches!(fjord_store::schema_doc::source(&entry.path), Ok(None)) {
             eprintln!(
                 "warning: `{}` embeds no schema copy — it predates one being kept, so it is \n\
                  served with this build's built-in schema. If that schema has changed since the \n\

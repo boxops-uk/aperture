@@ -5,21 +5,21 @@
 //! it away.
 //!
 //! **Phase 9f added a second shell rather than re-pointing this one**, which is a
-//! change from what this file used to predict. `aperture shell <db>` is
+//! change from what this file used to predict. `fjord shell <db>` is
 //! [`crate::commands::shell`] — always over the wire, and where `\more` holds a cursor
 //! across a round trip. What kept this one alive is `:plan` and `:type`: they need a
 //! compiler in the same process as the question, and a client holds a query's text and
 //! never its plan. So the split is not two ways of doing one thing — it is the two
 //! things a person actually wants, and the argument says which.
 //!
-//! `aperture` — an interactive shell for the focus language.
+//! `fjord` — an interactive shell for the sigla language.
 //!
-//! Reads a focus query, highlights it as you type from the same `logos` lexer the
+//! Reads a sigla query, highlights it as you type from the same `logos` lexer the
 //! compiler uses, **compiles it to a [`Plan`] and runs it** — reporting whatever the
 //! front end found on the way: lex and parse errors, names lowering cannot resolve,
 //! the type typecheck infers for the head, and then the rows.
 //!
-//! A command's **argument** is highlighted too, when the command takes focus source:
+//! A command's **argument** is highlighted too, when the command takes sigla source:
 //! `:plan X where …` reads exactly as the same query does at the bare prompt, because
 //! it is the same text going to the same compiler. Colour arriving as you type it is
 //! also the shell saying it recognised the command — a typo stays grey. That is keyed
@@ -37,13 +37,13 @@
 //!
 //! The schema is a **code index** because that is the canonical shape for a fact
 //! database: one fact per thing, and everything about a thing pointing at it by
-//! [`FactId`](aperture_schema::id::FactId) rather than repeating it. A reference is
+//! [`FactId`](fjord_schema::id::FactId) rather than repeating it. A reference is
 //! also the one thing whose plan does not read like its source — following one splices
 //! an *id*, so `to = r0#` is the answer to "did it follow the reference, or compare the
 //! wrong bytes?".
 //!
 //! The facts themselves are written as **well-typed Rust values** through
-//! [`focus::fact`](aperture_store::fact), which is what a hand-written deriver would
+//! [`sigla::fact`](fjord_store::fact), which is what a hand-written deriver would
 //! do: a plain struct, named fields, and the schema deciding the encoding order. The
 //! `Fact` impls below deliberately list their fields in the order that reads well rather
 //! than the order the schema declares, because getting that wrong by hand writes a fact
@@ -52,44 +52,44 @@
 //! # What it does not do
 //!
 //! **Anything a wire client could not.** The product shell is remote-first
-//! ([operations §5](../docs/aperture-cli-design.md)), so this holds no state a wire
+//! ([operations §5](../docs/fjord-cli-design.md)), so this holds no state a wire
 //! session cannot reproduce: no cursors kept between lines, no cached compilations.
 //! Phase 9 re-points the interactive front at the wire client, and everything here
 //! survives that except which store it opens.
 
 use std::path::Path;
 
-use aperture_encoding::tuple::{Value, decode_key};
-use aperture_engine::{
+use codespan_reporting::term::{
+    self,
+    termcolor::{ColorChoice, StandardStream},
+};
+use fjord_encoding::tuple::{Value, decode_key};
+use fjord_engine::{
     compile::Compilation,
-    error::ApertureError,
+    error::FjordError,
     iter::{Executor, Iteratee, Stream},
     lexer::Token,
     plan::{Access, Address, FieldPath, Level, Plan, Project, SeekKey, Step},
     print,
 };
-use aperture_schema::{
+use fjord_schema::{
     id::FactId,
     schema::{LocalInterner, PredicateId, PredicateTy, Schema, SchemaInterner, Symbol},
 };
-use aperture_store::{
+use fjord_store::{
     error::StoreError,
     fact::{Fact, ToValue, record},
     fact_store::FactStore,
     store::{FjallDb, FjallStore},
 };
-use codespan_reporting::term::{
-    self,
-    termcolor::{ColorChoice, StandardStream},
-};
 use serde::Deserialize;
 
 use rustyline::{Editor, error::ReadlineError, history::DefaultHistory};
 
-use crate::prompt::{Command, FocusHelper};
+use crate::prompt::{Command, SiglaHelper};
 use tokio_util::sync::CancellationToken;
 
-const PROMPT: &str = "focus> ";
+const PROMPT: &str = "sigla> ";
 
 // ---- the schema, and the facts that back it --------------------------------
 
@@ -97,7 +97,7 @@ const PROMPT: &str = "focus> ";
 //
 // Each of these is what a hand-written deriver emits: a plain struct, named fields,
 // and `db.put` doing the rest. None of them lists its fields in the schema's sorted
-// order, and none of them has to — that is what `focus::fact` checks and reorders,
+// order, and none of them has to — that is what `sigla::fact` checks and reorders,
 // and getting it wrong by hand writes a fact nobody can find.
 //
 // Each is *also* the JSON row `example/index.py` wrote for it, because the only thing
@@ -328,7 +328,7 @@ struct Index {
 ///
 /// `include_str!` rather than a read at startup, for two reasons: the shell has no
 /// working directory it can rely on, and this way `cargo build` reruns when the file
-/// changes. Aperture has no ingestion path yet ([Phase 7](../PLAN.md)), so a
+/// changes. Fjord has no ingestion path yet ([Phase 7](../PLAN.md)), so a
 /// checked-in artefact and a loader written by hand is what stands in for one — and
 /// what Phase 7 replaces, on both sides.
 ///
@@ -347,7 +347,7 @@ const MALFORMED: &str = "example/index.json is not the index this shell knows ho
 /// consequence of the order rather than a check — nothing can point at a fact that
 /// has not been written, because there is no id for it yet — and resolving the
 /// indexer's positions against the ids so far is the same argument from the other end.
-fn seed(db: &FjallDb, schema: &Schema) -> Result<usize, ApertureError> {
+fn seed(db: &FjallDb, schema: &Schema) -> Result<usize, FjordError> {
     let index: Index =
         serde_json::from_str(INDEX).unwrap_or_else(|error| panic!("{MALFORMED} ({error})"));
 
@@ -383,7 +383,7 @@ fn seed(db: &FjallDb, schema: &Schema) -> Result<usize, ApertureError> {
         to: id_at(&decls, name.to),
     })?;
 
-    // The case-folded copy, from the same rows: focus has no `toLower`, so the index
+    // The case-folded copy, from the same rows: sigla has no `toLower`, so the index
     // that answers a case-insensitive search has to be written.
     loader.put_all(&index.names, |name| SearchByLowerName {
         name: name.name.to_lowercase(),
@@ -462,7 +462,7 @@ impl Loader<'_> {
 /// points at a declaration, which points at its module, which points at its file.
 const MAX_REF_DEPTH: usize = 4;
 
-/// Render a projected row as focus-flavoured text.
+/// Render a projected row as sigla-flavoured text.
 ///
 /// A reference prints as the fact it names — `demo.City "Cambridge"` — which is
 /// both what a reader wants and how that same fact is written in a query. It
@@ -479,7 +479,7 @@ fn render_value(
     match value {
         Value::Null => "null".to_owned(),
         Value::Int(n) => n.to_string(),
-        // Debug formatting is the quoting and escaping focus source uses.
+        // Debug formatting is the quoting and escaping sigla source uses.
         Value::Str(s) => format!("{s:?}"),
         Value::FactRef(id) => render_ref(store, schema, interner, *id, depth),
         Value::Record(fields) => {
@@ -734,7 +734,7 @@ fn print_plan(source: &str, schema: &Schema) {
 /// A shell that advertises a query it cannot answer is worse than one that advertises
 /// none, and that is exactly what this was doing before a query could be run at all.
 /// **Nothing checks these strings**, and it is worth being plain about that: they are
-/// written against the code index, and `focus::corpus` — which does run every entry
+/// written against the code index, and `sigla::corpus` — which does run every entry
 /// against a real store — is written against the shared fixture. What the corpus
 /// pins is that each *construct* used here returns rows; that these particular
 /// queries do is checked by typing them, which is what a scaffold is for.
@@ -844,7 +844,7 @@ const COMMANDS: [Command; 7] = [
 ];
 
 fn print_help() {
-    println!("  <query>          compile and run a focus query, e.g.");
+    println!("  <query>          compile and run a sigla query, e.g.");
     for example in EXAMPLES {
         println!("                     {example}");
     }
@@ -1011,7 +1011,7 @@ fn print_facts(db: &FjallDb, schema: &Schema, name: &str) {
 /// A scratch directory of this run's own, so two shells never share a database
 /// and re-running never writes a key twice.
 fn scratch_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("aperture-shell-{}", std::process::id()))
+    std::env::temp_dir().join(format!("fjord-shell-{}", std::process::id()))
 }
 
 /// Run the demo shell: seed a scratch database from `example/index.json` and take
@@ -1020,7 +1020,7 @@ fn scratch_dir() -> std::path::PathBuf {
 /// # Errors
 ///
 /// Whatever the store or the terminal reports.
-pub fn main() -> Result<(), ApertureError> {
+pub fn main() -> Result<(), FjordError> {
     let dir = scratch_dir();
     let result = shell(&dir);
 
@@ -1031,7 +1031,7 @@ pub fn main() -> Result<(), ApertureError> {
     result
 }
 
-fn shell(dir: &Path) -> Result<(), ApertureError> {
+fn shell(dir: &Path) -> Result<(), FjordError> {
     let schema = crate::code_index::schema();
 
     let db = FjallDb::open(dir)?;
@@ -1043,9 +1043,9 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
     // queries behind `:help` — and the pointer to it appears where someone is
     // actually looking for it: after typing a command that does not exist.
 
-    let mut editor: Editor<FocusHelper, DefaultHistory> =
+    let mut editor: Editor<SiglaHelper, DefaultHistory> =
         Editor::new().map_err(|error| readline_failure(&error))?;
-    editor.set_helper(Some(FocusHelper::new(&COMMANDS)));
+    editor.set_helper(Some(SiglaHelper::new(&COMMANDS)));
 
     loop {
         match editor.readline(PROMPT) {
@@ -1083,7 +1083,7 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
                         // empty predicate looks like a bug from the prompt.
                         println!(
                             "  the build layer and the declaration graph are empty here — \
-                             they are written by clients/dotnet/Aperture.Indexer"
+                             they are written by clients/dotnet/Fjord.Indexer"
                         );
                     }
                     _ if line == ":help" => print_help(),
@@ -1106,7 +1106,7 @@ fn shell(dir: &Path) -> Result<(), ApertureError> {
 
 /// A terminal that cannot be read is not a store fault, but the shell has one
 /// error type to leave by.
-fn readline_failure(error: &ReadlineError) -> ApertureError {
-    eprintln!("aperture: {error}");
-    ApertureError::Cancelled
+fn readline_failure(error: &ReadlineError) -> FjordError {
+    eprintln!("fjord: {error}");
+    FjordError::Cancelled
 }

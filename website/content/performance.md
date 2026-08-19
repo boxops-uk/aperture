@@ -226,7 +226,7 @@ zero, one writer is the right answer.
 
 Most of the register is measurement. Three items were acted on, because leaving them would have
 made every later number a measurement of a bug. Two are worth repeating here because they change
-how you *use* Aperture.
+how you *use* Fjord.
 
 ### Field order is the largest effect measured anywhere
 

@@ -1,11 +1,11 @@
-//! `aperture list`.
+//! `fjord list`.
 //!
 //! Reads sidecars and nothing else (`ops-I7`), so it works while a server holds every
 //! database under the root — which is the one thing this command must never fail to
 //! do, since it is what someone runs when they are trying to find out what is going
 //! on.
 
-use aperture_store::catalog::Listing;
+use fjord_store::catalog::Listing;
 
 use crate::{CliError, cli::Format, commands, output};
 

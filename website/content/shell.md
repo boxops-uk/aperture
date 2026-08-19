@@ -3,28 +3,28 @@ title: Shell reference
 description: The two REPLs — the wire shell over a server, and the embedded demo that seeds its own database — with every command and what each one is for.
 ---
 
-`aperture shell` is two things depending on whether you name a database.
+`fjord shell` is two things depending on whether you name a database.
 
 | Invocation | What it is |
 |---|---|
-| `aperture shell <db>` | The **product shell**. Always over the wire, even against a local server — so the protocol has a permanent exerciser and `:more` holds a real cursor across a real round trip |
-| `aperture shell` | The **embedded demo**. A scratch database it seeds itself with a real index of a small Python corpus — the one thing no wire client can do |
+| `fjord shell <db>` | The **product shell**. Always over the wire, even against a local server — so the protocol has a permanent exerciser and `:more` holds a real cursor across a real round trip |
+| `fjord shell` | The **embedded demo**. A scratch database it seeds itself with a real index of a small Python corpus — the one thing no wire client can do |
 
 Both share the input layer: syntax highlighting from the compiler's own lexer, history,
 completion, and the rule that a line with an unclosed `{` or `(` continues on the next one.
 
 Commands are `:`-prefixed. The psql spellings (`\d`, `\l`, `\c`, `\timing`, `\more`) are accepted
-as aliases, because neither prefix can begin a focus query — so a hand trained on psql costs
+as aliases, because neither prefix can begin a sigla query — so a hand trained on psql costs
 nothing.
 
 ## The wire shell
 
 ```bash
-aperture --data-dir ./db shell code
+fjord --data-dir ./db shell code
 ```
 
 ```text
-aperture shell — `code` on ./db/aperture.sock
+fjord shell — `code` on ./db/fjord.sock
   28 predicate(s) · rows print as jsonl · :help for commands
 ```
 
@@ -42,7 +42,7 @@ aperture shell — `code` on ./db/aperture.sock
 | `:cancel` | `\cancel` | Stop the last result early |
 | `:timing` | `\timing` | Toggle how long a page took |
 | `:profile` | `\profile` | Toggle what a query examined, per step of its plan |
-| `:list` | `\l`, `:l` | The databases on this server — a query over `aperture.db.List` |
+| `:list` | `\l`, `:l` | The databases on this server — a query over `fjord.db.List` |
 | `:connect <db>` | `\c`, `:c` | The same session against another database |
 | `:clear` | | Clear the screen |
 | `:help` | `\?`, `:?`, `:h` | The table above, generated from the table itself |
@@ -65,15 +65,15 @@ It holds the schema the server said it serves — the `H`/`h` exchange — so a 
 ### Paging holds a real cursor
 
 ```text
-focus> :limit 3
+sigla> :limit 3
   3 row(s) per page
-focus> F where src.File F
+sigla> F where src.File F
   : str
 "src/f0000000.py"
 "src/f0000001.py"
 "src/f0000002.py"
   :more for the next 3 — 3 so far
-focus> :more
+sigla> :more
 "src/f0000003.py"
 "src/f0000004.py"
 "src/f0000005.py"
@@ -97,15 +97,15 @@ piping.
 ### `:expand` — show the fact a reference names
 
 ```text
-focus> R where R = src.Ref _
+sigla> R where R = src.Ref _
 {"to": "#4:1", "file": "#9:2", "at": {"line": 2, "col": 4, "length": 12}}
 
-focus> :expand
-focus> R where R = src.Ref _
+sigla> :expand
+sigla> R where R = src.Ref _
 {"to": {"module": {"file": "src/f0000000.py", "name": "m0000000"}, "name": "symbol_0000000_000", "line": 1}, "file": "src/f0000001.py", "at": {"line": 2, "col": 4, "length": 12}}
 ```
 
-A row carries a reference as a fact id, because that is what one is once stored — and focus
+A row carries a reference as a fact id, because that is what one is once stored — and sigla
 cannot ask what it names. So the question goes on the protocol, and the client walks the answer:
 breadth-first, one round trip per level of depth, one point read per distinct id, cached across
 pages because a page of references into one file names that file forty times.
@@ -117,8 +117,8 @@ a field somebody chose not to expand.
 ### `:profile` — what it examined
 
 ```text
-focus> :profile
-focus> {f = F, l = L} where src.Ref {to = src.Decl {name = "symbol_0000000_000"}, file = F, at = {line = L}}
+sigla> :profile
+sigla> {f = F, l = L} where src.Ref {to = src.Decl {name = "symbol_0000000_000"}, file = F, at = {line = L}}
 STEP      EXAMINED
 src.Decl  1000      full scan
 src.Ref   1
@@ -135,20 +135,20 @@ different query's numbers.
 ### `:schema` — and prefixes
 
 ```text
-focus> :schema src.Decl
-focus> :schema src.
+sigla> :schema src.Decl
+sigla> :schema src.
 ```
 
 An exact name describes one predicate; anything that does not resolve exactly falls back to
 **prefix matching**, so `:schema src.` dumps a namespace rather than failing.
 
 Virtual predicates are printed like any other, because the served schema is what may be *asked*
-about. `aperture.db.List` is there, and `:list` is a query over it.
+about. `fjord.db.List` is there, and `:list` is a query over it.
 
 ## The embedded demo
 
 ```bash
-aperture shell
+fjord shell
 ```
 
 No server, no store root, no setup: it seeds a scratch database from a **real** index of the
@@ -167,20 +167,20 @@ search predicate — written through the fact API at startup.
 Its `:help` also prints ten queries worth trying, and they answer with real names:
 
 ```text
-focus> D.name where D = src.Decl {name = "encode"..}
+sigla> D.name where D = src.Decl {name = "encode"..}
   : str
   "encode_int"
   "encode_key"
   "encode_str"
   3 row(s)
 
-focus> {file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = "encode_str"}}
+sigla> {file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = "encode_str"}}
   : {file: src.File, line: int}
   {file = src.File "store/codec.py", line = 38}
   {file = src.File "store/keys.py", line = 17}
   2 row(s)
 
-focus> M.name where M = src.Module _; !src.Import {from = M}
+sigla> M.name where M = src.Module _; !src.Import {from = M}
   : str
   "store.codec"
   1 row(s)
@@ -188,7 +188,7 @@ focus> M.name where M = src.Module _; !src.Import {from = M}
 
 Read those against the corpus itself: every row names a file and a line you can go and look at.
 
-Rows here print in focus's own value syntax rather than as JSON, because this shell renders from
+Rows here print in sigla's own value syntax rather than as JSON, because this shell renders from
 the engine's values directly — it is the one place in the tool that is not a wire client.
 
 :::note Why both survive
@@ -200,7 +200,7 @@ system answer a real question.
 
 ## Things worth trying in either
 
-```focus
+```sigla
 :plan D where D = src.Decl {name = "encode"..}
 :plan D where D = src.SearchByName {name = "encode"..}
 ```
@@ -209,14 +209,14 @@ The same question twice, and the plans are the argument for what a derived predi
 scans and filters, the other seeks a range. Run both with `:profile` on and read the
 `EXAMINED` column.
 
-```focus
+```sigla
 D.name where D = src.Decl _; !src.Ref {to = D}
 ```
 
 Unused declarations — a negation, which is a test rather than a level: it binds nothing and each
 source is drained to its first row.
 
-```focus
+```sigla
 {decl = D.name, module = D.module.name} where D = src.Decl {name = "encode"..}
 ```
 

@@ -1,10 +1,10 @@
 //! **The prompt itself** — what both shells share, and nothing either of them means.
 //!
 //! There are two shells and there will go on being two
-//! ([operations §5](../docs/aperture-cli-design.md)): [`crate::commands::shell`] is the
+//! ([operations §5](../docs/fjord-cli-design.md)): [`crate::commands::shell`] is the
 //! product one, always over the wire, and [`crate::shell`] is Phase 5's embedded demo
 //! over a scratch database it seeds itself. What they have in common is a *terminal* —
-//! the same highlighter over the same lexer, the same rule for where a line's focus
+//! the same highlighter over the same lexer, the same rule for where a line's sigla
 //! source begins, the same decision about colour, and the same table shape behind
 //! `:help`. That is this module. What differs is every command's meaning, which is why
 //! the table is passed in rather than defined here.
@@ -22,11 +22,11 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use aperture_engine::{
+use fjord_engine::{
     lexer::{Token, tokenize},
     syntax::Ty,
 };
-use aperture_schema::schema::{LocalInterner, Schema};
+use fjord_schema::schema::{LocalInterner, Schema};
 use rustyline::{
     Context, Helper,
     completion::{Completer, Pair},
@@ -37,7 +37,7 @@ use rustyline::{
 
 /// One shell command, as `:help`, the highlighter and the completer all read it.
 ///
-/// `argument` is `Some` when the command takes **focus source** — a query, or a
+/// `argument` is `Some` when the command takes **sigla source** — a query, or a
 /// predicate name. That is the field the highlighter reads, and it is why this is a
 /// table rather than three lists: a command added to the table without an arm in the
 /// dispatch is advertised, highlighted and inert, which is the one drift worth
@@ -121,8 +121,8 @@ pub fn colour(token: Token) -> &'static str {
 /// and `:schema` was painted by a hand-written tokeniser that guessed; there is a real
 /// one now, so what is printed is schema source painted by the schema's own lexer.
 #[must_use]
-pub fn schema_colour(token: aperture_schema::syntax::lexer::Token) -> &'static str {
-    use aperture_schema::syntax::lexer::Token as S;
+pub fn schema_colour(token: fjord_schema::syntax::lexer::Token) -> &'static str {
+    use fjord_schema::syntax::lexer::Token as S;
 
     match token {
         S::Error => "1;31",
@@ -148,7 +148,7 @@ pub fn paint_schema(source: &str) -> String {
         return source.to_owned();
     }
 
-    let (tokens, spans) = aperture_schema::syntax::lexer::tokenize(source, &mut Vec::new());
+    let (tokens, spans) = fjord_schema::syntax::lexer::tokenize(source, &mut Vec::new());
     let mut out = String::with_capacity(source.len() * 2);
     let mut last = 0;
 
@@ -167,8 +167,8 @@ pub fn paint_schema(source: &str) -> String {
 
         if matches!(
             token,
-            aperture_schema::syntax::lexer::Token::Whitespace
-                | aperture_schema::syntax::lexer::Token::EOF
+            fjord_schema::syntax::lexer::Token::Whitespace
+                | fjord_schema::syntax::lexer::Token::EOF
         ) {
             out.push_str(&source[span.clone()]);
         } else {
@@ -236,11 +236,11 @@ pub fn history_path() -> Option<PathBuf> {
             std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
         })?;
 
-    Some(base.join("aperture").join("history"))
+    Some(base.join("fjord").join("history"))
 }
 
 /// The line editor's helper: highlighting, hints, completion and when a line is done.
-pub struct FocusHelper {
+pub struct SiglaHelper {
     commands: &'static [Command],
     /// Predicate names to complete, refreshed when the session's schema changes.
     ///
@@ -251,10 +251,10 @@ pub struct FocusHelper {
     names: Mutex<Vec<String>>,
 }
 
-impl FocusHelper {
+impl SiglaHelper {
     #[must_use]
-    pub fn new(commands: &'static [Command]) -> FocusHelper {
-        FocusHelper {
+    pub fn new(commands: &'static [Command]) -> SiglaHelper {
+        SiglaHelper {
             commands,
             names: Mutex::new(vec![]),
         }
@@ -267,7 +267,7 @@ impl FocusHelper {
         }
     }
 
-    /// Where this line's **focus source** begins, if any.
+    /// Where this line's **sigla source** begins, if any.
     ///
     /// A query is source from the first byte. A command word is not — but the
     /// *argument* of a command that takes one is, so `:plan X where …` and
@@ -341,7 +341,7 @@ impl FocusHelper {
 /// **Both prefixes**, and that is a decision rather than indulgence: `:` is what the
 /// demo has always used and what this tool's own commands are named after, and `\` is
 /// what a hand trained on psql types without thinking. Neither can be the start of a
-/// focus query, so accepting both costs nothing and refusing one costs somebody a
+/// sigla query, so accepting both costs nothing and refusing one costs somebody a
 /// puzzled minute.
 #[must_use]
 pub fn starts_a_command(line: &str) -> bool {
@@ -359,7 +359,7 @@ pub fn split_command(line: &str) -> (&str, &str) {
     }
 }
 
-impl Highlighter for FocusHelper {
+impl Highlighter for SiglaHelper {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
         let Some(at) = self.source_offset(line) else {
             return Cow::Borrowed(line);
@@ -381,7 +381,7 @@ impl Highlighter for FocusHelper {
     }
 }
 
-impl Hinter for FocusHelper {
+impl Hinter for SiglaHelper {
     type Hint = String;
 
     /// A live hint for the one fault that is unambiguous mid-typing.
@@ -404,7 +404,7 @@ impl Hinter for FocusHelper {
     }
 }
 
-impl Completer for FocusHelper {
+impl Completer for SiglaHelper {
     type Candidate = Pair;
 
     /// Complete a command word, or a predicate name.
@@ -463,7 +463,7 @@ impl Completer for FocusHelper {
 
 /// Whether a line wants another one after it.
 ///
-/// **Unclosed brackets, and nothing cleverer.** A focus query has no terminator — `;`
+/// **Unclosed brackets, and nothing cleverer.** A sigla query has no terminator — `;`
 /// separates statements *inside* one — so there is no punctuation that means "done",
 /// and guessing from the grammar would make every half-typed `X where` a multi-line
 /// prompt. What is unambiguous is an open `{` or `(`: nothing that closes them can be
@@ -493,7 +493,7 @@ pub fn is_incomplete(line: &str) -> bool {
     depth > 0
 }
 
-impl Validator for FocusHelper {
+impl Validator for SiglaHelper {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
         Ok(if is_incomplete(ctx.input()) {
             ValidationResult::Incomplete
@@ -503,7 +503,7 @@ impl Validator for FocusHelper {
     }
 }
 
-impl Helper for FocusHelper {}
+impl Helper for SiglaHelper {}
 
 #[cfg(test)]
 mod tests {
@@ -524,8 +524,8 @@ mod tests {
         },
     ];
 
-    fn helper() -> FocusHelper {
-        FocusHelper::new(&COMMANDS)
+    fn helper() -> SiglaHelper {
+        SiglaHelper::new(&COMMANDS)
     }
 
     /// A query is source from the first byte; a command's argument is source only when

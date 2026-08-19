@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Index a .NET checkout into a fresh Aperture database, and leave it there to query.
+# Index a .NET checkout into a fresh Fjord database, and leave it there to query.
 #
 #   ./clients/dotnet/index-repo.sh /path/to/some/checkout [database]
 #
@@ -29,23 +29,23 @@ if [ $# -gt 0 ] && [[ "$1" != --* ]]; then
 fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-scratch="${APERTURE_INDEX_DIR:-/tmp/ap-index}"
+scratch="${FJORD_INDEX_DIR:-/tmp/fj-index}"
 
-# A named store root keeps its socket beside it (operations §2), so `aperture query`
+# A named store root keeps its socket beside it (operations §2), so `fjord query`
 # finds the same server this indexer wrote to without being told where.
-socket="$scratch/db/aperture.sock"
+socket="$scratch/db/fjord.sock"
 
-cargo build --manifest-path "$root/Cargo.toml" --bin aperture --release
-aperture="$root/target/release/aperture"
+cargo build --manifest-path "$root/Cargo.toml" --bin fjord --release
+fjord="$root/target/release/fjord"
 
 # A fresh database each run: the point of indexing something large is measuring what it
 # costs, and a second run over a database that already holds the answers measures dedup.
 rm -rf "$scratch"
 mkdir -p "$scratch"
 
-"$aperture" --data-dir "$scratch/db" create "$database"
+"$fjord" --data-dir "$scratch/db" create "$database"
 
-"$aperture" --data-dir "$scratch/db" serve --ready-file "$scratch/ready" &
+"$fjord" --data-dir "$scratch/db" serve --ready-file "$scratch/ready" &
 server=$!
 trap 'kill "$server" 2>/dev/null || true' EXIT
 
@@ -56,13 +56,13 @@ done
 
 [ -e "$scratch/ready" ] || { echo "the server never became ready" >&2; exit 1; }
 
-dotnet run --project "$root/clients/dotnet/Aperture.Indexer" --configuration Release -- \
+dotnet run --project "$root/clients/dotnet/Fjord.Indexer" --configuration Release -- \
     --source "$source_path" \
     --at "$socket//$database" \
     "$@"
 
 echo
 echo "the database is at $scratch/db, and the server is about to stop. To ask it things:"
-echo "  $aperture --data-dir $scratch/db serve &"
-echo "  $aperture --data-dir $scratch/db query $database 'N where src.Module {name = N}' --limit 20 --timing"
-echo "  $aperture --data-dir $scratch/db query $database 'X where X = src.SearchByName {name = \"Parse\"}' --profile"
+echo "  $fjord --data-dir $scratch/db serve &"
+echo "  $fjord --data-dir $scratch/db query $database 'N where src.Module {name = N}' --limit 20 --timing"
+echo "  $fjord --data-dir $scratch/db query $database 'X where X = src.SearchByName {name = \"Parse\"}' --profile"
