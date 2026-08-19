@@ -60,6 +60,14 @@ it encodes for a fixed corpus, and `aperture-client`'s
 (Phase 9e's criterion). The corpus and the schema are stated independently on each side
 on purpose — a shared statement would make the two agree by construction, which is the
 agreement being tested. The Rust test needs no `dotnet`; regenerating the golden does.
+**And it writes to Glean too** — `--glean-out <dir>` puts the same facts into Glean's own
+JSON batch format against `clients/dotnet/glean/apbench.angle`
+(`./clients/dotnet/index-repo-glean.sh <checkout>`), because a number comparing the two
+systems needs one producer: the walk, the batching and the writer threads are shared and
+only `IBlockTarget.Write` differs. References stay **nested** on that path as well — Glean
+interns an anonymous nested fact exactly as `intern` does — so neither side is being asked
+an easier question, and *emitting is not writing*: the load is a second phase with its own
+clock, and the honest total for Glean is emit plus load.
 
 `src/main.rs` compiles and runs what you type against a real store seeded with a **code index**
 (files → modules → declarations → references), written through the fact API; `:plan` shows the

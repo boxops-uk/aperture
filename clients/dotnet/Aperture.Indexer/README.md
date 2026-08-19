@@ -216,13 +216,14 @@ collision nobody would have predicted.
 --source <path>       a .sln, .slnx, .csproj, or a directory holding one (required)
 --root <path>         paths are reported relative to this (default: the solution's directory)
 --dotnet <path>       the dotnet host to build with (default: <root>/.dotnet/dotnet if present)
---socket <path>       the server's socket (default: /tmp/aperture.sock)
---database <name>     the database to write to (default: code)
+--at <address>        where to write: [where//]name[@instance] (default: code, on
+                      /tmp/aperture.sock)
 --batch <n>           facts per block (default: 4096)
 --max-files <n>       stop after n source files
 --skip-files <n>      skip the first n files, in path order (--syntax-only)
 --max-projects <n>    stop after n projects
 --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
+--writers <n>         concurrent write streams, one connection each (default: 1)
 --no-refs             declarations only: no src.Ref, no src.Import
 --no-lines            do not write the line table (src.Line)
 --no-docs             do not write doc comments (src.Doc)
@@ -230,6 +231,7 @@ collision nobody would have predicted.
 --syntax-only         skip MSBuild; glob *.cs and parse them
 --dry-run             index and encode, but connect to nothing
 --emit <path>         also write every block to a file
+--glean-out <dir>     write the facts as Glean JSON batches here, not to Aperture
 --no-smoke            do not query the index afterwards
 --verbose             let MSBuild's output through
 ```
@@ -284,6 +286,53 @@ is stated rather than hidden — a reference from one slice to a declaration in 
 binds against the framework's metadata rather than against source, so it is dropped as
 external. Slices that fall on a library boundary keep nearly all of it; slices that cut
 one in half do not.
+
+## Into Glean instead
+
+`--glean-out <dir>` sends the same facts to a **Glean** database rather than an Aperture
+one. One walk, two sinks:
+
+```sh
+./clients/dotnet/index-repo-glean.sh ~/runtime/src apbench --syntax-only --jobs 8
+```
+
+**Why this exists.** The comparison against Glean this repository keeps making is made
+out of documents ([capabilities](../../../docs/glean-capabilities.md),
+[divergences](../../../docs/glean-comparison.md)). A *number* needs the same corpus in
+both systems, and the same corpus needs the same producer — otherwise the measurement is
+of two indexers that happen to read the same source. So the walk, the per-predicate
+batching, the bounded queue and the writer threads are unchanged, and what differs is one
+method: `IBlockTarget.Write`.
+
+**Why JSON.** It is Glean's own indexer protocol. Glean's external-indexer driver runs a
+program, hands it a directory in `$JSON_BATCH_DIR`, and loads every file it finds there
+(`glean/index/Glean/Indexer/External.hs`). The alternative — a Thrift `Batch` of
+locally-numbered facts — would mean re-implementing Glean's fact numbering in C# and would
+measure our copy of it rather than theirs.
+
+**References stay nested on this path too**, which is the thing worth knowing: Glean's
+JSON reader takes a reference as an id, as `{"id": N}`, *or* as the whole target fact, and
+an anonymous nested fact is deduplicated against the batch and against the database
+exactly as interning does on our side (`glean/db/Glean/Write/JSON.hs`). So the producer
+holds no ids either way, and both write paths are being asked the same question:
+resolve-or-create, bottom-up, for every reference in the corpus.
+
+**One substitution, checked rather than assumed.** Angle has no signed integer, so every
+`int` in the schema is a `nat` in [`../glean/apbench.angle`](../glean/apbench.angle) —
+sound because every one of them is a line, a column, an end position, a length or a
+parameter index, and enforced because the writer throws on a negative rather than
+silently changing the corpus.
+
+**Emitting is not writing.** A file of JSON is a fact nobody has interned, so this is half
+a measurement: `index-repo-glean.sh` reports *emit* and *load* separately and the honest
+total is their sum. The report at the end of a `--glean-out` run says `batches` and `json`
+where a connected run says `server`, and it says out loud that nothing is interned yet.
+
+**What says it wrote the right facts.** Both databases, same corpus (this repository's own
+`clients/dotnet`, 20 files, 14,040 facts): identical counts on all 27 predicates, the same
+14,040 total, and `uses of FactSink` returning the same five (line, col) pairs from a join
+through a reference. Aperture reported 14,040 created against 36,035 deduped; Glean's
+batches carried the same nested trees, and its stored total is the deduplicated set.
 
 ## Something big to point it at
 

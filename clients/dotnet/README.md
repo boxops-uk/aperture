@@ -123,3 +123,16 @@ two questions after it: is it **usable** from outside by a producer with a real 
 and does the database hold up when the facts were not chosen to be convenient. It has its
 own [README](Aperture.Indexer/README.md) — what it maps onto the twenty-two predicates,
 what it resolves, and what the numbers it prints mean.
+
+**It also writes to Glean.** `--glean-out <dir>` puts the same facts into Glean's own JSON
+batch format instead, against [`glean/apbench.angle`](glean/apbench.angle) — a predicate,
+field and *field-order* preserving translation of `schemas/code.aps`:
+
+```sh
+./clients/dotnet/index-repo-glean.sh ~/src/SomeSolution apbench --syntax-only
+```
+
+One walk, two sinks, so a measurement of the two systems is a measurement of the two
+systems and not of two indexers. What that costs to keep honest — nested references on
+both paths, `int` becoming `nat`, and the fact that emitting is not writing — is in the
+indexer's README under *Into Glean instead*.

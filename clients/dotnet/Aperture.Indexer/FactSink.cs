@@ -23,11 +23,13 @@ namespace Aperture.Indexer;
 /// now only detaches the full list and queues it.
 /// </para>
 /// <para>
-/// <b>Several writers, each with its own connection.</b> The server excludes writers per
+/// <b>Several writers, each with its own target.</b> The server excludes writers per
 /// <em>key</em> rather than per database, so a database takes as many as there are
 /// streams. One connection cannot carry them: <see cref="ApertureConnection"/> issues
 /// streams sequentially and shares one socket, so concurrency here means one connection
-/// per writer thread and nothing shared between them but the queue.
+/// per writer thread and nothing shared between them but the queue. What a writer holds
+/// is an <see cref="IBlockTarget"/> rather than a connection, because a block is the same
+/// thing whichever database it is going into — see that interface for why.
 /// </para>
 /// <para>
 /// <b>The queue is bounded, and that bound is the backpressure.</b> An unbounded queue
@@ -54,7 +56,6 @@ internal sealed class FactSink : IDisposable
     private const int QueueDepthPerWriter = 4;
 
     private readonly Options _options;
-    private readonly IReadOnlyList<ApertureConnection> _connections;
     private readonly FileStream? _emit;
     private readonly List<ApertureFact>[] _pending;
     private readonly BlockingCollection<(uint Predicate, List<ApertureFact> Facts)> _queue;
@@ -80,15 +81,14 @@ internal sealed class FactSink : IDisposable
 
     private bool _drained;
 
-    /// <summary>A sink writing through <paramref name="connections"/>, one writer thread each.</summary>
+    /// <summary>A sink writing through <paramref name="targets"/>, one writer thread each.</summary>
     /// <remarks>
-    /// An empty list is a run that connects to nothing (<c>--dry-run</c>), which still
-    /// wants one thread so the encoding it measures happens off the walk.
+    /// An empty list is a run that writes to nothing (<c>--dry-run</c>), which still wants
+    /// one thread so the encoding it measures happens off the walk.
     /// </remarks>
-    public FactSink(Options options, IReadOnlyList<ApertureConnection> connections)
+    public FactSink(Options options, IReadOnlyList<IBlockTarget> targets)
     {
         _options = options;
-        _connections = connections;
         _emit = options.Emit is null ? null : File.Create(options.Emit);
         _pending = new List<ApertureFact>[CodeIndex.Predicates.Length];
 
@@ -99,16 +99,16 @@ internal sealed class FactSink : IDisposable
 
         Facts = new long[CodeIndex.Predicates.Length];
 
-        var writers = Math.Max(1, connections.Count);
+        var writers = Math.Max(1, targets.Count);
         _queue = new BlockingCollection<(uint, List<ApertureFact>)>(QueueDepthPerWriter * writers);
 
         _writers = new Thread[writers];
         for (var n = 0; n < writers; n++)
         {
-            // Each thread owns exactly one connection, so nothing about the socket or
-            // the stream numbering is shared and none of it needs a lock.
-            var connection = n < connections.Count ? connections[n] : null;
-            _writers[n] = new Thread(() => WriteLoop(connection))
+            // Each thread owns exactly one target, so nothing about a socket, a stream
+            // number or an output file is shared and none of it needs a lock.
+            var target = n < targets.Count ? targets[n] : null;
+            _writers[n] = new Thread(() => WriteLoop(target))
             {
                 IsBackground = false,
                 Name = $"aperture-writer-{n}",
@@ -125,14 +125,20 @@ internal sealed class FactSink : IDisposable
 
     public long Blocks => Interlocked.Read(ref _blocks);
 
-    /// <summary>Encoded block bytes — counted only when this sink encodes, which is when it emits or is dry.</summary>
+    /// <summary>Bytes written: what a target reports, plus what this sink encoded for itself.</summary>
+    /// <remarks>
+    /// Two measurements share one counter because only one of them is ever non-zero. A
+    /// connected Aperture run encodes inside the client and is told no size, so this is
+    /// the block bytes the sink encoded for <c>--emit</c> or <c>--dry-run</c>; a run
+    /// writing Glean batch files takes neither path, and this is the JSON it wrote.
+    /// </remarks>
     public long Bytes => Interlocked.Read(ref _bytes);
 
     public ulong Created => (ulong)Interlocked.Read(ref _created);
 
     public ulong Deduped => (ulong)Interlocked.Read(ref _deduped);
 
-    /// <summary>Time <em>summed over the writers</em> inside <see cref="ApertureConnection.Write(uint, IReadOnlyList{ApertureFact})"/>.</summary>
+    /// <summary>Time <em>summed over the writers</em> inside <see cref="IBlockTarget.Write"/>.</summary>
     /// <remarks>
     /// Not time the walk pays, and — with more than one writer — not wall clock either:
     /// it is a sum across threads that overlap each other as well as the walk, so it can
@@ -208,12 +214,12 @@ internal sealed class FactSink : IDisposable
         Interlocked.Add(ref _queueingTicks, Stopwatch.GetTimestamp() - started);
     }
 
-    /// <summary>One writer: encodes, emits and writes down its own connection.</summary>
+    /// <summary>One writer: encodes, emits and writes to its own target.</summary>
     /// <remarks>
     /// Every counter it touches is interlocked, because several of these run at once and
     /// the totals are read from the walk's thread at the end.
     /// </remarks>
-    private void WriteLoop(ApertureConnection? connection)
+    private void WriteLoop(IBlockTarget? target)
     {
         try
         {
@@ -231,14 +237,15 @@ internal sealed class FactSink : IDisposable
                     _emit?.Write(block);
                 }
 
-                if (connection is not null)
+                if (target is not null)
                 {
                     var started = Stopwatch.GetTimestamp();
-                    var summary = connection.Write(predicate, facts);
+                    var written = target.Write(predicate, facts);
                     Interlocked.Add(ref _writingTicks, Stopwatch.GetTimestamp() - started);
 
-                    Interlocked.Add(ref _created, (long)summary.Created);
-                    Interlocked.Add(ref _deduped, (long)summary.Deduped);
+                    Interlocked.Add(ref _created, (long)written.Created);
+                    Interlocked.Add(ref _deduped, (long)written.Deduped);
+                    Interlocked.Add(ref _bytes, written.Bytes);
                 }
 
                 Interlocked.Increment(ref _blocks);

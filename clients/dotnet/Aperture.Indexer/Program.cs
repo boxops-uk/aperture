@@ -61,8 +61,10 @@ internal static class Program
             + $"loaded in {loading.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine();
 
-        var connections = Connect(options);
-        using var closing = new Closing(connections);
+        // Nothing to connect to on the Glean path: the facts go into files, and the
+        // database at the far end has not been written to yet.
+        List<ApertureConnection> connections = options.GleanOut is null ? Connect(options) : [];
+        using var closing = new Closing<ApertureConnection>(connections);
         var connection = connections.Count > 0 ? connections[0] : null;
 
         if (connection is not null)
@@ -72,11 +74,18 @@ internal static class Program
             Console.WriteLine();
         }
 
+        if (Targets(options, connections) is not { } targets)
+        {
+            return 1;
+        }
+
+        using var closingTargets = new Closing<IBlockTarget>(targets);
+
         var walking = Stopwatch.StartNew();
         int files;
         Indexer indexer;
 
-        using (var sink = new FactSink(options, connections))
+        using (var sink = new FactSink(options, targets))
         {
             indexer = new Indexer(options, sink, root, solution.Build);
             var reported = TimeSpan.Zero;
@@ -138,21 +147,64 @@ internal static class Program
         return 0;
     }
 
-    /// <summary>Closes every connection when the run ends, however it ends.</summary>
+    /// <summary>Closes every one of them when the run ends, however it ends.</summary>
     /// <remarks>
     /// A list is not <see cref="IDisposable"/>, and a run that threw halfway would
     /// otherwise leave sockets open until the process exited — which is tidy enough for
     /// a tool and untidy for a server counting connections.
     /// </remarks>
-    private sealed class Closing(IReadOnlyList<ApertureConnection> connections) : IDisposable
+    private sealed class Closing<T>(IReadOnlyList<T> items) : IDisposable
+        where T : IDisposable
     {
         public void Dispose()
         {
-            foreach (var connection in connections)
+            foreach (var item in items)
             {
-                connection.Dispose();
+                item.Dispose();
             }
         }
+    }
+
+    /// <summary>
+    /// What the writer threads write to: one Aperture connection each, or one Glean batch
+    /// writer each. Null means the run cannot start, and why has been printed.
+    /// </summary>
+    /// <remarks>
+    /// <b>An empty output directory is a requirement, not a courtesy.</b> Glean's loader
+    /// takes every file it finds, so batches left over from an earlier run would be loaded
+    /// beside this one's — a corpus that is neither run, silently. Since each block writes
+    /// its own file this is the only place the question can be asked.
+    /// </remarks>
+    private static List<IBlockTarget>? Targets(
+        Options options,
+        IReadOnlyList<ApertureConnection> connections)
+    {
+        if (options.GleanOut is null)
+        {
+            return [.. connections.Select(IBlockTarget (connection) => new ApertureTarget(connection))];
+        }
+
+        Directory.CreateDirectory(options.GleanOut);
+
+        if (Directory.EnumerateFiles(options.GleanOut, "*.json").Any())
+        {
+            Console.Error.WriteLine(
+                $"{options.GleanOut} already holds batch files; glean write would load them "
+                + "with this run's, so empty it first");
+            return null;
+        }
+
+        Console.WriteLine($"writing Glean JSON batches to {options.GleanOut}, "
+            + $"{options.Writers} writer(s)");
+        Console.WriteLine($"  schema {GleanFacts.Namespace}.{GleanFacts.Version}, "
+            + "one file per block, every reference nested");
+        Console.WriteLine();
+
+        return
+        [
+            .. Enumerable.Range(0, options.Writers).Select(
+                IBlockTarget (writer) => new GleanTarget(CodeIndex.Schema, options.GleanOut, writer)),
+        ];
     }
 
     /// <summary>One connection per writer thread.</summary>
@@ -217,11 +269,22 @@ internal static class Program
 
         if (sink.Bytes > 0)
         {
-            Console.WriteLine($"  {"encoded",-20}{Megabytes(sink.Bytes),14} MB"
+            // `json` on the Glean path and `encoded` on ours, because they are not the
+            // same measurement: one is a batch file including every nested target spelled
+            // out again, the other is the wire encoding of the block.
+            var what = options.GleanOut is null ? "encoded" : "json";
+
+            Console.WriteLine($"  {what,-20}{Megabytes(sink.Bytes),14} MB"
                 + $"  ({(double)sink.Bytes / Math.Max(sink.Total, 1):F0} bytes/fact)");
         }
 
-        if (!options.DryRun)
+        if (options.GleanOut is not null)
+        {
+            Console.WriteLine($"  {"batches",-20}{Count(sink.Blocks),14} file(s) in {options.GleanOut}");
+            Console.WriteLine($"  {"",-20}{"",14}  not interned yet: load them with glean write");
+        }
+
+        if (!options.DryRun && options.GleanOut is null)
         {
             // Created counts every fact written, nested targets included; deduped those
             // already there. A million references naming ten thousand declarations is
@@ -229,6 +292,10 @@ internal static class Program
             // working, and it is the number this whole exercise is a measurement of.
             Console.WriteLine($"  {"server",-20}{Count((long)sink.Created),14} created, "
                 + $"{Count((long)sink.Deduped)} deduped");
+        }
+
+        if (!options.DryRun)
+        {
             Console.WriteLine($"  {"writing",-20}{sink.Writing.TotalSeconds,14:F1}s"
                 + $"  (summed over {sink.Writers} writer(s), overlapped — not wall clock)");
             Console.WriteLine($"  {"queueing",-20}{sink.Queueing.TotalSeconds,14:F1}s"
