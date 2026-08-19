@@ -849,7 +849,14 @@ is `flatten` and `ty.rs`, plus `never` decided alongside them.
   was retired**, and that is the honest outcome rather than a miss — each of `nyi/disjunction`,
   `nyi/negation` and `nyi/subquery` now covers a *narrower* construct than it did (an alternation
   inside a pattern; a negated group or a generator in a negation's key; a subquery rebinding an
-  outer name), and each keeps a corpus entry naming it. `nyi/union-select` is Phase 8's.
+  outer name). `nyi/union-select` is Phase 8's.
+  **Correction, at 0.0.1: "and each keeps a corpus entry naming it" was not true**, and nothing
+  checked it. `nyi/negation` keeps two entries; `nyi/disjunction`, `nyi/never`, `nyi/subquery`,
+  `nyi/fact-field` and `nyi/whole-key` keep none — and two dozen candidate queries aimed at the
+  narrower construct each one names all compiled clean, so they may be dead arms rather than
+  merely un-exercised ones. `corpus::every_nyi_code_is_accounted_for` is now the gate: a code
+  has an entry or is named with a reason, and the five are named. Answering whether they can
+  fire at all is its own change.
 
 **Acceptance:**
 - [x] Disjunction compiles to one level per statement and runs — `conjoined_disjunctions_do_not_multiply`
@@ -873,7 +880,8 @@ is `flatten` and `ty.rs`, plus `never` decided alongside them.
       plan** as `B X; !(A X)` — asserted as one plan rather than as one set of rows, since equal
       rows would also hold if the negation ran first and happened to match nothing.
 - [x] Every reclassified corpus entry returns its recorded rows against a real `FjallDb`. No
-      `nyi/` code was retired: each survivor names a narrower construct and keeps an entry.
+      `nyi/` code was retired: each survivor names a narrower construct. ~~and keeps an
+      entry~~ — five keep none; see 6b-f's correction and the gate that now says so.
 - [x] All prior engine guards green — the cursor format changed, so this is the claim that
       matters (414 tests).
 

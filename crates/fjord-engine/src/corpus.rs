@@ -1335,3 +1335,95 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod every_nyi_code_is_accounted_for {
+    use super::*;
+    use crate::diag::Code;
+
+    /// **Every `nyi/` code either has a corpus entry or is named below with a reason.**
+    ///
+    /// `PLAN.md` claimed each surviving `nyi/` code "keeps a corpus entry", and it was not
+    /// true of five of them — nothing checked, so nothing said. This is the check. A new
+    /// code added without an entry fails here, and the only way past is to write the entry
+    /// or to say out loud why there cannot be one.
+    ///
+    /// **The five below are not merely un-exercised; they may be dead.** Two dozen candidate
+    /// queries were put through the whole pipeline trying to reach them — `never` and `|` as
+    /// a field value and nested inside a record, a subquery rebinding an outer name at three
+    /// depths, a reference read through a fact's value one and two hops down — and every one
+    /// of them compiled clean. Either there is an input nobody has found, or the constructs
+    /// each names now work and the arm is unreachable.
+    ///
+    /// Deleting a diagnostic on that evidence would be worse than recording it: one that
+    /// cannot fire costs a reader a confusing branch, and one deleted wrongly costs a user a
+    /// silent miscompile. So this list is the finding, and the finding is a question.
+    const UNEXERCISED: &[(Code, &str)] = &[
+        (
+            Code::NyiDisjunction,
+            "an alternation inside a pattern; `test.Foo {id = 1 | 2}` and an alternation \
+             nested in a record field both compile",
+        ),
+        (
+            Code::NyiNever,
+            "`never` inside a pattern; `test.Foo {id = never}` and `{outer = never}` both \
+             compile",
+        ),
+        (
+            Code::NyiSubquery,
+            "a subquery rebinding a name the query around it binds; three spellings of that \
+             compile, one of them in a key field",
+        ),
+        (
+            Code::NyiFactField,
+            "a reference held in a fact's *value*; reading one through `.value` at one and \
+             two hops compiles",
+        ),
+        (
+            Code::NyiWholeKey,
+            "a whole key matched into a record field. Unreachable with this fixture for a \
+             stated reason rather than an unknown one: it needs a predicate whose whole key \
+             has the same record type as another predicate's field, and no pair here does",
+        ),
+    ];
+
+    fn diagnosed_by_the_corpus(code: Code) -> bool {
+        CORPUS
+            .iter()
+            .any(|entry| matches!(entry.expect, Expectation::Diagnosed(c) if c == code))
+    }
+
+    #[test]
+    fn each_nyi_code_has_an_entry_or_a_reason() {
+        let excused: Vec<Code> = UNEXERCISED.iter().map(|(code, _)| *code).collect();
+
+        let unaccounted: Vec<&str> = Code::ALL
+            .iter()
+            .filter(|code| code.as_str().starts_with("nyi/"))
+            .filter(|code| !diagnosed_by_the_corpus(**code) && !excused.contains(code))
+            .map(|code| code.as_str())
+            .collect();
+
+        assert!(
+            unaccounted.is_empty(),
+            "these `nyi/` codes have no corpus entry and no stated reason: {unaccounted:?}. \
+             Add an entry to CORPUS, or add the code to UNEXERCISED saying why there cannot \
+             be one."
+        );
+    }
+
+    /// And the excuse does not outlive its excuse.
+    ///
+    /// A code that gains a corpus entry must lose its place on the list, or the list becomes
+    /// a record of what used to be hard rather than of what is still unproven.
+    #[test]
+    fn nothing_is_both_exercised_and_excused() {
+        for (code, _) in UNEXERCISED {
+            assert!(
+                !diagnosed_by_the_corpus(*code),
+                "`{}` is in UNEXERCISED but the corpus now reaches it — take it off the list",
+                code.as_str()
+            );
+        }
+    }
+}
