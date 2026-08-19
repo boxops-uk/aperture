@@ -1,39 +1,41 @@
-# Release builds carry provenance.
+# What a branch must prove, and what a release must carry.
 #
-# A version tag builds and attests too, so a release cut from `v*` is never unprovenanced.
-# The gate is the `attest` job's status check on `release/*` (see the repository
-# ruleset of the same name): a change reaches a release branch only once this job
-# has built the binaries and signed a SLSA provenance attestation naming them.
-# Verify one with:
+# Two jobs, because they answer different questions and are trusted differently:
+#
+#   build   always runs, including on a pull request from a fork. It is the
+#           required status check on `main` and `release/*`, so nothing lands
+#           anywhere without compiling under the tree's own Cargo.lock.
+#
+#   attest  builds and signs SLSA provenance naming the binaries. It needs an
+#           OIDC token, which GitHub never issues to a fork's pull request, so
+#           it is skipped there — a required check that cannot run would block a
+#           branch forever rather than protect it. It runs on every push to
+#           `main` and `release/*`, on every `v*` tag, and on demand.
+#
+# Verify anything it produced:
 #
 #     gh attestation verify ./aperture --repo boxops-uk/aperture
 name: release
 
 on:
   push:
-    branches: ['release/**']
+    branches: ['main', 'release/**']
     tags: ['v*']
   pull_request:
-    branches: ['release/**']
+    branches: ['main', 'release/**']
   workflow_dispatch:
 
-# Least privilege at the top; the job widens only what it needs.
+# Least privilege at the top; only `attest` widens it.
 permissions:
   contents: read
 
 jobs:
-  attest:
-    name: attest
+  build:
+    name: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write # OIDC token the attestation is bound to
-      attestations: write # write the attestation back to the repository
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -42,19 +44,41 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
-
-      # --locked so the build is the Cargo.lock in the tree and not whatever
-      # resolves today; the fjall pin in particular is load-bearing.
+      # --locked so this is the Cargo.lock in the tree and not whatever resolves
+      # today; the fjall pin in particular is load-bearing.
       - name: Build release binaries
         run: cargo build --release --locked -p aperture-cli -p aperture-viewer --bins
 
+  attest:
+    name: attest
+    runs-on: ubuntu-latest
+    # Skipped only for a fork's pull request, which cannot be given an OIDC token.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      id-token: write # OIDC token the provenance is bound to
+      attestations: write # write the attestation back to the repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+      - name: Build release binaries
+        run: cargo build --release --locked -p aperture-cli -p aperture-viewer --bins
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
             target/release/aperture
             target/release/aperture-viewer
-
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
