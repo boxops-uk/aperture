@@ -1,5 +1,6 @@
 # Release builds carry provenance.
 #
+# A version tag builds and attests too, so a release cut from `v*` is never unprovenanced.
 # The gate is the `attest` job's status check on `release/*` (see the repository
 # ruleset of the same name): a change reaches a release branch only once this job
 # has built the binaries and signed a SLSA provenance attestation naming them.
@@ -11,6 +12,7 @@ name: release
 on:
   push:
     branches: ['release/**']
+    tags: ['v*']
   pull_request:
     branches: ['release/**']
   workflow_dispatch:
