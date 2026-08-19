@@ -1127,6 +1127,68 @@ number has to come from splitting that residue, which is
 [§13](#13-the-write-rung-committing-is-41-of-interning-and-the-cache-is-worth-23-of-a-resolve-pass)'s
 write rung run over this corpus rather than a synthetic one.
 
+## 17. On equal footing the two write paths are within 8%, and §15's 3.5× was mostly memory pressure
+
+**What was measured.** The Glean side of [§16](#16-without-srctests-196k-factss-and-the-cache-is-at-its-ceiling--7305-against-an-available-7312)'s
+corpus: same producer, same flags, `--exclude src/tests`, 26,924 files. Both databases hold
+**18,258,385 facts and all 27 predicates agree stored-for-stored** — verified by counting
+each one on both sides, not by trusting the totals.
+
+| | Aperture (4 writers) | Glean |
+|---|---|---|
+| the walk | fused with ingest | **emit 502 s** (36,445 f/s) |
+| ingest | fused; 2,668 s summed over 4 writers | **load 352 s** |
+| seal | `finish` **220 s** | inside the load |
+| walk + ingest, indexer's clock | 882 s (20,730 f/s) | 502 s |
+| **end to end, sealed** | **1,102 s** | **854 s** (1.29×) |
+| intermediate | none | 4.9 GB of JSON (285 B/fact) |
+| on disk | 2.4 GB (2.36 GiB logical) | **659 MB** (1.11 GiB logical) |
+| peak RSS | indexer 9.4 GB, server 1.8 GB | emit 9.1 GB, load 976 MB |
+
+### 17a. The emit prices the walk, and what is left is the write path
+
+The emit's sink costs 60 s over 4,483 blocks and its `queueing` is 0.3 s, so **the walk's own
+cost is ~502 s** and everything above it is interning that failed to hide behind it:
+
+- **Aperture's ingest costs 380 s of wall clock** it could not overlap (882 − 502);
+- **Glean's entire load costs 352 s** — parsing 4.9 GB of JSON, interning 68M nested
+  references into 18.26M facts, renaming local ids onto global ones, committing, and sealing.
+
+**Those are within 8% of each other.** [§15](#15-aperture-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper)
+reported 3.5× on the same comparison and named the likely confound in its own text: Glean's
+load ran alone on the box after the walk had exited, while our server interned with a
+16–20 GB Roslyn process squeezing 30 GB of RAM down to ~3 GB of page cache. Dropping
+`src/tests` halves the indexer's peak to 9.4 GB, and the difference goes away. **So the write
+paths are close to equal, and §15's number was mostly the harness.** Per-fact summed write
+cost fell 28% between the two runs (203 → 146 µs) for the same code, which is the same story
+told by the other end.
+
+**What still separates them end to end is our `finish`.** 220 s of merging trees and hashing
+an identity, which Glean does inside its 352 s. Take that out and the two are 1,102 − 220 =
+882 s against 854 s — 3%. Whether sealing can be folded into ingest, or is simply the price
+of [`ops-I4`](../docs/aperture-cli-design.md)'s content hash being computable at all, is a
+question this makes worth asking.
+
+### 17b. Two things the comparison did not set out to measure
+
+**Storage is still 3.7× on disk** (659 MB against 2.4 GB), 2.1× on the logical figures each
+system reports. Nothing here explains it, and it is the one gap that also acts on the read
+path — a database that fits in cache is a database that scans faster, which is
+[Phase 13](../docs/phase-13-comparative-benchmark.md)'s F5.
+
+**The indexer's gate amplifies ~12×, and this run measured it by accident.** The same walk,
+two sinks:
+
+| | gate held | gate wait (8 walkers) | queueing |
+|---|---|---|---|
+| Glean sink (files) | 187.9 s | 928.1 s | 0.3 s |
+| Aperture sink (socket) | 335.9 s | 2,669.8 s | 70.3 s |
+
+**148 s more time holding the gate costs 1,742 s of summed walker wait.** That is the cheapest
+lever left on the producer side and it is `clients/dotnet`'s, not the database's: the gate is
+held across memoisation lookups *and* across `Add`, so a slower sink widens a critical section
+eight threads are queued behind.
+
 ## What is still open
 
 - **F6** — the reader head-of-line blocking on a ≥3-block ingest. The only hypothesis left
