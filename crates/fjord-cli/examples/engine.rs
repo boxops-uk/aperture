@@ -889,8 +889,7 @@ fn store_layer(db: &FjallDb, schema: &Schema, options: &Options) {
         let elapsed = started.elapsed();
         total_facts += facts;
 
-        if facts > 0 {
-            let per_key = bytes / facts;
+        if let Some(per_key) = bytes.checked_div(facts) {
             if widest.as_ref().is_none_or(|(_, w)| per_key > *w) {
                 widest = Some((name.clone(), per_key));
             }
