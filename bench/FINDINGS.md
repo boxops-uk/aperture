@@ -1092,12 +1092,20 @@ are re-reads it should be absorbing.
   so what is left is running the rung over it — and [§15d](#15d-what-the-glean-run-separates-that-no-aperture-run-could)
   is why that matters: the 3.5× against Glean is pipeline against pipeline, and only the rung
   splits interning from the socket.
-- **The interning lookup cache is not visibly paying.** Summed `writing` moved 2,395.5 → 2,037.7 s
-  for the same 94.9M interns, of which 73.6% are re-reads, and per-fact write cost *grows* with
-  the tree ([§15c](#15c-the-ingestion-upgrade-is-157-and-concurrent-writers-cross-over-at-16000-files)).
-  Whether `intern` consults the cache on this path, and with what hit rate, is unmeasured —
-  and it is the first thing to look at, because it is the difference §2.3 of
-  [glean-capabilities](../docs/glean-capabilities.md) predicted would be the largest.
+- **The interning lookup cache is now visible, and on a small corpus it is perfect.**
+  `aperture.db.Interning` reports it as facts, so a running server can be asked
+  (`:interning` in the shell). Over this repository's own `clients/dotnet` — 14,072 facts,
+  36,093 deduped — it answers `hits 36,093, misses 14,072, keys 14,072, entities 0`: **every
+  repeat reference was a cache hit**, every miss was a genuinely new fact costing exactly one
+  `keys` read, and the key-only fast path removed the second read entirely. So the ~21 µs an
+  intern costs on the big corpus is **not** re-reading parents, and the candidates left are the
+  one unavoidable `keys` probe per created fact, staging, the commit, and the wire decode —
+  which is [§13](#13-the-write-rung-committing-is-41-of-interning-and-the-cache-is-worth-23-of-a-resolve-pass)'s
+  split, now worth running over the real corpus.
+  **What a small corpus cannot say** is whether the cache still holds at 25M facts: the budget
+  is 128 MiB per generation against a hot parent set the code estimates at ~100 MB, so the
+  25M-fact re-index is where a rotation would show up — as `hits` falling and `keys` climbing
+  past the created count. That measurement is now one query.
 - **Storage is 3.7× Glean's for the same facts** (886 MB against 3.2 GB sealed). Three candidates
   named in [§15d](#15d-what-the-glean-run-separates-that-no-aperture-run-could), none measured.
 - **The writer count wants to be adaptive**, not a flag: the crossover in

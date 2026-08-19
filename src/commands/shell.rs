@@ -105,6 +105,20 @@ const LISTING: &str = "{name = D.name, status = D.status, facts = D.facts, \
                        bytes = D.bytes, instance = D.instance} \
                        where D = aperture.db.List _";
 
+/// What `:interning` runs.
+///
+/// **The four numbers that price an ingest**, per database, since this server opened it:
+/// what the lookup cache answered, what fell through, and what the two trees were then
+/// read for. `bench/FINDINGS.md` §15 is why they are reachable at all — it priced our
+/// write path against Glean's and could not say whether the cache was hitting.
+///
+/// A ratio is deliberately not computed here: the stripes are read one after another, so
+/// these are four facts rather than a snapshot, and dividing them in the shell would
+/// present an arithmetic accident as a hit rate.
+const INTERNING: &str = "{name = I.name, hits = I.hits, misses = I.misses, \
+                          keys = I.keys, entities = I.entities} \
+                          where I = aperture.db.Interning _";
+
 /// The commands, in the order `:help` lists them: what a query *is*, then what it
 /// costs, then what is stored, then the session, then the shell itself.
 ///
@@ -112,7 +126,7 @@ const LISTING: &str = "{name = D.name, status = D.status, facts = D.facts, \
 /// hand trained on psql types without thinking; neither can begin a focus query, so
 /// accepting both costs nothing. Aliases are not advertised — a help screen that lists
 /// every spelling twice is one nobody reads to the end.
-pub const COMMANDS: [Command; 15] = [
+pub const COMMANDS: [Command; 16] = [
     Command {
         name: ":type",
         aliases: &[],
@@ -184,6 +198,12 @@ pub const COMMANDS: [Command; 15] = [
         aliases: &["\\l", ":l"],
         argument: None,
         help: "the databases on this server — a query over aperture.db.List",
+    },
+    Command {
+        name: ":interning",
+        aliases: &["\\i", ":i"],
+        argument: None,
+        help: "what the write path's lookup cache did — a query over aperture.db.Interning",
     },
     Command {
         name: ":connect",
@@ -423,6 +443,7 @@ impl Repl {
             // [operations §5](../../docs/aperture-cli-design.md) means by putting
             // enumeration through the normal machinery.
             ":list" => self.run_or_report(LISTING, out)?,
+            ":interning" => self.run_or_report(INTERNING, out)?,
 
             ":connect" => {
                 if argument.is_empty() {

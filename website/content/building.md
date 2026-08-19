@@ -1,0 +1,140 @@
+---
+title: Building from source
+description: The workspace, the build and test commands, the generated grammar, the .NET client, and what each crate is for.
+---
+
+Aperture is a Cargo workspace. There is no build system on top of it, no code generation
+step you have to run by hand, and no vendored C.
+
+## Build and test
+
+```bash
+cargo build                          # everything, debug
+cargo build --release --bin aperture # the tool, optimised
+
+cargo test                           # the green suite
+cargo test -- --ignored --list       # the invariant coverage ledger
+cargo clippy --all-targets --workspace -- -D warnings
+cargo fmt --all
+```
+
+`default-members` is the whole workspace, so `cargo build` and `cargo test` mean
+*everything* without `--workspace`. That is deliberate: the coverage ledger silently
+narrowing to one package as crates are extracted would be a ledger that had stopped
+counting.
+
+:::note The ignored tests are not skipped work
+`cargo test -- --ignored --list` prints the guards that are written but not yet live —
+each one pinned to an invariant whose subsystem does not exist yet. A phase is finished
+only when the invariants it touches are un-ignored and green. Exactly one guard is
+`#[ignore]`d today: `schema::discriminants_append_only`, which waits on union types. See
+[Testing method](testing.html).
+:::
+
+### Generated code
+
+The two grammars are compiled at build time by [`lelwel`](https://crates.io/crates/lelwel)
+from `build.rs`, so nothing is checked in and nothing needs regenerating by hand:
+
+| Grammar | Compiled by | Language |
+|---|---|---|
+| `crates/aperture-engine/src/grammar.llw` | `aperture-engine/build.rs` | focus queries |
+| `crates/aperture-schema/src/syntax/grammar.llw` | `aperture-schema/build.rs` | the schema DSL |
+
+## The workspace, top to bottom
+
+Each crate depends only on the ones **above** it in this list. That is not a convention
+any more — the compiler refuses the other direction, and there is no edge pointing back.
+
+| Crate | Holds |
+|---|---|
+| `aperture-schema` | The type model (`schema`), the physical row id (`id`), schema identity (`fingerprint`) and the schema DSL's front end (`syntax`: lexer, grammar, parse, lower, print, import resolution). Depends on no Aperture crate. |
+| `aperture-encoding` | The order-preserving storage tuple codec (`tuple`) and its error type. |
+| `aperture-wire` | The **transport** codec and the protocol vocabulary: `varint`, `value`, `crc`, `block`, `frame`, `protocol`. A sibling of `aperture-encoding`, not a layer on it — it shares no bytes with the storage codec. |
+| `aperture-store` | The `FactStore` seam, the fjall backend, the in-memory test store, `fact`, the format stamp, and the lifecycle: `catalog`, `meta`, `schema_doc`, `identity`, `ulid`, `lookup_cache`. |
+| `aperture-ingest` | The write funnel: `FactSink` (the write seam) and `intern` — a wire fact in, a `FactId` out, nested references resolved bottom-up. |
+| `aperture-engine` | **focus and the machine**: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor. All new query work lands here. |
+| `aperture-client` | The client: `address`, `connection`, `rows` (a result as a bookmark), `expand`. Depends on `aperture-wire` and nothing else. |
+| `aperture-server` | The protocol over a Unix socket or TCP: `session`, `registry`, `outbound` (the fair writer), `rows`, `blocking`, `server`, `stats`, `catalogue`. |
+| `aperture-viewer` | The code-search site: `query`, `render`, `pool`, and the routes. An ordinary consumer of the client. |
+| root `aperture-cli` | The tool: `cli`, `config`, `commands/`, `output`, `prompt`, `shell`, `code_index`, `workload`. The binary is `aperture`. |
+
+Two test-support modules span crates, and the split is load-bearing:
+`aperture_store::fixtures` holds everything store-shaped (probes, model stores,
+scan-contract assertions) because a probe has to be *the same* `FactStore` as the store it
+wraps; `aperture_engine::fixtures` holds the plan runners and re-exports the rest.
+
+## Binaries
+
+| Binary | Build | What it is |
+|---|---|---|
+| `aperture` | `cargo build --release --bin aperture` | The command line tool: create, serve, query, shell, schema, list, describe, finish, db rm |
+| `aperture-viewer` | `cargo build --release --bin aperture-viewer` | The code-search site over a database |
+
+## Measuring instruments
+
+Deliberately `examples/` rather than subcommands — they are measuring instruments, not
+things anyone should find while looking for how to use the database.
+
+| Example | Rung | What it isolates |
+|---|---|---|
+| `examples/engine.rs` | S1–S3 | The engine with everything else taken away |
+| `examples/breakdown.rs` | S4 | The fixed per-query cost, by subtraction |
+| `examples/loadgen.rs` | S5 | One connection, the whole round trip — and the seeder |
+| `examples/soak.rs` | S6–S7 | A mixed population, and steady state over hours |
+| `examples/codesearch.rs` | S6 | The product's own traffic rather than a generic mix |
+| `examples/ingest.rs` | write | The write path per layer: commit, resolve, decode |
+
+```bash
+cargo run --release --example loadgen -- --data-dir /tmp/apbench --files 20000
+./scripts/bench.sh          # create, serve, seed, measure — one command
+```
+
+## The example corpus
+
+`example/` is a small Python codebase, a real `ast`-based indexer over it, and the JSON the
+embedded demo shell compiles in. Regenerate it after editing the corpus:
+
+```bash
+python3 example/index.py
+```
+
+Six predicates come straight out of that parse. The rest of the built-in schema — the
+build layer and the declaration graph — needs a compiler and a build system to answer, and
+is filled by the .NET indexer.
+
+## The .NET client
+
+A second implementation of the wire protocol, in C#, sharing no constants and no enums
+with the Rust side. It exists to answer what the Rust tests cannot: whether the protocol
+is implementable from outside. It has already found two faults that way.
+
+```bash
+./clients/dotnet/run-demo.sh                  # write a small index and query it back
+./clients/dotnet/index-repo.sh <checkout>     # index a real .NET repository
+./clients/dotnet/emit-golden.sh               # regenerate the byte-for-byte golden
+```
+
+The golden is checked in, and `aperture-client`'s
+`byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes
+for the same corpus. The Rust test needs no `dotnet`; regenerating the golden does. See
+[Clients & the viewer](clients.html).
+
+## Repository layout
+
+```text
+aperture/
+├── src/                 the `aperture` binary: cli, commands, shell, output, config
+├── crates/              the workspace, bottom to top (table above)
+├── schemas/             code.aps (the built-in schema) and catalogue.aps
+├── example/             a Python corpus, its indexer, and the JSON the demo shell embeds
+├── examples/            the measuring instruments
+├── clients/dotnet/      the C# client, demo producer and real indexer
+├── docs/                the design book — chapters 1–7 plus operations and references
+├── bench/FINDINGS.md    what has actually been measured
+├── PLAN.md              the phase tree and current state
+└── website/             this documentation site
+```
+
+The design book in `docs/` is the source of record. This site is written from it and links
+back into it by chapter where a subject has more depth than a docs site should carry.

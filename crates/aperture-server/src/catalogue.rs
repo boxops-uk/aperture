@@ -1,4 +1,4 @@
-//! **`aperture.db.List` — the store root, answered as facts.**
+//! **`aperture.db.List` and `aperture.db.Interning` — the server, answered as facts.**
 //!
 //! [Operations §5](../../../docs/aperture-cli-design.md) asks for enumeration to ride
 //! the query machinery rather than a control message, and this is that: `\l` is a query,
@@ -36,6 +36,19 @@
 //! module can tell the difference, which is the point: a virtual predicate that needed
 //! special handling anywhere else would not be worth having.
 //!
+//! # Two predicates, one wrapper
+//!
+//! `aperture.db.List` is what the store root holds; `aperture.db.Interning` is what the
+//! write path has done to it since this server opened it (`bench/FINDINGS.md` §15 is why
+//! the second exists — it priced our interning and could not say whether the cache was
+//! hitting). They are different questions with the same *answer shape*: a tuple this
+//! module knows how to encode, in key order, that nothing downstream can tell from a
+//! keyspace. So the wrapper holds a [`Table`] per declared predicate and picks by the id
+//! leading a scan's `lo`, and adding a third would be a row type and one line here.
+//!
+//! A schema declaring neither has no catalogue at all, which is every schema but a
+//! server's — a client's, a test's, and the copy embedded in a database.
+//!
 //! # One listing per query, and that is [I8](../../../docs/invariants.md#i8)'s shape
 //!
 //! The rows are materialised once, when the query is prepared, and the same `Arc` is
@@ -60,12 +73,17 @@ use aperture_store::{
 };
 use byteview::ByteView;
 
+use crate::stats;
+
 /// The predicate this module answers, by name.
 ///
 /// Resolved through the schema rather than hardcoded as an id, because the id is a
 /// position and the schema is what decides positions. A deployment whose schema does not
 /// declare it simply has no catalogue, and [`materialise`] says so by answering `None`.
 pub const PREDICATE: &str = "aperture.db.List";
+
+/// The write path's counters, by name — see [`stats::InterningCounters`].
+pub const INTERNING: &str = "aperture.db.Interning";
 
 /// One database, as the row a query sees.
 ///
@@ -101,11 +119,66 @@ impl Fact for Row {
     }
 }
 
-/// The listing, encoded and in key order.
-pub struct Catalogue {
+/// One database's interning counters, as the row a query sees.
+///
+/// The counters are `u64` where the schema says `int`, which is an `i64`. Saturating
+/// rather than wrapping, and stated rather than cast: these are monotonic counts that
+/// would need 9.2 quintillion interns to reach the ceiling, so the arm is unreachable —
+/// but a silent wrap would report a busy server as one that had done nothing, which is
+/// the one wrong answer a gauge must not give.
+struct Interning {
+    name: String,
+    instance: String,
+    hits: i64,
+    misses: i64,
+    keys: i64,
+    entities: i64,
+}
+
+impl Interning {
+    fn of(counters: &stats::InterningCounters) -> Interning {
+        let saturating = |count: u64| i64::try_from(count).unwrap_or(i64::MAX);
+
+        Interning {
+            name: counters.name.clone(),
+            instance: counters.instance.clone(),
+            hits: saturating(counters.hits),
+            misses: saturating(counters.misses),
+            keys: saturating(counters.keys),
+            entities: saturating(counters.entities),
+        }
+    }
+}
+
+impl Fact for Interning {
+    const PREDICATE: &'static str = INTERNING;
+
+    fn key(&self) -> Value {
+        record([
+            ("name", self.name.to_value()),
+            ("instance", self.instance.to_value()),
+            ("hits", self.hits.to_value()),
+            ("misses", self.misses.to_value()),
+            ("keys", self.keys.to_value()),
+            ("entities", self.entities.to_value()),
+        ])
+    }
+
+    fn value(&self) -> Option<Value> {
+        None
+    }
+}
+
+/// One virtual predicate's rows, encoded and in key order.
+struct Table {
     predicate: PredicateId,
     /// `(predicate_id ++ key, id)` — a scan's rows, sorted as a keyspace holds them.
     rows: Arc<[(ByteView, FactId)]>,
+}
+
+/// Every virtual predicate this server answers, encoded and in key order.
+pub struct Catalogue {
+    tables: Box<[Table]>,
 }
 
 impl Catalogue {
@@ -123,17 +196,33 @@ impl Catalogue {
     pub fn materialise(
         schema: &Schema,
         listing: &Listing,
+        interning: &[stats::InterningCounters],
     ) -> Result<Option<Catalogue>, StoreError> {
-        let Some((predicate, _)) = schema.find_position(PREDICATE) else {
+        let mut tables = Vec::with_capacity(2);
+
+        if let Some(table) = Table::of(schema, Self::listing_rows(listing))? {
+            tables.push(table);
+        }
+
+        if let Some(table) = Table::of(schema, interning.iter().map(Interning::of))? {
+            tables.push(table);
+        }
+
+        if tables.is_empty() {
             return Ok(None);
-        };
+        }
 
-        let mut rows: Vec<(ByteView, FactId)> = Vec::with_capacity(listing.entries.len());
+        Ok(Some(Catalogue {
+            tables: tables.into_boxed_slice(),
+        }))
+    }
 
-        for (sequence, entry) in listing.entries.iter().enumerate() {
+    /// The store root's entries as rows, ready to encode.
+    fn listing_rows(listing: &Listing) -> impl Iterator<Item = Row> + '_ {
+        listing.entries.iter().map(|entry| {
             let meta = &entry.meta;
 
-            let row = Row {
+            Row {
                 name: meta.name.clone(),
                 instance: meta.instance.clone(),
                 status: meta.status.to_string(),
@@ -144,11 +233,63 @@ impl Catalogue {
                 facts: meta.facts.map_or(-1, |facts| facts as i64),
                 bytes: meta.bytes.map_or(-1, |bytes| bytes as i64),
                 created: meta.created_at_ms.to_string(),
-            };
+            }
+        })
+    }
 
+    /// How many rows this catalogue holds, over every predicate. Tests, and nothing else.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tables.iter().map(|table| table.rows.len()).sum()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The table a scan starting at `lo` reads, if any — decided by the predicate id
+    /// leading every key.
+    fn table_for(&self, lo: &[u8]) -> Option<&Table> {
+        if lo.len() < PREDICATE_ID_SIZE {
+            return None;
+        }
+
+        self.tables
+            .iter()
+            .find(|table| lo[..PREDICATE_ID_SIZE] == table.predicate.0.to_be_bytes())
+    }
+
+    /// The table holding `id`, if any.
+    fn table_of(&self, id: FactId) -> Option<&Table> {
+        self.tables
+            .iter()
+            .find(|table| table.predicate == id.predicate())
+    }
+}
+
+impl Table {
+    /// Encode `rows` against `schema`, or `None` if it does not declare their predicate.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Meta`] if the schema declares the predicate with a shape this module
+    /// does not write — a field renamed on one side only. Reported rather than papered
+    /// over, because the alternative is rows encoded to bytes no query can read.
+    fn of<F: Fact>(
+        schema: &Schema,
+        rows: impl IntoIterator<Item = F>,
+    ) -> Result<Option<Table>, StoreError> {
+        let Some((predicate, _)) = schema.find_position(F::PREDICATE) else {
+            return Ok(None);
+        };
+
+        let mut encoded: Vec<(ByteView, FactId)> = Vec::new();
+
+        for (sequence, row) in rows.into_iter().enumerate() {
             let (id, key, _value) =
                 fact::encode(schema, &row).map_err(|source| StoreError::Meta {
-                    path: std::path::PathBuf::from(PREDICATE),
+                    path: std::path::PathBuf::from(F::PREDICATE),
                     detail: format!("the catalogue does not match its declaration: {source}"),
                 })?;
 
@@ -162,37 +303,22 @@ impl Catalogue {
             // downstream meets a fact id shaped differently from every other.
             let fact_id =
                 FactId::new(predicate, sequence as u64 + 1).map_err(|source| StoreError::Meta {
-                    path: std::path::PathBuf::from(PREDICATE),
+                    path: std::path::PathBuf::from(F::PREDICATE),
                     detail: format!("the catalogue cannot be given fact ids: {source}"),
                 })?;
 
-            rows.push((ByteView::from(bytes), fact_id));
+            encoded.push((ByteView::from(bytes), fact_id));
         }
 
         // Key order, because that is the order a keyspace would have held them in and
         // every seek downstream assumes it. The codec is order-preserving, so sorting
         // the encoded bytes *is* sorting by the tuple ([I1]).
-        rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+        encoded.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        Ok(Some(Catalogue {
+        Ok(Some(Table {
             predicate,
-            rows: Arc::from(rows),
+            rows: Arc::from(encoded),
         }))
-    }
-
-    /// How many databases the listing held. Used by tests, and by nothing else.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.rows.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
-    }
-
-    fn names(&self, lo: &[u8]) -> bool {
-        lo.len() >= PREDICATE_ID_SIZE && lo[..PREDICATE_ID_SIZE] == self.predicate.0.to_be_bytes()
     }
 }
 
@@ -229,15 +355,14 @@ impl<S: FactStore> FactStore for Catalogued<S> {
     type Scan = Scan<S::Scan>;
 
     fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, StoreError> {
-        if !self.catalogue.names(lo) {
+        let Some(table) = self.catalogue.table_for(lo) else {
             return self.inner.scan(lo, hi).map(Scan::Stored);
-        }
+        };
 
         // The same half-open range fjall is given, over the same bytes: `lo` inclusive,
         // `hi` exclusive, and no row from another predicate because the predicate id
         // leads every key.
-        let rows: Vec<(ByteView, FactId)> = self
-            .catalogue
+        let rows: Vec<(ByteView, FactId)> = table
             .rows
             .iter()
             .filter(|(key, _)| key.as_ref() >= lo && hi.is_none_or(|hi| key.as_ref() < hi))
@@ -248,16 +373,15 @@ impl<S: FactStore> FactStore for Catalogued<S> {
     }
 
     fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError> {
-        if id.predicate() != self.catalogue.predicate {
+        let Some(table) = self.catalogue.table_of(id) else {
             return self.inner.point(id);
-        }
+        };
 
         // The key **without** its predicate prefix, which is what `entities` holds and
         // what a fetch splices a prefix back onto. Getting this the other way round
         // would read four bytes of predicate id as the first field of the key and
         // answer, silently, with nothing.
-        Ok(self
-            .catalogue
+        Ok(table
             .rows
             .iter()
             .find(|(_, row_id)| *row_id == id)
@@ -312,7 +436,7 @@ mod tests {
         let mut rodeo = Rodeo::new();
         let mut sym = |name: &str| rodeo.get_or_intern(name);
 
-        let predicate = Predicate {
+        let listing = Predicate {
             name: sym(PREDICATE),
             key: PredicateTy::Record(Arc::from([
                 (sym("name"), PredicateTy::Str),
@@ -325,7 +449,33 @@ mod tests {
             value: None,
         };
 
-        Schema::new(rodeo.into_reader(), Arc::from(vec![predicate]))
+        // Both, because the wrapper picking the wrong table is the failure the second
+        // predicate introduced, and a schema declaring one cannot exhibit it.
+        let interning = Predicate {
+            name: sym(INTERNING),
+            key: PredicateTy::Record(Arc::from([
+                (sym("name"), PredicateTy::Str),
+                (sym("instance"), PredicateTy::Str),
+                (sym("hits"), PredicateTy::Int),
+                (sym("misses"), PredicateTy::Int),
+                (sym("keys"), PredicateTy::Int),
+                (sym("entities"), PredicateTy::Int),
+            ])),
+            value: None,
+        };
+
+        Schema::new(rodeo.into_reader(), Arc::from(vec![listing, interning]))
+    }
+
+    pub(super) fn counters_of(name: &str) -> stats::InterningCounters {
+        stats::InterningCounters {
+            name: name.to_owned(),
+            instance: "01ABC".to_owned(),
+            hits: 7,
+            misses: 3,
+            keys: 3,
+            entities: 1,
+        }
     }
 
     pub(super) fn listing_of(names: &[&str]) -> Listing {
@@ -352,7 +502,7 @@ mod tests {
     #[test]
     fn a_point_read_answers_the_key_a_fetch_expects() {
         let schema = catalogue_schema();
-        let catalogue = Catalogue::materialise(&schema, &listing_of(&["alpha", "beta"]))
+        let catalogue = Catalogue::materialise(&schema, &listing_of(&["alpha", "beta"]), &[])
             .expect("it encodes")
             .expect("the schema declares it");
 
@@ -382,13 +532,65 @@ mod tests {
         }
     }
 
+    /// **Each predicate answers out of its own table**, which is what the second one put
+    /// at risk: one wrapper, two ids, and a lookup by the bytes leading a scan.
+    ///
+    /// The failure this catches is not an error — it is a query about the databases
+    /// answering with counters, or the other way round, because both encode to a tuple of
+    /// two strings followed by integers and nothing downstream would object.
+    #[test]
+    fn a_scan_reads_the_table_its_predicate_names() {
+        let schema = catalogue_schema();
+        let catalogue = Catalogue::materialise(
+            &schema,
+            &listing_of(&["alpha", "beta", "gamma"]),
+            &[counters_of("alpha"), counters_of("beta")],
+        )
+        .expect("it encodes")
+        .expect("the schema declares both");
+
+        assert_eq!(
+            catalogue.len(),
+            5,
+            "three databases and two sets of counters"
+        );
+
+        let store = Catalogued::new(NoStore, Arc::new(catalogue));
+        let scan = |predicate: u32| -> usize {
+            store
+                .scan(&PredicateId(predicate).0.to_be_bytes(), None)
+                .expect("a scan")
+                .count()
+        };
+
+        assert_eq!(scan(0), 3, "aperture.db.List answers the listing");
+        assert_eq!(scan(1), 2, "aperture.db.Interning answers the counters");
+    }
+
+    /// A counter is a `u64` and the schema says `int`; the ceiling saturates rather than
+    /// wrapping, because a wrapped count reports a busy server as an idle one.
+    #[test]
+    fn a_counter_past_the_signed_ceiling_saturates() {
+        let row = Interning::of(&stats::InterningCounters {
+            name: "alpha".to_owned(),
+            instance: "01ABC".to_owned(),
+            hits: u64::MAX,
+            misses: 0,
+            keys: 0,
+            entities: 0,
+        });
+
+        assert_eq!(row.hits, i64::MAX);
+    }
+
     /// A listing sorts by its encoded key, which is what every seek downstream assumes.
     #[test]
     fn rows_come_back_in_key_order() {
         let schema = catalogue_schema();
-        let catalogue = Catalogue::materialise(&schema, &listing_of(&["zulu", "alpha", "mike"]))
-            .expect("it encodes")
-            .expect("the schema declares it");
+        let catalogue =
+            Catalogue::materialise(&schema, &listing_of(&["zulu", "alpha", "mike"]), &[])
+                .expect("it encodes")
+                .expect("the schema declares it");
 
         let store = Catalogued::new(NoStore, Arc::new(catalogue));
         let rows: Vec<_> = store
@@ -422,7 +624,7 @@ mod tests {
         );
 
         assert!(
-            Catalogue::materialise(&bare, &listing_of(&["alpha"]))
+            Catalogue::materialise(&bare, &listing_of(&["alpha"]), &[])
                 .expect("it does not fail")
                 .is_none()
         );
@@ -465,7 +667,7 @@ mod ranges {
     fn a_scan_honours_both_ends_of_its_range() {
         let schema = catalogue_schema();
         let listing = listing_of(&["alpha", "code", "zulu"]);
-        let catalogue = Catalogue::materialise(&schema, &listing)
+        let catalogue = Catalogue::materialise(&schema, &listing, &[])
             .expect("it encodes")
             .expect("declared");
 

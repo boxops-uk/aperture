@@ -60,7 +60,7 @@ const SOURCE: &str = include_str!("../schemas/code.aps");
 /// rather than with the artifact ([`aperture_server::registry::Schemas`]).
 pub const CATALOGUE_SOURCE: &str = include_str!("../schemas/catalogue.aps");
 
-/// The one virtual predicate, by name.
+/// The store root as a predicate, by name — the first of the virtual ones.
 pub const CATALOGUE_NAME: &str = "aperture.db.List";
 
 /// The schema everything here resolves names against: **a code index**, which is the
@@ -167,12 +167,32 @@ pub fn id(name: &str) -> PredicateId {
 pub fn with_catalogue() -> Schema {
     static SERVED: LazyLock<Schema> = LazyLock::new(|| {
         let schema = parse_or_panic(&format!("{SOURCE}\n{CATALOGUE_SOURCE}"), None);
-        let id = schema
-            .find_position(CATALOGUE_NAME)
-            .map(|(id, _)| id)
-            .expect("the catalogue source declares it");
 
-        schema.with_virtual([id])
+        // **The file decides which predicates are virtual, not a list here.** Parsed a
+        // second time on its own so its declarations can be named, because the
+        // alternative — a constant per predicate, or "everything after the stored ones" —
+        // is a second statement of what `catalogue.aps` already says, and the first
+        // predicate added to it would leave one of them stored: given keyspaces at
+        // `create`, hashed into `ops-I4`'s identity, and inside the fingerprint every
+        // client has to agree with.
+        let declared = parse_or_panic(CATALOGUE_SOURCE, None);
+
+        let virtuals: Vec<PredicateId> = (0..declared.len())
+            .filter_map(|index| declared.get(PredicateId(index as u32))?.name())
+            .map(|name| {
+                schema
+                    .find_position(name)
+                    .map(|(id, _)| id)
+                    .expect("a predicate the catalogue declares is in the composed schema")
+            })
+            .collect();
+
+        assert!(
+            !virtuals.is_empty(),
+            "the catalogue source declares no predicates"
+        );
+
+        schema.with_virtual(virtuals)
     });
 
     SERVED.clone()
@@ -473,7 +493,12 @@ mod catalogue {
         let stored = schema();
         let served = with_catalogue();
 
-        assert_eq!(served.len(), stored.len() + 1, "one appended, nothing else");
+        let appended = parse_or_panic(CATALOGUE_SOURCE, None).len();
+        assert_eq!(
+            served.len(),
+            stored.len() + appended,
+            "the catalogue's predicates appended, nothing else"
+        );
 
         for index in 0..stored.len() {
             let id = PredicateId(index as u32);
@@ -485,17 +510,27 @@ mod catalogue {
         }
     }
 
-    /// Only the catalogue is virtual, and it is.
+    /// **Exactly the catalogue's predicates are virtual, and nothing else is.**
+    ///
+    /// Stated as a set rather than as one id: the failure this guards is a predicate
+    /// added to `catalogue.aps` and left *stored*, which gives it keyspaces at `create`,
+    /// puts it in `ops-I4`'s identity, and moves the fingerprint every client agrees
+    /// with. That is what happened the first time one was added.
     #[test]
-    fn the_catalogue_is_the_only_virtual_predicate() {
+    fn exactly_the_catalogues_predicates_are_virtual() {
         let served = with_catalogue();
 
-        let catalogue = catalogue_id();
+        let declared = parse_or_panic(CATALOGUE_SOURCE, None);
+        let mut expected: Vec<PredicateId> = (0..declared.len())
+            .filter_map(|index| declared.get(PredicateId(index as u32))?.name())
+            .filter_map(|name| served.find_position(name).map(|(id, _)| id))
+            .collect();
+        expected.sort_unstable();
 
-        assert_eq!(served.virtuals(), [catalogue]);
-        assert_eq!(
-            served.get(catalogue).and_then(|p| p.name()),
-            Some(CATALOGUE_NAME)
+        assert_eq!(served.virtuals(), expected.as_slice());
+        assert!(
+            served.virtuals().contains(&catalogue_id()),
+            "the listing is one of them"
         );
         assert!(schema().virtuals().is_empty(), "the stored schema has none");
     }

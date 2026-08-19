@@ -12,6 +12,16 @@
 //! drifts is worse than none — it reads as a leak that is not there, or hides one that
 //! is.
 //!
+//! **One set of numbers has since taken the durable home this doc names**, and it is not
+//! the server's own: [`InterningCounters`] carries what the *store* counted on the write
+//! path, and `aperture.db.Interning` answers it as a virtual predicate over the socket
+//! that already exists — the same arrangement `aperture.db.List` has. What forced the
+//! question was a measurement it could not answer: `bench/FINDINGS.md` §15 priced our
+//! interning at four times Glean's and could not say whether the lookup cache was even
+//! hitting, because the counters that would say were reachable only from a debugger. The
+//! counters below are still unexposed, and deliberately: a connection count is not what
+//! anybody needed.
+//!
 //! # Gauges are guards, not increments
 //!
 //! Two of these go up and down, and both count things that end on many paths — a task
@@ -35,6 +45,37 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering::Relaxed},
 };
+
+/// What one database's interning path has done since this server opened it.
+///
+/// **The counting is not here** — it is the store's, inside the per-key stripe where the
+/// decision is made ([`aperture_store`]'s `lookup_counters` and `intern_read_counters`).
+/// This is the *shape* those numbers are reported in, and the reason it lives in this
+/// module rather than in the registry that gathers it: it is a statistic about a run,
+/// which is what this module is for, and putting it beside the counters that are not yet
+/// exposed keeps the two decisions in one place.
+///
+/// **Never a second increment.** A copy of a counter is a counter that can drift, so
+/// nothing here is added to — every field is read from the store at the moment a query
+/// asks, and read one stripe at a time, so the four numbers are four facts and not a
+/// snapshot. `hits + misses` is therefore not exactly `keys` plus what the cache
+/// answered, and treating it as an identity would be reading a ratio into two
+/// independent reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterningCounters {
+    /// The database's name, and the instance under it — the store root's unique key.
+    pub name: String,
+    pub instance: String,
+    /// References resolved out of the ingest lookup cache, touching no tree.
+    pub hits: u64,
+    /// References the cache could not answer, which then read `keys`.
+    pub misses: u64,
+    /// Live `keys` point reads: one per resolve the cache did not answer.
+    pub keys: u64,
+    /// Live `entities` point reads: one per *found* fact whose predicate declares a
+    /// value side, and zero for a key-only predicate however often it is found.
+    pub entities: u64,
+}
 
 /// One server's counters.
 ///

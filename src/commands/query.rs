@@ -705,6 +705,46 @@ mod mixed {
         .rows
     }
 
+    /// **The write path's counters, answered as facts.**
+    ///
+    /// [`bench/FINDINGS.md` §15](../../bench/FINDINGS.md) priced our interning at four
+    /// times Glean's and could not say whether the ingest lookup cache was even hitting,
+    /// because the counters that would say were reachable only from a debugger. This is
+    /// the guard on the answer to that: they are a virtual predicate, so asking is a
+    /// query — with a plan, a residual and a page — and not a bespoke message.
+    #[test]
+    fn the_interning_counters_answer_as_facts() {
+        const FILES: usize = 20;
+        let serving = serving(FILES);
+
+        assert_eq!(
+            count(&serving, "I where I = aperture.db.Interning _"),
+            1,
+            "one row per database this server holds open"
+        );
+
+        // The seeder writes files, then modules *naming* those files, then declarations
+        // naming those modules. So every module and declaration resolved a parent, the
+        // first reference to each parent missed, and the rest of them hit.
+        for (field, why) in [
+            (
+                "hits",
+                "a nested corpus resolves the same parents repeatedly",
+            ),
+            ("misses", "the first reference to a parent cannot hit"),
+            ("keys", "a miss falls through to the keys tree"),
+        ] {
+            assert_eq!(
+                count(
+                    &serving,
+                    &format!("{{n = I.name}} where I = aperture.db.Interning _; I.{field} > 0")
+                ),
+                1,
+                "{field}: {why}"
+            );
+        }
+    }
+
     /// **One plan, two stores.** A level whose rows come from the registry and a level
     /// whose rows come from fjall, in the same query.
     ///

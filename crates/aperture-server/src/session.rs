@@ -62,7 +62,7 @@ use aperture_schema::{
     fingerprint::Identity,
     schema::{LocalInterner, PredicateId, PredicateTy, Schema},
 };
-use aperture_store::{meta::Status, store::FjallDb};
+use aperture_store::{catalog::Listing, meta::Status, store::FjallDb};
 use aperture_wire::{
     FrameHeader, FrameKind, StreamId, encode_desc, encode_frame, frame,
     protocol::{self, ErrorCode, Mode, ProfileStep, QueryProfile, Ready, Startup, kinds},
@@ -684,16 +684,18 @@ impl StreamTask {
 
         let database = Arc::clone(self.database()?);
         let working = Arc::clone(&database);
-        let catalog = self.session.registry.catalog().clone();
+        let registry = Arc::clone(&self.session.registry);
 
-        // The cheap question first, as `prepare` asks it: does any id name the catalogue
-        // at all? Almost none do, and the walk is far too much to do otherwise.
-        let catalogue_id = working
-            .schema
-            .find_position(catalogue::PREDICATE)
-            .map(|(id, _)| id);
-        let wants_listing =
-            catalogue_id.is_some_and(|id| ids.iter().any(|asked| asked.predicate() == id));
+        // The cheap question first, as `prepare` asks it: does any id name a virtual
+        // predicate at all? Almost none do, and the walk is far too much to do otherwise.
+        let asks_for = |name: &str| {
+            working
+                .schema
+                .find_position(name)
+                .is_some_and(|(id, _)| ids.iter().any(|asked| asked.predicate() == id))
+        };
+        let wants_listing = asks_for(catalogue::PREDICATE);
+        let wants_interning = asks_for(catalogue::INTERNING);
 
         let answers: Vec<protocol::Fetched> = blocking::run(move || {
             let store = working.db.reader();
@@ -703,8 +705,20 @@ impl StreamTask {
             // through it, and building one per id would allocate per point read.
             let interner = LocalInterner::new(schema.interner().clone());
 
-            let listing = if wants_listing {
-                Catalogue::materialise(schema, &catalog.list()?)?.map(Arc::new)
+            let listing = if wants_listing || wants_interning {
+                let entries = if wants_listing {
+                    registry.catalog().list()?
+                } else {
+                    Listing::default()
+                };
+
+                let interning = if wants_interning {
+                    registry.interning()
+                } else {
+                    Vec::new()
+                };
+
+                Catalogue::materialise(schema, &entries, &interning)?.map(Arc::new)
             } else {
                 None
             };
@@ -897,10 +911,10 @@ impl StreamTask {
             let queued = std::time::Instant::now();
             let stats = Arc::clone(stats);
             let database = Arc::clone(&database);
-            let catalog = self.session.registry.catalog().clone();
+            let registry = Arc::clone(&self.session.registry);
             blocking::run(move || {
                 stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
-                prepare(&database, &catalog, &source)
+                prepare(&database, &registry, &source)
             })
             .await?
         };
@@ -969,10 +983,10 @@ impl StreamTask {
             let stats = Arc::clone(stats);
             let database = Arc::clone(&database);
             let source = source.clone();
-            let catalog = self.session.registry.catalog().clone();
+            let registry = Arc::clone(&self.session.registry);
             blocking::run(move || {
                 stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
-                prepare(&database, &catalog, &source)
+                prepare(&database, &registry, &source)
             })
             .await?
         };
@@ -1293,7 +1307,7 @@ struct Chunk {
 /// Compile, and work out what the rows will look like. No execution.
 fn prepare(
     database: &Database,
-    catalog: &aperture_store::catalog::Catalog,
+    registry: &Registry,
     source: &str,
 ) -> Result<Prepared, ServerError> {
     let schema = &database.schema;
@@ -1328,20 +1342,40 @@ fn prepare(
     let mut interner = compilation.into_interner();
     let ty = desc.to_ty(&mut interner);
 
-    // **Only if the query asks for it.** A plan names its predicates, so the cheap
-    // question is answered before the expensive work: building the listing walks the
-    // store root and reads a sidecar per database, which is `ops-I7` doing exactly what
-    // it is for and still far too much to do on every query about `src.File`.
-    let catalogue = match database
-        .schema
-        .find_position(catalogue::PREDICATE)
-        .map(|(id, _)| id)
-    {
-        Some(id) if catalogue::reads(&plan, id) => {
-            let listing = catalog.list()?;
-            Catalogue::materialise(&database.schema, &listing)?.map(Arc::new)
+    // **Only if the query asks for it, and only the one it asks for.** A plan names its
+    // predicates, so the cheap question is answered before the expensive work — and the
+    // two are expensive in different ways. The listing walks the store root and reads a
+    // sidecar per database, which is `ops-I7` doing exactly what it is for and still far
+    // too much to do on every query about `src.File`; the counters take every interning
+    // stripe's lock in turn, which is a report standing briefly in front of the write
+    // path it reports on. Neither is paid for by a query that did not name it.
+    let catalogue = {
+        let reads = |name: &str| {
+            database
+                .schema
+                .find_position(name)
+                .is_some_and(|(id, _)| catalogue::reads(&plan, id))
+        };
+
+        let (listing, interning) = (reads(catalogue::PREDICATE), reads(catalogue::INTERNING));
+
+        if listing || interning {
+            let listing = if listing {
+                registry.catalog().list()?
+            } else {
+                Listing::default()
+            };
+
+            let interning = if interning {
+                registry.interning()
+            } else {
+                Vec::new()
+            };
+
+            Catalogue::materialise(&database.schema, &listing, &interning)?.map(Arc::new)
+        } else {
+            None
         }
-        _ => None,
     };
 
     Ok(Prepared {

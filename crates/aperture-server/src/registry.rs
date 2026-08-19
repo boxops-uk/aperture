@@ -42,7 +42,12 @@ use aperture_store::{
 
 use aperture_wire::protocol::{Control, ControlOp, ControlReply};
 
-use crate::{blocking, error::ServerError, session::Database, stats::ServerStats};
+use crate::{
+    blocking,
+    error::ServerError,
+    session::Database,
+    stats::{InterningCounters, ServerStats},
+};
 
 /// How a database's schema is arrived at.
 ///
@@ -258,6 +263,36 @@ impl Registry {
     #[must_use]
     pub fn stats(&self) -> &Arc<ServerStats> {
         &self.stats
+    }
+
+    /// What every open database's interning path has done since this server opened it.
+    ///
+    /// **One row per database this server holds open**, in instance order, which is what
+    /// `aperture.db.Interning` answers with. A database the root lists but this server
+    /// could not open has no counters to report and no row; a sealed one is open, never
+    /// interns, and reads zero — which is a true statement about it rather than a gap.
+    ///
+    /// Reading it takes each stripe's lock in turn, per database, so it belongs on a
+    /// query about the counters and nowhere near the path that increments them. That is
+    /// why nothing calls this unless a plan names the predicate.
+    #[must_use]
+    pub fn interning(&self) -> Vec<InterningCounters> {
+        self.read()
+            .values()
+            .map(|database| {
+                let (hits, misses) = database.db.lookup_counters();
+                let (keys, entities) = database.db.intern_read_counters();
+
+                InterningCounters {
+                    name: database.name.clone(),
+                    instance: database.instance.clone(),
+                    hits,
+                    misses,
+                    keys,
+                    entities,
+                }
+            })
+            .collect()
     }
 
     /// The schema fingerprint a session that names no database handshakes against.
