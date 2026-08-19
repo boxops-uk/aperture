@@ -54,11 +54,18 @@
 //! ([Phase 9f](../../PLAN.md)), and the reason a result is a bookmark
 //! ([`Rows`]) rather than an iterator holding the socket.
 //!
+//! # Two pipes, one protocol
+//!
+//! [`Connection::connect`] takes a Unix socket path and [`Connection::connect_tcp`] an
+//! authority; [`Connection::open`] takes an [`Endpoint`] and dispatches, which is the one
+//! a caller holding an [`Address`] wants. The frames, the handshake and the stream
+//! multiplexing are identical — only the pipe differs, which is why it is one enum inside
+//! rather than a second client. The server end is default-closed (`ops-I10`) and listens
+//! on TCP only when an operator passed `--listen-tcp`, so reaching one means somebody
+//! opted in; nothing at this end asserts anything about who may.
+//!
 //! # What is deliberately not here
 //!
-//! - **TCP.** `ops-I10` is default-closed and the server binds a Unix socket only, so
-//!   there is nothing to connect to yet. [`Connection::connect`] takes a path for that
-//!   reason, and gains an address form when the server gains a listener.
 //! - **Reconnection, retry and timeouts.** An I/O policy belongs to the program, not to
 //!   the transport: a shell wants to tell a person, a deriver wants to retry, and a
 //!   client that chose for both would be wrong for one. The one error worth retrying

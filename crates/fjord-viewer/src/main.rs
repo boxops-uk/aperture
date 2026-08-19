@@ -15,7 +15,7 @@ use clap::Parser;
 use fjord_client::{Address, Endpoint};
 
 #[derive(Parser)]
-#[command(name = "fjord-viewer", about = "Browse a Fjord code index")]
+#[command(name = "fjord-viewer", version, about = "Browse a Fjord code index")]
 struct Args {
     /// Where to read from: `[where//]name[@instance]`.
     ///
@@ -63,11 +63,6 @@ fn main() -> ExitCode {
     };
 
     runtime.block_on(async move {
-        // **The built-in schema, and no assertion made with it.** A reader has no
-        // claim to make about the schema — the database's is the one that matters,
-        // and it is frozen at create (I13).
-        let schema = Arc::new(fjord_cli_schema());
-
         let address = match address(&args.address) {
             Ok(address) => address,
             Err(error) => {
@@ -76,7 +71,7 @@ fn main() -> ExitCode {
             }
         };
 
-        let app = match fjord_viewer::App::open(&address, schema, args.pool) {
+        let app = match fjord_viewer::App::open(&address, args.pool) {
             Ok(app) => Arc::new(app),
             Err(error) => {
                 eprintln!("fjord-viewer: could not read `{address}`: {error}");
@@ -111,23 +106,4 @@ fn main() -> ExitCode {
             }
         }
     })
-}
-
-/// The code index schema, parsed from the same file the server reads.
-///
-/// **Compiled in rather than fetched**, which is the same position every other client
-/// is in: the transport codec sends no field names and no types, so both ends supply
-/// them. What a client cannot do yet is *ask* — see `docs/phase-8-schemas.md` on why
-/// generating a client from the schema is recorded rather than scheduled.
-fn fjord_cli_schema() -> fjord_schema::schema::Schema {
-    const SOURCE: &str = include_str!("../../../schemas/code.sigla");
-
-    let mut diagnostics = vec![];
-
-    let cst = fjord_schema::syntax::parse::parse(SOURCE, &mut diagnostics)
-        .expect("the built-in schema parses");
-
-    fjord_schema::syntax::lower::lower(&cst, &mut diagnostics)
-        .expect("the built-in schema lowers")
-        .schema
 }

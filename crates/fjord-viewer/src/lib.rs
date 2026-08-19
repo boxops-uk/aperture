@@ -41,7 +41,7 @@ use axum::{
     routing::get,
 };
 
-use fjord_client::ClientError;
+use fjord_client::{ClientError, Connection, Mode};
 use fjord_schema::schema::Schema;
 
 use crate::{pool::Pool, query::Paths};
@@ -84,16 +84,38 @@ impl App {
     /// [`query::Paths`]: a reference answers a file *id*, and nothing in the language
     /// turns one into a path.
     ///
+    /// **The schema comes from the server**, on one probe connection opened and dropped
+    /// before the pool exists.
+    ///
+    /// A schema belongs to the database ([I13](../../../docs/invariants.md#i13)) and this
+    /// is a reader with nothing to claim, so asking is the only way to be right. It used
+    /// to be compiled in from `schemas/code.sigla`, which was wrong twice: a database
+    /// created against a newer schema was read through this binary's older copy, and the
+    /// file sits outside this crate, so `cargo package` could not build one.
+    ///
+    /// What stays hard-coded is the *predicate names* the pages ask about — `src.File`,
+    /// `src.Decl` and the rest, in [`query`]. That is honest: this is a code-search site,
+    /// so a database that does not declare them has nothing for it to show, and the
+    /// failure is a query that will not compile, which is the error below.
+    ///
     /// # Errors
     ///
-    /// If the server will not answer — no socket, no such database, or a query that
-    /// does not compile, which for these queries means the database's schema is not
-    /// the code index.
-    pub fn open(
-        address: &fjord_client::Address,
-        schema: Arc<Schema>,
-        pool_size: usize,
-    ) -> Result<App, ClientError> {
+    /// If the server will not answer — no socket, no such database, a schema it will not
+    /// hand over, or a query that does not compile, which for these queries means the
+    /// database's schema is not a code index.
+    pub fn open(address: &fjord_client::Address, pool_size: usize) -> Result<App, ClientError> {
+        let schema = {
+            let mut probe = Connection::open(
+                address.endpoint().expect("a resolved address"),
+                address.database(),
+                Arc::new(Schema::empty()),
+                Mode::ReadOnly,
+                false,
+            )?;
+
+            Arc::new(probe.served_schema()?)
+        };
+
         let pool = Pool::new(address.clone(), schema, pool_size);
         let paths = pool.with(Paths::load)?;
 
