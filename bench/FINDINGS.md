@@ -1059,6 +1059,74 @@ goes: summed `writing` per fact *grows* with the tree (15c), and it barely impro
 lookup cache landed — 2,395.5 → 2,037.7 s for the same 94.9M interns, when 73.6% of them
 are re-reads it should be absorbing.
 
+## 16. Without `src/tests`: 19.6k facts/s, and the cache is at its ceiling — 73.05% against an available 73.12%
+
+**What was measured.** The same producer and flags as [§15](#15-aperture-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper),
+four writers, with `--exclude src/tests` — 26,924 of 32,710 files. §15b said the tail was a
+corpus decision; this is that decision taken, and it is a **larger** cut than the tail
+arithmetic predicted.
+
+| | 4 writers, whole `src/` | 4 writers, no `src/tests` |
+|---|---|---|
+| files / facts | 32,710 / 25,046,499 | 26,924 / **18,291,006** |
+| walk + ingest | 3,751 s | **935 s** |
+| throughput | 6,677 f/s (13,795 ex-tail) | **19,563 f/s** |
+| queueing | 271.4 s | **70.3 s** (7.5%) |
+| gate wait / held (8 walkers) | 3,256 / 644 s | 2,670 / 336 s |
+| `finish` | 344 s | 220 s |
+| sealed | 25,012,490 facts, 3.2 GB | 18,258,385 facts, 2.4 GB |
+| peak RSS, indexer / server | 20.0 / 1.7 GB | **9.4** / 1.8 GB |
+
+**`src/tests` was 27.0% of the facts and 75.1% of the wall clock.** Excluding it is worth
+more than removing the tail, because the tail cut only dropped the last 16 files while the
+tree carries pathological generated code all through the walk — and it halves peak memory,
+which hands the page cache back to the LSM the earlier runs were starving. Against the
+pre-upgrade baseline this is **3.94×**; against §15's ex-tail four-writer figure, 1.42×.
+
+### 16a. The lookup cache, watched rather than autopsied
+
+`aperture.db.Interning` sampled every 30 s through the ingest, and the last sample after the
+seal:
+
+| elapsed | hits | misses | `keys` | `entities` | hit rate |
+|---|---|---|---|---|---|
+| 181 s | 8,785,048 | 3,277,672 | 3,277,672 | 200 | 72.8% |
+| 361 s | 20,538,006 | 7,606,218 | 7,606,244 | 6,174 | 73.1% |
+| 451 s | 25,575,714 | 9,457,806 | 9,457,819 | 9,783 | 73.0% |
+| final | 49,614,896 | 18,303,664 | **18,303,664** | 29,026 | **73.05%** |
+
+**73.05% against a ceiling of 73.12%**, because 73.12% of this corpus's resolves are repeats
+— a perfect cache scores that and a useless one scores zero. Flat across 67.9M resolves, no
+decay.
+
+**`keys` equals `misses` exactly**, and that identity is the whole finding. An eviction can
+only show up one way: a resolve that misses the cache and then *finds* the fact in the trees
+— a miss and a probe that creates nothing. It is pinned from both sides,
+`misses − created` = `deduped − hits` = **45,279**, which is 0.067% of resolves. So the
+128 MiB-per-generation budget rotated a hot parent out about once in 1,500 resolves at 18.3M
+facts, and [§15](#15-aperture-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper)'s
+worry about the ~100 MB hot set is closed. `entities` is 0.043%: the key-only fast path
+removing the second tree read, confirmed on real data for the first time.
+
+**Block-local dedup fired zero times**, which is worth recording because it looks like dead
+code and is not: `intern` checks the block's own uncommitted `pending` map first, and a
+nested parent is only ever *created* in an earlier block, so the cache answers before that
+map can. It earns its place as the correctness backstop the comment says it is — a staged id
+the trees cannot yet answer for — not as an optimisation.
+
+### 16b. What is the ceiling now
+
+**Not the write path.** `queueing` is 7.5% and the cache is at its arithmetic maximum. The
+walkers spent 2,670 s summed blocked on `Indexer._gate` — ~334 s each, 36% of the run —
+which makes the producer's own serialisation the largest remaining term, and it is
+`clients/dotnet`'s to fix rather than the database's.
+
+**What interning still costs is one `keys` probe per created fact, plus staging, commit and
+wire decode.** With `keys == misses` there is nothing left to remove by caching; the next
+number has to come from splitting that residue, which is
+[§13](#13-the-write-rung-committing-is-41-of-interning-and-the-cache-is-worth-23-of-a-resolve-pass)'s
+write rung run over this corpus rather than a synthetic one.
+
 ## What is still open
 
 - **F6** — the reader head-of-line blocking on a ≥3-block ingest. The only hypothesis left
@@ -1092,6 +1160,10 @@ are re-reads it should be absorbing.
   so what is left is running the rung over it — and [§15d](#15d-what-the-glean-run-separates-that-no-aperture-run-could)
   is why that matters: the 3.5× against Glean is pipeline against pipeline, and only the rung
   splits interning from the socket.
+- **The interning lookup cache is measured and closed** —
+  [§16a](#16a-the-lookup-cache-watched-rather-than-autopsied): 73.05% of an available 73.12%
+  at 18.3M facts, `keys` equal to `misses` exactly, and 45,279 resolves (0.067%) as the whole
+  cost of eviction. What follows is below, and it is no longer about caching.
 - **The interning lookup cache is now visible, and on a small corpus it is perfect.**
   `aperture.db.Interning` reports it as facts, so a running server can be asked
   (`:interning` in the shell). Over this repository's own `clients/dotnet` — 14,072 facts,
