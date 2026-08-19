@@ -44,11 +44,7 @@ pub fn serving(files: usize) -> Serving {
     // The **served** schema, as `serve` builds it: the stored predicates plus the
     // catalogue. Created with the stored one, because a virtual predicate is not part
     // of the artifact — which is the arrangement these tests exist to exercise.
-    let (registry, _listing) = Registry::open(
-        catalog,
-        Schemas::new(code_index::CATALOGUE_SOURCE, code_index::with_catalogue()),
-    )
-    .expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, Schemas::default()).expect("a registry");
     let listener = Listener::bind(&socket).expect("a socket");
 
     thread::spawn(move || {
@@ -156,11 +152,7 @@ pub fn serving_on_tcp(files: usize) -> (Serving, String) {
         .create("code", &code_index::schema())
         .expect("a database");
 
-    let (registry, _listing) = Registry::open(
-        catalog,
-        Schemas::new(code_index::CATALOGUE_SOURCE, code_index::with_catalogue()),
-    )
-    .expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, Schemas::default()).expect("a registry");
     let registry = Arc::new(registry);
 
     // **A port the OS chose, taken and released.** `serve_on` takes an address rather
@@ -212,8 +204,12 @@ pub fn serving_on_tcp(files: usize) -> (Serving, String) {
 /// lower bound of any seek excludes everything the upper bound would have, and a broken
 /// upper bound is invisible.
 pub fn create_database(serving: &Serving, name: &str) {
-    let mut control = Connection::control(&serving.socket, Arc::new(code_index::schema()))
-        .expect("a control session");
+    let mut control = Connection::control(&serving.socket).expect("a control session");
 
-    control.create(name, "").expect("the database is created");
+    // The source, because `create` requires one: an empty schema no longer means "the
+    // server's own", since a server has none.
+    let source = fjord_schema::syntax::print::print(&code_index::schema());
+    control
+        .create(name, &source)
+        .expect("the database is created");
 }

@@ -50,10 +50,16 @@ pub fn run(
             // The resolved schema as source rather than the entry file's text: what
             // the server embeds must be the union, or a database built through the
             // server would hold less than the same command built locally.
-            let source = resolved
-                .as_ref()
-                .map(fjord_schema::syntax::print::print)
-                .unwrap_or_default();
+            //
+            // **Sent explicitly even when nobody named one.** An empty `source` used to
+            // mean "whatever the server has", and a server no longer has anything — so
+            // the default, while there still is one, travels with the request like any
+            // other schema. Which is also the honest shape: the two doors now embed the
+            // same text rather than two things that happened to agree.
+            let source = resolved.as_ref().map_or_else(
+                || fjord_schema::syntax::print::print(&code_index::schema()),
+                fjord_schema::syntax::print::print,
+            );
 
             server.create(&target.database, &source)?
         }

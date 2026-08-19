@@ -238,11 +238,24 @@ impl Connection {
     /// Which exists because [`create`](Connection::create) names a database that does
     /// not exist yet, so there is nothing for the session to bind.
     ///
+    /// **It carries no schema and claims nothing.** A claim is about a database, and this
+    /// session has none — so there is nothing it could honestly assert, and asserting
+    /// something anyway is what made a *default* schema load-bearing on a path that never
+    /// reads one: a tool whose built-in schema was not the server's was refused at the
+    /// handshake before it could create a database against the schema it actually meant.
+    /// What the two ends still agree about is the protocol version and the catalogue.
+    ///
     /// # Errors
     ///
     /// As [`connect`](Connection::connect).
-    pub fn control(socket: &Path, schema: Arc<Schema>) -> Result<Connection, ClientError> {
-        Connection::connect(socket, "", schema, Mode::ReadWrite, true)
+    pub fn control(socket: &Path) -> Result<Connection, ClientError> {
+        Connection::connect(
+            socket,
+            "",
+            Arc::new(Schema::empty()),
+            Mode::ReadWrite,
+            false,
+        )
     }
 
     /// A control session wherever `endpoint` says.
@@ -250,11 +263,14 @@ impl Connection {
     /// # Errors
     ///
     /// As [`open`](Connection::open).
-    pub fn control_at(
-        endpoint: &crate::Endpoint,
-        schema: Arc<Schema>,
-    ) -> Result<Connection, ClientError> {
-        Connection::open(endpoint, "", schema, Mode::ReadWrite, true)
+    pub fn control_at(endpoint: &crate::Endpoint) -> Result<Connection, ClientError> {
+        Connection::open(
+            endpoint,
+            "",
+            Arc::new(Schema::empty()),
+            Mode::ReadWrite,
+            false,
+        )
     }
 
     fn establish(

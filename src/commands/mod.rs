@@ -15,7 +15,7 @@ pub mod schema;
 pub mod serve;
 pub mod shell;
 
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 
 use fjord_client::{Address, ClientError, Connection, Endpoint};
 use fjord_store::{
@@ -23,7 +23,7 @@ use fjord_store::{
     error::StoreError,
 };
 
-use crate::{CliError, code_index};
+use crate::CliError;
 
 /// Where a command is going, and which database it is about.
 ///
@@ -148,9 +148,7 @@ pub fn route(root: &Path, target: &Target) -> Result<Route, CliError> {
 /// [`CliError::NoServer`] if nothing is listening, which is the message that says what
 /// to do about it.
 fn control(endpoint: &Endpoint) -> Result<Connection, CliError> {
-    let schema = Arc::new(code_index::schema());
-
-    Connection::control_at(endpoint, schema).map_err(|error| match error {
+    Connection::control_at(endpoint).map_err(|error| match error {
         ClientError::Io(io)
             if matches!(
                 io.kind(),
@@ -174,14 +172,18 @@ fn control(endpoint: &Endpoint) -> Result<Connection, CliError> {
 /// — is reported rather than assumed away, because that is a server we are being kept
 /// out of, not the absence of one.
 ///
-/// The session asserts this build's schema fingerprint rather than accepting whatever
-/// the server has. A tool whose built-in schema is not the server's would otherwise
-/// create a database against a schema it does not have, and find out by writing facts
-/// nobody can read back — which is precisely what that handshake field is for.
+/// **The session asserts nothing about a schema, and carries none.** It used to claim
+/// this build's built-in one, and the argument for that was real — a tool whose schema is
+/// not the server's would create a database against a schema it does not have. What made
+/// it wrong is that a lifecycle request names a database that may not exist yet, so there
+/// is nothing there to agree *about*; what the claim actually compared was two copies of a
+/// default, and requiring them to match is what made a default load-bearing. The schema a
+/// database is created against now travels with the request ([`create`]), which is where a
+/// disagreement can be a real one.
 fn connect(socket: &Path) -> Result<Option<Connection>, CliError> {
     use std::io::ErrorKind;
 
-    match Connection::control(socket, Arc::new(code_index::schema())) {
+    match Connection::control(socket) {
         Ok(server) => Ok(Some(server)),
 
         Err(ClientError::Io(error))

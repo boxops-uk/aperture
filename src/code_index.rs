@@ -53,16 +53,6 @@ use fjord_schema::{
 /// is a file a person can read, diff, and pass to `fjord create --schema`.
 const SOURCE: &str = include_str!("../schemas/code.sigla");
 
-/// The catalogue, declared in the same language as everything else.
-///
-/// Public because it is what a **server** appends to every database's own schema: a
-/// virtual predicate belongs to whoever answers it, so it travels with the process
-/// rather than with the artifact ([`fjord_server::registry::Schemas`]).
-pub const CATALOGUE_SOURCE: &str = include_str!("../schemas/catalogue.sigla");
-
-/// The store root as a predicate, by name — the first of the virtual ones.
-pub const CATALOGUE_NAME: &str = "fjord.db.List";
-
 /// The schema everything here resolves names against: **a code index**, which is the
 /// canonical shape for a fact database — one fact per thing, and everything about a
 /// thing pointing at it rather than repeating it.
@@ -123,20 +113,6 @@ pub fn schema() -> Schema {
     SCHEMA.clone()
 }
 
-/// The id `fjord.db.List` takes — **looked up, never assumed**.
-///
-/// Ids come from sorting a schema's names ([D1](../../docs/phase-8-schemas.md)), so a
-/// position is a fact about the whole schema rather than about one declaration. A
-/// constant here would be a second statement of it, and the wrong one the first time
-/// somebody adds a predicate sorting earlier.
-#[must_use]
-pub fn catalogue_id() -> PredicateId {
-    with_catalogue()
-        .find_position(CATALOGUE_NAME)
-        .map(|(id, _)| id)
-        .expect("with_catalogue declares the catalogue")
-}
-
 /// The predicate a name denotes in the built-in schema.
 ///
 /// # Panics
@@ -149,53 +125,6 @@ pub fn id(name: &str) -> PredicateId {
         .find_position(name)
         .map(|(id, _)| id)
         .unwrap_or_else(|| panic!("the built-in schema declares no `{name}`"))
-}
-
-/// The schema a **server** answers queries against: the stored one, plus the catalogue.
-///
-/// **Virtual predicates belong to the server, not to the database**, and everything
-/// about how this is put together follows from that one sentence. `fjord.db.List` is
-/// not in [`schema`], so it is not in the handshake fingerprint, not in the copy
-/// embedded at create, and not a pair of keyspaces in any artifact — which is why a
-/// client that has never heard of it still connects, and why the .NET clients did not
-/// have to be told.
-///
-/// Assembled by parsing the stored source **and** the catalogue's, rather than by
-/// restating either: two schemas built from one text cannot drift, and the catalogue is
-/// declared in the same language as everything else.
-#[must_use]
-pub fn with_catalogue() -> Schema {
-    static SERVED: LazyLock<Schema> = LazyLock::new(|| {
-        let schema = parse_or_panic(&format!("{SOURCE}\n{CATALOGUE_SOURCE}"), None);
-
-        // **The file decides which predicates are virtual, not a list here.** Parsed a
-        // second time on its own so its declarations can be named, because the
-        // alternative — a constant per predicate, or "everything after the stored ones" —
-        // is a second statement of what `catalogue.sigla` already says, and the first
-        // predicate added to it would leave one of them stored: given keyspaces at
-        // `create`, hashed into `ops-I4`'s identity, and inside the fingerprint every
-        // client has to agree with.
-        let declared = parse_or_panic(CATALOGUE_SOURCE, None);
-
-        let virtuals: Vec<PredicateId> = (0..declared.len())
-            .filter_map(|index| declared.get(PredicateId(index as u32))?.name())
-            .map(|name| {
-                schema
-                    .find_position(name)
-                    .map(|(id, _)| id)
-                    .expect("a predicate the catalogue declares is in the composed schema")
-            })
-            .collect();
-
-        assert!(
-            !virtuals.is_empty(),
-            "the catalogue source declares no predicates"
-        );
-
-        schema.with_virtual(virtuals)
-    });
-
-    SERVED.clone()
 }
 
 /// Parse a schema, or explain why the build is broken.
@@ -461,77 +390,5 @@ mod tests {
                 walk(value, schema.len(), name);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod catalogue {
-    use super::*;
-
-    /// **The property the whole arrangement rests on**: appending a virtual predicate
-    /// does not change what a client has to agree with.
-    ///
-    /// If this ever fails, every .NET client stops connecting until it declares a
-    /// predicate it can never write to — which is the outcome the virtual/stored split
-    /// exists to avoid, and the reason identity skips virtuals rather than the server
-    /// keeping two schemas and hoping they stay in step.
-    #[test]
-    fn the_catalogue_does_not_change_the_handshake() {
-        let stored = fjord_schema::fingerprint::of(&schema());
-        let served = fjord_schema::fingerprint::of(&with_catalogue());
-
-        assert_eq!(
-            stored, served,
-            "a virtual predicate must be invisible to the handshake"
-        );
-    }
-
-    /// Restating the stored schema must not move an id, because an id is a position
-    /// and is the tag in every `FactId` already written.
-    #[test]
-    fn restating_the_stored_schema_moves_no_id() {
-        let stored = schema();
-        let served = with_catalogue();
-
-        let appended = parse_or_panic(CATALOGUE_SOURCE, None).len();
-        assert_eq!(
-            served.len(),
-            stored.len() + appended,
-            "the catalogue's predicates appended, nothing else"
-        );
-
-        for index in 0..stored.len() {
-            let id = PredicateId(index as u32);
-            assert_eq!(
-                served.get(id).and_then(|p| p.name()),
-                stored.get(id).and_then(|p| p.name()),
-                "predicate {index} moved"
-            );
-        }
-    }
-
-    /// **Exactly the catalogue's predicates are virtual, and nothing else is.**
-    ///
-    /// Stated as a set rather than as one id: the failure this guards is a predicate
-    /// added to `catalogue.sigla` and left *stored*, which gives it keyspaces at `create`,
-    /// puts it in `ops-I4`'s identity, and moves the fingerprint every client agrees
-    /// with. That is what happened the first time one was added.
-    #[test]
-    fn exactly_the_catalogues_predicates_are_virtual() {
-        let served = with_catalogue();
-
-        let declared = parse_or_panic(CATALOGUE_SOURCE, None);
-        let mut expected: Vec<PredicateId> = (0..declared.len())
-            .filter_map(|index| declared.get(PredicateId(index as u32))?.name())
-            .filter_map(|name| served.find_position(name).map(|(id, _)| id))
-            .collect();
-        expected.sort_unstable();
-
-        assert_eq!(served.virtuals(), expected.as_slice());
-        assert!(
-            served.virtuals().contains(&catalogue_id()),
-            "the listing is one of them"
-        );
-        assert!(schema().virtuals().is_empty(), "the stored schema has none");
     }
 }

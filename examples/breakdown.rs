@@ -89,11 +89,7 @@ fn main() {
         .path
         .clone();
 
-    let (registry, _listing) = Registry::open(
-        catalog,
-        Schemas::new(code_index::CATALOGUE_SOURCE, code_index::with_catalogue()),
-    )
-    .expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, Schemas::default()).expect("a registry");
     let listener = Listener::bind(&socket).expect("a socket");
     thread::spawn(move || {
         let _ = listener.run_blocking(Arc::new(registry));

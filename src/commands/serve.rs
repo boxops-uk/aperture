@@ -14,7 +14,7 @@ use std::{path::Path, sync::Arc};
 use fjord_server::{Registry, registry::Schemas, server::serve_on};
 use fjord_wire::protocol;
 
-use crate::{CliError, code_index, commands};
+use crate::{CliError, commands};
 
 /// # Errors
 ///
@@ -50,29 +50,26 @@ pub fn run(
     // anything is opened and released only when the server exits.
     let (catalog, _lock) = commands::exclusive(root, socket)?;
 
-    // **The served schema, not the stored one**: the same predicates a client declares,
-    // plus `fjord.db.List`, which this process can answer out of the root it owns.
-    // The fingerprint is unchanged by that — a virtual predicate is not part of what
-    // two ends have to agree about — so a client that has never heard of it still
-    // connects ([`code_index::with_catalogue`]).
-    let schema = code_index::with_catalogue();
-    let fingerprint = fjord_schema::fingerprint::of(&schema);
-
     // The registry takes the catalog with it, because owning the root and owning the
     // databases under it are the same ownership: `create` and `remove` arriving over
     // the wire need both, and a server that held only the open handles is exactly the
     // server that had to be stopped before a lifecycle command could run.
-    let (registry, listing) =
-        Registry::open(catalog, Schemas::new(code_index::CATALOGUE_SOURCE, schema))?;
+    //
+    // **`Schemas::default()` is a server that carries no data schema of its own** — only
+    // the catalogue, the virtual predicates it answers out of the root it owns. Every
+    // database is served from the copy it embedded at create ([I13]), and one that
+    // embedded none is listed rather than served: there used to be a built-in schema here
+    // to fall back on, and falling back on it was a guess about how somebody else's rows
+    // decode.
+    let (registry, listing) = Registry::open(catalog, Schemas::default())?;
     let registry = Arc::new(registry.with_block_commits(commit_per_block));
 
     println!("fjord serve");
     println!("  data dir   {}", root.display());
     println!("  socket     {}", socket.display());
     println!("  protocol   {}", protocol::VERSION);
-    println!(
-        "  schema     {fingerprint:#018x}  (the built-in one; each database is served with its own)"
-    );
+    // No schema line: a server has none of its own to print. Each database is served
+    // from the copy it embedded, and `fjord describe <db>` is where to read it.
     if commit_per_block {
         // Printed because it changes what a crash costs, and an operator reading a log
         // afterwards should not have to reconstruct which flags were passed.
@@ -96,25 +93,6 @@ pub fn run(
 
     for problem in &listing.problems {
         eprintln!("warning: {problem}");
-    }
-
-    // **A database with no embedded schema is being read through a guess, and the guess
-    // is silent.** Since 8.4 a database carries the schema it was created against and
-    // the two are checked against each other; one made before that carries neither half
-    // of the comparison, so it is served with *this build's* built-in schema — and if
-    // that schema has moved since (a field reordered, a predicate retyped) the rows
-    // decode as something else. The loud version is a decode error; the quiet version
-    // is a query answering zero rows, which is why this is worth a line at startup
-    // rather than a note in a document.
-    for entry in &listing.entries {
-        if matches!(fjord_store::schema_doc::source(&entry.path), Ok(None)) {
-            eprintln!(
-                "warning: `{}` embeds no schema copy — it predates one being kept, so it is \n\
-                 served with this build's built-in schema. If that schema has changed since the \n\
-                 database was written, its rows will decode as something else. Re-index it.",
-                entry.name()
-            );
-        }
     }
 
     if let Some(address) = listen {

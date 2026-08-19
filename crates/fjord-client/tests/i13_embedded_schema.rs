@@ -59,8 +59,7 @@ fn start() -> Serving {
         .create("code", &schema(EMBEDDED))
         .expect("a database");
 
-    let (registry, listing) =
-        Registry::open(catalog, Schemas::new("", schema(EMBEDDED))).expect("a registry");
+    let (registry, listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
     assert!(listing.problems.is_empty(), "{:?}", listing.problems);
 
     let listener = Listener::bind(&socket).expect("a socket");
@@ -202,8 +201,7 @@ fn the_schema_validated_against_is_the_embedded_one() {
     // The server's own schema declares something else entirely. If a handshake checked
     // *that*, every claim below would come out the wrong way round.
     let server_schema = "schema other { predicate Thing : int }";
-    let (registry, _listing) =
-        Registry::open(catalog, Schemas::new("", schema(server_schema))).expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
 
     let listener = Listener::bind(&socket).expect("a socket");
     thread::spawn(move || {

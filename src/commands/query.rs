@@ -1100,7 +1100,12 @@ mod surface {
             .expect("a connection");
 
         let schema = std::sync::Arc::new(connection.served_schema().expect("the schema"));
-        let catalogue = crate::code_index::catalogue_id();
+        // Looked up in the schema the *server* serves, which is where the catalogue's
+        // predicates actually sit: an id is a position, and the position is decided by
+        // the composed schema rather than by anything this tool holds.
+        let (catalogue, _) = schema
+            .find_position(fjord_server::catalogue::PREDICATE)
+            .expect("the server serves the catalogue");
 
         // Sequence 1 is the first listed database, since the catalogue hands sequences out
         // from 1 as a real allocator does.

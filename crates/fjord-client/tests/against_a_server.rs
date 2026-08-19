@@ -123,7 +123,7 @@ impl Serving {
     }
 
     fn control(&self) -> Connection {
-        Connection::control(&self.socket, Arc::new(schema())).expect("a control session")
+        Connection::control(&self.socket).expect("a control session")
     }
 }
 
@@ -135,8 +135,7 @@ fn start() -> Serving {
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog.create("code", &schema).expect("a database");
 
-    let (registry, _listing) =
-        Registry::open(catalog, Schemas::new("", schema)).expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
     let registry = Arc::new(registry);
     let listener = Listener::bind(&socket).expect("a socket");
 
@@ -613,7 +612,11 @@ fn the_lifecycle_runs_through_the_client() {
     let serving = start();
     let mut control = serving.control();
 
-    let instance = control.create("fresh", "").expect("it is created");
+    // The source, because `create` requires one: a database embeds the schema it was
+    // built against, and there is no longer a server-side default standing in for a
+    // caller who did not name one.
+    let source = fjord_schema::syntax::print::print(&schema());
+    let instance = control.create("fresh", &source).expect("it is created");
     assert!(!instance.is_empty());
 
     // Immediately usable, without the server being restarted.

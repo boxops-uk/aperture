@@ -52,13 +52,19 @@ use crate::{
 /// How a database's schema is arrived at.
 ///
 /// **A schema belongs to a database, not to a server** ([I13](../../../docs/invariants.md#i13)):
-/// each one embedded its own at create, and this is what reads it back. Two pieces are
-/// the server's rather than the database's, and both are here because they are the same
-/// two every time:
+/// each one embedded its own at create, and this is what reads it back. Exactly one piece
+/// is the server's rather than the database's — the **virtual** predicates,
+/// `fjord.db.List` and `fjord.db.Interning`, which the server answers out of the root it
+/// owns and no artifact holds.
 ///
-/// - the **virtual** predicates — `fjord.db.List` and anything joining it — which
-///   the server answers out of the root it owns and no artifact holds;
-/// - a **fallback**, for a database that embedded no copy at all.
+/// **There is no fallback, and that is the whole of the change here.** A server used to
+/// carry a built-in data schema and serve a database that embedded no copy with it. That
+/// is a guess, and a silent one: if the built-in schema had moved since the database was
+/// written, its rows decode as something else — the loud version of which is a decode
+/// error and the quiet version a query answering zero rows. So a database with no
+/// embedded copy is now **listed and not served**, which is already how a copy this
+/// server cannot *read* is treated, and is the same refusal
+/// [I15](../../../docs/invariants.md#i15) makes of a database carrying no format stamp.
 ///
 /// The virtual half is carried as *source* rather than as a `Schema`, because composing
 /// two schemas means composing two interners, and the language already has an operator
@@ -67,34 +73,66 @@ use crate::{
 /// appending them moves no stored id.
 pub struct Schemas {
     virtual_source: String,
-    fallback: Arc<Schema>,
+    /// The virtual predicates alone, composed once.
+    ///
+    /// What a session naming **no database** is served with, and what its handshake
+    /// identity is computed over. A control session therefore agrees with the server
+    /// about the catalogue and about nothing else — which is all a lifecycle request can
+    /// honestly agree about, since it names a database that may not exist yet.
+    catalogue: Arc<Schema>,
+}
+
+impl Default for Schemas {
+    /// This server's own: the catalogue, and nothing else.
+    fn default() -> Schemas {
+        Schemas::new(crate::catalogue::SOURCE)
+    }
 }
 
 impl Schemas {
-    /// `virtual_source` is appended to every database's own schema; `fallback` is what
-    /// a database with no embedded copy is served with, already composed.
+    /// `virtual_source` is appended to every database's own schema.
+    ///
+    /// Almost every caller wants [`Schemas::default`], which passes
+    /// [`catalogue::SOURCE`](crate::catalogue::SOURCE). This form is for a battery that
+    /// wants a server answering no virtual predicates at all: `""` is how a test says
+    /// "no catalogue", which is a different thing from a catalogue it cannot read.
+    ///
+    /// # Panics
+    ///
+    /// If `virtual_source` does not parse and lower. On every real path it is
+    /// compiled-in text, so this is a build error wearing a runtime hat — and a server
+    /// that started with a catalogue it could not read would answer `fjord.db.List` with
+    /// nothing and never say why.
     #[must_use]
-    pub fn new(virtual_source: impl Into<String>, fallback: Schema) -> Schemas {
+    pub fn new(virtual_source: impl Into<String>) -> Schemas {
+        let virtual_source = virtual_source.into();
+
+        let catalogue = syntax::read("the catalogue", &virtual_source)
+            .map(|schema| with_virtuals_marked(&schema))
+            .unwrap_or_else(|error| panic!("the catalogue does not lower: {error}"));
+
         Schemas {
-            virtual_source: virtual_source.into(),
-            fallback: Arc::new(fallback),
+            virtual_source,
+            catalogue: Arc::new(catalogue),
         }
+    }
+
+    /// The virtual predicates alone — what a session naming no database sees.
+    #[must_use]
+    pub fn catalogue(&self) -> &Arc<Schema> {
+        &self.catalogue
     }
 
     /// The schema to serve the database at `path` with.
     ///
     /// # Errors
     ///
-    /// [`StoreError::Meta`] if the copy is unreadable, does not lower, or is not the
-    /// schema the sidecar says this database was created against. Each leaves the
+    /// [`StoreError::Meta`] if the copy is **absent**, unreadable, does not lower, or is
+    /// not the schema the sidecar says this database was created against. Each leaves the
     /// database **unserved** rather than served through a schema it does not hold: a
     /// schema that disagrees reads stored rows through the wrong types and reports
     /// nothing.
     pub fn of(&self, path: &std::path::Path, recorded: u64) -> Result<Arc<Schema>, StoreError> {
-        let Some(source) = schema_doc::source(path)? else {
-            return Ok(Arc::clone(&self.fallback));
-        };
-
         let fault = |detail: String| StoreError::Meta {
             path: path
                 .join(schema_doc::SCHEMA_DIR)
@@ -102,22 +140,21 @@ impl Schemas {
             detail,
         };
 
+        // **No copy is a refusal, not a fallback.** A database that embeds no schema
+        // predates one being kept; there is nothing here that can describe its rows, and
+        // the only other candidate — a schema this build happens to carry — would be a
+        // guess whose failure mode is a query answering nothing.
+        let Some(source) = schema_doc::source(path)? else {
+            return Err(fault(
+                "it embeds no schema copy, so nothing here can describe its rows — \
+                 re-index it against the schema it was built from"
+                    .to_owned(),
+            ));
+        };
+
         let composed = format!("{source}\n{}", self.virtual_source);
         let schema = syntax::recover(schema_doc::SCHEMA_FILE, &composed).map_err(fault)?;
-
-        // Virtual by **namespace**, not by name: the reserved namespace is what makes
-        // "the server answers this one" a property of the schema text rather than a
-        // list kept somewhere else and forgotten when a second one is added.
-        let served = schema
-            .clone()
-            .with_virtual((0..schema.len()).filter_map(|index| {
-                let id = PredicateId(index as u32);
-                schema
-                    .get(id)?
-                    .name()?
-                    .starts_with(syntax::lower::RESERVED_NAMESPACE)
-                    .then_some(id)
-            }));
+        let served = with_virtuals_marked(&schema);
 
         let embedded = fingerprint::of(&served);
         if embedded != recorded {
@@ -142,6 +179,28 @@ impl Schemas {
     pub fn of_entry(&self, entry: &Entry) -> Result<Arc<Schema>, StoreError> {
         self.of(&entry.path, entry.meta.schema_fingerprint)
     }
+}
+
+/// Mark every predicate in the reserved namespace **virtual**.
+///
+/// Virtual by **namespace**, not by name: the reserved namespace is what makes "the
+/// server answers this one" a property of the schema text rather than a list kept
+/// somewhere else and forgotten when a second one is added.
+///
+/// Shared by [`Schemas::new`] and [`Schemas::of`] so a catalogue served on its own is
+/// marked the same way as one appended to a database's schema. Marking it in one place
+/// and not the other is how a catalogue predicate acquires keyspaces.
+fn with_virtuals_marked(schema: &Schema) -> Schema {
+    schema
+        .clone()
+        .with_virtual((0..schema.len()).filter_map(|index| {
+            let id = PredicateId(index as u32);
+            schema
+                .get(id)?
+                .name()?
+                .starts_with(syntax::lower::RESERVED_NAMESPACE)
+                .then_some(id)
+        }))
 }
 
 /// The store root, and the databases open under it.
@@ -192,7 +251,9 @@ impl Registry {
     ///
     /// [`ServerError::Store`] only if the root itself cannot be read.
     pub fn open(catalog: Catalog, schemas: Schemas) -> Result<(Registry, Listing), ServerError> {
-        let identity = fingerprint::identity(&schemas.fallback);
+        // Over the catalogue alone, which is all this server has of its own. A session
+        // naming no database is handshaking about lifecycle, not about data.
+        let identity = fingerprint::identity(&schemas.catalogue);
 
         let mut listing = catalog.list()?;
         let mut open = BTreeMap::new();
@@ -308,11 +369,12 @@ impl Registry {
         &self.identity
     }
 
-    /// The schema a session that names **no database** sees: the fallback, which is
-    /// this server's built-in one. A session bound to a database sees that database's.
+    /// The schema a session that names **no database** sees: the catalogue, which is all
+    /// this server holds that is not some database's. A session bound to a database sees
+    /// that database's own.
     #[must_use]
     pub fn schema(&self) -> &Arc<Schema> {
-        &self.schemas.fallback
+        &self.schemas.catalogue
     }
 
     /// The database `address` names — `name`, or `name@instance`.
@@ -378,21 +440,32 @@ impl Registry {
     /// once it names something a session could actually bind — which is the same
     /// all-or-nothing rule [`Catalog::create`] follows on the disk, one level up.
     ///
-    /// `source` is the schema to create it against, already resolved by the caller, or
-    /// empty for this server's own. It is **lowered here rather than trusted**: the
-    /// text arrived over a socket, and a database created from a schema nothing read
-    /// is a database nothing can serve.
+    /// `source` is the schema to create it against, already resolved by the caller, and
+    /// it is **required**. It is also **lowered here rather than trusted**: the text
+    /// arrived over a socket, and a database created from a schema nothing read is a
+    /// database nothing can serve.
+    ///
+    /// An empty `source` used to mean "this server's own", which is the write half of the
+    /// guess [`Schemas`] no longer makes: it created a database whose embedded schema was
+    /// whatever binary happened to be listening, so the same command against two builds
+    /// produced two different artifacts. `create` requires a schema — which is what
+    /// [operations §5](../../../docs/fjord-cli-design.md) always specified.
+    ///
+    /// # Errors
+    ///
+    /// [`ServerError::Protocol`] if `source` is empty or does not lower.
     async fn create(&self, name: &str, source: &str) -> Result<ControlReply, ServerError> {
         let catalog = self.catalog.clone();
 
-        let schema = if source.is_empty() {
-            Arc::clone(&self.schemas.fallback)
-        } else {
-            Arc::new(
-                syntax::read("the schema this client sent", source)
-                    .map_err(ServerError::Protocol)?,
-            )
-        };
+        if source.trim().is_empty() {
+            return Err(ServerError::Protocol(
+                "create needs a schema: pass one with `--schema <file>`".to_owned(),
+            ));
+        }
+
+        let schema = Arc::new(
+            syntax::read("the schema this client sent", source).map_err(ServerError::Protocol)?,
+        );
 
         let wanted = name.to_owned();
 
@@ -542,5 +615,131 @@ fn finished(sealed: &Finished) -> ControlReply {
         facts: sealed.facts,
         bytes: sealed.bytes,
         already_complete: sealed.already_complete,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fjord_schema::schema::{Predicate, PredicateTy};
+    use lasso::Rodeo;
+
+    use super::*;
+
+    /// One stored predicate, stated in Rust so this file does not depend on a schema
+    /// file to have a database to compose against.
+    fn stored() -> Schema {
+        let mut rodeo = Rodeo::new();
+        let file = rodeo.get_or_intern("src.File");
+        Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name: file,
+                key: PredicateTy::Str,
+                value: None,
+            }]),
+        )
+    }
+
+    /// A database created against [`stored`], and the schema a server serves it with.
+    fn served() -> (tempfile::TempDir, Schema, Arc<Schema>) {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
+        let entry = catalog.create("code", &stored()).expect("a database");
+
+        let schemas = Schemas::default();
+        let served = schemas
+            .of(&entry.path, entry.meta.schema_fingerprint)
+            .expect("it is servable");
+
+        (dir, stored(), served)
+    }
+
+    /// **The property the whole arrangement rests on**: appending a virtual predicate
+    /// does not change what a client has to agree with.
+    ///
+    /// If this ever fails, every .NET client stops connecting until it declares a
+    /// predicate it can never write to — which is the outcome the virtual/stored split
+    /// exists to avoid, and the reason identity skips virtuals rather than the server
+    /// keeping two schemas and hoping they stay in step.
+    #[test]
+    fn the_catalogue_does_not_change_the_handshake() {
+        let (_dir, stored, served) = served();
+
+        assert_eq!(
+            fingerprint::of(&stored),
+            fingerprint::of(&served),
+            "a virtual predicate must be invisible to the handshake"
+        );
+    }
+
+    /// Restating the stored schema must not move an id, because an id is a position and
+    /// is the tag in every `FactId` already written.
+    #[test]
+    fn appending_the_catalogue_moves_no_stored_id() {
+        let (_dir, stored, served) = served();
+
+        let appended = syntax::read("the catalogue", crate::catalogue::SOURCE)
+            .expect("the catalogue lowers")
+            .len();
+
+        assert_eq!(
+            served.len(),
+            stored.len() + appended,
+            "the catalogue's predicates appended, nothing else"
+        );
+
+        for index in 0..stored.len() {
+            let id = PredicateId(index as u32);
+            assert_eq!(
+                served.get(id).and_then(|p| p.name()),
+                stored.get(id).and_then(|p| p.name()),
+                "predicate {index} moved"
+            );
+        }
+    }
+
+    /// **Exactly the catalogue's predicates are virtual, and nothing else is.**
+    ///
+    /// Stated as a set rather than as one id: the failure this guards is a predicate
+    /// added to `catalogue.sigla` and left *stored*, which gives it keyspaces at `create`,
+    /// puts it in `ops-I4`'s identity, and moves the fingerprint every client agrees
+    /// with. That is what happened the first time one was added.
+    #[test]
+    fn exactly_the_catalogues_predicates_are_virtual() {
+        let (_dir, stored, served) = served();
+
+        let declared =
+            syntax::read("the catalogue", crate::catalogue::SOURCE).expect("the catalogue lowers");
+
+        let mut expected: Vec<PredicateId> = (0..declared.len())
+            .filter_map(|index| declared.get(PredicateId(index as u32))?.name())
+            .filter_map(|name| served.find_position(name).map(|(id, _)| id))
+            .collect();
+        expected.sort_unstable();
+
+        assert!(!expected.is_empty(), "the catalogue declares something");
+        assert_eq!(served.virtuals(), expected.as_slice());
+        assert!(
+            served
+                .find_position(crate::catalogue::PREDICATE)
+                .is_some_and(|(id, _)| served.is_virtual(id)),
+            "the listing is one of them"
+        );
+        assert!(stored.virtuals().is_empty(), "the stored schema has none");
+    }
+
+    /// A server's own schema is the catalogue and nothing else — which is what a session
+    /// naming no database sees, and what its handshake identity is over.
+    #[test]
+    fn a_servers_own_schema_is_the_catalogue_alone() {
+        let schemas = Schemas::default();
+        let catalogue = schemas.catalogue();
+
+        assert!(!catalogue.is_empty(), "it declares the virtual predicates");
+        assert_eq!(
+            catalogue.virtuals().len(),
+            catalogue.len(),
+            "and every one of them is virtual: a server stores nothing of its own"
+        );
     }
 }

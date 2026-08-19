@@ -210,6 +210,24 @@ impl Schema {
         }
     }
 
+    /// A schema declaring nothing.
+    ///
+    /// **What a client carries when it has no claim to make.** The transport codec sends
+    /// no names and no types, so both ends supply them — but a reader is served the
+    /// database's own schema and asks for it
+    /// ([`served_schema`](../../fjord-client/src/connection.rs)), and a lifecycle session
+    /// names a database that may not exist yet. Neither has anything to assert, and
+    /// before this each had to invent a schema in order to say so: the tool passed its
+    /// built-in one, which is how a *default* schema became load-bearing on a path that
+    /// never read it.
+    ///
+    /// It is not a placeholder for a schema that should have been there. Nothing can be
+    /// encoded against it, which is the point — a producer must have the real one.
+    #[must_use]
+    pub fn empty() -> Schema {
+        Schema::new(Rodeo::default().into_reader(), Arc::from(Vec::new()))
+    }
+
     /// Mark predicates as **virtual**: declared like any other, and answered by
     /// whoever is running the query rather than read from a keyspace.
     ///

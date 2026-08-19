@@ -85,8 +85,7 @@ fn start() -> Serving {
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog.create("code", &schema).expect("a database");
 
-    let (registry, _listing) =
-        Registry::open(catalog, Schemas::new("", schema)).expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
     let listener = Listener::bind(&socket).expect("a socket");
 
     thread::spawn(move || {
