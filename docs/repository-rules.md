@@ -17,7 +17,6 @@ which means they apply to repository admins too.
 | Pull request required | `main`, `release/*` | pushing straight to the branch |
 | `build` check | `main`, `release/*` | landing anything that does not compile under the tree's own `Cargo.lock` |
 | `attest` check | `release/*` | landing without SLSA provenance |
-| One approval | `main`, `release/*` | merging someone else's work unreviewed (org admins bypass) |
 | No tag re-pointing | every tag | moving a tag to another commit |
 | No tag deletion | `v*` | unmaking a release tag |
 
@@ -25,7 +24,12 @@ Merges are squash or rebase only; merge commits are disabled repository-wide, so
 history is enforced by two independent mechanisms rather than one.
 
 `GITHUB_TOKEN` defaults to **read**, and workflows may not approve pull requests — otherwise
-a workflow could satisfy the review requirement or push to `main` itself.
+a workflow could satisfy a review requirement or push to `main` itself. A fork's workflow
+needs approval before it runs at all.
+
+Write access is the other half of all of this, and currently one account has it. There are no
+outside collaborators, no teams and no deploy keys, so a branch can only be created by the
+account that owns the repository; anyone else must fork.
 
 ## Verifying a binary
 
@@ -56,5 +60,16 @@ These are limits of the platform, recorded so nobody mistakes them for guarantee
 - **Publishing a release is not gated.** Nothing stops a hand-uploaded binary on a GitHub
   Release. The guarantee is the consumer's: verify the attestation.
 - **"Verified" means signed by a key registered to an account with access** — not
-  necessarily by a person. A commit made in the web editor is signed by GitHub's own key and
-  counts as verified.
+  necessarily by a person, and on `main` usually not by us. Because `main` takes changes only
+  by pull request and GitHub offers no fast-forward-only merge, GitHub creates the merge
+  commit and signs it with **its own** key: the commit reads `committer GitHub` and verifies
+  against `B5690EEEBB952194`, not against the signing key every other commit carries. The
+  badge therefore says *GitHub vouches this merge happened*, which is a weaker claim than the
+  one the 232 extracted commits make about themselves. Locally such a commit reports `E`
+  rather than `G`, since this repository verifies SSH signatures and that one is PGP.
+- **Review is not enforced.** GitHub cannot require approval conditionally on who wrote the
+  pull request, and never lets an author approve their own, so any non-zero approval count
+  deadlocks a sole maintainer — bypass actors do not help, and an organisation owner's
+  implicit admin satisfies neither the `OrganizationAdmin` nor the `RepositoryRole` form. The
+  rule is written and **parked disabled**, to be enabled the day a second account has write
+  access. Until then what stands in for it is access control, above.
