@@ -1,0 +1,63 @@
+# Release builds carry provenance.
+#
+# The gate is the `attest` job's status check on `release/*` (see the repository
+# ruleset of the same name): a change reaches a release branch only once this job
+# has built the binaries and signed a SLSA provenance attestation naming them.
+# Verify one with:
+#
+#     gh attestation verify ./aperture --repo boxops-uk/aperture
+name: release
+
+on:
+  push:
+    branches: ['release/**']
+  pull_request:
+    branches: ['release/**']
+  workflow_dispatch:
+
+# Least privilege at the top; the job widens only what it needs.
+permissions:
+  contents: read
+
+jobs:
+  attest:
+    name: attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC token the attestation is bound to
+      attestations: write # write the attestation back to the repository
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+
+      # --locked so the build is the Cargo.lock in the tree and not whatever
+      # resolves today; the fjall pin in particular is load-bearing.
+      - name: Build release binaries
+        run: cargo build --release --locked -p aperture-cli -p aperture-viewer --bins
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            target/release/aperture
+            target/release/aperture-viewer
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: aperture-linux-x86_64
+          path: |
+            target/release/aperture
+            target/release/aperture-viewer
+          if-no-files-found: error
