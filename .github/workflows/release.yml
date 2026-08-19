@@ -8,6 +8,10 @@
 #           target, the suite, and the invariant coverage ledger printed so a
 #           reviewer can read what is still pending without running anything.
 #
+#           fmt and clippy run on a **pinned** toolchain and the suite on `stable`.
+#           A required check that can go red because an upstream released is a
+#           check that blocks merges for a reason nobody chose.
+#
 #           A **debug** build on purpose. Several correctness guards are
 #           `cfg(debug_assertions)` — the merge frontier's never-nested
 #           assertion and `put_fact`'s write-once contract among them — so a
@@ -60,9 +64,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # **The lint gate is pinned; the tests are not.** They answer different
+      # questions and want different toolchains.
+      #
+      # `-D warnings` on a floating `stable` makes a clippy release able to redden a
+      # branch nobody has touched — and since `test` is a required check, that blocks
+      # every merge until somebody fixes lints that did not exist when the code landed.
+      # It is the same argument the `fjall = "=3.1.8"` pin makes: a break should happen
+      # when someone chooses to upgrade, with the diff in front of them, rather than on
+      # a day the upstream released. rustfmt is pinned for the same reason — its output
+      # changes between versions too.
+      #
+      # So this is the version a contributor is checked against, and `cargo fmt` and
+      # `cargo clippy` passing locally on it mean passing here. Bumping it is a commit.
+      - name: Pinned toolchain, for fmt and clippy
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.97.1
           components: clippy, rustfmt
+      # Installed second, so it is the default: the suite runs on whatever stable is
+      # today, because that is what a consumer has. `build` floats too, so a compiler
+      # that breaks the tree is still caught the day it lands — just not as a lint.
+      - uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -73,12 +96,12 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
       # Cheapest first, so a formatting slip does not cost a compile.
       - name: Formatting
-        run: cargo fmt --all --check
+        run: cargo +1.97.1 fmt --all --check
       # `--all-targets` is the point: without it, tests, examples and benches are
       # never even compiled, and the six measuring instruments under `examples/`
       # would rot green.
       - name: Clippy
-        run: cargo clippy --all-targets --workspace --locked -- -D warnings
+        run: cargo +1.97.1 clippy --all-targets --workspace --locked -- -D warnings
       # `default-members` is the whole workspace, so this means everything.
       - name: Tests
         run: cargo test --locked

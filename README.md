@@ -132,11 +132,13 @@ it does not.
 cargo build
 cargo test                          # the green suite
 cargo test -- --ignored --list      # the invariant coverage ledger (guards not yet live)
-cargo clippy --all-targets --workspace -- -D warnings
-cargo fmt --all
+cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
+cargo +1.97.1 fmt --all
 ```
 
 `default-members` is every crate, so the first two mean *everything* without `--workspace`.
+The `+1.97.1` matches CI's lint gate, which is pinned so that a clippy release cannot redden a
+branch nobody has touched; the test suite runs on `stable`.
 
 ## Working on Fjord
 

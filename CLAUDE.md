@@ -122,9 +122,15 @@ compiles a second copy of its own crate, and the two `FactStore`s are then diffe
 cargo build
 cargo test                          # the green suite
 cargo test -- --ignored --list      # the invariant coverage ledger (guards not yet live)
-cargo clippy --all-targets --workspace -- -D warnings
-cargo fmt --all
+cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
+cargo +1.97.1 fmt --all
 ```
+
+**The `+1.97.1` is not decoration.** CI's lint gate runs on that toolchain and the suite runs
+on `stable`, because a required check that can go red because an upstream released is a check
+that blocks merges for a reason nobody chose — the same argument the `fjall` pin makes below.
+Clippy and rustfmt both change between versions, so those two are pinned and bumping them is a
+commit. Run them without the `+` and you may see lints CI does not, or miss lints it does.
 
 `default-members` is the whole workspace, so the first two mean *everything* without
 `--workspace`. That is deliberate: the coverage ledger silently narrowing to one package as

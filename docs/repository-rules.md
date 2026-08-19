@@ -15,7 +15,7 @@ which means they apply to repository admins too.
 | Linear history | `main`, `release/*` | a merge commit |
 | No deletion | `main`, `release/*` | deleting the branch |
 | Pull request required | `main`, `release/*` | pushing straight to the branch |
-| `test` check | `main`, `release/*` | landing anything that is unformatted, draws a clippy warning, or has a red test |
+| `test` check | `main`, `release/*` | landing anything that is unformatted, draws a clippy warning, or has a red test. fmt and clippy run on a **pinned** toolchain so this cannot go red because an upstream released; the suite runs on `stable` |
 | `build` check | `main`, `release/*` | landing anything that does not compile under the tree's own `Cargo.lock` |
 | `attest` check | `release/*` | landing without SLSA provenance |
 | No tag re-pointing | every tag | moving a tag to another commit |
