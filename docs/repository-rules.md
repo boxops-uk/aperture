@@ -58,8 +58,15 @@ These are limits of the platform, recorded so nobody mistakes them for guarantee
 - **A pull request can edit its own gate.** A change to `.github/workflows/release.yml` is
   checked by the workflow as that change leaves it. A reusable workflow pinned from `main`
   would close this; one seat cannot.
-- **Publishing a release is not gated.** Nothing stops a hand-uploaded binary on a GitHub
-  Release. The guarantee is the consumer's: verify the attestation.
+- **Publishing a release is not gated.** A `v*` tag now cuts the Release itself — the
+  `release` job runs after `test`, `package` and `attest`, and attaches the attested binaries
+  with their checksums — so the ordinary path produces something verifiable. What is *not*
+  prevented is a hand-uploaded binary added to that Release afterwards. The guarantee stays
+  the consumer's: verify the attestation.
+- **A registry upload is not automated, deliberately.** `package` proves that crates.io and
+  nuget.org would accept what this tree would publish, and stops there. A Release can be
+  deleted and a version on a registry cannot, so pushing one is a person's decision and not a
+  tag's.
 - **"Verified" means signed by a key registered to an account with access** — not
   necessarily by a person, and on `main` usually not by us. Because `main` takes changes only
   by pull request and GitHub offers no fast-forward-only merge, GitHub creates the merge

@@ -1,6 +1,6 @@
 # What a branch must prove, and what a release must carry.
 #
-# Four jobs, because they answer different questions and are trusted differently:
+# Five jobs, because they answer different questions and are trusted differently:
 #
 #   test    always runs, including on a pull request from a fork. `PLAN.md`'s
 #           definition of done everywhere is "a task ends in a green test", and
@@ -25,6 +25,11 @@
 #           from `test` because it answers a different question — that the
 #           *shipped profile* compiles — and because a release build and a debug
 #           test run share no cache.
+#
+#   release runs for a `v*` tag only, after the three below have passed, and creates the
+#           GitHub Release with the attested binaries and their checksums. It deliberately
+#           does *not* push to crates.io or nuget.org: a registry upload cannot be undone
+#           and a Release can, so that step stays a person's.
 #
 #   attest  builds and signs SLSA provenance naming the binaries. It needs an
 #           OIDC token, which GitHub never issues to a fork's pull request, so
@@ -187,6 +192,14 @@ jobs:
           subject-path: |
             target/release/fjord
             target/release/fjord-viewer
+      # Checksums beside the binaries, because an attestation says *this workflow built
+      # this file* and a checksum says *this is that file* — a consumer who downloaded
+      # from the Release page needs both, and only one of them is generated for them.
+      - name: Checksums
+        run: |
+          cd target/release
+          sha256sum fjord fjord-viewer > SHA256SUMS
+          cat SHA256SUMS
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
@@ -194,4 +207,41 @@ jobs:
           path: |
             target/release/fjord
             target/release/fjord-viewer
+            target/release/SHA256SUMS
           if-no-files-found: error
+
+  # **Cutting the release**, which happens only for a `v*` tag.
+  #
+  # It runs after `test`, `package` and `attest` — a tag that does not pass them produces
+  # no release rather than a released failure. What it does *not* do is publish to
+  # crates.io or nuget.org: `docs/repository-rules.md` records that publishing is not
+  # gated, and the reason it stays manual is that a registry upload is irreversible while
+  # a GitHub Release can be deleted. `package` has already proven both would be accepted.
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, package, attest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the Release and attach files to it
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fjord-linux-x86_64
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Fjord DB $version" \
+            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md).
+
+          Binaries below are Linux x86_64 and carry SLSA provenance:
+
+          \`\`\`
+          gh attestation verify ./fjord --repo ${GITHUB_REPOSITORY}
+          \`\`\`" \
+            dist/fjord dist/fjord-viewer dist/SHA256SUMS
