@@ -929,13 +929,135 @@ connections, handshakes and scheduling. Most of that is fixed cost and would dis
 scale — but "would" is not a measurement. The number that says to raise `--writers` is
 `queueing`; while it is near zero, one writer is the right answer.
 
-**What this does not measure.** A corpus of 26 blocks tells you nothing about a corpus of
-six thousand. Finding 12's 2,255 s inside `Write` was taken *before* the producer stopped
-waiting (finding 12's own fix), so nobody knows what `queueing` looks like on a real index
-today. That needs a `dotnet/runtime` re-index, which is hours — and it is now the one
-measurement that would settle both this and the `--commit-per-block` flag.
+**What this does not measure — now measured, in [§15c](#15c-the-ingestion-upgrade-is-157-and-concurrent-writers-cross-over-at-16000-files).**
+A corpus of 26 blocks told us nothing about a corpus of six thousand, and it was wrong about
+the sign: on the full corpus four writers *do* pay, but only past ~16,000 files, and they
+cost 20–30% before that. `queueing` on a real index is 1,019.4 s of 3,977.7 s at one writer.
+`--commit-per-block` is still unmeasured.
 
 ---
+
+## 15. Aperture and Glean over one corpus and one producer: the walk is 30%, the tail is 45%, and Glean's write path is 3.5× cheaper
+
+**What was measured.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree, four runs
+of the same producer: `clients/dotnet/Aperture.Indexer --syntax-only --jobs 8`, the line
+table on, `--batch 4096`. Three write into Aperture, one writes Glean JSON batches
+(`--glean-out`, [§Into Glean instead](../clients/dotnet/Aperture.Indexer/README.md)) which
+`glean create -j 8 --finish` then loads. **One walk, two sinks**, so what differs between
+the last two rows is the database and not the indexer.
+
+| | pre-upgrade | 1 writer | 4 writers | Glean |
+|---|---|---|---|---|
+| walk + ingest | 5,048.2 s | 3,977.7 s | 3,751 s | 3,738 s emit **+ 579 s load** |
+| **ex-tail** (see below) | 3,493 s | 2,230 s | 1,811 s | **1,110 s** + 579 s |
+| ex-tail throughput | 7,156 f/s | **11,204 f/s** | **13,795 f/s** | 22,511 f/s emit-only |
+| seal | not run | 327 s | 344 s | inside the load |
+| `writing`, summed over writers | 2,395.5 s | 2,037.7 s | 5,081.9 s | **107.5 s** |
+| `queueing` (walk blocked) | did not exist | **1,019.4 s** | 271.4 s | 1.5 s |
+| gate wait / held | did not exist | 7,608 / 1,282 s | 3,256 / 644 s | 926 / 284 s |
+| facts stored | 25,012,490 | 25,012,490 | 25,012,490 | **25,012,490** |
+| on disk | 2.3 GB unsealed | 3.2 GB | 3.2 GB | **886 MB** |
+| intermediate | none | none | none | 6.6 GB of JSON (264 B/fact) |
+| peak RSS | — | 16.2 / 2.2 GB | 20.0 / 1.7 GB | 24.3 GB emit, 1.16 GB load |
+
+### 15a. Both databases hold the same facts, and that is the load-bearing check
+
+25,012,490 facts on each side, and **all 27 predicates agree stored-for-stored** —
+`Decl` 888,177, `Assembly` 5,349, `Package` 142, `PackageRef` 435, `Implements` 32,238,
+`Override` 89,415, `Attribute`/`AttributeOf` 163,640, and so on. The producer queued
+25,046,499, so 34,009 top-level keys were duplicates; both systems deduplicated exactly
+those, from 94.9M interning attempts, without either being told which.
+
+The two Aperture runs also seal to the **same identity, `0x462058b7b0671d29`** — one writer
+and four, over a real server and four real sockets. That is
+`writer_count_and_write_order_do_not_change_the_database` at 25M facts rather than in
+process, and it is `ops-I4` meaning what it says.
+
+### 15b. The tail: one generated file is 45% of the wall clock and contributes 365 facts
+
+`src/tests/JIT/jit64/opt/cse/hugeexpr1.cs` — 24 MB, 89,162 lines, one gigantic expression —
+sits at position 28,819 of 32,710 in path order. `IndexTree` emits its line table
+immediately and then walks `DescendantNodes()` with a semantic lookup per name; on one
+enormous expression that pass runs for **~29 minutes and resolves almost nothing** (912,615
+unresolved names in that directory alone). The other seven walkers finish everything else,
+the file counter parks at 32,709, and the run waits.
+
+| | pre-upgrade | 1 writer | 4 writers | Glean emit |
+|---|---|---|---|---|
+| tail | 1,555 s (31%) | 1,747 s (44%) | 1,940 s (52%) | 2,628 s (70%) |
+
+**Every facts/s figure ever quoted for this corpus is diluted by it, including
+[§12](#12-ingest-is-52k-factss-and-the-write-path-was-never-the-reason--three-quarters-of-the-work-was-re-reading-and-half-the-wall-clock-was-the-producer-waiting)'s
+5.2k.** It is also not constant: it grows with heap pressure (its share tracks peak RSS
+across the four runs), so it is the *worst* thing to leave inside a measured window. What to
+do about it is a corpus decision, not a code one — quote ex-tail, or exclude `src/tests`,
+which is CoreCLR's test suite rather than library source. Ex-tail is used above and should
+be used from here on.
+
+### 15c. The ingestion upgrade is 1.57×, and concurrent writers cross over at ~16,000 files
+
+Ex-tail, one writer: **7,156 → 11,204 facts/s, 1.57×**. Handing the block to a writer
+thread is the whole of it; the corpus, the counts and the dedup are identical.
+
+Four writers are **1.23× again** (13,795 f/s) — but the totals hide what happened, and the
+matched-file-count curve is the finding:
+
+| files | 1 writer | 4 writers | ratio |
+|---|---|---|---|
+| 4,000 | 127 s | 167 s | **0.76** |
+| 8,000 | 289 s | 367 s | 0.79 |
+| 16,000 | 579 s | 655 s | 0.88 |
+| 24,000 | 1,434 s | 1,132 s | **1.27** |
+| 32,000 | 2,192 s | 1,768 s | 1.24 |
+
+**Concurrency costs 20–30% while the tree is small and pays 19–27% once it is deep**, and
+the crossover is around 16,000 files / 11M facts. Early on, interning is cheap, the writer
+was never the ceiling, and three more of them only add connections and server-side
+exclusion; late on, each intern is a real LSM read and four writers overlap that I/O.
+[§14](#14-the-indexer-can-now-use-many-write-streams-and-on-a-small-corpus-it-should-not)
+guessed the small-corpus half of this from 26 blocks and was right; this is the other half,
+and together they say the writer count wants to be **adaptive rather than a flag**.
+
+`queueing` — the number §12 and §14 both said nobody had for a real index — is
+**1,019.4 s of 3,977.7 s at one writer**, and four writers cut it to 271.4 s while
+inflating summed `writing` 2.5× (2,037.7 → 5,081.9 s). The stall did not vanish; it moved
+from the client's queue into the server's interning path.
+
+### 15d. What the Glean run separates that no Aperture run could
+
+The emit's sink costs 107.5 s over 6,128 blocks (17 ms each, against 330 ms for a block
+through the socket) and its `queueing` is 1.5 s, so **the emit ex-tail is the walk's own
+cost: 1,110 s.** Everything else in an Aperture run is interning that failed to hide behind
+it:
+
+- **the walk is ~30% of a one-writer run** (1,110 s of 3,977.7 s), or half of it ex-tail;
+- **~1,120 s of interning could not be overlapped** at one writer (2,230 − 1,110), which is
+  what `queueing`'s 1,019 s is from the other side;
+- **Glean's entire load is 579 s** — parsing 6.6 GB of JSON, interning 94.9M nested
+  references into 25.0M facts, renaming local ids onto global ones, committing, and sealing
+  — against **2,037.7 s inside `Write` plus 327 s of `finish`** on ours. **3.5×**, with
+  Glean paying a JSON parse we do not.
+
+Ex-tail, end to end and sealed: **Glean 1,689 s, Aperture 2,155 s at four writers, 2,557 s
+at one.** Glean is 1.28× the four-writer run despite writing every fact twice — once as
+JSON, once into the database — and despite no overlap whatsoever between its two phases.
+
+**And it stores the same 25M facts in 886 MB against 3.2 GB.** 3.7× on disk (2× on the
+logical figures each system reports: 1.53 GiB against 3.11 GiB). Three candidates, none
+measured yet: dense 4–5 byte ids against our 8-byte `FactId` with its predicate tag,
+RocksDB's compression against fjall's defaults, and our two column families storing a key
+in `keys` and again inside the row in `entities`.
+
+**What this does not say.** Glean's load is one process reading local files with `-j 8`;
+ours is a socket round trip per block into a server interning under per-key exclusion. That
+is a real difference between the two pipelines and not a handicap either side was given —
+but it means the 3.5× is *pipeline against pipeline*, not interner against interner. The
+number that would separate those is the write rung
+([§13](#13-the-write-rung-committing-is-41-of-interning-and-the-cache-is-worth-23-of-a-resolve-pass))
+run over this corpus rather than a synthetic one. Two things already point at where ours
+goes: summed `writing` per fact *grows* with the tree (15c), and it barely improved when the
+lookup cache landed — 2,395.5 → 2,037.7 s for the same 94.9M interns, when 73.6% of them
+are re-reads it should be absorbing.
 
 ## What is still open
 
@@ -965,4 +1087,22 @@ measurement that would settle both this and the `--commit-per-block` flag.
   the read path, over a write stream.
 - **Finding 13 is a synthetic corpus.** The ratio is dialled to bracket the real one, not taken
   from it. Re-measuring finding 12 through the rung needs a `dotnet/runtime` re-index — hours,
-  and it must not run while anything else is being measured.
+  and it must not run while anything else is being measured. The re-index now exists
+  ([§15](#15-aperture-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper)),
+  so what is left is running the rung over it — and [§15d](#15d-what-the-glean-run-separates-that-no-aperture-run-could)
+  is why that matters: the 3.5× against Glean is pipeline against pipeline, and only the rung
+  splits interning from the socket.
+- **The interning lookup cache is not visibly paying.** Summed `writing` moved 2,395.5 → 2,037.7 s
+  for the same 94.9M interns, of which 73.6% are re-reads, and per-fact write cost *grows* with
+  the tree ([§15c](#15c-the-ingestion-upgrade-is-157-and-concurrent-writers-cross-over-at-16000-files)).
+  Whether `intern` consults the cache on this path, and with what hit rate, is unmeasured —
+  and it is the first thing to look at, because it is the difference §2.3 of
+  [glean-capabilities](../docs/glean-capabilities.md) predicted would be the largest.
+- **Storage is 3.7× Glean's for the same facts** (886 MB against 3.2 GB sealed). Three candidates
+  named in [§15d](#15d-what-the-glean-run-separates-that-no-aperture-run-could), none measured.
+- **The writer count wants to be adaptive**, not a flag: the crossover in
+  [§15c](#15c-the-ingestion-upgrade-is-157-and-concurrent-writers-cross-over-at-16000-files) is a
+  property of tree depth, which the server knows and the producer does not.
+- **The corpus includes a file that is 45% of it.** [§15b](#15b-the-tail-one-generated-file-is-45-of-the-wall-clock-and-contributes-365-facts).
+  Quote ex-tail, or drop `src/tests` and re-baseline — a decision to take before the next
+  measurement rather than after it.
