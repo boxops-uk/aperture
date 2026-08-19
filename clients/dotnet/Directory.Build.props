@@ -1,0 +1,44 @@
+<Project>
+
+  <!-- Everything the three projects here agree about, stated once.
+
+       MSBuild walks *up* from each project looking for this file, so a checkout of
+       Fjord sitting inside somebody else's workspace would otherwise be told what to do
+       by a file that has never heard of it. That is the same hazard `Boxops.Fjord.Indexer`
+       already guards with `ManagePackageVersionsCentrally=false`, and the answer is the
+       same: say it here, close to the projects it is about. -->
+
+  <PropertyGroup>
+    <!-- No framework here on purpose. The library multi-targets for reach; the two
+         console programs pin one, because `dotnet run` against a project with several
+         cannot tell which was meant. -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Nothing is packable unless it says so. Two of the three projects here are
+         console programs — a demo producer and a real indexer — and a package is the
+         client library for a language and nothing else. -->
+    <IsPackable>false</IsPackable>
+
+    <!-- One version for the whole repository, matching the Rust workspace's. -->
+    <Version>0.0.1</Version>
+    <Company>Boxops</Company>
+    <Authors>Boxops</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/boxops-uk/fjord</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/boxops-uk/fjord</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <!-- A published package should be traceable back to the commit that built it and
+         steppable into. `PublishRepositoryUrl` and `EmbedUntrackedSources` are what make
+         Source Link resolve for a consumer; the symbols travel as a separate `.snupkg`,
+         which is what nuget.org expects. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+</Project>

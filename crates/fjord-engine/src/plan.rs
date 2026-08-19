@@ -166,7 +166,7 @@ pub enum ResidualOp {
     /// `field < constant` and its three siblings.
     ///
     /// **A byte comparison, and that is not a shortcut.** The key encoding is
-    /// order-preserving ([I1](../../docs/invariants.md#i1)), so the lexicographic
+    /// order-preserving ([I1](../../../docs/invariants.md#i1)), so the lexicographic
     /// order of two encoded fields of the same type *is* their value order — which is
     /// the property the whole storage model rests on, used here for the first time
     /// somewhere other than a seek. No decode, no allocation, no value read.
@@ -196,7 +196,7 @@ pub enum ResidualOp {
     ///
     /// The one comparison that cannot be a byte compare: the other side is a
     /// computed `Value`, not encoded bytes, and encoding it per row would allocate
-    /// ([I9](../../docs/invariants.md#i9)). So this decodes the *field* instead —
+    /// ([I9](../../../docs/invariants.md#i9)). So this decodes the *field* instead —
     /// a fixed-width integer read, which allocates nothing — and compares numbers.
     /// Integers only, which typecheck already guarantees of anything arithmetic
     /// produced.
@@ -494,7 +494,7 @@ pub enum Project {
 /// Every arm is a pure function of the bindings, with no iteration and no hidden
 /// state, and that purity is the load-bearing part: it is what lets a [`Cursor`]
 /// save only generator positions and recompute the rest
-/// ([chapter 7](../../docs/07-compilation.md#derived-facts)).
+/// ([chapter 7](../../../docs/07-compilation.md#derived-facts)).
 ///
 /// This was one arm wide until Phase 11 — a constant, because nothing in the
 /// language could produce anything else. Arithmetic is the first thing that does,
@@ -509,7 +509,7 @@ pub enum Computed {
     /// An **integer** field of a bound row, decoded.
     ///
     /// Integers only, because arithmetic is integers only — which is what keeps
-    /// this allocation-free ([I9](../../docs/invariants.md#i9)): a fixed-width read
+    /// this allocation-free ([I9](../../../docs/invariants.md#i9)): a fixed-width read
     /// into an `i64`, with no `String` built per row. A string-valued arm would
     /// need one, and there is nothing yet that would use it.
     Field {
@@ -1625,7 +1625,7 @@ pub mod proptest {
 
     impl FieldTy {
         pub fn of(pick: u8) -> Self {
-            if pick.is_multiple_of(2) {
+            if pick % 2 == 0 {
                 FieldTy::Int
             } else {
                 FieldTy::Str
@@ -2056,7 +2056,7 @@ pub mod proptest {
             // and, at a cut point, a suspend taken while the *second* one is live.
             let mut sources = vec![residual];
 
-            if draw.alternative.is_multiple_of(3) {
+            if draw.alternative % 3 == 0 {
                 sources.push(Some(ResidualSpec::EqConst {
                     field,
                     val: constant_for(

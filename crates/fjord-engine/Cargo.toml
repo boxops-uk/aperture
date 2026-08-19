@@ -1,7 +1,16 @@
 [package]
 name = "fjord-engine"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "sigla, Fjord DB's query language, and the suspendable executor that runs it — an internal crate"
+# Not on crates.io. A package is the client library for a language and nothing
+# else — what it takes to construct facts, talk to a database and read rows back.
+# This is an internal of the implementation, and publishing it would make its
+# shape somebody's dependency.
+publish = false
 
 [features]
 # Exposes the `arb_*` strategies, the shared fixtures and the corpus to consumers

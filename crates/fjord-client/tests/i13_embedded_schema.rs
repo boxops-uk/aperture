@@ -1,4 +1,4 @@
-//! **[I13](../../../docs/invariants.md#i13)** — the DB's schema is embedded and frozen
+//! **[I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)** — the DB's schema is embedded and frozen
 //! at create, and every ingest is validated against it by **subset containment**.
 //!
 //! The guard was written in Phase 0 and has been `#[ignore]`d ever since, in
@@ -6,7 +6,7 @@
 //! database to validate it against, a schema that was parsed rather than built, and a
 //! write path. All three exist now, and none of them is in that crate — so the guard
 //! lives here, over the real client and the real server, and
-//! [`docs/invariants.md`](../../../docs/invariants.md) points at it by this name.
+//! [`docs/invariants.md`](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md) points at it by this name.
 //!
 //! # What containment means on the way in
 //!
@@ -22,7 +22,7 @@
 //!   that name and not that shape — and a fact encoded against the producer's idea of it
 //!   would decode as something else rather than fail.
 //!
-//! Each of those is a fact file's producing schema in [chapter 6](../../../docs/06-types-and-schema.md)'s
+//! Each of those is a fact file's producing schema in [chapter 6](https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md)'s
 //! wording; over the write stream, the producer *is* the file's header, so the check
 //! lands at the handshake and no bytes flow before it.
 
@@ -59,8 +59,7 @@ fn start() -> Serving {
         .create("code", &schema(EMBEDDED))
         .expect("a database");
 
-    let (registry, listing) =
-        Registry::open(catalog, Schemas::new("", schema(EMBEDDED))).expect("a registry");
+    let (registry, listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
     assert!(listing.problems.is_empty(), "{:?}", listing.problems);
 
     let listener = Listener::bind(&socket).expect("a socket");
@@ -202,8 +201,7 @@ fn the_schema_validated_against_is_the_embedded_one() {
     // The server's own schema declares something else entirely. If a handshake checked
     // *that*, every claim below would come out the wrong way round.
     let server_schema = "schema other { predicate Thing : int }";
-    let (registry, _listing) =
-        Registry::open(catalog, Schemas::new("", schema(server_schema))).expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
 
     let listener = Listener::bind(&socket).expect("a socket");
     thread::spawn(move || {

@@ -43,7 +43,9 @@ fjord="$root/target/release/fjord"
 rm -rf "$scratch"
 mkdir -p "$scratch"
 
-"$fjord" --data-dir "$scratch/db" create "$database"
+# `--schema` is required, and this is the file `CodeIndex.cs` states independently.
+"$fjord" --data-dir "$scratch/db" create "$database" \
+    --schema "$root/schemas/code.sigla"
 
 "$fjord" --data-dir "$scratch/db" serve --ready-file "$scratch/ready" &
 server=$!
@@ -56,7 +58,7 @@ done
 
 [ -e "$scratch/ready" ] || { echo "the server never became ready" >&2; exit 1; }
 
-dotnet run --project "$root/clients/dotnet/Fjord.Indexer" --configuration Release -- \
+dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Indexer" --configuration Release -- \
     --source "$source_path" \
     --at "$socket//$database" \
     "$@"

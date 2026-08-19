@@ -67,7 +67,7 @@
 //!
 //! **The file envelope.** A fact file's header (magic, format version, producing
 //! schema fingerprint) and its optional footer of block offsets are
-//! [operations §8](../../docs/fjord-cli-design.md)'s and belong to Phase 7b with
+//! [operations §8](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)'s and belong to Phase 7b with
 //! the rest of the file pipeline. Blocks are here because they are shared with the
 //! wire; the envelope is not shared with anything.
 //!
@@ -75,7 +75,7 @@
 //! it opens no socket, holds no state and decides nothing about retries, timeouts or
 //! concurrency. That is `fjord-client`'s on one side and `fjord-server`'s on the
 //! other, and it is why both can share this crate without sharing each other —
-//! [operations §10](../../docs/fjord-cli-design.md)'s "shared by server and client,
+//! [operations §10](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)'s "shared by server and client,
 //! no I/O policy", and its rule that nothing depends on the server.
 //!
 //! The vocabulary lived in `fjord-server` until 9e, which was fine while the server
@@ -109,3 +109,12 @@ pub use protocol::{
     Startup, kinds,
 };
 pub use value::{WireFact, WireRef, WireValue, decode_fact, encode_fact, from_bytes, to_bytes};
+
+/// **The README, compiled.**
+///
+/// `cfg(doctest)` so it costs an ordinary build nothing and appears in no documentation:
+/// what it buys is that the examples on the crate's front page are run by `cargo test`
+/// like any other, rather than being prose that compiled once when it was written.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct Readme;

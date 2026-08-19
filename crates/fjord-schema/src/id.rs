@@ -85,7 +85,7 @@ impl FactId {
     /// The field is private so that [`FactId::new`]'s checks are the only way to
     /// *mint* an id: the tag has to fit and sequence 0 is reserved, which is what
     /// makes a zeroed eight bytes detectably not a fact
-    /// ([I11](../../../docs/invariants.md#i11)). Named rather than a tuple
+    /// ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)). Named rather than a tuple
     /// constructor so the places that bypass those checks are greppable.
     #[must_use]
     pub fn from_raw(raw: u64) -> Self {

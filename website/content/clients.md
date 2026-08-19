@@ -13,9 +13,9 @@ frames.
 
 | Project | What it is |
 |---|---|
-| `Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection |
-| `Fjord.Demo` | A console program that writes a small code index and queries it back |
-| `Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is |
+| `Boxops.Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection. Published as `Boxops.Fjord.Client` for `net8.0` and `net10.0`, with no dependencies |
+| `Boxops.Fjord.Demo` | A console program that writes a small code index and queries it back |
+| `Boxops.Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is |
 
 It exists to answer a question the Rust tests cannot: **is the protocol implementable from
 outside?** A client written in the same repository, against the same types, can agree with the
@@ -76,7 +76,7 @@ needs no `dotnet`; regenerating the golden does.
 The demo's argument made at scale: the same library, the same nested references and the same
 handshake, driven by a design-time build per project and a compiler that answers what every name
 means. It is where a database large enough to be worth measuring comes from — and where twenty-one
-of the built-in schema's predicates come from, because the build layer and the declaration graph
+of the sample schema's predicates come from, because the build layer and the declaration graph
 cannot be answered by a syntax walk at all.
 
 The run reports what interning cost:
@@ -92,7 +92,7 @@ no longer fits in memory, ordered so that every target is written before every r
 
 It can also write the same facts into **Glean's** own JSON batch format
 (`--glean-out <dir>`, `./clients/dotnet/index-repo-glean.sh`) against a predicate-, field- and
-field-order-preserving translation of the built-in schema. One walk, two sinks — so a comparison
+field-order-preserving translation of the sample schema. One walk, two sinks — so a comparison
 of the two systems is a comparison of the two systems and not of two indexers. Two honesty
 conditions are recorded with it: references stay nested on that path as well, and **emitting is
 not writing** — the load is a second phase with its own clock, so the honest total for Glean is
@@ -146,6 +146,12 @@ that had to be added — a file's cross-references keyed by file, and a case-fol
 because the questions a UI asks turned out not to be the questions the schema answered.
 
 ## Writing a client
+
+:::note There is no JavaScript client
+`@boxops-uk` is reserved on npm for when there is one, and a reserved scope is not a
+deliverable. Two implementations exist — this one and the Rust client — and the protocol is
+what a third would be written against, not either of them.
+:::
 
 The protocol is [documented frame by frame](wire-protocol.html). A minimal read-only client is:
 

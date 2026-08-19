@@ -1,0 +1,375 @@
+using System.Net.Sockets;
+using System.Text;
+
+namespace Boxops.Fjord.Client;
+
+/// <summary>Which way a session may go, declared once at startup.</summary>
+public enum SessionMode : byte
+{
+    ReadOnly = 0,
+    ReadWrite = 1,
+}
+
+/// <summary>What the server said when the session opened.</summary>
+public sealed record ServerHello(uint Version, ulong SchemaFingerprint, ulong Predicates);
+
+/// <summary>What a write stream did.</summary>
+/// <remarks>
+/// <paramref name="Created"/> counts <b>every</b> fact written, nested targets
+/// included, and <paramref name="Deduped"/> those already there. A producer sending a
+/// thousand declarations that all name one file sees a thousand and one created and
+/// nine hundred and ninety-nine deduped — which is how it can tell interning is
+/// working without querying anything.
+/// </remarks>
+public sealed record WriteSummary(ulong Created, ulong Deduped)
+{
+    public ulong Seen => Created + Deduped;
+}
+
+/// <summary>A query's rows, and the shape they came in.</summary>
+public sealed record QueryResult(FjordType Shape, IReadOnlyList<FjordValue> Rows);
+
+/// <summary>
+/// A connection to a Fjord server.
+/// </summary>
+/// <remarks>
+/// <para>
+/// One connection carries several streams: a write is a stream and a query is a
+/// stream, each identified by a number the caller chooses. This client issues them
+/// sequentially — it sends a stream's frames and reads its replies before starting the
+/// next — which is all the current server does anyway. The stream ids are real
+/// nonetheless, and the server tags every reply with the stream it belongs to.
+/// </para>
+/// <para>
+/// <b>The schema is the client's.</b> Nothing in the protocol describes it: the value
+/// codec sends no names and no types because both ends already have them. The
+/// handshake asserts they agree, by fingerprint, before a byte of data flows.
+/// </para>
+/// </remarks>
+public sealed class FjordConnection : IDisposable
+{
+    /// <summary>The protocol version this client speaks.</summary>
+    /// <remarks>
+    /// 2 is Phase 8's: a startup frame's schema fingerprint carries chapter 6's schema
+    /// identity, where 1 carried a provisional hash each end computed for itself. Every
+    /// number changed, so a client pinned to the old one is told it speaks a different
+    /// protocol rather than left to fail a comparison it cannot interpret.
+    /// </remarks>
+    public const uint ProtocolVersion = 2;
+
+    private readonly Socket _socket;
+    private readonly NetworkStream _stream;
+    private readonly FjordSchema _schema;
+    private uint _nextStream = 1;
+
+    private FjordConnection(Socket socket, FjordSchema schema, ServerHello hello)
+    {
+        _socket = socket;
+        _stream = new NetworkStream(socket, ownsSocket: false);
+        _schema = schema;
+        Hello = hello;
+    }
+
+    public ServerHello Hello { get; }
+
+    /// <summary>
+    /// Connect over a Unix socket and complete the handshake.
+    /// </summary>
+    /// <param name="socketPath">Where the server is listening.</param>
+    /// <param name="database">The database to open.</param>
+    /// <param name="schema">The schema this client writes against.</param>
+    /// <param name="mode">Read-only or read-write, resolved once here.</param>
+    /// <param name="assertSchema">
+    /// Whether to send the schema fingerprint as a claim. <c>true</c> is the right
+    /// default for a producer: a disagreement is then refused at the handshake instead
+    /// of by writing facts nobody can read back. <c>false</c> sends <c>0</c>, which
+    /// means "do not check" and is what a reader wants.
+    /// </param>
+    public static FjordConnection Connect(
+        string socketPath,
+        string database,
+        FjordSchema schema,
+        SessionMode mode = SessionMode.ReadWrite,
+        bool assertSchema = true)
+    {
+        return Connect(
+            FjordAddress.ForSocket(socketPath, database),
+            database,
+            schema,
+            mode,
+            assertSchema);
+    }
+
+    /// <summary>
+    /// Connect wherever <paramref name="address"/> says, and complete the handshake.
+    /// </summary>
+    /// <remarks>
+    /// The database comes from the address, so the two halves of "where and what" cannot
+    /// be passed separately and disagree. An address that names no target is a
+    /// programming error here rather than a default: this client has no configuration
+    /// layer to fall back to, so the caller resolves it with
+    /// <see cref="FjordAddress.OrSocket"/> before arriving.
+    /// </remarks>
+    public static FjordConnection Connect(
+        FjordAddress address,
+        FjordSchema schema,
+        SessionMode mode = SessionMode.ReadWrite,
+        bool assertSchema = true)
+        => Connect(address, address.Database, schema, mode, assertSchema);
+
+    private static FjordConnection Connect(
+        FjordAddress address,
+        string database,
+        FjordSchema schema,
+        SessionMode mode,
+        bool assertSchema)
+    {
+        Socket socket;
+
+        if (address.SocketPath is { } path)
+        {
+            socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            socket.Connect(new UnixDomainSocketEndPoint(path));
+        }
+        else if (address.Host is { } host)
+        {
+            socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+            socket.Connect(host, address.Port);
+
+            // Small frames, answered one at a time: Nagle would hold a handshake back
+            // waiting for company that is not coming. The Rust client says the same.
+            socket.NoDelay = true;
+        }
+        else
+        {
+            throw new ArgumentException(
+                $"`{address}` names no server to connect to", nameof(address));
+        }
+
+        var stream = new NetworkStream(socket, ownsSocket: false);
+
+        var startup = new ByteBuffer();
+        Varint.Write(startup, ProtocolVersion);
+        WriteString(startup, database);
+        startup.WriteByte((byte)mode);
+        Varint.Write(startup, assertSchema ? schema.Fingerprint : 0);
+
+        // **No per-predicate claims**, which is what a client carrying a constant has
+        // to send. The field is how a producer writing *part* of a database's schema
+        // says which part — it costs a fingerprint per predicate, and computing those
+        // is exactly what a client does not do (see FjordSchema). Zero here means
+        // "judge me by the number above".
+        Varint.Write(startup, 0);
+
+        FrameIo.Write(stream, FrameKind.Startup, 0, startup.Span);
+
+        var reply = FrameIo.Read(stream);
+        ThrowIfError(reply);
+
+        if (reply.Kind != FrameKind.Ready)
+        {
+            throw new FjordProtocolException(
+                $"expected a ready frame, got `{(char)reply.Kind}`");
+        }
+
+        var at = 0;
+        var hello = new ServerHello(
+            (uint)Varint.Read(reply.Payload, ref at),
+            Varint.Read(reply.Payload, ref at),
+            Varint.Read(reply.Payload, ref at));
+
+        if (hello.Version != ProtocolVersion)
+        {
+            throw new FjordProtocolException(
+                $"this client speaks protocol {ProtocolVersion}, the server speaks {hello.Version}");
+        }
+
+        return new FjordConnection(socket, schema, hello);
+    }
+
+    /// <summary>
+    /// Write facts, all of one predicate, as one block on one write stream.
+    /// </summary>
+    /// <remarks>
+    /// References inside the facts may be nested — the whole target fact rather than an
+    /// id — and the server interns them. That is what lets a producer keep no book of
+    /// what it has already sent.
+    /// </remarks>
+    public WriteSummary Write(uint predicate, IReadOnlyList<FjordFact> facts) =>
+        Write([(predicate, facts)]);
+
+    /// <summary>Write several blocks on one write stream.</summary>
+    public WriteSummary Write(IReadOnlyList<(uint Predicate, IReadOnlyList<FjordFact> Facts)> blocks)
+    {
+        var stream = _nextStream++;
+
+        FrameIo.Write(_stream, FrameKind.OpenWrite, stream, []);
+        var opened = FrameIo.Read(_stream);
+        ThrowIfError(opened);
+
+        if (opened.Kind != FrameKind.CopyInResponse)
+        {
+            throw new FjordProtocolException(
+                $"expected a copy-in response, got `{(char)opened.Kind}`");
+        }
+
+        foreach (var (predicate, facts) in blocks)
+        {
+            var block = Block.Encode(_schema, predicate, facts);
+            FrameIo.Write(_stream, FrameKind.CopyData, stream, block);
+        }
+
+        FrameIo.Write(_stream, FrameKind.CopyDone, stream, []);
+
+        var complete = FrameIo.Read(_stream);
+        ThrowIfError(complete);
+
+        if (complete.Kind != FrameKind.Complete)
+        {
+            throw new FjordProtocolException(
+                $"expected a complete frame, got `{(char)complete.Kind}`");
+        }
+
+        var at = 0;
+        return new WriteSummary(
+            Varint.Read(complete.Payload, ref at),
+            Varint.Read(complete.Payload, ref at));
+    }
+
+    /// <summary>Run a sigla query and collect its rows.</summary>
+    /// <remarks>
+    /// The server sends a <b>row descriptor</b> first, because a query's shape comes
+    /// from its head rather than from any predicate — <c>{a = X, b = Y}</c> is a record
+    /// no predicate declares. Rows then follow positionally against it, decoded by the
+    /// same codec that encodes facts.
+    /// </remarks>
+    public QueryResult Query(string sigla)
+    {
+        var stream = _nextStream++;
+        FrameIo.Write(_stream, FrameKind.Query, stream, Encoding.UTF8.GetBytes(sigla));
+
+        var described = FrameIo.Read(_stream);
+        ThrowIfError(described);
+
+        if (described.Kind != FrameKind.RowDescription)
+        {
+            throw new FjordProtocolException(
+                $"expected a row description, got `{(char)described.Kind}`");
+        }
+
+        var at = 0;
+        var shape = RowDescriptor.Read(described.Payload, ref at);
+        var rows = new List<FjordValue>();
+
+        while (true)
+        {
+            var frame = FrameIo.Read(_stream);
+            ThrowIfError(frame);
+
+            if (frame.Kind == FrameKind.Complete)
+            {
+                return new QueryResult(shape, rows);
+            }
+
+            if (frame.Kind != FrameKind.DataRow)
+            {
+                throw new FjordProtocolException(
+                    $"expected a data row, got `{(char)frame.Kind}`");
+            }
+
+            var rowAt = 0;
+            rows.Add(ValueCodec.ReadValue(frame.Payload, _schema, shape, ref rowAt));
+        }
+    }
+
+    private static void ThrowIfError(Frame frame)
+    {
+        if (frame.Kind != FrameKind.Error)
+        {
+            return;
+        }
+
+        if (frame.Payload.Length < 1)
+        {
+            throw new FjordProtocolException("an error frame with no code");
+        }
+
+        var code = (FjordErrorCode)frame.Payload[0];
+        var at = 1;
+        var length = Varint.Read(frame.Payload, ref at);
+        var message = Encoding.UTF8.GetString(frame.Payload, at, (int)length);
+
+        throw new FjordServerException(code, message);
+    }
+
+    private static void WriteString(IBufferSink sink, string text)
+    {
+        var utf8 = Encoding.UTF8.GetBytes(text);
+        Varint.Write(sink, (ulong)utf8.Length);
+        sink.Write(utf8);
+    }
+
+    public void Dispose()
+    {
+        _stream.Dispose();
+        _socket.Dispose();
+    }
+}
+
+/// <summary>
+/// The row descriptor: the outbound direction's type source.
+/// </summary>
+/// <remarks>
+/// This is the <b>one</b> place the format carries type tags, and it carries them once
+/// per stream rather than once per field per row — which is exactly the trade that
+/// makes tagging affordable here and not in a fact.
+/// </remarks>
+public static class RowDescriptor
+{
+    public static FjordType Read(ReadOnlySpan<byte> bytes, ref int at)
+    {
+        var tag = Varint.Read(bytes, ref at);
+
+        switch (tag)
+        {
+            case 0:
+                return FjordType.Integer;
+
+            case 1:
+                return FjordType.String;
+
+            case 2:
+                return FjordType.Reference((uint)Varint.Read(bytes, ref at));
+
+            case 3:
+            {
+                var count = Varint.Read(bytes, ref at);
+                if (count > (ulong)bytes.Length)
+                {
+                    throw new FjordProtocolException("a descriptor declares more fields than could fit");
+                }
+
+                var fields = new List<(string, FjordType)>((int)count);
+
+                for (ulong index = 0; index < count; index++)
+                {
+                    var length = Varint.Read(bytes, ref at);
+                    if (length > (ulong)(bytes.Length - at))
+                    {
+                        throw new FjordProtocolException("a field name runs past the descriptor");
+                    }
+
+                    var name = Encoding.UTF8.GetString(bytes.Slice(at, (int)length));
+                    at += (int)length;
+
+                    fields.Add((name, Read(bytes, ref at)));
+                }
+
+                return new FjordType.Record(fields);
+            }
+
+            default:
+                throw new FjordProtocolException($"unknown descriptor tag {tag}");
+        }
+    }
+}

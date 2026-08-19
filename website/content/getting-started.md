@@ -35,46 +35,23 @@ cargo build --release --example loadgen         # a producer that can fill a dat
 For a first run, `--release` matters more than usual: a debug build of the executor is
 several times slower and is not the thing you want a first impression of.
 
-## 2. Try it with no server at all
+## 2. Create a database
 
-Before any of the setup below: the binary carries an **embedded demo** that seeds its own
-database from a real index of a small Python corpus. No server, no store root, no producer.
+A database is created **against a schema**, and that schema is frozen and embedded in it for
+its lifetime. There is no default: the schema decides what every stored row means, so a
+database whose schema nobody chose is one nobody can describe.
+
+`schemas/code.sigla` in the repository is a worked example — twenty-seven predicates
+describing files, declarations, references, a build graph and a declaration graph. It is what
+the .NET indexer writes, what the viewer reads and what every benchmark here measures, so it
+is the one to start from.
 
 ```bash
-fjord shell
+fjord --data-dir ./db create code --schema schemas/code.sigla
 ```
 
 ```text
-sigla> D.name where D = src.Decl {name = "encode"..}
-  : str
-  "encode_int"
-  "encode_key"
-  "encode_str"
-  3 row(s)
-
-sigla> {file = F, line = L} where src.Ref {file = F, at = {line = L}, to = src.Decl {name = "encode_str"}}
-  : {file: src.File, line: int}
-  {file = src.File "store/codec.py", line = 38}
-  {file = src.File "store/keys.py", line = 17}
-  2 row(s)
-```
-
-`:help` there prints ten more queries worth trying, and `:plan` shows what any of them compiles
-to. Everything from here on is the real thing: a database on disk, a server, and a client.
-
-## 3. Create a database
-
-A database is created **against a schema**, and that schema is frozen and embedded in it
-for its lifetime. With no `--schema`, you get the built-in code index — twenty-seven
-predicates describing files, declarations, references, a build graph and a declaration
-graph.
-
-```bash
-fjord --data-dir ./db create code
-```
-
-```text
-created code (01M0BN4HG1W821VK1R7R9E26P1) against the built-in schema
+created code (01M0BN4HG1W821VK1R7R9E26P1) against schemas/code.sigla
 ```
 
 The name is `code`; the ULID is the **instance**. `--data-dir` is the **store root** — the
@@ -92,7 +69,7 @@ code  01M0BN4HG1W821VK1R7R9E26P1  writable  b08eea634e86  -        -      -     
 `list` reads sidecar files and never opens the storage engine, so it works while a server
 holds every database under the root.
 
-## 4. Start a server
+## 3. Start a server
 
 Every client talks to a server — there is no "open the directory directly" path for
 readers. Locally that is a Unix socket.
@@ -107,7 +84,6 @@ fjord serve
   data dir   ./db
   socket     ./db/fjord.sock
   protocol   2
-  schema     0xb08eea634e866a75  (the built-in one; each database is served with its own)
   databases  1
     code                 writable
 ```
@@ -122,7 +98,7 @@ pass `--socket /tmp/fjord.sock` explicitly and name it in the address —
 `/tmp/fjord.sock//code`.
 :::
 
-## 5. Put some facts in it
+## 4. Put some facts in it
 
 There is no `fjord write` command yet — [file ingestion](status.html) is unbuilt. Facts
 arrive over the wire, from a producer. Three exist today:
@@ -138,7 +114,7 @@ seeding 1,000 declarations over 200 files, 1,000 facts per block
 ```
 
 The other two are the .NET client's demo (a tiny hand-written index) and
-`Fjord.Indexer`, which runs a real design-time build with Roslyn over a checkout — see
+`Boxops.Fjord.Indexer`, which runs a real design-time build with Roslyn over a checkout — see
 [Clients & the viewer](clients.html). To write facts from your own program, see
 [the client section](clients.html#writing-facts-from-rust).
 
@@ -147,7 +123,7 @@ each declaration with its module nested inside it, and the module with its file 
 inside that. The server interns each nested fact, so a file named a thousand times is
 written once and deduplicated 999 times.
 
-## 6. Ask it something
+## 5. Ask it something
 
 ```bash
 fjord --data-dir ./db query code 'F where src.File F' --limit 3
@@ -199,7 +175,7 @@ Without `--expand`, `F` prints as `#9:2` — a fact id, because that is what a r
 once stored. Expansion is the client asking the server *what fact does this id name*, and
 it is off unless you ask for it: it costs one point read per distinct reference.
 
-## 7. Use the shell
+## 6. Use the shell
 
 ```bash
 fjord --data-dir ./db shell code
@@ -227,7 +203,7 @@ sigla> :more
 `:more` holds a real resume token across a real round trip. Full command list:
 [Shell reference](shell.html).
 
-## 8. Seal it
+## 7. Seal it
 
 A database is an **artifact**. Sealing flushes and merges every tree, hashes the content,
 records the identity, and flips the status — after which every write is refused, forever.
@@ -254,7 +230,7 @@ Merging at `finish` is not cosmetic: an unmerged tree was measured seeking at up
 a merged one, and the artifact roughly halves on disk. See
 [Performance](performance.html).
 
-## 9. Browse it
+## 8. Browse it
 
 ```bash
 fjord-viewer ./db/fjord.sock//code --bind 127.0.0.1:8088

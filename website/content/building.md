@@ -57,7 +57,7 @@ any more — the compiler refuses the other direction, and there is no edge poin
 | `fjord-client` | The client: `address`, `connection`, `rows` (a result as a bookmark), `expand`. Depends on `fjord-wire` and nothing else. |
 | `fjord-server` | The protocol over a Unix socket or TCP: `session`, `registry`, `outbound` (the fair writer), `rows`, `blocking`, `server`, `stats`, `catalogue`. |
 | `fjord-viewer` | The code-search site: `query`, `render`, `pool`, and the routes. An ordinary consumer of the client. |
-| root `fjord-cli` | The tool: `cli`, `config`, `commands/`, `output`, `prompt`, `shell`, `code_index`, `workload`. The binary is `fjord`. |
+| `fjord-cli` | The tool: `cli`, `config`, `commands/`, `output`, `prompt`, `sample_schema`, `workload`. The binary is `fjord`. |
 
 Two test-support modules span crates, and the split is load-bearing:
 `fjord_store::fixtures` holds everything store-shaped (probes, model stores,
@@ -73,8 +73,10 @@ wraps; `fjord_engine::fixtures` holds the plan runners and re-exports the rest.
 
 ## Measuring instruments
 
-Deliberately `examples/` rather than subcommands — they are measuring instruments, not
-things anyone should find while looking for how to use the database.
+They live in `crates/fjord-cli/examples/` and are deliberately examples rather than
+subcommands: measuring instruments are not things anyone should find while looking for how to
+use the database. Run them from anywhere in the workspace — `cargo run --release --example
+loadgen -- …`.
 
 | Example | Rung | What it isolates |
 |---|---|---|
@@ -90,18 +92,20 @@ cargo run --release --example loadgen -- --data-dir /tmp/fjbench --files 20000
 ./scripts/bench.sh          # create, serve, seed, measure — one command
 ```
 
-## The example corpus
+## Where a database to work against comes from
 
-`example/` is a small Python codebase, a real `ast`-based indexer over it, and the JSON the
-embedded demo shell compiles in. Regenerate it after editing the corpus:
+There is no bundled corpus. `schemas/code.sigla` describes three layers, and only the first —
+files, modules, declarations, references, their spans — is answerable by a syntax walk; the
+build layer and the declaration graph need a compiler and a build system, which is what the
+.NET indexer has. So the way to get a database worth querying is to point that at a real
+checkout:
 
 ```bash
-python3 example/index.py
+./clients/dotnet/index-repo.sh ~/src/OrchardCore
 ```
 
-Six predicates come straight out of that parse. The rest of the built-in schema — the
-build layer and the declaration graph — needs a compiler and a build system to answer, and
-is filled by the .NET indexer.
+`./scripts/bench.sh` is the other way in: it creates, serves, seeds and measures in one
+command, from a synthetic corpus sized by `FILES` and `DECLS`.
 
 ## The .NET client
 
@@ -124,11 +128,9 @@ for the same corpus. The Rust test needs no `dotnet`; regenerating the golden do
 
 ```text
 fjord/
-├── src/                 the `fjord` binary: cli, commands, shell, output, config
-├── crates/              the workspace, bottom to top (table above)
-├── schemas/             code.sigla (the built-in schema) and catalogue.sigla
-├── example/             a Python corpus, its indexer, and the JSON the demo shell embeds
-├── examples/            the measuring instruments
+├── crates/              the workspace, bottom to top (table above). `fjord-cli` is
+│                       the `fjord` binary; its examples/ are the instruments
+├── schemas/             code.sigla, the sample schema every client here builds against
 ├── clients/dotnet/      the C# client, demo producer and real indexer
 ├── docs/                the design book — chapters 1–7 plus operations and references
 ├── bench/FINDINGS.md    what has actually been measured

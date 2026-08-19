@@ -85,8 +85,7 @@ fn start() -> Serving {
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog.create("code", &schema).expect("a database");
 
-    let (registry, _listing) =
-        Registry::open(catalog, Schemas::new("", schema)).expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
     let listener = Listener::bind(&socket).expect("a socket");
 
     thread::spawn(move || {
@@ -217,10 +216,11 @@ fn seed(serving: &Serving) {
 fn serve(serving: &Serving) -> (SocketAddr, tokio::runtime::Runtime) {
     let runtime = tokio::runtime::Runtime::new().expect("a runtime");
 
+    // No schema passed: the viewer asks the server for the database's own, which is what
+    // makes this test cover the path a person takes rather than one only a test can.
     let app = fjord_viewer::App::open(
         &fjord_client::Address::local("code")
             .or_endpoint(fjord_client::Endpoint::Unix(serving.socket.clone())),
-        Arc::new(schema()),
         2,
     )
     .expect("the viewer opens the database");

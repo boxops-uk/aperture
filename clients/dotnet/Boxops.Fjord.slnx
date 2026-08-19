@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Boxops.Fjord.Client/Boxops.Fjord.Client.csproj" />
+  <Project Path="Boxops.Fjord.Demo/Boxops.Fjord.Demo.csproj" />
+  <Project Path="Boxops.Fjord.Indexer/Boxops.Fjord.Indexer.csproj" />
+</Solution>

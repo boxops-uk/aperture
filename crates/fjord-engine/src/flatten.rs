@@ -7108,7 +7108,7 @@ mod tests {
     // ---- Phase 6: derived binds (red, pending the `Slot` promotion) ---------
     //
     // Phase 6's acceptance criteria, as tests, written before the machine that
-    // satisfies them ([`PLAN.md`](../../PLAN.md) Phase 6). They are deliberately
+    // satisfies them ([`PLAN.md`](../../../PLAN.md) Phase 6). They are deliberately
     // written **through the driver** — sigla text in, rows out — and name no plan
     // type that does not exist yet, so they compile today, fail today for the
     // right reason (`nyi/value-bind`, reported by `collect`), and go green when
@@ -8717,7 +8717,7 @@ pub mod proptest {
             // they are is what makes the branches agree about what they bind, which
             // is the rule flatten enforces and the one a generator has to respect to
             // draw a query at all.
-            let branches = match draw.branch.is_multiple_of(4) {
+            let branches = match draw.branch % 4 == 0 {
                 true => vec![
                     alternative_branch(&fields, &facts[predicate], draw.branch / 4),
                     fields,
@@ -8749,8 +8749,7 @@ pub mod proptest {
             .iter()
             .filter(|v| var_tys[**v] == FieldTy::Str)
             .find_map(|v| {
-                constraint
-                    .is_multiple_of(2)
+                (constraint % 2 == 0)
                     .then(|| (*v, MATCHES[constraint as usize / 2 % MATCHES.len()]))
             })
             .into_iter()
@@ -8820,7 +8819,7 @@ pub mod proptest {
                 .filter(|candidate| !occurs.contains(candidate))
                 .collect();
 
-            match candidates.is_empty() || !negation.is_multiple_of(4) {
+            match candidates.is_empty() || negation % 4 != 0 {
                 true => vec![],
                 false => {
                     let (predicate, field, var) =
@@ -8846,7 +8845,7 @@ pub mod proptest {
                     // A **second branch** for the negation too, on half of them:
                     // `!(A | B)` is the shape De Morgan's law is about, and it is
                     // also the only way a *test* gets more than one source.
-                    let branches = match negation_branches.is_multiple_of(2) {
+                    let branches = match negation_branches % 2 == 0 {
                         true => vec![
                             alternative_branch(&branch, &facts[predicate], negation_branches / 2),
                             branch,
@@ -9464,7 +9463,7 @@ mod battery {
 
     // ---- resume, over plans the compiler produced --------------------------
     //
-    // [I4](../../docs/invariants.md#i4) is guarded over *hand-built* plan shapes
+    // [I4](../../../docs/invariants.md#i4) is guarded over *hand-built* plan shapes
     // (`plan::proptest`), which is where it belongs — the executor is what it is
     // about. But flatten emits shapes that generator never draws: constant seek
     // prefixes, composite seeks of several parts, `ResidualOp::Prefix`, nested
@@ -9790,7 +9789,7 @@ mod battery {
         ///
         /// **The order is drawn, not the identity**, and that is what puts a step
         /// that binds nothing *above* a scan. Phase 6 learned this the expensive
-        /// way: the first [I14](../../docs/invariants.md#i14) guard passed with
+        /// way: the first [I14](../../../docs/invariants.md#i14) guard passed with
         /// resume's recompute deleted, because the derive sat below the scan and
         /// `enumerate` re-entered it from beneath on the way back up. A negation is
         /// the same shape of step and would hide the same fault — written last in

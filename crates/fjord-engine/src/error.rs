@@ -55,7 +55,7 @@ pub enum FjordError {
     CursorTruncated,
 
     /// A resume cursor built from a **different plan** — the hole the level count
-    /// leaves open ([chapter 5](../../docs/05-resume.md)).
+    /// leaves open ([chapter 5](../../../docs/05-resume.md)).
     ///
     /// A cursor's entries are paired with the plan's levels *by order*, so two
     /// plans of the same shape over overlapping predicates would accept each

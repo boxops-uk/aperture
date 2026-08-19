@@ -51,11 +51,7 @@ fn schema() -> Schema {
 /// about what is in them.
 fn seal(catalog: &Catalog, entry: &fjord_store::catalog::Entry) {
     catalog
-        .finish(
-            &Selector::at(entry.name(), &entry.meta.instance),
-            &schema(),
-            true,
-        )
+        .finish(&Selector::at(entry.name(), &entry.meta.instance), true)
         .expect("it seals");
 }
 

@@ -1,16 +1,32 @@
 [package]
 name = "fjord-client"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "A client for Fjord DB, an embedded immutable fact database: connect, write facts, query, page and expand"
+readme = "README.md"
+keywords = ["database", "datalog", "client", "facts", "immutable"]
+categories = ["database", "api-bindings"]
+# **Only what a consumer needs.** Cargo packages every file under the crate root by
+# default, and `tests/` here reaches outside it — the golden is regenerated from the
+# .NET client and lives in the repository, so a test shipped in the package could not
+# run anyway. Naming the contents keeps the package to the library, its licence and
+# its front page.
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 # The schema, because a client must have one: the transport codec sends no names
 # and no types, so both ends supply them (see `fjord-wire`'s module docs).
-fjord-schema = { path = "../fjord-schema" }
+fjord-schema = { path = "../fjord-schema", version = "0.0.1" }
 # The codec and the message vocabulary. **Not `fjord-server`** — operations §10
 # is explicit that nothing depends on the server, and a client that needed one to
 # talk to one would be a contradiction with a build time attached.
-fjord-wire = { path = "../fjord-wire" }
+fjord-wire = { path = "../fjord-wire", version = "0.0.1" }
 thiserror = { workspace = true }
 
 [dev-dependencies]

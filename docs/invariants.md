@@ -287,8 +287,8 @@ prevent the double-create and not this ([chapter 3](03-storage-model.md#and-a-se
 writes) + `store::no_half_present_facts` (a child process aborted mid-write; the bijection
 must survive recovery) + `store::put_is_write_once_and_says_so_in_release` and
 `store::writing_a_key_twice_is_caught_in_debug` (the two halves of the write-once rule) +
-`store::concurrent_interning_of_one_key_creates_one_fact` (Phase 12, pending — N threads
-racing on the same key, the bijection intact and one id handed to all of them).
+`store::concurrent_interning_of_one_key_creates_one_fact` (N threads racing on the same key,
+the bijection intact and one id handed to all of them — built with Phase 12, and green).
 
 <a id="i13"></a>
 ### I13 — The DB's schema is embedded and frozen at create

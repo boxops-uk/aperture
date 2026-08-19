@@ -27,7 +27,7 @@
 #
 # It is NOT sound for Fjord's demo corpus, which deliberately writes a
 # parameter at index -1 to exercise zigzag encoding
-# (clients/dotnet/Fjord.Demo/Program.cs). Do not benchmark against that
+# (clients/dotnet/Boxops.Fjord.Demo/Program.cs). Do not benchmark against that
 # corpus through this schema; a negative would be unrepresentable here.
 
 schema fjbench.1 {

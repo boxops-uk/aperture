@@ -1,7 +1,23 @@
 [package]
 name = "fjord-wire"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The Fjord DB wire protocol: frame and value codecs, and the message vocabulary a client and server share"
+readme = "README.md"
+keywords = ["database", "protocol", "codec", "facts", "wire"]
+categories = ["database", "encoding", "network-programming"]
+# **Only what a consumer needs.** Cargo packages every file under the crate root by
+# default, and `tests/` here reaches outside it — the golden is regenerated from the
+# .NET client and lives in the repository, so a test shipped in the package could not
+# run anyway. Naming the contents keeps the package to the library, its licence and
+# its front page.
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 # Mirrors the other crates': exposes the `arb_*` strategies to consumers outside
@@ -12,7 +28,7 @@ proptest = ["dep:proptest"]
 # The schema, and nothing else. The transport codec is driven by `PredicateTy`
 # and shares no code with the storage codec — see the module docs for why that
 # is the point rather than an omission.
-fjord-schema = { path = "../fjord-schema" }
+fjord-schema = { path = "../fjord-schema", version = "0.0.1" }
 lasso = { workspace = true }
 # The block splitter's marker scan — operations §8's "SIMD memchr-style scan".
 memchr = { workspace = true }

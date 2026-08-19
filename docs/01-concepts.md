@@ -199,25 +199,20 @@ convention any more — the compiler refuses the other direction.
   - test support: `fixtures.rs` (the plan runners, re-exporting the store-shaped half) and
     `corpus.rs` (the language surface as data — the acceptance gate for the grammar, which
     runs each supported entry against a real store and compares its rows).
-- **`src/main.rs`** — the root package, and now only the binary: an interactive **sigla shell** that lexes,
-  parses, lowers, typechecks, **compiles and runs** what you type against a real store seeded
-  with a **code index** — files, modules, declarations, references, imports — which is the
-  canonical shape for a fact database and the one that makes reference joins worth watching.
-  `:plan` shows the plan without running it. Useful for seeing the whole system behave; not a
-  place to put logic — the plan renderer it needed went into the engine's `print.rs`, and its
-  facts are written through the store's `fact.rs`. The target layout calls this
-  `fjord-cli` ([operations §10](fjord-cli-design.md)); it keeps its place until it grows
-  a command tree.
-- **`example/`** — what that index is an index *of*: a small Python corpus, a real
-  `ast`-based indexer over it, and the JSON the shell compiles in and writes as facts at
-  startup. Its sixth predicate is the interesting one — `src.SearchByName` is the declaration
-  names keyed *by name*, because `src.Decl`'s key begins with its module and a name prefix can
+- **`crates/fjord-cli/`** — the tool: the clap tree, the commands, and the **wire
+  shell**, which lexes, parses, lowers, typechecks and compiles what you type *on your machine*
+  — against the schema the server says it serves — and runs it over the socket. `:plan` and
+  `:type` therefore answer without running anything, which a client holding no compiler could
+  not do. Not a place to put logic: the plan renderer it needs lives in the engine's `print.rs`.
+  This is where [operations §10](fjord-cli-design.md) always said it belonged.
+- **`schemas/code.sigla`** — the sample code index, and the shape every client in this
+  repository writes. Its `src.SearchByName` is the interesting predicate: the declaration names
+  keyed *by name*, because `src.Decl`'s key begins with its module and a name prefix can
   therefore only filter that scan, not narrow it. Derived data written by hand, which is what a
-  deriver does until [Phase 8b](../PLAN.md) can declare one. See
-  [`example/README.md`](../example/README.md).
-- **`crates/fjord-engine/src/lib.rs`** — the module list, and then a **graveyard of
-  commented-out prototype code** (~20 live lines out of ~1,250). Kept only for the
-  transport-codec sketch. Don't add code here.
+  deriver does until [Phase 8b](../PLAN.md) can declare one.
+- **`crates/fjord-engine/src/lib.rs`** — the module list, and nothing else. It used to
+  carry 1,222 lines of commented-out prototype below it, kept for a transport-codec sketch;
+  that codec shipped as `fjord-wire` in Phase 7a, and git remembers the rest.
 
 ---
 

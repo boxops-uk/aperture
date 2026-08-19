@@ -25,7 +25,7 @@ built rather than described as if it were.
 | **Server** | Unix socket by default, TCP opt-in, per-connection reader task, per-stream tasks, blocking pool, virtual `fjord.db.List` |
 | **Client** | Rust client crate — connect, query, page, count, profile, fetch, expand, write, lifecycle |
 | **CLI** | `serve`, `create`, `finish`, `list`, `describe`, `query`, `shell`, `schema …`, `db rm` |
-| **Shell** | The wire REPL (compiles locally, real cursor paging, expansion, profiling) and the embedded demo |
+| **Shell** | The wire REPL: compiles locally against the schema the server serves, real cursor paging, expansion, profiling |
 | **Second implementation** | A C# client, its demo producer, a real Roslyn/MSBuild indexer, and a byte-for-byte golden against the Rust encoder |
 | **Viewer** | A code-search site: browse, file view with cross-references, prefix search, symbol pages |
 | **Measurement** | Six instruments across seven rungs, and a findings register |
@@ -36,7 +36,7 @@ built rather than described as if it were.
 |---|---|---|
 | **Ingestion from files** | Facts arrive over the wire from a producer. The file format, block encoding and splitting rule are all defined and shared with the wire path; the pipeline is not wired to a command | Was gated on parallel ingestion, which is now done |
 | **Union types** | The schema DSL parses a sum and names `nyi/union`. No `maybe`, `enum` or union-typed field yet | Discriminant encoding, and the freeze that comes with it |
-| **Stored derivation** | A derived predicate cannot be *declared*. Derived data is written by hand — which is what four predicates in the built-in schema are | The schema DSL (done) plus the re-derivation decision below |
+| **Stored derivation** | A derived predicate cannot be *declared*. Derived data is written by hand — which is what four predicates in the sample schema are | The schema DSL (done) plus the re-derivation decision below |
 | **Arrays and sets** | A one-to-many is one fact per element. Marker bands are reserved | An open design question, not a missing implementation |
 | **`fjord write`, `db backup/restore/verify`, `completions`** | Named in the CLI design, absent from the binary. A Complete database is a directory, so `tar` is the backup | — |
 | **Per-predicate statistics** | Nothing feeds a selectivity heuristic, which is why the reorderer does not have one | `finish` is the natural place to record them |
@@ -131,3 +131,4 @@ hundreds of references across the repository point at these numbers.
 | 10 | Capacity: measure it | done |
 | 11 | The code-search site, and what it took | done |
 | 12 | Parallel ingestion: the striped merge frontier | done |
+| 13 | Fjord against Glean, on one corpus | part done — the write paths are measured and within 8%; the read-path comparison is planned and not yet run |

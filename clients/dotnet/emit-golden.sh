@@ -14,7 +14,7 @@ out="$root/clients/dotnet/golden/blocks.txt"
 
 mkdir -p "$(dirname "$out")"
 
-dotnet run --project "$root/clients/dotnet/Fjord.Demo" -- --golden "$out"
+dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Demo" -- --golden "$out"
 
 echo
 echo "now check the Rust side still agrees:"

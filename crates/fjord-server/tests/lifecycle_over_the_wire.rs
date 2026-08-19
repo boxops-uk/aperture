@@ -96,8 +96,7 @@ fn start() -> Serving {
     let fingerprint = fjord_schema::fingerprint::of(&schema);
 
     let catalog = Catalog::open(&root).expect("a store root");
-    let (registry, _listing) =
-        Registry::open(catalog, Schemas::new("", schema)).expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
 
     let listener = Listener::bind(&socket).expect("a socket");
     thread::spawn(move || {
@@ -142,14 +141,26 @@ impl Client {
     }
 
     /// Open a session bound to `database`, or — for the empty string — to none at all.
+    ///
+    /// **A claim belongs to a database.** A session naming one asserts the fingerprint it
+    /// expects, which is the whole point of that field; a session naming *none* has
+    /// nothing to assert about, since a `create` is about to name a database that does not
+    /// exist yet. So a control session sends `0` — "do not check" — and what it agrees
+    /// with the server about is the catalogue, which is all a server holds of its own.
     fn hello(serving: &Serving, database: &str, mode: Mode) -> (Client, FrameHeader, Vec<u8>) {
         let mut client = Client::connect(serving);
+
+        let claim = if database.is_empty() {
+            0
+        } else {
+            serving.fingerprint
+        };
 
         let startup = protocol::encode_startup(&Startup {
             version: protocol::VERSION,
             database: database.to_owned(),
             mode,
-            schema_fingerprint: serving.fingerprint,
+            schema_fingerprint: claim,
             predicates: vec![],
         });
 
@@ -187,7 +198,14 @@ impl Client {
             op,
             database: database.to_owned(),
             allow_zero_facts,
-            schema: String::new(),
+            // **`create` requires a schema; every other op ignores the field.** Printed
+            // from this file's own `schema()` rather than restated as text, so there is
+            // one statement of it — and the trip out through source and back through
+            // `lower` is exercised on the way.
+            schema: match op {
+                ControlOp::Create => fjord_schema::syntax::print::print(&schema()),
+                _ => String::new(),
+            },
         });
 
         self.send(kinds::CONTROL, StreamId(1), &request);
@@ -554,4 +572,50 @@ fn a_declined_request_says_why() {
     let (header, payload) = control.control_raw(ControlOp::Remove, "nope", false);
     assert_eq!(header.kind, FrameKind::ERROR);
     assert_eq!(error_of(&payload).0, ErrorCode::UnknownDatabase);
+}
+
+/// **`create` needs a schema, and an empty one is refused rather than substituted.**
+///
+/// Until 0.0.1 an empty `schema` field meant "this server's own", and a server carried a
+/// built-in one to hand over. That made the artifact a property of whichever binary
+/// happened to be listening: the same command against two builds produced two databases
+/// with two different embedded schemas, and nothing said so. `create` now requires the
+/// text, which is what [operations §5](../../../docs/fjord-cli-design.md) always
+/// specified.
+///
+/// Sent as a raw control frame because no client should make this easy to do by accident
+/// — `fjord create` has a required flag, and `Connection::create` takes the source.
+#[test]
+fn creating_a_database_with_no_schema_is_refused() {
+    let serving = start();
+    let mut control = Client::control_session(&serving, Mode::ReadWrite);
+
+    let request = protocol::encode_control(&Control {
+        op: ControlOp::Create,
+        database: "schemaless".to_owned(),
+        allow_zero_facts: false,
+        schema: String::new(),
+    });
+
+    control.send(kinds::CONTROL, StreamId(1), &request);
+    let (header, payload) = control.recv();
+
+    assert_eq!(header.kind, FrameKind::ERROR, "an empty schema is refused");
+    let (_, message) = error_of(&payload);
+    assert!(
+        message.contains("--schema"),
+        "the refusal should say what to pass: {message}"
+    );
+
+    // And nothing was left behind by the attempt.
+    let catalog = Catalog::open(&serving.root).expect("a store root");
+    assert!(
+        catalog
+            .resolve(
+                &Selector::parse("schemaless").expect("a selector"),
+                Intent::Read
+            )
+            .is_err(),
+        "a refused create leaves no database"
+    );
 }

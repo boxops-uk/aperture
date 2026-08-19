@@ -17,7 +17,7 @@ AP=/path/to/fjord/target/release/fjord
 
 ## 1. A schema you can read
 
-The built-in schema is a file, `schemas/code.sigla`, and it parses like any other. Ask it
+The sample schema is a file, `schemas/code.sigla`, and it parses like any other. Ask it
 what it thinks it is:
 
 ```bash
@@ -55,25 +55,25 @@ design — and [step 6](#6-read-the-plan) is where it becomes visible.
 ## 2. Create, and serve
 
 ```bash
-$AP --data-dir ./db create code
+$AP --data-dir ./db create code --schema schemas/code.sigla
 $AP --data-dir ./db serve --ready-file ./ready &
 while [ ! -e ./ready ]; do sleep 0.1; done
 ```
 
 ```text
-created code (01M0BNMTQ3RWQFMM755NV1MWA3) against the built-in schema
+created code (01M0BNMTQ3RWQFMM755NV1MWA3) against schemas/code.sigla
 fjord serve
   data dir   ./db
   socket     ./db/fjord.sock
   protocol   2
-  schema     0xb08eea634e866a75  (the built-in one; each database is served with its own)
   databases  1
     code                 writable
 ```
 
-The schema printed at startup is the built-in one, and the parenthesis is the point: each
-database is served with **its own** embedded copy, so one store root can hold artifacts
-built from different declarations.
+**No schema is printed, because a server has none of its own.** Each database is served with
+its own embedded copy, so one store root can hold artifacts built from different declarations
+— and one that embedded no copy is listed rather than served, since the only alternative is to
+guess how its rows decode.
 
 ## 3. Write facts, holding no ids
 

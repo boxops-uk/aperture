@@ -13,9 +13,27 @@ order.
 
 | Project | What it is |
 |---|---|
-| `Fjord.Client` | the library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection |
-| `Fjord.Demo` | a console program that writes a small code index and queries it |
-| `Fjord.Indexer` | a **real** indexer — Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is ([its README](Fjord.Indexer/README.md)) |
+| `Boxops.Fjord.Client` | the library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection. **The one packable project** — published as `Boxops.Fjord.Client`, targeting `net8.0` and `net10.0`, with no dependencies |
+| `Boxops.Fjord.Demo` | a console program that writes a small code index and queries it |
+| `Boxops.Fjord.Indexer` | a **real** indexer — Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is ([its README](Boxops.Fjord.Indexer/README.md)) |
+
+## As a package
+
+```bash
+dotnet add package Boxops.Fjord.Client
+```
+
+`Boxops.Fjord.Client/README.md` is the package's front page, and its example is compiled against
+this library rather than written next to it. Shared metadata — version, licence, repository,
+Source Link, deterministic build — is in `Directory.Build.props`, and nothing there is
+packable unless it says so, which is how the two console programs stay out of the feed.
+
+```bash
+dotnet pack clients/dotnet/Boxops.Fjord.Client -c Release -o ./nupkg
+```
+
+That produces the `.nupkg` and a `.snupkg` of symbols. CI runs the same two commands, so a
+package that would not build is a red branch rather than a discovery at publish time.
 
 ## Running it
 
@@ -34,7 +52,7 @@ rm -rf /tmp/fj-demo && mkdir -p /tmp/fj-demo
 # signal rather than a race.
 while [ ! -e /tmp/fj-demo/ready ]; do sleep 0.1; done
 
-dotnet run --project clients/dotnet/Fjord.Demo -- --socket /tmp/fj-demo/fjord.sock
+dotnet run --project clients/dotnet/Boxops.Fjord.Demo -- --socket /tmp/fj-demo/fjord.sock
 ```
 
 Or `./clients/dotnet/run-demo.sh`, which is the above.
@@ -109,7 +127,7 @@ constants were copied.
 
 ## The indexer
 
-`Fjord.Indexer` is the demo's argument made at scale: the same client library, the
+`Boxops.Fjord.Indexer` is the demo's argument made at scale: the same client library, the
 same nested references and the same handshake, driven by **Buildalyzer** (a design-time
 build per project, out of process) and **Roslyn** (what every name in the result means)
 over a checkout of somebody's real .NET source.
@@ -121,7 +139,7 @@ over a checkout of somebody's real .NET source.
 The demo answers *is the protocol implementable from outside*. The indexer answers the
 two questions after it: is it **usable** from outside by a producer with a real workload,
 and does the database hold up when the facts were not chosen to be convenient. It has its
-own [README](Fjord.Indexer/README.md) — what it maps onto the twenty-two predicates,
+own [README](Boxops.Fjord.Indexer/README.md) — what it maps onto the twenty-two predicates,
 what it resolves, and what the numbers it prints mean.
 
 **It also writes to Glean.** `--glean-out <dir>` puts the same facts into Glean's own JSON

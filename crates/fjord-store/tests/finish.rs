@@ -167,7 +167,7 @@ fn build(catalog: &Catalog, name: &str, content: Content) -> u64 {
     drop(db);
 
     catalog
-        .finish(&Selector::of(name), &schema, false)
+        .finish(&Selector::of(name), false)
         .expect("it seals")
         .fingerprint
 }
@@ -297,7 +297,7 @@ fn finishing_twice_is_a_no_op() {
     let fingerprint = build(&catalog, "code", CONTENT);
 
     let again = catalog
-        .finish(&Selector::of("code"), &schema(), false)
+        .finish(&Selector::of("code"), false)
         .expect("finishing again is allowed");
 
     assert!(again.already_complete);
@@ -316,7 +316,7 @@ fn an_empty_database_will_not_seal_without_being_told_to() {
     catalog.create("empty", &schema).expect("it creates");
 
     assert!(matches!(
-        catalog.finish(&Selector::of("empty"), &schema, false),
+        catalog.finish(&Selector::of("empty"), false),
         Err(StoreError::EmptyDatabase(_))
     ));
 
@@ -330,7 +330,7 @@ fn an_empty_database_will_not_seal_without_being_told_to() {
     );
 
     let sealed = catalog
-        .finish(&Selector::of("empty"), &schema, true)
+        .finish(&Selector::of("empty"), true)
         .expect("with the flag, it seals");
     assert_eq!(sealed.facts, 0);
     assert_eq!(
@@ -532,7 +532,7 @@ fn sealing_merges_every_tree_into_one_table() {
     drop(db);
 
     catalog
-        .finish(&Selector::of("code"), &schema, false)
+        .finish(&Selector::of("code"), false)
         .expect("it seals");
 
     let (_entry, db) = catalog
@@ -568,7 +568,7 @@ fn merging_does_not_change_the_identity() {
     drop(db);
 
     let sealed = catalog
-        .finish(&Selector::of("code"), &schema, false)
+        .finish(&Selector::of("code"), false)
         .expect("it seals");
 
     assert_eq!(sealed.fingerprint, unmerged.fingerprint);
@@ -640,7 +640,7 @@ fn a_killed_finish_leaves_a_re_runnable_database() {
                 );
 
                 let sealed = catalog
-                    .finish(&Selector::of("code"), &schema(), false)
+                    .finish(&Selector::of("code"), false)
                     .unwrap_or_else(|e| panic!("delay {delay_ms}ms: it must re-run: {e}"));
                 assert!(!sealed.already_complete);
                 assert_eq!(sealed.facts, 7);
@@ -711,7 +711,131 @@ fn crashing_finisher_child_process() {
         std::process::abort();
     });
 
-    let _ = catalog.finish(&Selector::of("code"), &schema, false);
+    let _ = catalog.finish(&Selector::of("code"), false);
 
     std::thread::sleep(std::time::Duration::from_millis(delay_ms + 500));
+}
+
+// ---- the schema an identity is computed against ------------------------------
+
+/// **The identity is over the schema the database embeds, and nothing a caller holds.**
+///
+/// [`identity::compute`] looks a predicate up by its `PredicateId`, which is a *position*.
+/// So a schema that is not this database's does not fail — it decodes every stored key
+/// against whatever type happens to sit at that position and hashes the result. `finish`
+/// used to take the schema from its caller, and the offline `fjord finish` handed it the
+/// tool's built-in one regardless of what the database embedded: sealing a database built
+/// against any other schema recorded an `ops-I4` identity over misread rows, and the
+/// `finish` that only checks that references resolve had no way to notice.
+///
+/// The sharp case is two schemas whose position 0 holds a **different type**, since a
+/// string key read as a record is the silent misread rather than a loud one. So this seals
+/// a database whose position 0 is a record while a schema whose position 0 is a string is
+/// sitting right there in the process, and asserts the identity is the embedded schema's.
+#[test]
+fn the_identity_is_over_the_schema_the_database_embeds() {
+    let (_dir, catalog) = catalog();
+
+    // Position 0 is a *record*, where `schema()`'s position 0 is a bare string.
+    let other = {
+        let mut rodeo = Rodeo::new();
+        let mut sym = |name: &str| rodeo.get_or_intern(name);
+        let (thing, a, b) = (sym("other.Thing"), sym("a"), sym("b"));
+
+        Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name: thing,
+                key: PredicateTy::Record(Arc::from([(a, PredicateTy::Int), (b, PredicateTy::Str)])),
+                value: None,
+            }]),
+        )
+    };
+
+    struct Thing(i64, &'static str);
+
+    impl Fact for Thing {
+        const PREDICATE: &'static str = "other.Thing";
+
+        fn key(&self) -> fjord_encoding::tuple::Value {
+            record([("a", self.0.to_value()), ("b", self.1.to_value())])
+        }
+    }
+
+    catalog.create("other", &other).expect("it creates");
+    let (entry, db) = catalog
+        .open_write(&Selector::of("other"))
+        .expect("it opens");
+
+    db.put(&other, &Thing(1, "one")).expect("a fact");
+    db.put(&other, &Thing(2, "two")).expect("a fact");
+
+    // What the *embedded* schema says this content hashes to, computed here so the
+    // assertion is against a number with a stated derivation rather than a constant.
+    let expected = identity::compute(&db, &other, entry.meta.schema_fingerprint)
+        .expect("it walks")
+        .fingerprint;
+
+    // **And the two candidates are distinguishable**, which is what makes the assertion
+    // below mean anything: handing the walk the *other* schema in this process reads a
+    // record key as a string and answers differently — or fails outright. Either way it
+    // is not `expected`, so a `finish` that used anything but the embedded copy could not
+    // pass. This is the shape the offline `fjord finish` was in for every database not
+    // built against the tool's own schema.
+    let with_the_wrong_one =
+        identity::compute(&db, &schema(), entry.meta.schema_fingerprint).map(|id| id.fingerprint);
+    assert_ne!(
+        with_the_wrong_one.ok(),
+        Some(expected),
+        "the wrong schema must not produce the right identity"
+    );
+
+    drop(db);
+
+    let sealed = catalog
+        .finish(&Selector::of("other"), false)
+        .expect("it seals against its own schema");
+
+    assert_eq!(sealed.facts, 2);
+    assert_eq!(
+        sealed.fingerprint, expected,
+        "the identity must be the embedded schema's"
+    );
+}
+
+/// **A database that embeds no schema copy cannot be sealed.**
+///
+/// It is the same refusal a server makes when asked to *serve* one: there is nothing that
+/// can describe its rows, and the only other candidate is a guess. An identity is the
+/// artifact's name for its own content, so recording one computed over rows read through a
+/// guess is worse than refusing — every later comparison would trust it.
+#[test]
+fn sealing_a_database_with_no_embedded_schema_is_refused() {
+    let (_dir, catalog) = catalog();
+    let schema = schema();
+
+    catalog.create("ancient", &schema).expect("it creates");
+    let (entry, db) = catalog
+        .open_write(&Selector::of("ancient"))
+        .expect("it opens");
+    write(&db, &schema, CONTENT);
+    drop(db);
+
+    std::fs::remove_dir_all(entry.path.join(fjord_store::schema_doc::SCHEMA_DIR))
+        .expect("the copy is there to remove");
+
+    let refused = catalog
+        .finish(&Selector::of("ancient"), false)
+        .expect_err("it must not seal");
+
+    assert!(
+        matches!(refused, StoreError::Meta { .. }),
+        "a missing schema copy is a corrupt artifact: {refused:?}"
+    );
+
+    // Still Writable, so the refusal cost nothing: re-index it and seal it then.
+    let entry = catalog
+        .resolve(&Selector::of("ancient"), Intent::Read)
+        .expect("it is found");
+    assert_eq!(entry.status(), Status::Writable);
 }

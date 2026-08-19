@@ -75,6 +75,21 @@ use fjord_store::{
 
 use crate::stats;
 
+/// **The catalogue, as text** — the virtual predicates this server answers, declared in
+/// the same language as everything else.
+///
+/// It lives here, in the crate that answers them, because a virtual predicate belongs to
+/// whoever answers it: it travels with the *process* rather than with an artifact, is
+/// absent from the handshake fingerprint, absent from the copy a database embeds at
+/// create, and owns no keyspace. Until 0.0.1 this text was a `const` in the CLI and was
+/// handed *down* to the server, which had it the wrong way round — the tool that hosts a
+/// server should not be the thing that decides what the server can answer.
+///
+/// [`Schemas`](crate::registry::Schemas) appends it to every database's own schema.
+/// Reserved names sort last ([`RESERVED_NAMESPACE`](fjord_schema::syntax::lower::RESERVED_NAMESPACE)),
+/// so appending moves no stored id.
+pub const SOURCE: &str = include_str!("../schemas/catalogue.sigla");
+
 /// The predicate this module answers, by name.
 ///
 /// Resolved through the schema rather than hardcoded as an id, because the id is a

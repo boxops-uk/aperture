@@ -30,7 +30,9 @@ loadgen="$root/target/release/examples/loadgen"
 rm -rf "$dir"
 mkdir -p "$dir"
 
-"$fjord" --data-dir "$dir" create code
+# `--schema` is required: a database embeds the schema it was built against, and
+# there is no built-in one standing in for a caller who did not name it.
+"$fjord" --data-dir "$dir" create code --schema "$root/schemas/code.sigla"
 
 "$fjord" --data-dir "$dir" serve --ready-file "$dir/ready" >"$dir/server.log" 2>&1 &
 server=$!

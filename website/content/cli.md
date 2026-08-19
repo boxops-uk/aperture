@@ -169,13 +169,17 @@ re-running the index, never a wrong answer from one that sealed.
 ## `fjord create <name>`
 
 ```bash
-fjord --data-dir ./db create code
+fjord --data-dir ./db create code --schema ./schemas/code.sigla
 fjord --data-dir ./db create people --schema ./people.sigla
 ```
 
 | Flag | Means |
 |---|---|
-| `--schema <FILE>` | The entry file to create it against. Without it, the built-in code index |
+| `--schema <FILE>` | **Required.** The entry file to create it against |
+
+There is no default. The schema decides what every stored row means and is frozen once the
+database exists, so a database whose schema nobody chose is one nobody can describe — and a
+default shipped in the binary would make the artifact depend on which build of the tool made it.
 
 The schema is resolved (imports and all), canonicalised, fingerprinted and **embedded**. It is
 frozen for the database's lifetime, so this is the one moment it can be chosen. Every
@@ -268,17 +272,16 @@ Three things are worth knowing:
 Rendering is **always** client-side: the wire carries the binary format and the server never
 produces JSON.
 
-## `fjord shell [<name>]`
+## `fjord shell <name>`
 
 ```bash
-fjord --data-dir ./db shell code     # the product shell, over the wire
-fjord shell                          # the embedded demo, over a scratch database
+fjord --data-dir ./db shell code
 ```
 
-With a database it is the product shell and always speaks the protocol, even against a local
-server — so the format has a permanent exerciser and `:more` holds a real cursor across a real
-round trip. With none, it is the embedded demo over a database it seeds itself, which is the one
-thing no wire client can do.
+Always over the wire, even against a server on the same machine — so the format has a permanent
+exerciser and `:more` holds a real cursor across a real round trip. Queries compile on *your*
+machine, against the schema the server says it serves, so `:plan` and `:type` answer without
+running anything.
 
 Full command list: [Shell reference](shell.html).
 

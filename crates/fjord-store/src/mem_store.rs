@@ -37,7 +37,7 @@ impl MemStore {
     ///
     /// `sequence` is the fact's number *within its predicate*, not a raw
     /// [`FactId`]: the real store composes a snowflake id from the two
-    /// ([I11](../../docs/invariants.md#i11)), so a model that took whole ids could
+    /// ([I11](../../../docs/invariants.md#i11)), so a model that took whole ids could
     /// hold a fact whose id is tagged for a different predicate — a state fjall
     /// rejects, and one that would make this store a dishonest oracle.
     pub fn insert_valued(
@@ -81,7 +81,7 @@ impl FactStore for MemStore {
         // fjall returned an error for the same call.
         let predicate = predicate_of(lo)?;
 
-        // A scan is a *predicate* query ([chapter 3](../../docs/03-storage-model.md)):
+        // A scan is a *predicate* query ([chapter 3](../../../docs/03-storage-model.md)):
         // it never crosses out of the predicate named by `lo`'s prefix. One
         // `BTreeMap` holds every predicate here, so that bound has to be applied
         // explicitly — the real store gets it structurally, from one keyspace per

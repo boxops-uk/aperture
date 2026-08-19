@@ -11,7 +11,7 @@
 //! The **message vocabulary** is not here: it is
 //! [`fjord_wire::protocol`], shared with `fjord-client`, because nothing should
 //! have to depend on a server to speak to one
-//! ([operations §10](../../docs/fjord-cli-design.md)).
+//! ([operations §10](../../../docs/fjord-cli-design.md)).
 //!
 //! - [`session`] — one connection, from handshake to close.
 //! - [`registry`] — the store root and the databases open under it, which is what
@@ -24,7 +24,7 @@
 //! # What is deliberately not built
 //!
 //! Named here rather than discovered, and each is named as deferred in
-//! [operations §5](../../docs/fjord-cli-design.md) too:
+//! [operations §5](../../../docs/fjord-cli-design.md) too:
 //!
 //! - **Per-stream flow-control windows**, explicitly past P0: bounded per-stream
 //!   queues plus connection backpressure are what §5 says to start with, and are what

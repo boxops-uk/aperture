@@ -12,25 +12,17 @@ sealed, and thereafter only read. That single decision is what makes the rest of
 design tractable — snapshots are trivial, resume tokens can be plain bytes, and parallel
 ingestion is "fearless."
 
-> **Status.** Being taken from prototype to production. In `crates/fjord-engine/`: the engine spine
-> (codec, executor, resume, projection) and the fjall store are built and guarded, and the
-> **front end reaches the `Plan`** — sigla text parses, lowers, typechecks and flattens, with
-> every construct deferred to a later phase drawing a diagnostic that names it. A query is now
-> **answerable end to end**: `fjord` compiles what you type and runs it against a real
-> store, joins *through fact references* included, and every supported construct in the corpus
-> is checked against the rows it returns rather than only against the plan it produced. Facts
-> are **written by hand as well-typed values** whose fields are resolved against the schema, so
-> the shell's store is a code index built through the same API a deriver would use.
-> A register now holds a **`Slot`** — a stored row or a computed value — and a plan's body is an
-> ordered sequence of **steps**, so a value can be derived mid-query and *recomputed* rather than
-> saved when a query suspends ([I14](docs/invariants.md#i14)); a bind to a constant is folded
-> instead, at compile time.
-> Since then the deferred query surface compiles (`|`, `never`, `!`, subqueries), the wire
-> protocol and the operational layer are built — a database is created, written to, queried,
-> sealed and removed against a running server — and **schemas are files**: a database is created
-> against one, embeds it, and is served from that copy ([I13](docs/invariants.md#i13)).
-> **Not yet built:** union types, bulk ingestion from files, and **stored** derivation. See
-> [`PLAN.md`](PLAN.md) for the sequence and current state.
+> **Status: `0.0.1`, a pre-release.** Built and guarded: the storage codec and the fjall
+> store, a suspendable executor that resumes exactly, the sigla front end end to end — text
+> to `Plan` to rows, joins *through fact references* included — the schema language and schema
+> identity, the wire protocol with a second implementation in another language, parallel
+> ingestion, a server, a client, the command-line tool, and a code-search site built on
+> nothing but the client.
+>
+> **Not built:** authentication, union types, stored derivation, ingestion from files, arrays
+> and sets, per-predicate statistics. [`CHANGELOG.md`](CHANGELOG.md) is the full inventory
+> including two operational limits worth knowing before you measure anything, and
+> [`PLAN.md`](PLAN.md) is the phase tree.
 
 ---
 
@@ -97,6 +89,33 @@ about one subsystem.
 
 ---
 
+## Install
+
+```bash
+cargo add fjord-db                              # the Rust client
+dotnet add package Boxops.Fjord.Client          # the .NET client
+```
+
+`fjord-db` is a façade over the three crates that do the work — `fjord-client`, `fjord-schema`
+and `fjord-wire` — so one dependency is the whole of getting started. The storage layer, the
+query engine and the server are internal crates and are not published: a package is what it
+takes to talk to a database and read rows back, not the shape of what is answering.
+
+The binaries — `fjord` and `fjord-viewer` — are attached to each release and carry SLSA
+provenance naming the workflow that built them:
+
+```bash
+gh attestation verify ./fjord --repo boxops-uk/fjord
+```
+
+**Linux x86_64.** The store root's lock is POSIX `flock` and the default transport is a Unix
+socket, so Windows is out of scope rather than untested.
+
+[`CHANGELOG.md`](CHANGELOG.md) is what each release contains — including, deliberately, what
+it does not.
+
+---
+
 ## Two invariant namespaces (don't conflate them)
 
 - **Engine invariants `I1`–`I14`** — codec, executor/resume, storage, identity, and
@@ -113,9 +132,13 @@ about one subsystem.
 cargo build
 cargo test                          # the green suite
 cargo test -- --ignored --list      # the invariant coverage ledger (guards not yet live)
-cargo clippy --all-targets -- -D warnings
-cargo fmt
+cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
+cargo +1.97.1 fmt --all
 ```
+
+`default-members` is every crate, so the first two mean *everything* without `--workspace`.
+The `+1.97.1` matches CI's lint gate, which is pinned so that a clippy release cannot redden a
+branch nobody has touched; the test suite runs on `stable`.
 
 ## Working on Fjord
 
@@ -124,6 +147,6 @@ cargo fmt
 - [`PLAN.md`](PLAN.md) — the living phase tree: the build sequence and current state.
 
 Module map: `crates/fjord-engine/` is the live engine and language — all new work lands there.
-`src/main.rs` is the `fjord` sigla shell, which compiles and runs what you type against a
-real store — seeded with a real index of the Python corpus in [`example/`](example/README.md).
-`crates/fjord-engine/src/lib.rs` is a commented-out graveyard. See [Concepts](docs/01-concepts.md) for detail.
+`crates/fjord-cli/` is the `fjord` command-line tool, whose `shell` compiles what you type on *your* machine
+against the schema the server says it serves, and runs it over the wire.
+See [Concepts](docs/01-concepts.md) for detail.

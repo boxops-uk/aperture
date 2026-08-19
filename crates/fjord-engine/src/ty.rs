@@ -1225,7 +1225,7 @@ mod tests {
     /// Every deferred construct reports itself by name, exactly once.
     ///
     /// **One is left** — union select, which waits on a `PredicateTy::Union` to
-    /// exist at all ([Phase 8](../../PLAN.md)). Negation was the other, and is now
+    /// exist at all ([Phase 8](../../../PLAN.md)). Negation was the other, and is now
     /// a plan; what still carries its code is narrower and is flatten's, so the
     /// corpus is where those are pinned.
     #[test]

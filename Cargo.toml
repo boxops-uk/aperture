@@ -1,12 +1,36 @@
 [workspace]
 members = ["crates/*"]
+# **Stated, because a virtual manifest does not inherit it.** While `fjord-cli` was the
+# root *package*, its `edition = "2024"` implied `resolver = "3"` for the whole workspace;
+# a manifest with no package defaults to `resolver = "1"` and only warns. Feature
+# unification is not a formatting detail — resolver 1 unifies features across
+# build-dependencies and target-specific dependencies, which is how an optional
+# `proptest` ends up linked into a release binary. This keeps what the workspace already
+# had.
+resolver = "3"
 # So `cargo test` and `cargo test -- --ignored --list` — the coverage ledger
-# (`docs/testing.md`) — keep meaning "everything", rather than silently narrowing
-# to the root package as crates are extracted.
-default-members = [".", "crates/*"]
+# (`docs/testing.md`) — keep meaning "everything". `members` is already every crate;
+# stating `default-members` as well is what stops a future `exclude` or a
+# `--no-default-features` habit from quietly narrowing the ledger.
+default-members = ["crates/*"]
 
-# Versions live here so a crate cannot drift from the root package's pin — the
-# fjall pin in particular is load-bearing (see below).
+# **One version for the whole workspace, and one licence.**
+#
+# Every crate inherits these with `x.workspace = true`, so a release is one edit here
+# rather than ten that can disagree. crates.io refuses a package without `description`
+# and `license`, so those are per-crate — a description is the one field that has to
+# differ — and everything a release stamps identically is stated once.
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/boxops-uk/fjord"
+# Edition 2024's floor. Stated rather than left implicit so crates.io and docs.rs can
+# advertise it, and so raising it is a visible decision rather than a `cargo update`.
+rust-version = "1.85"
+
+# Versions live here so a crate cannot drift — the fjall pin in particular is
+# load-bearing (see `fjord-store`).
 [workspace.dependencies]
 byteview = "0.10.1"
 fjall = "=3.1.8"
@@ -14,117 +38,3 @@ memchr = "2.8.2"
 lasso = "0.7.3"
 serde = { version = "1.0.150", features = ["derive"] }
 thiserror = "2.0.18"
-
-[package]
-name = "fjord-cli"
-version = "0.1.0"
-edition = "2024"
-
-# The binary is `fjord`; the package is named for its place in operations §10.
-[[bin]]
-name = "fjord"
-path = "src/main.rs"
-
-[features]
-# Exposes the per-domain `proptest` support modules (named `arb_*` strategies,
-# shared fixtures) to consumers outside `cfg(test)` — integration tests and, later,
-# the workspace crates. Under `cargo test` the modules are active via `cfg(test)`
-# regardless; this feature is for everything that isn't the crate's own unit tests.
-#
-# `dep:proptest` is what keeps the strategies' own dependency out of an ordinary
-# build: the modules that need the crate are exactly the ones this feature (or
-# `cfg(test)`, which the dev-dependency covers) turns on.
-proptest = ["dep:proptest", "fjord-engine/proptest"]
-
-# **tokio-console, for looking at tasks rather than counting them.**
-#
-# Off by default and it is a *developer's* feature, not an operator's: it opens a gRPC
-# port, which is exactly the thing `ops-I10`'s default-closed argument is about. What it
-# buys is the view that would have found `bench/FINDINGS.md` §10 in minutes instead of an
-# afternoon — every task, where it is parked, and how long it has been there. The leak
-# was found by hand-rolling a worse version of this.
-#
-# It also needs `--cfg tokio_unstable`, which is why running it is two flags rather than
-# one; `serve`'s docs give the line.
-console = ["dep:console-subscriber", "fjord-server/console"]
-
-[dependencies]
-# Task-level introspection for `--features console`. Optional, and nothing but the
-# feature refers to it.
-console-subscriber = { version = "0.4", optional = true }
-# The tool is a wire client, and an ordinary one: `create`, `finish` and `db rm`
-# against a running server go through the same crate an external tool would use.
-fjord-client = { path = "crates/fjord-client" }
-fjord-encoding = { path = "crates/fjord-encoding" }
-fjord-engine = { path = "crates/fjord-engine" }
-fjord-schema = { path = "crates/fjord-schema" }
-fjord-server = { path = "crates/fjord-server" }
-fjord-store = { path = "crates/fjord-store" }
-# The tool is a wire client (`wire.rs`), so it frames its own messages. That it needs
-# the codec and not the server's session machinery is the seam working: `protocol` says
-# what a message means, `wire` delimits it, and neither requires the other's runtime.
-fjord-wire = { path = "crates/fjord-wire" }
-byteview = { workspace = true }
-clap = { version = "4.5", features = ["derive"] }
-codespan-reporting = "0.13.1"
-# Pinned exactly, not a caret requirement, for two reasons that compound.
-#
-# The on-disk format is frozen (I3 markers, I13 the embedded schema), so moving
-# the storage engine underneath an existing database is a deliberate act with a
-# migration question attached — not something `cargo update` should decide.
-#
-# And the I8 guard reads fjall's snapshot count through a `#[doc(hidden)]` field,
-# which carries no stability promise (see `FjallDb::open_snapshots`). That reach
-# is confined to test builds, so a move breaks the guard rather than the library
-# — but a pin is what makes the break happen when someone chooses to upgrade,
-# with the guard in front of them, instead of on an unrelated `cargo update`.
-fjall = { workspace = true }
-lasso = { workspace = true }
-logos = "0.16.1"
-memchr = { workspace = true }
-# Optional, and reached only through the `proptest` feature above — never linked
-# into an ordinary build. `cargo test` gets it from `[dev-dependencies]`.
-proptest = { version = "1.11.0", optional = true }
-rustyline = "18"
-serde = { workspace = true }
-# Reads `example/index.json` — the example indexer's output, which the `fjord`
-# shell compiles in and writes as facts at startup (`example/README.md`). Nothing in
-# the engine uses it, and nothing should: JSON is the *indexer's* format, not a
-# storage one, and Fjord's own ingestion path (PLAN phase 7) is a fact file.
-serde_json = "1.0.150"
-thiserror = { workspace = true }
-tinyvec = { version = "1.11.0", features = ["alloc"] }
-tokio-util = "0.7.18"
-# Ctrl-C during `query`, so it cancels the stream rather than tearing the connection
-# down. The handler only sets a flag; the query loop is what speaks the protocol.
-ctrlc = "3.5.2"
-
-[dev-dependencies]
-# The codec's `arb_*` strategies and the I5 decode probe live behind that crate's
-# `proptest` feature. `cfg(test)` in this package does not reach into a
-# dependency, so the feature is what the batteries here compile against — the
-# cross-crate form of the rule the feature comment above describes.
-fjord-encoding = { path = "crates/fjord-encoding", features = ["proptest"] }
-# The write rung (`examples/ingest.rs`) drives the funnel in-process, below the wire and
-# below the server — which is the whole point of a rung. A dev-dependency rather than a
-# real one because the *tool* writes over a socket like any other client, and adding this
-# to `[dependencies]` would quietly give it a second way in.
-fjord-ingest = { path = "crates/fjord-ingest" }
-fjord-store = { path = "crates/fjord-store", features = ["proptest"] }
-# Allocation-counting global allocator for the I9 hot-path guard
-# (`exec::scan_is_alloc_free_per_row`). Its counters are thread-local, so it
-# survives the parallel test harness; it installs its own `#[global_allocator]`
-# unconditionally, so keeping it a dev-dependency is what confines the counting
-# allocator to test binaries.
-allocation-counter = "0.8.1"
-# The `arb_*` strategies are active under `cfg(test)` whether or not the
-# `proptest` feature is on, so the crate has to be here as well as being an
-# optional dependency.
-proptest = "1.11.0"
-# Scratch directories for the fjall store batteries (PLAN 1a+).
-tempfile = "3.24.0"
-# `examples/breakdown.rs` times the server's own hop off the reactor, which means
-# taking that hop itself. Nothing the tool ships needs a runtime, which is why this
-# is a dev-dependency and `fjord` still links none.
-tokio = { version = "1", features = ["rt-multi-thread"] }
-

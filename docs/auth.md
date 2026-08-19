@@ -303,7 +303,7 @@ Recorded here so the amendments are a list rather than a search. **None of them 
 | [invariants](invariants.md#ops-i10) | the `ops-I1`–`ops-I10` range | `ops-I11`, and the range text in three files |
 | `crates/fjord-server/src/lib.rs` | *"the handshake has a reserved credential slot and accepts anonymous"* | the first half deleted; the second half becomes `Principal::Anonymous` |
 | `crates/fjord-server/src/server.rs` | *"a reserved credential slot nothing fills"* | same |
-| `src/cli.rs`, `src/commands/serve.rs` | *"the handshake accepts anonymous"* | true, and now a value rather than an absence |
+| `crates/fjord-cli/src/cli.rs`, `.../commands/serve.rs` | *"the handshake accepts anonymous"* | true, and now a value rather than an absence |
 
 The retirement is the one to get right: leaving a reserved slot documented in three files while
 the design has decided against filling it is how a book starts contradicting itself.

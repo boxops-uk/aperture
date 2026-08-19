@@ -53,7 +53,7 @@ mkdir -p "$scratch/json"
 
 echo "=== emit"
 emit_start=$(date +%s)
-dotnet run --project "$root/clients/dotnet/Fjord.Indexer" --configuration Release -- \
+dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Indexer" --configuration Release -- \
     --source "$source_path" \
     --glean-out "$scratch/json" \
     "$@"

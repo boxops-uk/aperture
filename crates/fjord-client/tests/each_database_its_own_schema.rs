@@ -1,4 +1,4 @@
-//! **One store root, two schemas** — [I13](../../../docs/invariants.md#i13) made real.
+//! **One store root, two schemas** — [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13) made real.
 //!
 //! Until 8.4 a server was handed one schema and served every database with it, which
 //! was true enough while the schema was compiled into the binary. Once `create` takes a
@@ -44,8 +44,7 @@ fn start() -> Serving {
 
     // The server's own schema is neither of them — it is what a session bound to *no*
     // database sees, and a fallback for a database that embedded no copy.
-    let (registry, listing) =
-        Registry::open(catalog, Schemas::new("", schema(LOGS))).expect("a registry");
+    let (registry, listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
 
     assert!(listing.problems.is_empty(), "{:?}", listing.problems);
     assert_eq!(registry.len(), 2, "both are served");
@@ -124,8 +123,7 @@ fn a_query_is_compiled_against_the_database_it_is_asked_of() {
 fn create_over_the_wire_takes_the_schema_the_caller_sent() {
     let serving = start();
 
-    let mut control =
-        Connection::control(&serving.socket, Arc::new(schema(LOGS))).expect("a control session");
+    let mut control = Connection::control(&serving.socket).expect("a control session");
 
     control
         .create("fresh", NOTES)
@@ -202,8 +200,7 @@ fn a_copy_that_disagrees_with_the_sidecar_leaves_the_database_unserved() {
     )
     .expect("it writes");
 
-    let (registry, listing) =
-        Registry::open(catalog, Schemas::new("", schema(LOGS))).expect("a registry");
+    let (registry, listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
 
     assert!(registry.bind("logs").is_err(), "it must not be served");
     assert_eq!(listing.entries.len(), 1, "`list` still shows it (ops-I7)");
@@ -215,29 +212,40 @@ fn a_copy_that_disagrees_with_the_sidecar_leaves_the_database_unserved() {
     );
 }
 
-/// **A database from before the copy was load-bearing is still served**, with the
-/// server's own schema and no fingerprint check.
+/// **A database with no embedded copy is listed and not served**, exactly as one whose
+/// copy was edited is.
 ///
-/// Not laxity: such an artifact predates *both* halves of the comparison — it embedded
-/// no source to read, and the number in its sidecar came from an algorithm that has
-/// since been retired, so checking it would reject every database on the machine to no
-/// purpose. It is served exactly as every database was before 8.4: with the schema the
-/// server was started with.
+/// It used to be served with the schema the server was started with, and the argument for
+/// that was that such an artifact predates *both* halves of the comparison — no source to
+/// read, and a sidecar number from an algorithm since retired — so there was nothing to
+/// check it against. True, and the wrong conclusion: what was left was not a lax check but
+/// a **guess**, and the guess decided how every stored row decoded. If the server's schema
+/// had moved since the database was written — a field reordered, a predicate retyped —
+/// then the loud outcome is a decode error and the quiet one is a query answering zero
+/// rows, with nothing anywhere saying why.
+///
+/// So the honest answer is the one the edited-copy case already gave, and the server no
+/// longer carries a data schema for this to fall back to. The database is still *listed*:
+/// `ops-I7` reads sidecars and never opens a store, so `list` and `describe` keep working,
+/// which is what somebody diagnosing it needs.
 #[test]
-fn a_database_with_no_embedded_copy_is_served_with_the_servers_own() {
+fn a_database_with_no_embedded_copy_is_not_served() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     let entry = catalog.create("logs", &schema(LOGS)).expect("a database");
 
     std::fs::remove_dir_all(entry.path.join("schema")).expect("it goes");
 
-    let (registry, listing) =
-        Registry::open(catalog, Schemas::new("", schema(LOGS))).expect("a registry");
+    let (registry, listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
 
-    assert!(listing.problems.is_empty(), "{:?}", listing.problems);
-
-    let served = registry.bind("logs").expect("it is served");
-    assert_eq!(served.identity.schema(), fingerprint::of(&schema(LOGS)));
+    assert!(registry.bind("logs").is_err(), "it must not be served");
+    assert_eq!(listing.entries.len(), 1, "`list` still shows it (ops-I7)");
+    assert_eq!(listing.problems.len(), 1, "and says what is wrong with it");
+    assert!(
+        listing.problems[0].to_string().contains("no schema copy"),
+        "{}",
+        listing.problems[0]
+    );
 }
 
 /// A client asserting the wrong schema is refused at the handshake, before anything is

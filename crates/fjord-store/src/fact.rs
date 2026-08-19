@@ -26,7 +26,14 @@
 //! wrong shape, or a value side on a predicate that has none are all errors before
 //! anything is written. What reaches the encoder is already in declared order.
 //!
-//! ```ignore
+//! `text` rather than `ignore`, deliberately: this is a sketch and not a test — it
+//! names a `db`, a `schema` and a `file` that no example builds. An `ignore` block is
+//! still a test, so it would appear in `cargo test -- --ignored --list`, which is this
+//! project's coverage ledger for guards written before their subject exists
+//! ([`docs/testing.md`](../../../docs/testing.md)). An illustration counted there is an
+//! illustration that reads as an unbuilt invariant.
+//!
+//! ```text
 //! struct Module { file: FactId, name: &'static str }
 //!
 //! impl Fact for Module {

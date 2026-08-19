@@ -1,10 +1,39 @@
 # What a branch must prove, and what a release must carry.
 #
-# Two jobs, because they answer different questions and are trusted differently:
+# Five jobs, because they answer different questions and are trusted differently:
 #
-#   build   always runs, including on a pull request from a fork. It is the
+#   test    always runs, including on a pull request from a fork. `PLAN.md`'s
+#           definition of done everywhere is "a task ends in a green test", and
+#           this is the only thing that enforces it: fmt, clippy over every
+#           target, the suite, and the invariant coverage ledger printed so a
+#           reviewer can read what is still pending without running anything.
+#
+#           fmt and clippy run on a **pinned** toolchain and the suite on `stable`.
+#           A required check that can go red because an upstream released is a
+#           check that blocks merges for a reason nobody chose.
+#
+#           A **debug** build on purpose. Several correctness guards are
+#           `cfg(debug_assertions)` — the merge frontier's never-nested
+#           assertion and `put_fact`'s write-once contract among them — so a
+#           release-profile test run would silently not check them.
+#
+#   package always runs. It answers what a *consumer* gets rather than what the tree
+#           does: what each published crate would upload, that crates.io would accept
+#           the bottom of the SDK, that the documentation docs.rs builds has no broken
+#           link in it, and that the .NET package builds on both the frameworks it
+#           claims and packs with its licence and its front page inside.
+#
+#   build   always runs, including on a pull request from a fork. It is a
 #           required status check on `main` and `release/*`, so nothing lands
-#           anywhere without compiling under the tree's own Cargo.lock.
+#           anywhere without compiling under the tree's own Cargo.lock. Separate
+#           from `test` because it answers a different question — that the
+#           *shipped profile* compiles — and because a release build and a debug
+#           test run share no cache.
+#
+#   release runs for a `v*` tag only, after the three below have passed, and creates the
+#           GitHub Release with the attested binaries and their checksums. It deliberately
+#           does *not* push to crates.io or nuget.org: a registry upload cannot be undone
+#           and a Release can, so that step stays a person's.
 #
 #   attest  builds and signs SLSA provenance naming the binaries. It needs an
 #           OIDC token, which GitHub never issues to a fork's pull request, so
@@ -30,6 +59,113 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # **The lint gate is pinned; the tests are not.** They answer different
+      # questions and want different toolchains.
+      #
+      # `-D warnings` on a floating `stable` makes a clippy release able to redden a
+      # branch nobody has touched — and since `test` is a required check, that blocks
+      # every merge until somebody fixes lints that did not exist when the code landed.
+      # It is the same argument the `fjall = "=3.1.8"` pin makes: a break should happen
+      # when someone chooses to upgrade, with the diff in front of them, rather than on
+      # a day the upstream released. rustfmt is pinned for the same reason — its output
+      # changes between versions too.
+      #
+      # So this is the version a contributor is checked against, and `cargo fmt` and
+      # `cargo clippy` passing locally on it mean passing here. Bumping it is a commit.
+      - name: Pinned toolchain, for fmt and clippy
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          components: clippy, rustfmt
+      # Installed second, so it is the default: the suite runs on whatever stable is
+      # today, because that is what a consumer has. `build` floats too, so a compiler
+      # that breaks the tree is still caught the day it lands — just not as a lint.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
+      # Cheapest first, so a formatting slip does not cost a compile.
+      - name: Formatting
+        run: cargo +1.97.1 fmt --all --check
+      # `--all-targets` is the point: without it, tests, examples and benches are
+      # never even compiled, and the six measuring instruments under `examples/`
+      # would rot green.
+      - name: Clippy
+        run: cargo +1.97.1 clippy --all-targets --workspace --locked -- -D warnings
+      # `default-members` is the whole workspace, so this means everything.
+      - name: Tests
+        run: cargo test --locked
+      # The coverage ledger (`docs/testing.md`): guards written up front and not
+      # yet live. Printed rather than asserted — a number here would have to be
+      # edited by whoever un-ignores one, and the list is what a reviewer reads.
+      - name: Invariant coverage ledger
+        run: cargo test --locked -- --ignored --list
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-package-${{ hashFiles('Cargo.lock') }}
+      # **What each published crate would actually upload.** `cargo package` obeys
+      # `include`, so this is the check that a package holds the library, its licence
+      # and its front page — and not a test that reads a golden from the repository it
+      # is no longer in.
+      #
+      # `--list` rather than `--dry-run` for the three that have dependencies: a
+      # dry-run resolves them against crates.io, and they are not there until the one
+      # below them is published. `--list` needs no registry, and the build is already
+      # proven by `test` and `build`.
+      - name: What the packages would contain
+        run: |
+          for crate in fjord-schema fjord-wire fjord-client fjord-db; do
+            echo "── $crate"
+            cargo package --locked --list -p "$crate"
+          done
+      # The bottom of the SDK has no Fjord dependencies, so it is the one that *can* be
+      # fully verified — manifest, metadata and a build of the packaged copy — before
+      # anything is uploaded. crates.io refuses a package with no description or licence,
+      # and this is where that is found out.
+      - name: Verify the package crates.io would accept
+        run: cargo publish --locked --dry-run -p fjord-schema
+      # **Documentation is part of the package.** docs.rs has no repository to walk up
+      # into, so a relative link in a published crate is a broken link on the page a
+      # consumer actually reads; `-D warnings` also catches an unresolved intra-doc link
+      # and a public item documented against a private one.
+      - name: Documentation, as docs.rs would build it
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps -p fjord-schema -p fjord-wire -p fjord-client -p fjord-db
+      # The .NET half of the same question. `Boxops.Fjord.Client` is the only packable project
+      # here — the demo producer and the real indexer are console programs — and it
+      # multi-targets, so this is also what says the library still builds on the LTS.
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: clients/dotnet/global.json
+      - name: What the NuGet package would contain
+        run: |
+          dotnet build clients/dotnet/Boxops.Fjord.slnx -warnaserror
+          dotnet pack clients/dotnet/Boxops.Fjord.Client -c Release -o /tmp/nupkg
+          ls -l /tmp/nupkg
+
   build:
     name: build
     runs-on: ubuntu-latest
@@ -79,6 +215,14 @@ jobs:
           subject-path: |
             target/release/fjord
             target/release/fjord-viewer
+      # Checksums beside the binaries, because an attestation says *this workflow built
+      # this file* and a checksum says *this is that file* — a consumer who downloaded
+      # from the Release page needs both, and only one of them is generated for them.
+      - name: Checksums
+        run: |
+          cd target/release
+          sha256sum fjord fjord-viewer > SHA256SUMS
+          cat SHA256SUMS
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
@@ -86,4 +230,41 @@ jobs:
           path: |
             target/release/fjord
             target/release/fjord-viewer
+            target/release/SHA256SUMS
           if-no-files-found: error
+
+  # **Cutting the release**, which happens only for a `v*` tag.
+  #
+  # It runs after `test`, `package` and `attest` — a tag that does not pass them produces
+  # no release rather than a released failure. What it does *not* do is publish to
+  # crates.io or nuget.org: `docs/repository-rules.md` records that publishing is not
+  # gated, and the reason it stays manual is that a registry upload is irreversible while
+  # a GitHub Release can be deleted. `package` has already proven both would be accepted.
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, package, attest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the Release and attach files to it
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fjord-linux-x86_64
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Fjord DB $version" \
+            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md).
+
+          Binaries below are Linux x86_64 and carry SLSA provenance:
+
+          \`\`\`
+          gh attestation verify ./fjord --repo ${GITHUB_REPOSITORY}
+          \`\`\`" \
+            dist/fjord dist/fjord-viewer dist/SHA256SUMS

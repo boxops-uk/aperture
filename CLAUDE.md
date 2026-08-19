@@ -30,9 +30,9 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 | `fjord-ingest` | the **write funnel** (`ops-I5`): `FactSink` (the write seam, as `FactStore` is the read seam), and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up. Sits above `store` and `wire` because it is the crossing between them, and neither should know the other |
 | `fjord-engine` | **sigla** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here. `iter::Profile` is what a run *examined*, per step of the body: the counter the cancellation stride already kept, handed back by `enumerate_profiled` instead of thrown away |
 | `fjord-client` | the **client**: `address` (§2's `[where//]name[@instance]`, parsed once for every client there is — the CLI, the viewer, and `FjordAddress` restating it in C#), `connection` (connect over a Unix socket **or TCP** — one `Transport` enum, since the protocol is the same and only the pipe differs — handshake, the write stream, lifecycle requests, `fetch` (what facts these ids name), and the frame demultiplexer that parks another stream's frames rather than dropping them), `rows` (a query result as a **bookmark** — no borrow of the connection, so several are open at once, and `take` is the page `\more` is built on), `expand` (a reference replaced by the fact it names, recursively — the breadth-first walk, the depth bound and the cache, since how deep to expand is a display decision and the point read behind it is not). Depends on `wire` and nothing else |
-| `fjord-server` | the wire protocol over a Unix socket (and TCP, opt-in): one connection's life (`session`), the store root and the databases open under it (`registry` — what makes `create`/`finish`/`remove` work against a *running* server), the fair writer (`outbound`), rows out without a fourth encoder (`rows`), the hop off the reactor (`blocking`), the listener (`server`), this server's counters (`stats`), and `catalogue` — `fjord.db.List` and `fjord.db.Interning` answered at the `FactStore` seam, which is what makes a **virtual predicate** need nothing from the machine. The second one is the write path's own counters (cache hits, misses, and the two trees' point reads), which is how *is the interning cache working* became a query (`:interning`) rather than a debugger session; `schemas/catalogue.sigla` is the whole virtual set, and `code_index::with_catalogue` marks **every** predicate it declares virtual, because one left stored acquires keyspaces, enters `ops-I4`'s identity and moves the fingerprint every client agrees with |
+| `fjord-server` | the wire protocol over a Unix socket (and TCP, opt-in): one connection's life (`session`), the store root and the databases open under it (`registry` — what makes `create`/`finish`/`remove` work against a *running* server), the fair writer (`outbound`), rows out without a fourth encoder (`rows`), the hop off the reactor (`blocking`), the listener (`server`), this server's counters (`stats`), and `catalogue` — `fjord.db.List` and `fjord.db.Interning` answered at the `FactStore` seam, which is what makes a **virtual predicate** need nothing from the machine. The second one is the write path's own counters (cache hits, misses, and the two trees' point reads), which is how *is the interning cache working* became a query (`:interning`) rather than a debugger session; `schemas/catalogue.sigla` — **this crate's**, since a virtual predicate belongs to whoever answers it — is the whole virtual set, and `registry`'s `with_virtuals_marked` marks every predicate in the reserved `fjord.` namespace virtual, because one left stored acquires keyspaces, enters `ops-I4`'s identity and moves the fingerprint every client agrees with. `Schemas` carries **no fallback**: a database with no embedded schema copy is listed and not served, since the only alternative is a guess about how its rows decode |
 | `fjord-viewer` | the **site**: `query` (every question a code-search page asks, in one place, each saying which key order answers it), `render` (HTML by hand, no assets), `pool` (a recycled pool, since the client is blocking and this is not), and the routes — browse, file, search, symbol. Depends on `fjord-client` and nothing below it, which is the claim: a viewer is an ordinary consumer of the protocol. The binary is `fjord-viewer`; [phase 11](docs/phase-11-code-search.md) is what it was built from |
-| root `fjord-cli` | the **tool**: `cli` (the clap tree, §4), `config` (where things live), `commands/` (create — with `--schema`, since 8.4 — list, describe, finish, rm, serve, query, **shell** (the wire REPL: `:`-prefixed commands with the psql `\` spellings as aliases, JSON rows, `:more` holding a real cursor, and queries **compiled client-side** against the schema the server serves — so a refusal is a caret in colour and `:plan`/`:type` are answered without running anything), **schema** (`check`/`fingerprint`/`diff`, 8.5), plus `Target`, §2's address resolution stated once over `fjord_client::address`), `output` (rendering, always client-side), `prompt` (what both shells share: the highlighter over the sigla lexer, the palettes, the command-table shape, completion, the continue-while-a-brace-is-open rule, history), `shell` (Phase 5's *embedded demo*, kept because it seeds its own database — which is the thing no wire client can do), `code_index` — the **default** schema, parsed from `schemas/code.sigla`, which is what a database gets when `create` was not given a path — and `workload`, the one statement of what the `examples/` instruments measure (Phase 10's S0). The binary is `fjord` |
+| `fjord-cli` | the **tool**: `cli` (the clap tree, §4), `config` (where things live), `commands/` (create — with `--schema`, since 8.4 — list, describe, finish, rm, serve, query, **shell** (the wire REPL: `:`-prefixed commands with the psql `\` spellings as aliases, JSON rows, `:more` holding a real cursor, and queries **compiled client-side** against the schema the server serves — so a refusal is a caret in colour and `:plan`/`:type` are answered without running anything), **schema** (`check`/`fingerprint`/`diff`, 8.5), plus `Target`, §2's address resolution stated once over `fjord_client::address`), `output` (rendering, always client-side), `prompt` (the shell's input layer: the highlighter over the sigla lexer, the palettes, the command-table shape, completion, the continue-while-a-brace-is-open rule, history), `sample_schema` — `schemas/code.sigla` parsed, a **fixture** for the tests and the instruments rather than a default, since `create` requires `--schema` — and `workload`, the one statement of what the `examples/` instruments measure (Phase 10's S0). The binary is `fjord` |
 
 **A non-Rust client is part of the test surface.** `clients/dotnet` is a C#
 implementation of the wire protocol plus a console producer that writes a nested code
@@ -40,20 +40,20 @@ index into a real database and queries it back — `./clients/dotnet/run-demo.sh
 exists to answer what the Rust tests cannot: whether the protocol is implementable from
 outside, by something that shares no constants, no enums and no unwritten assumptions.
 It has already earned that twice.
-Beside it, **`Fjord.Indexer` is that client pointed at somebody's real source** —
+Beside it, **`Boxops.Fjord.Indexer` is that client pointed at somebody's real source** —
 Buildalyzer runs a design-time build per project out of process, Roslyn answers what
 every name in the result means, and the facts go down the same socket:
 `./clients/dotnet/index-repo.sh <checkout>`
-([its README](clients/dotnet/Fjord.Indexer/README.md)). That is where a database large
+([its README](clients/dotnet/Boxops.Fjord.Indexer/README.md)). That is where a database large
 enough to be worth measuring comes from, and it is the same argument as the demo's made
 at a size where it stops being an argument: a producer holding no fact ids, every
 reference nested, emitting in whatever order a syntax walk reaches things.
-**It is also what the built-in schema's other twenty-one predicates are for.** `code_index`
-holds three layers: the source one `example/index.py` fills, a **build layer** (project,
-assembly, compilation, the two dependency graphs) and a **declaration graph** (member,
-extends, implements, override, parameter, type, doc, attribute) — each answerable only
-by something holding a compiler and a build system, which is what makes this client part
-of the schema rather than a consumer of it.
+**It is also what most of `schemas/code.sigla` is for.** That schema holds three layers: a
+**source** layer any syntax walk can fill, a **build layer** (project, assembly, compilation,
+the two dependency graphs) and a **declaration graph** (member, extends, implements, override,
+parameter, type, doc, attribute) — the last two answerable only by something holding a compiler
+and a build system, which is what makes this client part of the schema rather than a consumer
+of it.
 It is also **a checked-in golden**: `./clients/dotnet/emit-golden.sh` writes the blocks
 it encodes for a fixed corpus, and `fjord-client`'s
 `byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes
@@ -69,19 +69,20 @@ interns an anonymous nested fact exactly as `intern` does — so neither side is
 an easier question, and *emitting is not writing*: the load is a second phase with its own
 clock, and the honest total for Glean is emit plus load.
 
-`src/main.rs` compiles and runs what you type against a real store seeded with a **code index**
-(files → modules → declarations → references), written through the fact API; `:plan` shows the
-plan. The index is a real one — `example/` holds a small Python corpus, the `ast`-based indexer
-that reads it and the JSON it emits, which the shell compiles in and writes as facts at startup
-([`example/README.md`](example/README.md)). Regenerate with `python3 example/index.py`. Keep
-logic out of it — the plan renderer it needed lives in `fjord_engine::print`.
+`fjord shell <db>` compiles what you type **client-side**, against the schema the server says it
+serves, and runs it over the wire; `:plan` and `:type` therefore answer without running anything.
+Keep logic out of it — the plan renderer it needs lives in `fjord_engine::print`.
+There used to be a second, *embedded* shell for an argument-less `fjord shell`, which seeded a
+scratch database from a Python corpus and a schema both compiled into the binary. It went with
+the built-in schema: a database is created against a schema **file** now, and a demo that could
+not be was the last thing holding a default.
 **`fjord_store::fact` is how a fact is written by hand**: a well-typed value whose key
 fields are named, resolved against the schema (`FjallDb::put`), because `put_fact` takes bytes
 and three of its preconditions fail silently — see
 [chapter 3](docs/03-storage-model.md#writing-a-fact-by-hand). `fjord_store::fixture` is the
 fixture database the corpus and the batteries share.
-`fjord-engine/src/lib.rs` is the module list plus a commented-out graveyard (~20 live lines;
-only the transport-codec sketch is worth keeping). See [chapter 1](docs/01-concepts.md).
+`fjord-engine/src/lib.rs` is the module list and nothing else. See
+[chapter 1](docs/01-concepts.md).
 
 **Test support spans two crates, and the split is load-bearing.** `fjord_store::fixtures`
 holds everything store-shaped — the probes, the model stores, the scan-contract assertions,
@@ -121,9 +122,15 @@ compiles a second copy of its own crate, and the two `FactStore`s are then diffe
 cargo build
 cargo test                          # the green suite
 cargo test -- --ignored --list      # the invariant coverage ledger (guards not yet live)
-cargo clippy --all-targets --workspace -- -D warnings
-cargo fmt --all
+cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
+cargo +1.97.1 fmt --all
 ```
+
+**The `+1.97.1` is not decoration.** CI's lint gate runs on that toolchain and the suite runs
+on `stable`, because a required check that can go red because an upstream released is a check
+that blocks merges for a reason nobody chose — the same argument the `fjall` pin makes below.
+Clippy and rustfmt both change between versions, so those two are pinned and bumping them is a
+commit. Run them without the `+` and you may see lints CI does not, or miss lints it does.
 
 `default-members` is the whole workspace, so the first two mean *everything* without
 `--workspace`. That is deliberate: the coverage ledger silently narrowing to one package as

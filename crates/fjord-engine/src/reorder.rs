@@ -254,8 +254,12 @@ impl Deps {
 /// here before it has anything to measure would be a stub pretending to be a
 /// heuristic.
 // TODO: selectivity — extend `StmtDeps` with the key-prefix shape, then
-// `min_by_key` over the frontier; and move negations/conditionals after their
-// non-locals are bound (Phase 6b).
+// `min_by_key` over the frontier.
+//
+// This used to ask for a second thing as well — moving negations and conditionals after
+// whatever binds their non-locals — and Phase 6b did it: a negation is a `Step::Test`
+// whose variables are `reads`, which is the whole of that rule, so `reorder` needed no
+// new kind of constraint and got none.
 #[must_use]
 pub fn reorder(deps: &Deps) -> Box<[usize]> {
     let mut order: Vec<usize> = Vec::with_capacity(deps.len());

@@ -52,7 +52,7 @@ pub enum WireError {
 
     /// A `FactId` that is not one — sequence zero is reserved, so a zeroed or
     /// corrupt eight bytes is detectably not a fact
-    /// ([I11](../../../docs/invariants.md#i11)).
+    /// ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)).
     #[error("not a valid fact id: {0}")]
     BadFactId(u64),
 

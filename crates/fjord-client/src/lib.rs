@@ -9,7 +9,7 @@
 //!
 //! What it is made of is `fjord-wire` and a socket. It depends on **no** storage
 //! engine, no query engine and no runtime, which is
-//! [operations §10](../../docs/fjord-cli-design.md)'s `client → wire → encoding` and
+//! [operations §10](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)'s `client → wire → encoding` and
 //! its rule that nothing depends on the server.
 //!
 //! ```no_run
@@ -49,16 +49,23 @@
 //! buffered here and nothing is buffered there: the server's outbound queue for that
 //! stream fills, its query loop suspends holding a **bytes-only cursor**, and the
 //! snapshot was already released at the chunk boundary
-//! ([I8](../../docs/invariants.md#i8)). A pause of a millisecond and a pause of an hour
+//! ([I8](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i8)). A pause of a millisecond and a pause of an hour
 //! cost it the same thing. That is the property `\more` is built on
-//! ([Phase 9f](../../PLAN.md)), and the reason a result is a bookmark
+//! ([Phase 9f](https://github.com/boxops-uk/fjord/blob/main/PLAN.md)), and the reason a result is a bookmark
 //! ([`Rows`]) rather than an iterator holding the socket.
+//!
+//! # Two pipes, one protocol
+//!
+//! [`Connection::connect`] takes a Unix socket path and [`Connection::connect_tcp`] an
+//! authority; [`Connection::open`] takes an [`Endpoint`] and dispatches, which is the one
+//! a caller holding an [`Address`] wants. The frames, the handshake and the stream
+//! multiplexing are identical — only the pipe differs, which is why it is one enum inside
+//! rather than a second client. The server end is default-closed (`ops-I10`) and listens
+//! on TCP only when an operator passed `--listen-tcp`, so reaching one means somebody
+//! opted in; nothing at this end asserts anything about who may.
 //!
 //! # What is deliberately not here
 //!
-//! - **TCP.** `ops-I10` is default-closed and the server binds a Unix socket only, so
-//!   there is nothing to connect to yet. [`Connection::connect`] takes a path for that
-//!   reason, and gains an address form when the server gains a listener.
 //! - **Reconnection, retry and timeouts.** An I/O policy belongs to the program, not to
 //!   the transport: a shell wants to tell a person, a deriver wants to retry, and a
 //!   client that chose for both would be wrong for one. The one error worth retrying
@@ -85,3 +92,12 @@ pub use rows::Rows;
 pub use fjord_wire::{
     Desc, ErrorCode, Mode, ProfileStep, QueryProfile, WireFact, WireRef, WireValue,
 };
+
+/// **The README, compiled.**
+///
+/// `cfg(doctest)` so it costs an ordinary build nothing and appears in no documentation:
+/// what it buys is that the examples on the crate's front page are run by `cargo test`
+/// like any other, rather than being prose that compiled once when it was written.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct Readme;

@@ -13,7 +13,11 @@ cargo build --manifest-path "$root/Cargo.toml" --bin fjord
 rm -rf "$scratch"
 mkdir -p "$scratch"
 
-"$root/target/debug/fjord" --data-dir "$scratch/db" create code
+# The schema the demo producer writes against, named explicitly: `create` requires
+# one, and this is the file the C# side states independently in `Program.cs` — which
+# is the agreement the handshake fingerprint checks.
+"$root/target/debug/fjord" --data-dir "$scratch/db" create code \
+    --schema "$root/schemas/code.sigla"
 
 "$root/target/debug/fjord" --data-dir "$scratch/db" serve \
     --socket "$scratch/fjord.sock" \
@@ -28,4 +32,4 @@ done
 
 [ -e "$scratch/ready" ] || { echo "the server never became ready" >&2; exit 1; }
 
-dotnet run --project "$root/clients/dotnet/Fjord.Demo" -- --at "$scratch/fjord.sock//code"
+dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Demo" -- --at "$scratch/fjord.sock//code"

@@ -87,7 +87,7 @@ and nothing sorts them: that order is the physical key order, so it decides whic
 a key a query can seek on and which fields it can only filter by.
 
 Declaring a key in alphabetical order is therefore a choice, and usually the wrong one — it
-makes the index shape a consequence of what the fields are called. The built-in code index
+makes the index shape a consequence of what the fields are called. The sample code index
 did exactly that until it was measured: `src.Decl` led with a line number and `src.Ref` with
 a column, which cost 56,274 rows examined per row produced on an ordinary join and made
 find-references unanswerable (`bench/FINDINGS.md` §2). Phase 8's schema DSL inherits this:

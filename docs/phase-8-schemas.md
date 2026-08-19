@@ -176,7 +176,7 @@ carries, and the C# side holds one `ulong` it does not compute.
 #### What Fjord should do instead
 
 **Now (8.4): a client carries the number, it does not derive it.** ✅ `fjord schema
-fingerprint` prints it; `Fjord.Demo` and `Fjord.Indexer` each hold it as a `const ulong`
+fingerprint` prints it; `Boxops.Fjord.Demo` and `Boxops.Fjord.Indexer` each hold it as a `const ulong`
 and assert it at the handshake. The C# FNV is gone. A stale constant fails the handshake
 loudly, and — better — fails `the_dotnet_clients_schema_is_this_one` without `dotnet` or a
 running server, because the golden records the constant and the Rust side computes what it
@@ -371,13 +371,16 @@ before anything depends on it, and unions come last because they are the widest 
   - **And a database is now served from its copy**, not from the schema the server was started
     with — which is what makes one store root able to hold artifacts built from different
     declarations. A copy that disagrees with the sidecar leaves the database listed and
-    unserved; a database with no copy at all is served with the server's own schema and
-    unchecked, because such an artifact predates both halves of the comparison.
-  - **One deliberate divergence from §5**, recorded rather than left to be discovered:
-    operations §5 says `create` *requires* `--schema`. Here it is optional and defaults to the
-    built-in code index. Every test, demo and instrument in the tree creates a database without
-    naming a schema, and the default is exactly what each of them had; making it required is a
-    one-line change and a flag day, and nothing yet needs one.
+    unserved; **and since 0.0.1 so does a database with no copy at all.** That case used to be
+    served with the server's own schema and unchecked, on the argument that such an artifact
+    predates both halves of the comparison — true, and the wrong conclusion, since what is left
+    is not a lax check but a guess about how every stored row decodes.
+  - ~~**One deliberate divergence from §5**~~ — **closed at 0.0.1.** It read: operations §5 says
+    `create` *requires* `--schema`; here it is optional and defaults to the built-in code index,
+    every test, demo and instrument in the tree creates a database without naming a schema, and
+    making it required is a one-line change and a flag day that nothing yet needs. The flag day
+    came with the release: the flag is required, the default is gone, and `schemas/code.sigla`
+    is a sample that the scripts, the suites and the instruments each name.
   - **What deleting the constants found.** `provisional_fingerprint` hashed predicates in
     *traversal* order, and lowering sorts a schema's predicates by name while a hand-written
     client lists them in whatever order reads well. The two ends then disagreed about a schema
@@ -415,8 +418,8 @@ before anything depends on it, and unions come last because they are the widest 
   and field order is what decides which questions are seeks. What is left of the module is a
   *default* schema rather than a definition: the one you get when `create` was not given a
   path — which is what it is since 8.4, and the reason the module survives at all.
-- **Both .NET schema statements and the golden.** ✅ `Fjord.Indexer/CodeIndex.cs` and
-  `Fjord.Demo/Program.cs` state the schema independently *on purpose* — that is what makes
+- **Both .NET schema statements and the golden.** ✅ `Boxops.Fjord.Indexer/CodeIndex.cs` and
+  `Boxops.Fjord.Demo/Program.cs` state the schema independently *on purpose* — that is what makes
   the byte-identical golden meaningful. What they must **not** do is reimplement the
   fingerprint: they deleted their FNV and carry the number `fjord schema fingerprint`
   prints, per D2. One constant per client, the shapes they already had, no port of the

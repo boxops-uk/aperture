@@ -1,0 +1,769 @@
+//! Query rows, rendered for a person or a script.
+//!
+//! **Client-side, always.** The wire carries the binary format and the server never
+//! produces JSON — a decision from the original brief, and the reason `--format` is a
+//! flag on a command rather than a field in a request.
+//!
+//! # Four of the five shapes stream, and the fifth says why it does not
+//!
+//! A [`Sink`] is handed rows one at a time, as they arrive, and writes as it goes.
+//! [`RowFormat::Table`] is the exception: aligning columns needs the widest cell, and
+//! the widest cell is not known until the last row. It buffers, and a result too large
+//! to hold is a result to ask for in another shape — which is what `raw` and `count`
+//! are for, and why `count` exists at all: a measurement of the *server* should not be
+//! paying for this file.
+//!
+//! # JSON is shaped like the head, all the way down
+//!
+//! A row's structure is the head's, and the [`Desc`] the server sent describes it —
+//! **recursively**, field names and all. So a nested record comes out as a nested
+//! object rather than as a positional array: `{at = {line = L, col = C}}` reads as
+//! `{"at": {"line": 4, "col": 19}}`, which is the shape somebody asked for when they
+//! wrote the query. Rendering only the top level by name and the rest by position was
+//! the easy half of the same job, and it made every reference-and-span row — the
+//! interesting ones — arrive as numbers in an array.
+//!
+//! A **reference** renders as `"#predicate:sequence"`, the same string the table
+//! shows. A raw `u64` would be the id's bytes rather than the id: nothing takes one as
+//! input (sigla names a fact by its key, not by its number), so the useful thing is the
+//! one a person can read and a script can compare.
+//!
+//! # An **expanded** reference is the fact, and the schema is what names it
+//!
+//! `:expand` and `--expand` replace a reference with the fact it names
+//! ([`Expander`](fjord_client::Expander)), so what arrives here is a nested fact where
+//! the descriptor says `Fact(p)`. The descriptor is not wrong — that *is* what the row
+//! carried — it simply has nothing to say about the shape underneath, which is `p`'s key.
+//! So this is the one place rendering consults the **schema** rather than the descriptor,
+//! and the one reason a [`Sink`] can hold one. Without it the fields still print, in
+//! order, which is the same fallback a descriptor mismatch takes.
+//!
+//! # Colour, when there is a terminal, and jq's colours because they are the ones people
+//! know
+//!
+//! `jq` is what everybody reads JSON through, so its palette is the one a person has
+//! already learned: keys bold blue, strings green, punctuation bright, numbers plain
+//! (its `JQ_COLORS` default). Copying it costs nothing and means nobody has to learn a
+//! second scheme to read the same document.
+//!
+//! **One deliberate divergence**: a *reference* is yellow, not green, even though it
+//! renders as a JSON string. jq has no idea what one is; this tool does, and yellow is
+//! what a predicate name is painted everywhere else in it — in a query, in a schema, and
+//! now in a row. In a fact database the references are the part you follow, and the
+//! palette should say so.
+//!
+//! Colour is asked of [`crate::prompt::colours_enabled`], which answers `NO_COLOR` and
+//! "is stdout a terminal" — so `| jq` and `> file` get plain bytes, exactly as jq's own
+//! output does.
+
+use std::{io::Write, sync::Arc};
+
+use fjord_client::{Desc, WireValue};
+use fjord_schema::schema::{PredicateId, Schema};
+
+use crate::cli::RowFormat;
+
+/// Somewhere to put rows as they arrive.
+pub struct Sink<W: Write> {
+    out: W,
+    format: RowFormat,
+    /// The schema, when the caller has one — needed only to **name** the fields of an
+    /// expanded reference.
+    ///
+    /// A descriptor describes a reference *as* a reference (`Desc::Fact`), which is
+    /// right: that is what a row carries. Once one has been expanded into the fact it
+    /// names, the shape underneath it is the target predicate's key, and the only place
+    /// that says so is the schema. Without one the fields still print, positionally,
+    /// which is the same fallback a descriptor mismatch takes.
+    schema: Option<Arc<Schema>>,
+    /// Whether to paint, decided **once** when the result starts.
+    ///
+    /// Carried rather than asked per value, so that the answer cannot change halfway
+    /// down a document — and so a test can render both ways without a terminal, which
+    /// is the only way the escape codes are ever checked at all.
+    colour: bool,
+    /// What a row looks like, as the server described it.
+    ///
+    /// Held whole rather than reduced to column names, because JSON needs it whole:
+    /// names live at every level of a record, not only the top one.
+    desc: Desc,
+    /// Column names, when the head is a record. Empty for a scalar head, which is one
+    /// unnamed column.
+    columns: Vec<String>,
+    /// `Table` only — see the module docs for why this one shape holds on.
+    buffered: Vec<Vec<String>>,
+    rows: u64,
+}
+
+impl<W: Write> Sink<W> {
+    /// Start a result, having seen its descriptor.
+    ///
+    /// Whatever has to be written before the first row is written **here**, rather
+    /// than in a `begin` the caller has to remember: a two-step opening is a step
+    /// somebody eventually skips, and the JSON that comes out of a skipped one is
+    /// malformed in a way no row-level test would catch.
+    ///
+    /// # Errors
+    ///
+    /// Whatever writing reports.
+    pub fn new(out: W, format: RowFormat, desc: &Desc) -> std::io::Result<Sink<W>> {
+        Sink::painted(out, format, desc, None, crate::prompt::colours_enabled())
+    }
+
+    /// The same, holding the schema — which is what names the fields of an **expanded**
+    /// reference.
+    ///
+    /// # Errors
+    ///
+    /// Whatever writing reports.
+    pub fn naming(
+        out: W,
+        format: RowFormat,
+        desc: &Desc,
+        schema: Arc<Schema>,
+    ) -> std::io::Result<Sink<W>> {
+        Sink::painted(
+            out,
+            format,
+            desc,
+            Some(schema),
+            crate::prompt::colours_enabled(),
+        )
+    }
+
+    /// The same, told whether to paint rather than asking.
+    ///
+    /// # Errors
+    ///
+    /// Whatever writing reports.
+    pub fn painted(
+        mut out: W,
+        format: RowFormat,
+        desc: &Desc,
+        schema: Option<Arc<Schema>>,
+        colour: bool,
+    ) -> std::io::Result<Sink<W>> {
+        let columns = match desc {
+            Desc::Record(fields) => fields.iter().map(|(name, _)| name.clone()).collect(),
+            _ => vec![],
+        };
+
+        if format == RowFormat::Json {
+            write!(out, "{}", punct("[", colour))?;
+        }
+
+        Ok(Sink {
+            out,
+            format,
+            schema,
+            colour,
+            desc: desc.clone(),
+            columns,
+            buffered: vec![],
+            rows: 0,
+        })
+    }
+
+    /// One row.
+    ///
+    /// # Errors
+    ///
+    /// Whatever writing reports — including a closed pipe, which is how `| head`
+    /// ends a query rather than a fault to report.
+    pub fn row(&mut self, value: &WireValue) -> std::io::Result<()> {
+        match self.format {
+            RowFormat::Count => {}
+
+            RowFormat::Raw => {
+                let cells = self.cells(value);
+                writeln!(self.out, "{}", cells.join("\t"))?;
+            }
+
+            RowFormat::Json => {
+                if self.rows > 0 {
+                    write!(self.out, "{}", punct(",", self.colour))?;
+                }
+                write!(
+                    self.out,
+                    "\n  {}",
+                    json(value, &self.desc, self.schema.as_deref(), self.colour)
+                )?;
+            }
+
+            RowFormat::Jsonl => writeln!(
+                self.out,
+                "{}",
+                json(value, &self.desc, self.schema.as_deref(), self.colour)
+            )?,
+
+            RowFormat::Table => {
+                let cells = self.cells(value);
+                self.buffered.push(cells);
+            }
+        }
+
+        self.rows += 1;
+        Ok(())
+    }
+
+    /// Finish, and answer with the number of rows written.
+    ///
+    /// # Errors
+    ///
+    /// Whatever writing reports.
+    pub fn end(mut self) -> std::io::Result<u64> {
+        match self.format {
+            RowFormat::Count => writeln!(self.out, "{}", self.rows)?,
+
+            RowFormat::Json => {
+                if self.rows > 0 {
+                    writeln!(self.out)?;
+                }
+                writeln!(self.out, "{}", punct("]", self.colour))?;
+            }
+
+            RowFormat::Table => {
+                let headers: Vec<&str> = if self.columns.is_empty() {
+                    vec!["value"]
+                } else {
+                    self.columns.iter().map(String::as_str).collect()
+                };
+
+                write!(
+                    self.out,
+                    "{}",
+                    crate::output::table(&headers, &self.buffered)
+                )?;
+                writeln!(self.out, "{} row(s)", self.rows)?;
+            }
+
+            RowFormat::Raw | RowFormat::Jsonl => {}
+        }
+
+        self.out.flush()?;
+        Ok(self.rows)
+    }
+
+    /// A row's cells: a record's fields spread across columns, anything else in one.
+    fn cells(&self, value: &WireValue) -> Vec<String> {
+        match value {
+            WireValue::Record(fields) if !self.columns.is_empty() => {
+                fields.iter().map(render).collect()
+            }
+            other => vec![render(other)],
+        }
+    }
+}
+
+/// One value, as a person reads it.
+///
+/// A reference prints as `#predicate:sequence` rather than as its raw `u64`, because
+/// that is what a [`FactId`](fjord_schema::id::FactId) *is* — a snowflake, the
+/// owning predicate in the high bits and a per-predicate sequence in the low
+/// ([I11](../../../docs/invariants.md#i11)) — and a sixteen-digit number hides both halves.
+#[must_use]
+pub fn render(value: &WireValue) -> String {
+    match value {
+        WireValue::Int(n) => n.to_string(),
+        WireValue::Str(text) => text.clone(),
+
+        WireValue::Ref(fjord_client::WireRef::Id(id)) => {
+            format!("#{}:{}", id.predicate().0, id.sequence())
+        }
+
+        // **An expanded reference is the fact it names**, so it renders as that fact's
+        // key does and nothing marks it as having been a reference. In a table that is
+        // the whole point: a `file` column holds `store/codec.py` instead of `#1:12`,
+        // which is what somebody turned expansion on to see. The same shape reaches here
+        // from a producer that nested a reference on the way *in*, and there is nothing
+        // to tell them apart by — nor any reason to.
+        WireValue::Ref(fjord_client::WireRef::Nested(fact)) => render(&fact.key),
+
+        WireValue::Record(fields) => {
+            let cells: Vec<String> = fields.iter().map(render).collect();
+            format!("{{{}}}", cells.join(", "))
+        }
+    }
+}
+
+/// One value as JSON, named by the descriptor that came with it.
+///
+/// The descriptor is what makes a record an object rather than an array, at every
+/// level. Where the two disagree — a record the descriptor does not describe as one,
+/// or one of a different width — the value wins and comes out positionally: a row that
+/// arrived is a row worth printing, and a mismatch is a server bug better reported by
+/// odd-looking output than by a panic on a data path.
+///
+/// **An expanded reference is the one place the descriptor runs out**, and the schema
+/// takes over. A descriptor says `Fact(p)`, which is exactly what the row carried; the
+/// fact underneath it is shaped like *p's key*, and only the schema knows that shape's
+/// field names. So a nested reference is rendered against the target predicate's key
+/// type, and a caller with no schema gets the same positional fallback a mismatch does.
+fn json(value: &WireValue, desc: &Desc, schema: Option<&Schema>, colour: bool) -> String {
+    match (value, desc) {
+        (WireValue::Int(n), _) => paint(NUMBER, &n.to_string(), colour),
+        (WireValue::Str(text), _) => paint(STRING, &json_string(text), colour),
+
+        (WireValue::Ref(fjord_client::WireRef::Id(id)), _) => paint(
+            REFERENCE,
+            &json_string(&format!("#{}:{}", id.predicate().0, id.sequence())),
+            colour,
+        ),
+
+        // The fact a reference names, in place of the reference: an object where the
+        // target's key is a record, its bare value where the key is a scalar — which is
+        // the same rule the row itself follows, since a row is shaped like its head.
+        (WireValue::Ref(fjord_client::WireRef::Nested(fact)), _) => {
+            let target = schema.and_then(|schema| key_desc(schema, fact.predicate));
+            json(&fact.key, target.as_ref().unwrap_or(desc), schema, colour)
+        }
+
+        (WireValue::Record(fields), Desc::Record(named)) if fields.len() == named.len() => {
+            let pairs: Vec<String> = fields
+                .iter()
+                .zip(named.iter())
+                .map(|(field, (name, desc))| {
+                    format!(
+                        "{}{} {}",
+                        paint(KEY, &json_string(name), colour),
+                        punct(":", colour),
+                        json(field, desc, schema, colour)
+                    )
+                })
+                .collect();
+
+            format!(
+                "{}{}{}",
+                punct("{", colour),
+                pairs.join(&format!("{} ", punct(",", colour))),
+                punct("}", colour)
+            )
+        }
+
+        (WireValue::Record(fields), _) => {
+            let cells: Vec<String> = fields
+                .iter()
+                .map(|field| json(field, &Desc::Str, schema, colour))
+                .collect();
+
+            format!(
+                "{}{}{}",
+                punct("[", colour),
+                cells.join(&format!("{} ", punct(",", colour))),
+                punct("]", colour)
+            )
+        }
+    }
+}
+
+/// A predicate's key, as a descriptor — the shape an expanded reference to it has.
+///
+/// Computed where it is needed rather than cached: it is a small tree, it is built only
+/// for a reference that was actually expanded, and expansion has already paid for a
+/// point read by the time this runs. `None` for a predicate the schema does not declare,
+/// or a field name its interner cannot resolve, which are both "a schema that is not the
+/// one these rows came from" and answered by printing positionally rather than by
+/// failing a row.
+fn key_desc(schema: &Schema, predicate: PredicateId) -> Option<Desc> {
+    let key = &schema.get(predicate)?.predicate().key;
+    Desc::of(schema, key).ok()
+}
+
+/// jq's `JQ_COLORS` defaults, and one addition of our own.
+const STRING: &str = "0;32";
+const NUMBER: &str = "0;39";
+const KEY: &str = "34;1";
+const PUNCTUATION: &str = "1;39";
+/// A fact reference — **not** jq's, because jq has no such thing. Yellow is what a
+/// predicate is painted in a query and in a schema, and a reference names one.
+const REFERENCE: &str = "33";
+
+fn paint(code: &str, text: &str, colour: bool) -> String {
+    if colour {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_owned()
+    }
+}
+
+fn punct(text: &str, colour: bool) -> String {
+    paint(PUNCTUATION, text, colour)
+}
+
+/// A JSON string, escaped by hand.
+///
+/// `serde_json` is already here and would do it — but it would mean building a `Value`
+/// per row on a path whose whole point is not to, and the escape rules for a string are
+/// six characters and a control range.
+fn json_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = std::fmt::Write::write_fmt(&mut out, format_args!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(fields: Vec<WireValue>) -> WireValue {
+        WireValue::Record(fields.into())
+    }
+
+    #[test]
+    fn a_reference_prints_as_the_snowflake_it_is() {
+        // Predicate 3, sequence 7 — the two halves an id is made of, and the reason a
+        // raw `u64` would be the wrong thing to show.
+        let id = fjord_schema::id::FactId::new(fjord_schema::schema::PredicateId(3), 7)
+            .expect("a fact id");
+
+        assert_eq!(
+            render(&WireValue::Ref(fjord_client::WireRef::Id(id))),
+            "#3:7"
+        );
+    }
+
+    /// **An expanded reference is named by the schema, not by the descriptor.**
+    ///
+    /// A descriptor says `Fact(p)` — which is what the row carried — so the fields of the
+    /// fact underneath it have no names in it at all. Rendering them positionally was the
+    /// easy half of this job and would have made `{"module": ["f.py", "store"]}` out of
+    /// the interesting rows, which is the same mistake nesting a *record* by position
+    /// was. The schema is the only thing that knows the shape, so it renders against the
+    /// target predicate's key.
+    ///
+    /// The chain is the sample schema's: a declaration's `module` is a `src.Module`, whose
+    /// own `file` is a `src.File` — one hop expanded, one left as an id, which is also
+    /// what a bounded `:expand 1` produces.
+    #[test]
+    fn an_expanded_reference_is_named_by_the_schema() {
+        use fjord_client::{WireFact, WireRef};
+
+        let schema = Arc::new(crate::sample_schema::schema());
+        let file = fjord_schema::id::FactId::new(crate::sample_schema::id("src.File"), 4)
+            .expect("a fact id");
+
+        let desc = Desc::Record(Box::from([
+            ("name".to_owned(), Desc::Str),
+            (
+                "module".to_owned(),
+                Desc::Fact(crate::sample_schema::id("src.Module")),
+            ),
+        ]));
+
+        let module = WireValue::Ref(WireRef::Nested(Box::new(WireFact {
+            predicate: crate::sample_schema::id("src.Module"),
+            key: record(vec![
+                WireValue::Ref(WireRef::Id(file)),
+                WireValue::Str("store".to_owned()),
+            ]),
+            value: None,
+        })));
+
+        let row = record(vec![WireValue::Str("encode".to_owned()), module.clone()]);
+
+        let mut out = vec![];
+        let mut sink =
+            Sink::painted(&mut out, RowFormat::Jsonl, &desc, Some(schema), false).unwrap();
+        sink.row(&row).unwrap();
+        sink.end().unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(out).unwrap()).expect("valid JSON");
+
+        assert_eq!(parsed["module"]["name"], "store", "{parsed}");
+        assert_eq!(
+            parsed["module"]["file"],
+            format!("#{}:4", crate::sample_schema::id("src.File").0),
+            "the hop that was not taken is still an id: {parsed}"
+        );
+
+        // **With no schema, the fields still print** — positionally, which is the same
+        // fallback a descriptor mismatch takes. A row that arrived is a row worth
+        // printing.
+        let mut bare = vec![];
+        let mut sink = Sink::painted(&mut bare, RowFormat::Jsonl, &desc, None, false).unwrap();
+        sink.row(&row).unwrap();
+        sink.end().unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(bare).unwrap()).expect("valid JSON");
+        assert_eq!(parsed["module"][1], "store", "{parsed}");
+
+        // And in a table it is the target's key, with nothing marking it as having been
+        // a reference — which is what somebody turned expansion on to see.
+        assert_eq!(
+            render(&module),
+            format!("{{#{}:4, store}}", crate::sample_schema::id("src.File").0)
+        );
+    }
+
+    #[test]
+    fn a_scalar_head_is_one_unnamed_column() {
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Table, &Desc::Str).unwrap();
+
+        sink.row(&WireValue::Str("a.py".to_owned())).unwrap();
+        sink.row(&WireValue::Str("b.py".to_owned())).unwrap();
+        let rows = sink.end().unwrap();
+
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(rows, 2);
+        assert!(text.contains("VALUE"), "{text}");
+        assert!(text.contains("a.py"), "{text}");
+        assert!(text.contains("2 row(s)"), "{text}");
+    }
+
+    #[test]
+    fn a_record_head_spreads_across_columns() {
+        let desc = Desc::Record(Box::from([
+            ("at".to_owned(), Desc::Int),
+            ("what".to_owned(), Desc::Str),
+        ]));
+
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Raw, &desc).unwrap();
+
+        sink.row(&record(vec![
+            WireValue::Int(12),
+            WireValue::Str("key_of".to_owned()),
+        ]))
+        .unwrap();
+        sink.end().unwrap();
+
+        assert_eq!(String::from_utf8(out).unwrap(), "12\tkey_of\n");
+    }
+
+    /// The JSON is a **document**, not a line per row: it opens, separates and closes,
+    /// so a script can pipe it straight into a parser — and it still streams, because
+    /// nothing has to be known about row *n+1* to write row *n*.
+    #[test]
+    fn json_is_one_document_written_incrementally() {
+        let desc = Desc::Record(Box::from([
+            ("at".to_owned(), Desc::Int),
+            ("what".to_owned(), Desc::Str),
+        ]));
+
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Json, &desc).unwrap();
+
+        sink.row(&record(vec![
+            WireValue::Int(1),
+            WireValue::Str("a\"b".to_owned()),
+        ]))
+        .unwrap();
+        sink.row(&record(vec![
+            WireValue::Int(2),
+            WireValue::Str("c".to_owned()),
+        ]))
+        .unwrap();
+        sink.end().unwrap();
+
+        let text = String::from_utf8(out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        assert_eq!(parsed[0]["at"], 1);
+        assert_eq!(parsed[0]["what"], "a\"b");
+        assert_eq!(parsed[1]["what"], "c");
+    }
+
+    /// **A row is shaped like its head, all the way down.**
+    ///
+    /// The interesting rows in a code index are nested — a span inside a reference,
+    /// a file inside a declaration — and rendering only the top level by name left
+    /// exactly those arriving as anonymous arrays. The descriptor names every level,
+    /// so this uses it at every level.
+    #[test]
+    fn a_nested_record_is_a_nested_object() {
+        let desc = Desc::Record(Box::from([
+            ("file".to_owned(), Desc::Str),
+            (
+                "at".to_owned(),
+                Desc::Record(Box::from([
+                    ("line".to_owned(), Desc::Int),
+                    ("col".to_owned(), Desc::Int),
+                ])),
+            ),
+        ]));
+
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Json, &desc).unwrap();
+
+        sink.row(&record(vec![
+            WireValue::Str("store/codec.py".to_owned()),
+            record(vec![WireValue::Int(4), WireValue::Int(19)]),
+        ]))
+        .unwrap();
+        sink.end().unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(out).unwrap()).expect("valid JSON");
+
+        assert_eq!(parsed[0]["at"]["line"], 4);
+        assert_eq!(parsed[0]["at"]["col"], 19);
+        assert_eq!(parsed[0]["file"], "store/codec.py");
+    }
+
+    /// A reference is the string the table shows, not the number underneath it.
+    ///
+    /// Nothing takes a raw id as input — sigla names a fact by its key — so the useful
+    /// rendering is the one that shows which predicate it belongs to.
+    #[test]
+    fn a_reference_is_readable_in_json_too() {
+        let id = fjord_schema::id::FactId::new(fjord_schema::schema::PredicateId(3), 7)
+            .expect("a fact id");
+
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Jsonl, &Desc::Int).unwrap();
+        sink.row(&WireValue::Ref(fjord_client::WireRef::Id(id)))
+            .unwrap();
+        sink.end().unwrap();
+
+        assert_eq!(String::from_utf8(out).unwrap(), "\"#3:7\"\n");
+    }
+
+    /// **JSON Lines is what a page is**: each row stands alone, so three pages of one
+    /// query concatenate into something a reader can still parse — which an array per
+    /// page does not.
+    #[test]
+    fn jsonl_is_one_value_per_line() {
+        let desc = Desc::Record(Box::from([
+            ("at".to_owned(), Desc::Int),
+            ("what".to_owned(), Desc::Str),
+        ]));
+
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Jsonl, &desc).unwrap();
+
+        sink.row(&record(vec![
+            WireValue::Int(1),
+            WireValue::Str("a".to_owned()),
+        ]))
+        .unwrap();
+        sink.row(&record(vec![
+            WireValue::Int(2),
+            WireValue::Str("b".to_owned()),
+        ]))
+        .unwrap();
+        let rows = sink.end().unwrap();
+
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+
+        assert_eq!(rows, 2);
+        assert_eq!(lines.len(), 2, "one line each, and nothing around them");
+
+        for (n, line) in lines.iter().enumerate() {
+            let parsed: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+            assert_eq!(parsed["at"], n + 1);
+        }
+    }
+
+    /// **jq's palette, and the one place it is not jq's.**
+    ///
+    /// Keys bold blue, strings green, punctuation bright — `JQ_COLORS`' defaults, so
+    /// nobody has to learn a second scheme to read the same document. A **reference** is
+    /// yellow rather than green, because jq has no idea what one is and this tool does:
+    /// yellow is what a predicate is painted in a query and in a schema, and in a fact
+    /// database the references are the part you follow.
+    ///
+    /// Checked by asking for colour explicitly, since a test has no terminal and the
+    /// answer would otherwise always be "no" — which is how a palette rots.
+    #[test]
+    fn colour_follows_jq_except_where_jq_has_nothing_to_say() {
+        let desc = Desc::Record(Box::from([
+            ("name".to_owned(), Desc::Str),
+            ("line".to_owned(), Desc::Int),
+            (
+                "of".to_owned(),
+                Desc::Fact(fjord_schema::schema::PredicateId(3)),
+            ),
+        ]));
+
+        let id = fjord_schema::id::FactId::new(fjord_schema::schema::PredicateId(3), 7)
+            .expect("a fact id");
+
+        let mut out = vec![];
+        let mut sink = Sink::painted(&mut out, RowFormat::Jsonl, &desc, None, true).unwrap();
+
+        sink.row(&record(vec![
+            WireValue::Str("encode".to_owned()),
+            WireValue::Int(12),
+            WireValue::Ref(fjord_client::WireRef::Id(id)),
+        ]))
+        .unwrap();
+        sink.end().unwrap();
+
+        let text = String::from_utf8(out).unwrap();
+
+        assert!(text.contains("\u{1b}[34;1m\"name\"\u{1b}[0m"), "{text:?}");
+        assert!(text.contains("\u{1b}[0;32m\"encode\"\u{1b}[0m"), "{text:?}");
+        assert!(text.contains("\u{1b}[0;39m12\u{1b}[0m"), "{text:?}");
+        assert!(text.contains("\u{1b}[33m\"#3:7\"\u{1b}[0m"), "{text:?}");
+        assert!(text.contains("\u{1b}[1;39m{\u{1b}[0m"), "{text:?}");
+
+        // And with colour off it is the same document with nothing in it — which is
+        // what a pipe gets, and what every other test here reads.
+        let mut plain = vec![];
+        let mut sink = Sink::painted(&mut plain, RowFormat::Jsonl, &desc, None, false).unwrap();
+        sink.row(&record(vec![
+            WireValue::Str("encode".to_owned()),
+            WireValue::Int(12),
+            WireValue::Ref(fjord_client::WireRef::Id(id)),
+        ]))
+        .unwrap();
+        sink.end().unwrap();
+
+        let plain = String::from_utf8(plain).unwrap();
+        assert!(!plain.contains('\u{1b}'), "{plain:?}");
+        assert_eq!(
+            plain.trim(),
+            r##"{"name": "encode", "line": 12, "of": "#3:7"}"##
+        );
+    }
+
+    /// An empty result is still a valid document rather than nothing at all.
+    #[test]
+    fn an_empty_result_is_still_well_formed() {
+        let mut out = vec![];
+        let sink = Sink::new(&mut out, RowFormat::Json, &Desc::Str).unwrap();
+        sink.end().unwrap();
+
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+            serde_json::json!([])
+        );
+    }
+
+    /// `count` writes the tally and nothing else — the shape a measurement of the
+    /// *server* wants, since rendering is the client's cost and not the thing under
+    /// test.
+    #[test]
+    fn count_renders_no_rows() {
+        let mut out = vec![];
+        let mut sink = Sink::new(&mut out, RowFormat::Count, &Desc::Str).unwrap();
+
+        for n in 0..1000 {
+            sink.row(&WireValue::Int(n)).unwrap();
+        }
+        sink.end().unwrap();
+
+        assert_eq!(String::from_utf8(out).unwrap(), "1000\n");
+    }
+}

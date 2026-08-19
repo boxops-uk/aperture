@@ -11,7 +11,7 @@
 > **Status — read this before the rest.** This was drafted against the tree at
 > `d57f45167` and two commits landed underneath it: `ce377eb81` (committing
 > `examples/breakdown.rs`) and `87d3055b2` (`examples/soak.rs` plus the whole
-> `Fjord.Indexer`). **S6 is therefore largely built, not proposed.** `soak.rs`
+> `Boxops.Fjord.Indexer`). **S6 is therefore largely built, not proposed.** `soak.rs`
 > already does the weighted mix, per-client think time, per-class percentiles,
 > offered-vs-achieved saturation reading, an error count, and `--stalled` for paused
 > readers — and its header already states the generator-shares-the-machine caveat §5
@@ -20,7 +20,7 @@
 >
 > **S1–S3 are now built and run.** `examples/engine.rs --layer executor|compile|store`
 > is the instrument, and it was run against a real index — `dotnet/runtime`'s whole
-> `src/` tree, **18,176,899 facts**, built by `Fjord.Indexer`. The results, and the
+> `src/` tree, **18,176,899 facts**, built by `Boxops.Fjord.Indexer`. The results, and the
 > three findings they turned up, are in [`bench/FINDINGS.md`](../bench/FINDINGS.md):
 > **F7 answered** (paging costs one seek per page — 4–12 µs, ~10% of a 256-row chunk),
 > **F3 answered** (compile is 4–14 µs, linear in query size, 2–7% of the round-trip
@@ -113,7 +113,7 @@ over `PLAN.md` and `CLAUDE.md` returns nothing:
 | `examples/engine.rs` | **S1–S3.** In-process against a real index: ns/row with `Profile` attribution, the paging comparison taken apart per page, the raw scan/seek/point floor under it | committed |
 | `scripts/bench.sh` (71 ln) | create · serve · seed · measure, release-only by construction | committed |
 | `iter::Profile` → `PROFILE` frame → `query --profile` | Rows examined per plan step, with a full-scan flag | committed, fully plumbed |
-| `clients/dotnet/Fjord.Indexer` + `index-repo.sh` | Indexes a real .NET checkout over the wire; `--max-files` dials the size; reports created/deduped | committed; 18.2M facts indexed |
+| `clients/dotnet/Boxops.Fjord.Indexer` + `index-repo.sh` | Indexes a real .NET checkout over the wire; `--max-files` dials the size; reports created/deduped | committed; 18.2M facts indexed |
 | [`bench/FINDINGS.md`](../bench/FINDINGS.md) | The register: what was measured, the number, what a fix would cost | S1–S3 entered |
 
 Three things are missing, and they are this phase:
@@ -192,7 +192,7 @@ at one shape and one skew. Every rung needs the same data, at a size it can affo
 
 **Real data is the primary corpus, and it is already dialable.**
 `clients/dotnet/index-repo.sh <checkout> [db] --max-files N` indexes a .NET checkout over
-the wire into the built-in schema — six source predicates plus a line table, seven
+the wire into the sample schema — six source predicates plus a line table, seven
 build-layer ones and eight over the declaration graph (`src/code_index.rs`), of which
 `src.Ref` and `src.Line` are the two that reach seven figures on a real checkout.
 `--max-files`
@@ -266,7 +266,7 @@ S2 to the scaling-with-query-size question breakdown does not ask.
 `examples/engine.rs --layer store`. Raw `FactStore::scan` / `point` throughput underneath
 S1, so an S1 regression is attributable to the engine rather than to fjall. Also LSM shape
 (freshly ingested vs compacted) and predicate-count effects — a keyspace pair costs ~30 ms
-to create (`store.rs:231`) and the built-in schema holds twenty-two, so `fjord create`
+to create (`store.rs:231`) and the sample schema holds twenty-two, so `fjord create`
 is a measured **1.4 s** before a fact is written.
 
 ### S4 — The session, in-process

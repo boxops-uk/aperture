@@ -283,7 +283,7 @@ schema DSL landed it is also the *source* a server reads a database's schema bac
 
 ## Writing a fact by hand
 
-Inside the process there is a second way in, used by tests and by the embedded demo shell:
+Inside the process there is a second way in, used by the tests and the benchmarks:
 `FjallDb::put(&schema, &fact)` takes a **well-typed value** whose key fields are named and
 resolved against the schema.
 
