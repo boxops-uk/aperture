@@ -147,6 +147,12 @@ because the questions a UI asks turned out not to be the questions the schema an
 
 ## Writing a client
 
+:::note There is no JavaScript client
+`@boxops-uk` is reserved on npm for when there is one, and a reserved scope is not a
+deliverable. Two implementations exist — this one and the Rust client — and the protocol is
+what a third would be written against, not either of them.
+:::
+
 The protocol is [documented frame by frame](wire-protocol.html). A minimal read-only client is:
 
 1. Connect to the socket (or TCP).

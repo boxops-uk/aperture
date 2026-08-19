@@ -4,7 +4,7 @@
 
        MSBuild walks *up* from each project looking for this file, so a checkout of
        Fjord sitting inside somebody else's workspace would otherwise be told what to do
-       by a file that has never heard of it. That is the same hazard `Fjord.Indexer`
+       by a file that has never heard of it. That is the same hazard `Boxops.Fjord.Indexer`
        already guards with `ManagePackageVersionsCentrally=false`, and the answer is the
        same: say it here, close to the projects it is about. -->
 
