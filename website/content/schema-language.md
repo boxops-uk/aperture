@@ -59,7 +59,7 @@ Two things about the shape:
 - **A record and a sum share their braces**, and are told apart by the separator after the
   first field: `,` continues a record, `|` starts a sum. That is one token of lookahead, and
   it is Angle's shape too.
-- **A keyword may be a field name.** The built-in schema has
+- **A keyword may be a field name.** The sample schema has
   `src.Extends { base, type }`, and `type` is also how a named type is declared. That costs
   the grammar nothing, because a field name is never in a position where a keyword could
   start something.
@@ -107,7 +107,7 @@ predicate SearchByName : { name : string, to : Decl }
 ```
 
 Read each record as *what is this predicate fast at*, not as a list of attributes. Two
-predicates in the built-in schema were once declared alphabetically out of habit; it cost
+predicates in the sample schema were once declared alphabetically out of habit; it cost
 **56,274 rows examined per row produced** on an ordinary join, and made find-references
 unanswerable. The fix was to move a field.
 
@@ -292,10 +292,11 @@ Two of them are worth understanding rather than just noting:
   to give somewhere to write the number down. Positional numbering would silently renumber
   every stored value when an alternative was inserted.
 
-## The built-in schema
+## The sample schema
 
-With no `--schema`, `create` uses `schemas/code.sigla`: twenty-seven predicates in three
-layers, and the joins between the layers are the point.
+`schemas/code.sigla` is a worked example rather than a default — `create` requires a schema and
+there is nothing standing in for one. It is twenty-seven predicates in three layers, and the
+joins between the layers are the point.
 
 | Layer | Predicates | Answerable by |
 |---|---|---|
@@ -308,7 +309,7 @@ comment saying which question its key order answers, and four of them exist pure
 a derived predicate cannot yet be declared.
 
 There is also a **virtual** predicate, `fjord.db.List`, declared in
-`schemas/catalogue.sigla`. It is answered by the server out of what it knows rather than read
+`crates/fjord-server/schemas/catalogue.sigla` — the crate that answers it. It is answered by the server out of what it knows rather than read
 from a keyspace, which is why it is a file of its own: it is deliberately absent from the
 handshake fingerprint, from the copy embedded at create, and from every artifact's
 keyspaces. A client that has never heard of it connects exactly as before.

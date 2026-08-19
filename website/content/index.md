@@ -10,7 +10,7 @@ language — compiled to a nested-loop plan and run by a pull-based machine that
 mid-result, hand you a few bytes, and pick up exactly where it left off.
 
 The canonical use is a **code index**: files, modules, declarations, references, the build
-graph, the declaration graph. That is what the built-in schema describes and what every
+graph, the declaration graph. That is what the sample schema describes and what every
 number in these docs was measured against.
 
 <div class="cards">

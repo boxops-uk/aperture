@@ -90,18 +90,20 @@ cargo run --release --example loadgen -- --data-dir /tmp/fjbench --files 20000
 ./scripts/bench.sh          # create, serve, seed, measure — one command
 ```
 
-## The example corpus
+## Where a database to work against comes from
 
-`example/` is a small Python codebase, a real `ast`-based indexer over it, and the JSON the
-embedded demo shell compiles in. Regenerate it after editing the corpus:
+There is no bundled corpus. `schemas/code.sigla` describes three layers, and only the first —
+files, modules, declarations, references, their spans — is answerable by a syntax walk; the
+build layer and the declaration graph need a compiler and a build system, which is what the
+.NET indexer has. So the way to get a database worth querying is to point that at a real
+checkout:
 
 ```bash
-python3 example/index.py
+./clients/dotnet/index-repo.sh ~/src/OrchardCore
 ```
 
-Six predicates come straight out of that parse. The rest of the built-in schema — the
-build layer and the declaration graph — needs a compiler and a build system to answer, and
-is filled by the .NET indexer.
+`./scripts/bench.sh` is the other way in: it creates, serves, seeds and measures in one
+command, from a synthetic corpus sized by `FILES` and `DECLS`.
 
 ## The .NET client
 
@@ -126,8 +128,7 @@ for the same corpus. The Rust test needs no `dotnet`; regenerating the golden do
 fjord/
 ├── src/                 the `fjord` binary: cli, commands, shell, output, config
 ├── crates/              the workspace, bottom to top (table above)
-├── schemas/             code.sigla (the built-in schema) and catalogue.sigla
-├── example/             a Python corpus, its indexer, and the JSON the demo shell embeds
+├── schemas/             code.sigla, the sample schema every client here builds against
 ├── examples/            the measuring instruments
 ├── clients/dotnet/      the C# client, demo producer and real indexer
 ├── docs/                the design book — chapters 1–7 plus operations and references

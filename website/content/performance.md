@@ -242,7 +242,7 @@ rows to completion. `--profile` tells you (`full scan` on the inner step); nothi
 you write it.
 
 The two predicates involved had been declared in alphabetical order out of habit, so the key led
-with a line number and a column. They are declared deliberately now, and the built-in schema says
+with a line number and a column. They are declared deliberately now, and the sample schema says
 per predicate which question its order answers. This is the reason
 [Schema language](schema-language.html#field-order-is-the-index-design) puts field order first.
 

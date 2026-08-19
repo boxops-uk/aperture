@@ -169,13 +169,17 @@ re-running the index, never a wrong answer from one that sealed.
 ## `fjord create <name>`
 
 ```bash
-fjord --data-dir ./db create code
+fjord --data-dir ./db create code --schema ./schemas/code.sigla
 fjord --data-dir ./db create people --schema ./people.sigla
 ```
 
 | Flag | Means |
 |---|---|
-| `--schema <FILE>` | The entry file to create it against. Without it, the built-in code index |
+| `--schema <FILE>` | **Required.** The entry file to create it against |
+
+There is no default. The schema decides what every stored row means and is frozen once the
+database exists, so a database whose schema nobody chose is one nobody can describe — and a
+default shipped in the binary would make the artifact depend on which build of the tool made it.
 
 The schema is resolved (imports and all), canonicalised, fingerprinted and **embedded**. It is
 frozen for the database's lifetime, so this is the one moment it can be chosen. Every

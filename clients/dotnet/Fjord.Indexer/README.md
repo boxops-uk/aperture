@@ -32,7 +32,7 @@ Four things, in the order they matter:
    nothing the protocol does not offer.
 3. **Something to query.** An index of code someone knows is a database whose answers
    can be checked by opening the file.
-4. **The rest of the schema.** Twenty-one of the built-in schema's twenty-seven predicates —
+4. **The rest of the schema.** Twenty-one of `schemas/code.sigla`'s twenty-seven predicates —
    the build layer and the declaration graph — cannot be answered by a syntax walk at
    all, and `example/index.py` fills none of them. This program is where they come from,
    which makes it part of the schema rather than a consumer of it.

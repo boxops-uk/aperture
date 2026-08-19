@@ -84,7 +84,6 @@ fjord serve
   data dir   ./db
   socket     ./db/fjord.sock
   protocol   2
-  schema     0xb08eea634e866a75  (the built-in one; each database is served with its own)
   databases  1
     code                 writable
 ```

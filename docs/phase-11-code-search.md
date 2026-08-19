@@ -13,7 +13,7 @@ symbol, land on its definition — plus the things the demo *implies* and Glass 
 serves, which are search, find-references and a symbol panel. This file decomposes that
 into the queries it needs, runs each one against Fjord, and records what came back.
 
-Every plan quoted below was produced by `:plan` against the built-in schema, and the
+Every plan quoted below was produced by `:plan` against the sample schema, and the
 row-count claims come from [`bench/FINDINGS.md`](../bench/FINDINGS.md)'s 18.2M-fact
 `dotnet/runtime` index. Nothing here is inferred from reading the source.
 
@@ -229,7 +229,7 @@ diagnostic attached: the wrong ordering is not an error, it is a 3M-row scan.
 model; this is what it looks like from the product side.
 
 **One language.** The Glean demo indexes React. Fjord's only real indexer is C#
-(Roslyn + Buildalyzer), plus a toy Python walker for `example/`. Building *the same*
+(Roslyn + Buildalyzer). Building *the same*
 demo means writing a JS/TS indexer; building an equivalent one means pointing at a C#
 repository, and `dotnet/runtime` is already indexed at 18.2M facts. The second is
 obviously right, and it is worth saying out loud that it makes the demo not a

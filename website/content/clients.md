@@ -76,7 +76,7 @@ needs no `dotnet`; regenerating the golden does.
 The demo's argument made at scale: the same library, the same nested references and the same
 handshake, driven by a design-time build per project and a compiler that answers what every name
 means. It is where a database large enough to be worth measuring comes from — and where twenty-one
-of the built-in schema's predicates come from, because the build layer and the declaration graph
+of the sample schema's predicates come from, because the build layer and the declaration graph
 cannot be answered by a syntax walk at all.
 
 The run reports what interning cost:
@@ -92,7 +92,7 @@ no longer fits in memory, ordered so that every target is written before every r
 
 It can also write the same facts into **Glean's** own JSON batch format
 (`--glean-out <dir>`, `./clients/dotnet/index-repo-glean.sh`) against a predicate-, field- and
-field-order-preserving translation of the built-in schema. One walk, two sinks — so a comparison
+field-order-preserving translation of the sample schema. One walk, two sinks — so a comparison
 of the two systems is a comparison of the two systems and not of two indexers. Two honesty
 conditions are recorded with it: references stay nested on that path as well, and **emitting is
 not writing** — the load is a second phase with its own clock, so the honest total for Glean is

@@ -192,7 +192,7 @@ at one shape and one skew. Every rung needs the same data, at a size it can affo
 
 **Real data is the primary corpus, and it is already dialable.**
 `clients/dotnet/index-repo.sh <checkout> [db] --max-files N` indexes a .NET checkout over
-the wire into the built-in schema — six source predicates plus a line table, seven
+the wire into the sample schema — six source predicates plus a line table, seven
 build-layer ones and eight over the declaration graph (`src/code_index.rs`), of which
 `src.Ref` and `src.Line` are the two that reach seven figures on a real checkout.
 `--max-files`
@@ -266,7 +266,7 @@ S2 to the scaling-with-query-size question breakdown does not ask.
 `examples/engine.rs --layer store`. Raw `FactStore::scan` / `point` throughput underneath
 S1, so an S1 regression is attributable to the engine rather than to fjall. Also LSM shape
 (freshly ingested vs compacted) and predicate-count effects — a keyspace pair costs ~30 ms
-to create (`store.rs:231`) and the built-in schema holds twenty-two, so `fjord create`
+to create (`store.rs:231`) and the sample schema holds twenty-two, so `fjord create`
 is a measured **1.4 s** before a fact is written.
 
 ### S4 — The session, in-process
