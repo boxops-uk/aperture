@@ -95,6 +95,32 @@ internal sealed record Options
     public int MaxFiles { get; init; }
 
     /// <summary>
+    /// Paths, relative to <see cref="Root"/>, whose files are not walked.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A corpus decision, made explicit.</b> `bench/FINDINGS.md` §15b found that 45% of
+    /// the wall clock of a whole-`dotnet/runtime` index was one 24 MB generated file in
+    /// `src/tests` whose reference pass resolves nothing — so every facts/s figure ever
+    /// quoted for that corpus was measuring one pathological file as much as the database.
+    /// This is how that file leaves the corpus without leaving a subset of it to a script.
+    /// </para>
+    /// <para>
+    /// <b>A path prefix, matched relative to the root</b> — <c>--exclude src/tests</c> —
+    /// rather than a glob, because the thing being excluded is a *tree* and a prefix says
+    /// so without a pattern language. Repeat the flag for more than one.
+    /// </para>
+    /// <para>
+    /// <b>The build layer is still whole</b>, which is the same decision <c>--max-files</c>
+    /// already made: what projects a repository has and what they reference is a fact about
+    /// the repository, not about which files this run reached. So an excluded tree's
+    /// projects still appear, and `src.ProjectSource` still names its files — which
+    /// interning creates as `src.File` facts with nothing else said about them.
+    /// </para>
+    /// </remarks>
+    public string[] Excludes { get; init; } = [];
+
+    /// <summary>
     /// Skip this many source files before indexing, in path order — <c>--syntax-only</c>
     /// only.
     /// </summary>
@@ -177,6 +203,7 @@ internal sealed record Options
                                 `/run/aperture.sock//code` names a socket)
           --batch <n>           facts per block (default: 4096)
           --max-files <n>       stop after n source files
+          --exclude <path>      do not walk this tree, relative to --root (repeatable)
           --skip-files <n>      skip the first n files, in path order (--syntax-only)
           --max-projects <n>    stop after n projects
           --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
@@ -220,6 +247,7 @@ internal sealed record Options
         string? source = null, root = null, emit = null, dotnet = null, gleanOut = null;
         var at = $"{DefaultSocket}{ApertureAddress.Separator}code";
         int batch = 4096, maxFiles = 0, maxProjects = 0, skipFiles = 0;
+        var excludes = new List<string>();
         var jobs = Math.Min(4, Environment.ProcessorCount);
         int? writers = null;
         bool references = true, restore = true, syntaxOnly = false;
@@ -266,6 +294,7 @@ internal sealed record Options
                     case "--glean-out": gleanOut = Value(); break;
                     case "--batch": batch = Number(); break;
                     case "--max-files": maxFiles = Number(); break;
+                    case "--exclude": excludes.Add(Value().Replace('\\', '/').Trim('/')); break;
                     case "--skip-files": skipFiles = Number(); break;
                     case "--max-projects": maxProjects = Number(); break;
                     case "--jobs": jobs = Math.Max(1, Number()); break;
@@ -338,6 +367,7 @@ internal sealed record Options
             GleanOut = gleanOut is null ? null : Path.GetFullPath(gleanOut),
             Batch = batch,
             MaxFiles = maxFiles,
+            Excludes = [.. excludes],
             SkipFiles = skipFiles,
             MaxProjects = maxProjects,
             Jobs = jobs,

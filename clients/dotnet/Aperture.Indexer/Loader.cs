@@ -457,11 +457,25 @@ internal static class Loader
             ? options.Source
             : Path.GetDirectoryName(options.Source)!;
 
-        var found = Directory
+        // Relative to `--root` rather than to `--source`, so an exclusion reads the way a
+        // path in the index reads: `src/tests` is what a `src.File` fact calls it.
+        var relativeTo = options.Root ?? root;
+
+        var all = Directory
             .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
             .Where(Indexable)
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToList();
+
+        var found = options.Excludes.Length == 0
+            ? all
+            : all.Where(path => !Excluded(path)).ToList();
+
+        if (all.Count != found.Count)
+        {
+            log.WriteLine($"  excluding {all.Count - found.Count} file(s) under "
+                + string.Join(", ", options.Excludes));
+        }
 
         // `--max-files` bounds the *parse* here, not just the walk. Parsing seventeen
         // thousand files to index two thousand of them is the wrong shape for the flag
@@ -522,6 +536,23 @@ internal static class Loader
         static bool Indexable(string path) =>
             !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
             && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
+
+        // A prefix on the *relative* path, and a separator after it, so `--exclude src/te`
+        // excludes nothing and `--exclude src/tests` excludes exactly that tree.
+        bool Excluded(string path)
+        {
+            var relative = Path.GetRelativePath(relativeTo, path).Replace('\\', '/');
+
+            foreach (var excluded in options.Excludes)
+            {
+                if (relative.StartsWith($"{excluded}/", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
     }
 
     /// <summary>A solution, a project, or the directory one lives in.</summary>
