@@ -16,13 +16,13 @@ serde = { version = "1.0.150", features = ["derive"] }
 thiserror = "2.0.18"
 
 [package]
-name = "aperture-cli"
+name = "fjord-cli"
 version = "0.1.0"
 edition = "2024"
 
-# The binary is `aperture`; the package is named for its place in operations §10.
+# The binary is `fjord`; the package is named for its place in operations §10.
 [[bin]]
-name = "aperture"
+name = "fjord"
 path = "src/main.rs"
 
 [features]
@@ -34,7 +34,7 @@ path = "src/main.rs"
 # `dep:proptest` is what keeps the strategies' own dependency out of an ordinary
 # build: the modules that need the crate are exactly the ones this feature (or
 # `cfg(test)`, which the dev-dependency covers) turns on.
-proptest = ["dep:proptest", "aperture-engine/proptest"]
+proptest = ["dep:proptest", "fjord-engine/proptest"]
 
 # **tokio-console, for looking at tasks rather than counting them.**
 #
@@ -46,7 +46,7 @@ proptest = ["dep:proptest", "aperture-engine/proptest"]
 #
 # It also needs `--cfg tokio_unstable`, which is why running it is two flags rather than
 # one; `serve`'s docs give the line.
-console = ["dep:console-subscriber", "aperture-server/console"]
+console = ["dep:console-subscriber", "fjord-server/console"]
 
 [dependencies]
 # Task-level introspection for `--features console`. Optional, and nothing but the
@@ -54,16 +54,16 @@ console = ["dep:console-subscriber", "aperture-server/console"]
 console-subscriber = { version = "0.4", optional = true }
 # The tool is a wire client, and an ordinary one: `create`, `finish` and `db rm`
 # against a running server go through the same crate an external tool would use.
-aperture-client = { path = "crates/aperture-client" }
-aperture-encoding = { path = "crates/aperture-encoding" }
-aperture-engine = { path = "crates/aperture-engine" }
-aperture-schema = { path = "crates/aperture-schema" }
-aperture-server = { path = "crates/aperture-server" }
-aperture-store = { path = "crates/aperture-store" }
+fjord-client = { path = "crates/fjord-client" }
+fjord-encoding = { path = "crates/fjord-encoding" }
+fjord-engine = { path = "crates/fjord-engine" }
+fjord-schema = { path = "crates/fjord-schema" }
+fjord-server = { path = "crates/fjord-server" }
+fjord-store = { path = "crates/fjord-store" }
 # The tool is a wire client (`wire.rs`), so it frames its own messages. That it needs
 # the codec and not the server's session machinery is the seam working: `protocol` says
 # what a message means, `wire` delimits it, and neither requires the other's runtime.
-aperture-wire = { path = "crates/aperture-wire" }
+fjord-wire = { path = "crates/fjord-wire" }
 byteview = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 codespan-reporting = "0.13.1"
@@ -87,10 +87,10 @@ memchr = { workspace = true }
 proptest = { version = "1.11.0", optional = true }
 rustyline = "18"
 serde = { workspace = true }
-# Reads `example/index.json` — the example indexer's output, which the `aperture`
+# Reads `example/index.json` — the example indexer's output, which the `fjord`
 # shell compiles in and writes as facts at startup (`example/README.md`). Nothing in
 # the engine uses it, and nothing should: JSON is the *indexer's* format, not a
-# storage one, and Aperture's own ingestion path (PLAN phase 7) is a fact file.
+# storage one, and Fjord's own ingestion path (PLAN phase 7) is a fact file.
 serde_json = "1.0.150"
 thiserror = { workspace = true }
 tinyvec = { version = "1.11.0", features = ["alloc"] }
@@ -104,13 +104,13 @@ ctrlc = "3.5.2"
 # `proptest` feature. `cfg(test)` in this package does not reach into a
 # dependency, so the feature is what the batteries here compile against — the
 # cross-crate form of the rule the feature comment above describes.
-aperture-encoding = { path = "crates/aperture-encoding", features = ["proptest"] }
+fjord-encoding = { path = "crates/fjord-encoding", features = ["proptest"] }
 # The write rung (`examples/ingest.rs`) drives the funnel in-process, below the wire and
 # below the server — which is the whole point of a rung. A dev-dependency rather than a
 # real one because the *tool* writes over a socket like any other client, and adding this
 # to `[dependencies]` would quietly give it a second way in.
-aperture-ingest = { path = "crates/aperture-ingest" }
-aperture-store = { path = "crates/aperture-store", features = ["proptest"] }
+fjord-ingest = { path = "crates/fjord-ingest" }
+fjord-store = { path = "crates/fjord-store", features = ["proptest"] }
 # Allocation-counting global allocator for the I9 hot-path guard
 # (`exec::scan_is_alloc_free_per_row`). Its counters are thread-local, so it
 # survives the parallel test harness; it installs its own `#[global_allocator]`
@@ -125,6 +125,6 @@ proptest = "1.11.0"
 tempfile = "3.24.0"
 # `examples/breakdown.rs` times the server's own hop off the reactor, which means
 # taking that hop itself. Nothing the tool ships needs a runtime, which is why this
-# is a dev-dependency and `aperture` still links none.
+# is a dev-dependency and `fjord` still links none.
 tokio = { version = "1", features = ["rt-multi-thread"] }
 

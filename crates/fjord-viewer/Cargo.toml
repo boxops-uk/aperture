@@ -1,0 +1,31 @@
+[package]
+name = "fjord-viewer"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "fjord-viewer"
+path = "src/main.rs"
+
+[dependencies]
+# The client, and **nothing below it**. A viewer is an ordinary consumer of the
+# wire protocol: it holds a schema, opens connections, and asks questions. Reaching
+# past the client for the store or the engine would make it a second server rather
+# than a demonstration that one is enough.
+fjord-client = { path = "../fjord-client" }
+fjord-schema = { path = "../fjord-schema" }
+fjord-wire = { path = "../fjord-wire" }
+
+axum = { version = "0.8", default-features = false, features = [
+    "http1",
+    "tokio",
+    "query",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+fjord-server = { path = "../fjord-server" }
+fjord-store = { path = "../fjord-store" }
+tempfile = "3"

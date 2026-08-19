@@ -6,17 +6,17 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-scratch="${APERTURE_DEMO_DIR:-/tmp/ap-demo}"
+scratch="${FJORD_DEMO_DIR:-/tmp/fj-demo}"
 
-cargo build --manifest-path "$root/Cargo.toml" --bin aperture
+cargo build --manifest-path "$root/Cargo.toml" --bin fjord
 
 rm -rf "$scratch"
 mkdir -p "$scratch"
 
-"$root/target/debug/aperture" --data-dir "$scratch/db" create code
+"$root/target/debug/fjord" --data-dir "$scratch/db" create code
 
-"$root/target/debug/aperture" --data-dir "$scratch/db" serve \
-    --socket "$scratch/aperture.sock" \
+"$root/target/debug/fjord" --data-dir "$scratch/db" serve \
+    --socket "$scratch/fjord.sock" \
     --ready-file "$scratch/ready" &
 server=$!
 trap 'kill "$server" 2>/dev/null || true' EXIT
@@ -28,4 +28,4 @@ done
 
 [ -e "$scratch/ready" ] || { echo "the server never became ready" >&2; exit 1; }
 
-dotnet run --project "$root/clients/dotnet/Aperture.Demo" -- --at "$scratch/aperture.sock//code"
+dotnet run --project "$root/clients/dotnet/Fjord.Demo" -- --at "$scratch/fjord.sock//code"

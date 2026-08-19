@@ -1,4 +1,4 @@
-//! `aperture create <name> [--schema <file>]`.
+//! `fjord create <name> [--schema <file>]`.
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,7 @@ use crate::{
 /// A database that now exists, however it was made.
 ///
 /// One type for both doors, so the caller does not have to know which one answered —
-/// which is [operations §5](../../docs/aperture-cli-design.md)'s rule that local and
+/// which is [operations §5](../../docs/fjord-cli-design.md)'s rule that local and
 /// remote are a property of the *address*, seen from the printing end.
 pub struct Created {
     pub name: String,
@@ -52,7 +52,7 @@ pub fn run(
             // server would hold less than the same command built locally.
             let source = resolved
                 .as_ref()
-                .map(aperture_schema::syntax::print::print)
+                .map(fjord_schema::syntax::print::print)
                 .unwrap_or_default();
 
             server.create(&target.database, &source)?

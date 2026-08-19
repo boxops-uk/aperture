@@ -1,15 +1,15 @@
 //! **The built-in schema** — a code index, now *read* rather than written.
 //!
 //! One fact per thing, and everything about a thing pointing at it by
-//! [`FactId`](aperture_schema::id::FactId) rather than repeating it. It is the shape
+//! [`FactId`](fjord_schema::id::FactId) rather than repeating it. It is the shape
 //! `example/index.py` emits ([`example/README.md`](../../example/README.md)), the
 //! shape the shell queries, and the shape a client writes against — which is the
 //! point of it living here rather than in either binary.
 //!
 //! **Nothing here states a schema any more.** Until Phase 8.4 this file *was* the
 //! schema: twenty-two predicates of hand-written Rust, with six id constants beside
-//! them written down a second time. Both are gone. `schemas/code.aps` is the single
-//! statement, in the language `aperture create --schema` takes, and this module is the
+//! them written down a second time. Both are gone. `schemas/code.sigla` is the single
+//! statement, in the language `fjord create --schema` takes, and this module is the
 //! two lines that parse it plus the lookups that used to be constants. What is left to
 //! guard is therefore not "does the vector still say what it said" but "does the *file*
 //! still declare what the rest of the tree names" — which is what `tests` below asks.
@@ -22,7 +22,7 @@
 //! file is compiled by and into which assembly, what a type extends, what a member
 //! overrides, what a parameter's type is spelled as, what the doc comment says.
 //! They are written by
-//! [`Aperture.Indexer`](../../clients/dotnet/Aperture.Indexer/README.md), which has
+//! [`Fjord.Indexer`](../../clients/dotnet/Fjord.Indexer/README.md), which has
 //! Roslyn and MSBuild to answer them with; `example/index.py` fills only the first six
 //! and says so. A predicate nobody fills is an empty keyspace pair, which costs the
 //! ~30 ms it takes to create it and nothing after that.
@@ -41,7 +41,7 @@
 
 use std::sync::LazyLock;
 
-use aperture_schema::{
+use fjord_schema::{
     schema::{PredicateId, Schema},
     syntax,
 };
@@ -49,19 +49,19 @@ use aperture_schema::{
 /// The schema itself, as text.
 ///
 /// **This file is the schema.** It was twenty-two predicates of hand-written Rust until
-/// Phase 8.4; `schemas/code.aps` is now the only statement of it in this crate, and it
-/// is a file a person can read, diff, and pass to `aperture create --schema`.
-const SOURCE: &str = include_str!("../schemas/code.aps");
+/// Phase 8.4; `schemas/code.sigla` is now the only statement of it in this crate, and it
+/// is a file a person can read, diff, and pass to `fjord create --schema`.
+const SOURCE: &str = include_str!("../schemas/code.sigla");
 
 /// The catalogue, declared in the same language as everything else.
 ///
 /// Public because it is what a **server** appends to every database's own schema: a
 /// virtual predicate belongs to whoever answers it, so it travels with the process
-/// rather than with the artifact ([`aperture_server::registry::Schemas`]).
-pub const CATALOGUE_SOURCE: &str = include_str!("../schemas/catalogue.aps");
+/// rather than with the artifact ([`fjord_server::registry::Schemas`]).
+pub const CATALOGUE_SOURCE: &str = include_str!("../schemas/catalogue.sigla");
 
 /// The store root as a predicate, by name — the first of the virtual ones.
-pub const CATALOGUE_NAME: &str = "aperture.db.List";
+pub const CATALOGUE_NAME: &str = "fjord.db.List";
 
 /// The schema everything here resolves names against: **a code index**, which is the
 /// canonical shape for a fact database — one fact per thing, and everything about a
@@ -95,7 +95,7 @@ pub const CATALOGUE_NAME: &str = "aperture.db.List";
 /// | `src.Line` | the **wide row**: a file's line table, one fact per line, the text on the value side |
 ///
 /// **Why the field order decides the seeks, and why it is declared rather than derived.**
-/// A record's fields are stored in the order `schemas/code.aps` lists them, that order
+/// A record's fields are stored in the order `schemas/code.sigla` lists them, that order
 /// *is* the key order, and a query can only narrow on a leading run of it. So
 /// `src.Extends` is declared `{base, type}` because "everything deriving from this" is
 /// the question worth a seek; `{iface, type}`, `{container, member}` and
@@ -106,7 +106,7 @@ pub const CATALOGUE_NAME: &str = "aperture.db.List";
 /// the order followed from the names — that renaming `base` to `super` would silently
 /// change what `src.Extends` answers. Nothing sorts these slices: `flatten` walks the
 /// schema's own slice by index and looks each query field up by name, and
-/// `aperture_store::fact`'s `the_encoding_order_is_the_declared_order` has always pinned
+/// `fjord_store::fact`'s `the_encoding_order_is_the_declared_order` has always pinned
 /// that. What the alphabetical habit did was make the physical key order a *consequence*
 /// of naming, which is how `src.Decl` came to lead with a line number and `src.Ref` with
 /// a column — the two most expensive keys in the index, both by accident.
@@ -123,7 +123,7 @@ pub fn schema() -> Schema {
     SCHEMA.clone()
 }
 
-/// The id `aperture.db.List` takes — **looked up, never assumed**.
+/// The id `fjord.db.List` takes — **looked up, never assumed**.
 ///
 /// Ids come from sorting a schema's names ([D1](../../docs/phase-8-schemas.md)), so a
 /// position is a fact about the whole schema rather than about one declaration. A
@@ -154,7 +154,7 @@ pub fn id(name: &str) -> PredicateId {
 /// The schema a **server** answers queries against: the stored one, plus the catalogue.
 ///
 /// **Virtual predicates belong to the server, not to the database**, and everything
-/// about how this is put together follows from that one sentence. `aperture.db.List` is
+/// about how this is put together follows from that one sentence. `fjord.db.List` is
 /// not in [`schema`], so it is not in the handshake fingerprint, not in the copy
 /// embedded at create, and not a pair of keyspaces in any artifact — which is why a
 /// client that has never heard of it still connects, and why the .NET clients did not
@@ -171,7 +171,7 @@ pub fn with_catalogue() -> Schema {
         // **The file decides which predicates are virtual, not a list here.** Parsed a
         // second time on its own so its declarations can be named, because the
         // alternative — a constant per predicate, or "everything after the stored ones" —
-        // is a second statement of what `catalogue.aps` already says, and the first
+        // is a second statement of what `catalogue.sigla` already says, and the first
         // predicate added to it would leave one of them stored: given keyspaces at
         // `create`, hashed into `ops-I4`'s identity, and inside the fingerprint every
         // client has to agree with.
@@ -224,7 +224,7 @@ fn parse_or_panic(source: &str, _path: Option<&str>) -> Schema {
 
 #[cfg(test)]
 mod tests {
-    use aperture_schema::schema::PredicateTy;
+    use fjord_schema::schema::PredicateTy;
 
     use super::*;
 
@@ -273,11 +273,11 @@ mod tests {
 
     /// **The .NET client states this schema independently, and must still agree.**
     ///
-    /// The golden records the fingerprint `Aperture.Demo` computed from its own
+    /// The golden records the fingerprint `Fjord.Demo` computed from its own
     /// twenty-seven declarations. `byte_identical_with_dotnet` compares that against a
     /// *third* statement in Rust, which is what makes the codec argument; what neither
     /// checks is whether either agrees with the schema the **server** actually serves,
-    /// because that one is parsed from `schemas/code.aps` and nothing else reads it.
+    /// because that one is parsed from `schemas/code.sigla` and nothing else reads it.
     ///
     /// Until this test, drift there surfaced as a failed handshake in `run-demo.sh` —
     /// a real guard, but one that needs `dotnet` and a running server to fire. This is
@@ -297,9 +297,9 @@ mod tests {
             .expect("the golden names a schema fingerprint");
 
         assert_eq!(
-            aperture_schema::fingerprint::of(&schema()),
+            fjord_schema::fingerprint::of(&schema()),
             recorded,
-            "`schemas/code.aps` and the .NET client's declaration have drifted — \
+            "`schemas/code.sigla` and the .NET client's declaration have drifted — \
              the demo would be refused at the handshake"
         );
     }
@@ -477,8 +477,8 @@ mod catalogue {
     /// keeping two schemas and hoping they stay in step.
     #[test]
     fn the_catalogue_does_not_change_the_handshake() {
-        let stored = aperture_schema::fingerprint::of(&schema());
-        let served = aperture_schema::fingerprint::of(&with_catalogue());
+        let stored = fjord_schema::fingerprint::of(&schema());
+        let served = fjord_schema::fingerprint::of(&with_catalogue());
 
         assert_eq!(
             stored, served,
@@ -513,7 +513,7 @@ mod catalogue {
     /// **Exactly the catalogue's predicates are virtual, and nothing else is.**
     ///
     /// Stated as a set rather than as one id: the failure this guards is a predicate
-    /// added to `catalogue.aps` and left *stored*, which gives it keyspaces at `create`,
+    /// added to `catalogue.sigla` and left *stored*, which gives it keyspaces at `create`,
     /// puts it in `ops-I4`'s identity, and moves the fingerprint every client agrees
     /// with. That is what happened the first time one was added.
     #[test]

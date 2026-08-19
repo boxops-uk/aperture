@@ -25,13 +25,13 @@
 //!
 //! A **reference** renders as `"#predicate:sequence"`, the same string the table
 //! shows. A raw `u64` would be the id's bytes rather than the id: nothing takes one as
-//! input (focus names a fact by its key, not by its number), so the useful thing is the
+//! input (sigla names a fact by its key, not by its number), so the useful thing is the
 //! one a person can read and a script can compare.
 //!
 //! # An **expanded** reference is the fact, and the schema is what names it
 //!
 //! `:expand` and `--expand` replace a reference with the fact it names
-//! ([`Expander`](aperture_client::Expander)), so what arrives here is a nested fact where
+//! ([`Expander`](fjord_client::Expander)), so what arrives here is a nested fact where
 //! the descriptor says `Fact(p)`. The descriptor is not wrong — that *is* what the row
 //! carried — it simply has nothing to say about the shape underneath, which is `p`'s key.
 //! So this is the one place rendering consults the **schema** rather than the descriptor,
@@ -58,8 +58,8 @@
 
 use std::{io::Write, sync::Arc};
 
-use aperture_client::{Desc, WireValue};
-use aperture_schema::schema::{PredicateId, Schema};
+use fjord_client::{Desc, WireValue};
+use fjord_schema::schema::{PredicateId, Schema};
 
 use crate::cli::RowFormat;
 
@@ -258,7 +258,7 @@ impl<W: Write> Sink<W> {
 /// One value, as a person reads it.
 ///
 /// A reference prints as `#predicate:sequence` rather than as its raw `u64`, because
-/// that is what a [`FactId`](aperture_schema::id::FactId) *is* — a snowflake, the
+/// that is what a [`FactId`](fjord_schema::id::FactId) *is* — a snowflake, the
 /// owning predicate in the high bits and a per-predicate sequence in the low
 /// ([I11](../docs/invariants.md#i11)) — and a sixteen-digit number hides both halves.
 #[must_use]
@@ -267,7 +267,7 @@ pub fn render(value: &WireValue) -> String {
         WireValue::Int(n) => n.to_string(),
         WireValue::Str(text) => text.clone(),
 
-        WireValue::Ref(aperture_client::WireRef::Id(id)) => {
+        WireValue::Ref(fjord_client::WireRef::Id(id)) => {
             format!("#{}:{}", id.predicate().0, id.sequence())
         }
 
@@ -277,7 +277,7 @@ pub fn render(value: &WireValue) -> String {
         // which is what somebody turned expansion on to see. The same shape reaches here
         // from a producer that nested a reference on the way *in*, and there is nothing
         // to tell them apart by — nor any reason to.
-        WireValue::Ref(aperture_client::WireRef::Nested(fact)) => render(&fact.key),
+        WireValue::Ref(fjord_client::WireRef::Nested(fact)) => render(&fact.key),
 
         WireValue::Record(fields) => {
             let cells: Vec<String> = fields.iter().map(render).collect();
@@ -304,7 +304,7 @@ fn json(value: &WireValue, desc: &Desc, schema: Option<&Schema>, colour: bool) -
         (WireValue::Int(n), _) => paint(NUMBER, &n.to_string(), colour),
         (WireValue::Str(text), _) => paint(STRING, &json_string(text), colour),
 
-        (WireValue::Ref(aperture_client::WireRef::Id(id)), _) => paint(
+        (WireValue::Ref(fjord_client::WireRef::Id(id)), _) => paint(
             REFERENCE,
             &json_string(&format!("#{}:{}", id.predicate().0, id.sequence())),
             colour,
@@ -313,7 +313,7 @@ fn json(value: &WireValue, desc: &Desc, schema: Option<&Schema>, colour: bool) -
         // The fact a reference names, in place of the reference: an object where the
         // target's key is a record, its bare value where the key is a scalar — which is
         // the same rule the row itself follows, since a row is shaped like its head.
-        (WireValue::Ref(aperture_client::WireRef::Nested(fact)), _) => {
+        (WireValue::Ref(fjord_client::WireRef::Nested(fact)), _) => {
             let target = schema.and_then(|schema| key_desc(schema, fact.predicate));
             json(&fact.key, target.as_ref().unwrap_or(desc), schema, colour)
         }
@@ -429,11 +429,11 @@ mod tests {
     fn a_reference_prints_as_the_snowflake_it_is() {
         // Predicate 3, sequence 7 — the two halves an id is made of, and the reason a
         // raw `u64` would be the wrong thing to show.
-        let id = aperture_schema::id::FactId::new(aperture_schema::schema::PredicateId(3), 7)
+        let id = fjord_schema::id::FactId::new(fjord_schema::schema::PredicateId(3), 7)
             .expect("a fact id");
 
         assert_eq!(
-            render(&WireValue::Ref(aperture_client::WireRef::Id(id))),
+            render(&WireValue::Ref(fjord_client::WireRef::Id(id))),
             "#3:7"
         );
     }
@@ -452,11 +452,11 @@ mod tests {
     /// what a bounded `:expand 1` produces.
     #[test]
     fn an_expanded_reference_is_named_by_the_schema() {
-        use aperture_client::{WireFact, WireRef};
+        use fjord_client::{WireFact, WireRef};
 
         let schema = Arc::new(crate::code_index::schema());
-        let file = aperture_schema::id::FactId::new(crate::code_index::id("src.File"), 4)
-            .expect("a fact id");
+        let file =
+            fjord_schema::id::FactId::new(crate::code_index::id("src.File"), 4).expect("a fact id");
 
         let desc = Desc::Record(Box::from([
             ("name".to_owned(), Desc::Str),
@@ -621,16 +621,16 @@ mod tests {
 
     /// A reference is the string the table shows, not the number underneath it.
     ///
-    /// Nothing takes a raw id as input — focus names a fact by its key — so the useful
+    /// Nothing takes a raw id as input — sigla names a fact by its key — so the useful
     /// rendering is the one that shows which predicate it belongs to.
     #[test]
     fn a_reference_is_readable_in_json_too() {
-        let id = aperture_schema::id::FactId::new(aperture_schema::schema::PredicateId(3), 7)
+        let id = fjord_schema::id::FactId::new(fjord_schema::schema::PredicateId(3), 7)
             .expect("a fact id");
 
         let mut out = vec![];
         let mut sink = Sink::new(&mut out, RowFormat::Jsonl, &Desc::Int).unwrap();
-        sink.row(&WireValue::Ref(aperture_client::WireRef::Id(id)))
+        sink.row(&WireValue::Ref(fjord_client::WireRef::Id(id)))
             .unwrap();
         sink.end().unwrap();
 
@@ -691,11 +691,11 @@ mod tests {
             ("line".to_owned(), Desc::Int),
             (
                 "of".to_owned(),
-                Desc::Fact(aperture_schema::schema::PredicateId(3)),
+                Desc::Fact(fjord_schema::schema::PredicateId(3)),
             ),
         ]));
 
-        let id = aperture_schema::id::FactId::new(aperture_schema::schema::PredicateId(3), 7)
+        let id = fjord_schema::id::FactId::new(fjord_schema::schema::PredicateId(3), 7)
             .expect("a fact id");
 
         let mut out = vec![];
@@ -704,7 +704,7 @@ mod tests {
         sink.row(&record(vec![
             WireValue::Str("encode".to_owned()),
             WireValue::Int(12),
-            WireValue::Ref(aperture_client::WireRef::Id(id)),
+            WireValue::Ref(fjord_client::WireRef::Id(id)),
         ]))
         .unwrap();
         sink.end().unwrap();
@@ -724,7 +724,7 @@ mod tests {
         sink.row(&record(vec![
             WireValue::Str("encode".to_owned()),
             WireValue::Int(12),
-            WireValue::Ref(aperture_client::WireRef::Id(id)),
+            WireValue::Ref(fjord_client::WireRef::Id(id)),
         ]))
         .unwrap();
         sink.end().unwrap();

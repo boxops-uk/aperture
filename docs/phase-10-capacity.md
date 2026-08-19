@@ -1,6 +1,6 @@
 # Phase 10 — Capacity: measure it
 
-> [Aperture design book](../README.md) · **folded into [`PLAN.md`](../PLAN.md)** as
+> [Fjord design book](../README.md) · **folded into [`PLAN.md`](../PLAN.md)** as
 > Phase 10, which now owns the tasks and the acceptance. What is kept here is the part
 > that does not belong in a plan: §2's eight hypotheses, read out of the code *before*
 > anything was measured and recorded as predictions rather than findings, and the working
@@ -11,7 +11,7 @@
 > **Status — read this before the rest.** This was drafted against the tree at
 > `d57f45167` and two commits landed underneath it: `ce377eb81` (committing
 > `examples/breakdown.rs`) and `87d3055b2` (`examples/soak.rs` plus the whole
-> `Aperture.Indexer`). **S6 is therefore largely built, not proposed.** `soak.rs`
+> `Fjord.Indexer`). **S6 is therefore largely built, not proposed.** `soak.rs`
 > already does the weighted mix, per-client think time, per-class percentiles,
 > offered-vs-achieved saturation reading, an error count, and `--stalled` for paused
 > readers — and its header already states the generator-shares-the-machine caveat §5
@@ -20,7 +20,7 @@
 >
 > **S1–S3 are now built and run.** `examples/engine.rs --layer executor|compile|store`
 > is the instrument, and it was run against a real index — `dotnet/runtime`'s whole
-> `src/` tree, **18,176,899 facts**, built by `Aperture.Indexer`. The results, and the
+> `src/` tree, **18,176,899 facts**, built by `Fjord.Indexer`. The results, and the
 > three findings they turned up, are in [`bench/FINDINGS.md`](../bench/FINDINGS.md):
 > **F7 answered** (paging costs one seek per page — 4–12 µs, ~10% of a 256-row chunk),
 > **F3 answered** (compile is 4–14 µs, linear in query size, 2–7% of the round-trip
@@ -70,7 +70,7 @@
 > **§5's host description is stale**: this box is now 8 cores / 32 GB / 185 GB free, not
 > 4 / 15 / 5.8. The disk constraint that shaped the plan is gone.
 
-**Goal.** Find out whether Aperture DB holds up for a few hundred to ~1000 concurrent
+**Goal.** Find out whether Fjord DB holds up for a few hundred to ~1000 concurrent
 users issuing overlapping queries of mixed complexity — by building a ladder of
 measurement surfaces from the executor upward, recording what each one costs, and writing
 down the findings. **Measurement only:** no mechanical guards, no fixes.
@@ -92,9 +92,9 @@ behaviour on any data path. The only production-code edits are counters and a fe
 Performance is, in the written plan, a non-topic. `PLAN.md`'s 1489 lines contain no phase,
 no target, no acceptance criteria and no cost model for it; the closest is one sentence
 deferring file ingestion as "a throughput feature". [Operations
-§1](aperture-cli-design.md) admits the hole outright:
+§1](fjord-cli-design.md) admits the hole outright:
 
-> Aperture states no target corpus size, no churn rate and no freshness budget anywhere,
+> Fjord states no target corpus size, no churn rate and no freshness budget anywhere,
 > so `ops-I9` is ultimately a *requirements* question this repo cannot settle on its own.
 
 Two other admissions point the same way: *"there is no cost model"*
@@ -113,7 +113,7 @@ over `PLAN.md` and `CLAUDE.md` returns nothing:
 | `examples/engine.rs` | **S1–S3.** In-process against a real index: ns/row with `Profile` attribution, the paging comparison taken apart per page, the raw scan/seek/point floor under it | committed |
 | `scripts/bench.sh` (71 ln) | create · serve · seed · measure, release-only by construction | committed |
 | `iter::Profile` → `PROFILE` frame → `query --profile` | Rows examined per plan step, with a full-scan flag | committed, fully plumbed |
-| `clients/dotnet/Aperture.Indexer` + `index-repo.sh` | Indexes a real .NET checkout over the wire; `--max-files` dials the size; reports created/deduped | committed; 18.2M facts indexed |
+| `clients/dotnet/Fjord.Indexer` + `index-repo.sh` | Indexes a real .NET checkout over the wire; `--max-files` dials the size; reports created/deduped | committed; 18.2M facts indexed |
 | [`bench/FINDINGS.md`](../bench/FINDINGS.md) | The register: what was measured, the number, what a fix would cost | S1–S3 entered |
 
 Three things are missing, and they are this phase:
@@ -143,7 +143,7 @@ of these is a *prediction* with the rung that settles it and the number that wou
 | # | Hypothesis | Where it comes from | Settled by |
 |---|---|---|---|
 | **F1** ✅ | **Stream tasks leak, per query.** `read_loop`'s `streams: HashMap<u32, StreamHandle>` (`session.rs:316`) has no removal path anywhere in the file; the client's `claim_stream` (`client/connection.rs:528`) never reuses an id. A connection issuing 10k queries leaves 10k parked tokio tasks, each holding `Arc<Session>`, `Arc<Outbound>`, a `CancellationToken` and an `mpsc(2)` buffer, until the *connection* closes — **true, and the mechanism is as described: ~3.5 kB retained per query, growth strictly proportional to queries issued on a connection, so 200k point lookups for one key took the server from 243 MB to 892 MB. It is *bounded*, though — a third such connection added 35 MB where the first added 649, and a realistic population reconnecting between queries retains 58 bytes/query. What it sets is a high-water mark for the busiest connection, not a restart schedule ([findings §7](../bench/FINDINGS.md))** | S7 — RSS and live-task count against **queries issued**, not connections open |
-| **F2** ⛔ | **A mid-chunk cancel reports `ErrorCode::Internal`, not a clean end.** `CANCELLATION_STRIDE = 4096` counts rows *examined* (`iter.rs:389`); `CHUNK_ROWS = 256` counts rows *produced*. A selective query trips the stride inside a chunk → `ApertureError::Cancelled` → `ServerError::Execution` (`session.rs:859`) → an ERROR frame, where the design says *"a cancel is an early end, not a failure"*. Under load this is the common case, and no test covers the branch — **refuted: cancelling the most stride-tripping query available (56,274 examined per row produced) returns a clean end, sends no error frame, and leaves the connection usable. Tested through the client API and through `query --limit`** | S4 / S6 — cancel the `denial` workload and read the frame kind |
+| **F2** ⛔ | **A mid-chunk cancel reports `ErrorCode::Internal`, not a clean end.** `CANCELLATION_STRIDE = 4096` counts rows *examined* (`iter.rs:389`); `CHUNK_ROWS = 256` counts rows *produced*. A selective query trips the stride inside a chunk → `FjordError::Cancelled` → `ServerError::Execution` (`session.rs:859`) → an ERROR frame, where the design says *"a cancel is an early end, not a failure"*. Under load this is the common case, and no test covers the branch — **refuted: cancelling the most stride-tripping query available (56,274 examined per row produced) returns a clean end, sends no error frame, and leaves the connection usable. Tested through the client API and through `query --limit`** | S4 / S6 — cancel the `denial` workload and read the frame kind |
 | **F3** ✅ | **No plan cache.** Every query is parsed, typechecked, flattened and reordered afresh on the blocking pool (`session.rs:577`). At a ~211 µs floor on 4 cores that is a ceiling of roughly 19k q/s whatever the query does — **true, and small: 4–14 µs, 2–7% of the floor, linear in query size ([findings §5](../bench/FINDINGS.md))** | S2 — compile µs as a fraction of the floor |
 | **F4** ✅ | **Per-row framing dominates above ~100k row/s.** One `DATA_ROW` frame per row: ~3 allocations, 2 outbound-mutex acquisitions and a `Notify` each (`session.rs:617`, `outbound.rs:90-122`, `rows.rs`) — **confirmed as significant but misattributed: the row *encoder* is 1.5× (2.1× where the projection builds a record), and the framing, socket and client decode above it are a further 3.6× ([findings §9](../bench/FINDINGS.md))** | S4 — row/s with framing against S1 row/s without |
 | **F5** ⛔ | **A chunk has no byte budget.** `CHUNK_ROWS` is row-bounded only, so 256 wide rows materialise unbounded memory on a blocking thread (`session.rs:863`). The only byte cap in the system is `MAX_PAYLOAD` = 64 MiB, and it is per frame — **not reachable from the query side: a fact's *value* cannot be read by a query at all, so the widest row buildable is three narrow key fields ([findings §4](../bench/FINDINGS.md))** | S1 / S4 — a wide-row workload, RSS at the chunk boundary |
@@ -213,14 +213,14 @@ pub struct Corpus { files, decls_per_file, refs_per_decl, seed, .. }
 impl Corpus { pub fn facts(&self) -> impl Iterator<Item = WireFact> }
 
 pub struct Pivots { /* seek keys, prefixes, names — sampled from whichever corpus loaded */ }
-pub struct Workload { pub name: &'static str, pub focus: String,
+pub struct Workload { pub name: &'static str, pub sigla: String,
                       pub expected_rows: Option<u64>, pub expected_examined: Option<u64> }
 pub fn catalogue(pivots: &Pivots) -> Vec<Workload>
 ```
 
 Two points carried from the house idiom:
 
-- **A workload states the rows it answers with**, exactly as `aperture_engine::corpus`
+- **A workload states the rows it answers with**, exactly as `fjord_engine::corpus`
   makes a `Supported` entry carry its rows. A run returning a different count did not
   measure what it thought, and says so instead of printing a throughput figure.
 - **Pivots are sampled, not computed.** `loadgen` builds its seek key as `files / 2`
@@ -246,7 +246,7 @@ Per workload × corpus size:
   has this number and it is paid on every query
 - RSS at the chunk boundary for the wide-row workload (F5)
 
-Reuse rather than rebuild: `aperture_engine::fixtures::{collect_rows, count_rows,
+Reuse rather than rebuild: `fjord_engine::fixtures::{collect_rows, count_rows,
 run_with_suspends}` (`fixtures.rs:32/59/91`) already drive plans, and `run_with_suspends`
 *is* the paging comparison. `FrozenStore` (`store/fixtures.rs:271`) is the allocation-free
 control. These sit behind `feature = "proptest"`, which the root manifest already enables
@@ -266,7 +266,7 @@ S2 to the scaling-with-query-size question breakdown does not ask.
 `examples/engine.rs --layer store`. Raw `FactStore::scan` / `point` throughput underneath
 S1, so an S1 regression is attributable to the engine rather than to fjall. Also LSM shape
 (freshly ingested vs compacted) and predicate-count effects — a keyspace pair costs ~30 ms
-to create (`store.rs:231`) and the built-in schema holds twenty-two, so `aperture create`
+to create (`store.rs:231`) and the built-in schema holds twenty-two, so `fjord create`
 is a measured **1.4 s** before a fact is written.
 
 ### S4 — The session, in-process
@@ -337,10 +337,10 @@ Measurement, not features. Three sources, increasing intrusiveness.
    chunks run, rows sent, blocking dispatches, queue-full waits, time waiting for a
    blocking slot; plus self-read RSS / thread count / fd count from `/proc/self`.
 
-   **Exposure: `aperture serve --stats-file PATH`** — one JSON line every N seconds. No
+   **Exposure: `fjord serve --stats-file PATH`** — one JSON line every N seconds. No
    wire change, no protocol surface, no design-of-record edit, deletable in one commit. The
-   durable alternative — an `aperture.server.Stats` virtual predicate riding 9f's
-   `aperture.db.List` seam — is the right long-term home and explicitly *not* this phase.
+   durable alternative — an `fjord.server.Stats` virtual predicate riding 9f's
+   `fjord.db.List` seam — is the right long-term home and explicitly *not* this phase.
 
    Also widen `FjallDb::open_snapshots()` (`store.rs:598`, today
    `cfg(any(test, feature = "proptest"))`) behind a new `metrics` feature, so a release
@@ -361,7 +361,7 @@ Measurement, not features. Three sources, increasing intrusiveness.
   findings; withhold absolute capacity claims until real hardware exists. Every result file
   carries a **host fingerprint** (cores, RAM, kernel, rustc, git SHA) and baselines are
   stored per host — which makes moving to a larger machine a re-run, not a rewrite.
-- **The generator competes with the server.** `aperture-client` is synchronous, so N users
+- **The generator competes with the server.** `fjord-client` is synchronous, so N users
   is N OS threads on the same 4 cores. Mitigations: `thread::Builder::stack_size(256 *
   1024)`, and **report the generator's own CPU** (`/proc/self/stat` utime+stime) beside
   every result, so a saturation reading can be attributed. If the generator turns out to
@@ -370,7 +370,7 @@ Measurement, not features. Three sources, increasing intrusiveness.
 - **One server process per store root**, by `flock` (`catalog.rs:145`), non-blocking and
   deliberately not a wait. There is no in-process multi-reader scaling story beyond stream
   multiplexing; horizontal scaling is a copy of a Complete DB per process
-  ([operations §5](aperture-cli-design.md), "Reader scaling model").
+  ([operations §5](fjord-cli-design.md), "Reader scaling model").
 
 ---
 
@@ -398,8 +398,8 @@ Each ends in a recorded, reproducible measurement rather than a green test.
 
 **Modified:** `examples/loadgen.rs` (re-point + population mode) ·
 `examples/breakdown.rs` (S4, after it lands) · `scripts/bench.sh` (rung selector, disk
-check, JSON path) · `crates/aperture-server/src/{server,session,outbound}.rs` (counters) ·
-`crates/aperture-store/src/store.rs` (`metrics` feature) · `PLAN.md` (fold this file in;
+check, JSON path) · `crates/fjord-server/src/{server,session,outbound}.rs` (counters) ·
+`crates/fjord-store/src/store.rs` (`metrics` feature) · `PLAN.md` (fold this file in;
 also gives `loadgen` / `bench.sh` / `breakdown.rs` a home) · `CLAUDE.md` (one pointer)
 
 **Untouched:** the engine, the codec, the wire protocol, the plan IR.
@@ -445,4 +445,4 @@ also gives `loadgen` / `bench.sh` / `breakdown.rs` a home) · `CLAUDE.md` (one p
 
 ---
 
-> [← Testing methodology](testing.md) · [Index](../README.md) · [Operations →](aperture-cli-design.md)
+> [← Testing methodology](testing.md) · [Index](../README.md) · [Operations →](fjord-cli-design.md)

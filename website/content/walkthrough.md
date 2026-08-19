@@ -11,23 +11,23 @@ small enough to seed in 50 ms.
 Set up once:
 
 ```bash
-cd /tmp && mkdir ap-tour && cd ap-tour
-AP=/path/to/aperture/target/release/aperture
+cd /tmp && mkdir fj-tour && cd fj-tour
+AP=/path/to/fjord/target/release/fjord
 ```
 
 ## 1. A schema you can read
 
-The built-in schema is a file, `schemas/code.aps`, and it parses like any other. Ask it
+The built-in schema is a file, `schemas/code.sigla`, and it parses like any other. Ask it
 what it thinks it is:
 
 ```bash
-$AP schema check schemas/code.aps
+$AP schema check schemas/code.sigla
 ```
 
 ```text
 27 predicate(s) in 1 file(s)
-  schemas/code.aps
-fingerprint 0x08b4c4306f2ea1b0
+  schemas/code.sigla
+fingerprint 0xb08eea634e866a75
 ```
 
 The fingerprint is computed over the **canonical form** — fully-qualified names, no
@@ -35,7 +35,7 @@ comments, no whitespace, no declaration order. Two files that mean the same thin
 same number. Per-predicate fingerprints come out too:
 
 ```bash
-$AP schema fingerprint schemas/code.aps
+$AP schema fingerprint schemas/code.sigla
 ```
 
 ```text
@@ -62,11 +62,11 @@ while [ ! -e ./ready ]; do sleep 0.1; done
 
 ```text
 created code (01M0BNMTQ3RWQFMM755NV1MWA3) against the built-in schema
-aperture serve
+fjord serve
   data dir   ./db
-  socket     ./db/aperture.sock
+  socket     ./db/fjord.sock
   protocol   2
-  schema     0x08b4c4306f2ea1b0  (the built-in one; each database is served with its own)
+  schema     0xb08eea634e866a75  (the built-in one; each database is served with its own)
   databases  1
     code                 writable
 ```
@@ -116,7 +116,7 @@ src/f0000000.py
 src/f0000001.py
 src/f0000002.py
 3 row(s)
-aperture: stopped at 3 rows; raise or drop --limit to see the rest
+fjord: stopped at 3 rows; raise or drop --limit to see the rest
 ```
 
 `--limit` is **not** `LIMIT`: the query is unchanged, the server does the work up to the
@@ -154,7 +154,7 @@ $AP --data-dir ./db query code 'R where R = src.Ref _' --format jsonl --limit 2
 "#23:2"
 ```
 
-`#23:1` is a `FactId`: predicate 23, sequence 1. focus cannot ask what it names — a query
+`#23:1` is a `FactId`: predicate 23, sequence 1. sigla cannot ask what it names — a query
 names a fact by its key, never by its number, and putting an id in the language would put a
 storage detail in a query. So the question goes to the **protocol**, and the client asks it:
 
@@ -184,7 +184,7 @@ $AP --data-dir ./db shell code
 Find-references, which is the question this schema is shaped for:
 
 ```text
-focus> :plan {f = F, l = L} where src.Ref {to = src.Decl {name = "symbol_0000000_000"}, file = F, at = {line = L}}
+sigla> :plan {f = F, l = L} where src.Ref {to = src.Decl {name = "symbol_0000000_000"}, file = F, at = {line = L}}
   r0 <- src.Decl scan
        where name == "symbol_0000000_000"
   r1 <- src.Ref seek[to = r0#, file = _, at = _]
@@ -219,7 +219,7 @@ src.Ref   1
 fix is not a query change; it is the schema — and it is what `src.SearchByName` exists for:
 
 ```text
-focus> :plan D where D = src.SearchByName {name = "symbol"..}
+sigla> :plan D where D = src.SearchByName {name = "symbol"..}
   r0 <- src.SearchByName seek[name = "symbol".., to = _]
   head r0#
 ```
@@ -235,7 +235,7 @@ Each of these is `:plan` output, and each is a different piece of the machine.
 **Reading through a reference** — a fetch level, one point read per row above it:
 
 ```text
-focus> :plan N where src.Ref {to = D}; N = D.name
+sigla> :plan N where src.Ref {to = D}; N = D.name
   r0 <- src.Ref scan
   r1 <- src.Decl fetch[r0.to]
   head r1.name
@@ -245,7 +245,7 @@ focus> :plan N where src.Ref {to = D}; N = D.name
 level: the cursor stores nothing for it, because it is recomputed on resume.
 
 ```text
-focus> :plan Y where src.Decl {line = L}; Y = L + 1
+sigla> :plan Y where src.Decl {line = L}; Y = L + 1
   r0 <- src.Decl scan
   r1 = r0.line + 1
   head r1=
@@ -255,7 +255,7 @@ focus> :plan Y where src.Decl {line = L}; Y = L + 1
 source is drained only to its first row, because the question is whether a witness exists:
 
 ```text
-focus> :plan F where F = src.File _; !src.Module {file = F, name = "m0000000"}
+sigla> :plan F where F = src.File _; !src.Module {file = F, name = "m0000000"}
   r0 <- src.File scan
   absent src.Module seek[file = r0#, name = "m0000000"]
   head r0#
@@ -265,7 +265,7 @@ focus> :plan F where F = src.File _; !src.Module {file = F, name = "m0000000"}
 written: "does not start with X" is the two ranges either side of one, and a seek walks one.
 
 ```text
-focus> :plan N where src.Decl {name = N}; N != "symbol_0000000"..
+sigla> :plan N where src.Decl {name = N}; N != "symbol_0000000"..
   r0 <- src.Decl scan
        where name does not start with "symbol_0000000"
   head r0.name
@@ -275,7 +275,7 @@ focus> :plan N where src.Decl {name = N}; N != "symbol_0000000"..
 concatenated. Never DNF-expanded across conjuncts:
 
 ```text
-focus> :plan X where src.Decl {module = M, name = X} | src.Module {file = _, name = X}
+sigla> :plan X where src.Decl {module = M, name = X} | src.Module {file = _, name = X}
   r0 <- src.Decl scan
      | src.Module scan
   head r0.1
@@ -284,15 +284,15 @@ focus> :plan X where src.Decl {module = M, name = X} | src.Module {file = _, nam
 ## 8. Paging that holds a real cursor
 
 ```text
-focus> :limit 3
+sigla> :limit 3
   3 row(s) per page
-focus> F where src.File F
+sigla> F where src.File F
   : str
 "src/f0000000.py"
 "src/f0000001.py"
 "src/f0000002.py"
   :more for the next 3 — 3 so far
-focus> :more
+sigla> :more
 "src/f0000003.py"
 "src/f0000004.py"
 "src/f0000005.py"
@@ -326,8 +326,8 @@ decides what runs.
 
 A schema is a file, and creating a database against one freezes it there:
 
-```aps
-# people.aps
+```schema
+# people.sigla
 schema demo {
 
   # A scalar key: the whole key is one string.
@@ -343,7 +343,7 @@ schema demo {
 ```
 
 ```bash
-$AP schema fingerprint people.aps
+$AP schema fingerprint people.sigla
 ```
 
 ```text
@@ -357,8 +357,8 @@ Adding a predicate is compatible. Changing one — including **reordering its fi
 not, because field order is encoding order:
 
 ```bash
-$AP schema diff people.aps people2.aps    # a fourth predicate added
-$AP schema diff people.aps people3.aps    # `Knows` fields swapped
+$AP schema diff people.sigla people2.sigla    # a fourth predicate added
+$AP schema diff people.sigla people3.sigla    # `Knows` fields swapped
 ```
 
 ```text
@@ -372,11 +372,11 @@ Breaking (1 predicate(s))
 Create a database against it, through the running server:
 
 ```bash
-$AP create './db/aperture.sock//people' --schema people.aps
+$AP create './db/fjord.sock//people' --schema people.sigla
 ```
 
 ```text
-created people (01M0BN8AG2APYZB3B5YXGY58VW) against people.aps
+created people (01M0BN8AG2APYZB3B5YXGY58VW) against people.sigla
 ```
 
 The address is `[where//]name[@instance]`, and it is the same grammar every client takes —
@@ -399,13 +399,13 @@ act. Now the database is an artifact:
 
 ```text
 NAME  INSTANCE                    STATUS    SCHEMA        CONTENT       FACTS  BYTES   CREATED
-code  01M0BNMTQ3RWQFMM755NV1MWA3  complete  08b4c4306f2e  f2c2e86612f5  5200   849350  2026-08-19 00:09:58Z
+code  01M0BNMTQ3RWQFMM755NV1MWA3  complete  b08eea634e86  f2c2e86612f5  5200   849350  2026-08-19 00:09:58Z
 ```
 
 and every writer is refused at the handshake, structurally rather than per fact:
 
 ```text
-loadgen: cannot connect to ./db/aperture.sock: `code` is complete: it takes no more writes
+loadgen: cannot connect to ./db/fjord.sock: `code` is complete: it takes no more writes
 ```
 
 ## What the tour showed

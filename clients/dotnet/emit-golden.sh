@@ -2,7 +2,7 @@
 # Regenerate the golden blocks the Rust client's test compares itself against.
 #
 # Phase 9e's acceptance criterion: the two clients produce byte-identical blocks for
-# the same facts. This writes the C# side's answer; `aperture-client`'s
+# the same facts. This writes the C# side's answer; `fjord-client`'s
 # `byte_identical_with_the_dotnet_client` test writes the Rust side's and compares.
 #
 # Run it when the wire format changes on purpose. If it changes by accident, the Rust
@@ -14,8 +14,8 @@ out="$root/clients/dotnet/golden/blocks.txt"
 
 mkdir -p "$(dirname "$out")"
 
-dotnet run --project "$root/clients/dotnet/Aperture.Demo" -- --golden "$out"
+dotnet run --project "$root/clients/dotnet/Fjord.Demo" -- --golden "$out"
 
 echo
 echo "now check the Rust side still agrees:"
-echo "  cargo test -p aperture-client byte_identical"
+echo "  cargo test -p fjord-client byte_identical"

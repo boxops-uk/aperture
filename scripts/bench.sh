@@ -14,7 +14,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Short, because a Unix socket path has about a hundred bytes to live in and a temp
 # directory under a long prefix silently exceeds it.
-dir="${APERTURE_BENCH_DIR:-/tmp/ap-bench}"
+dir="${FJORD_BENCH_DIR:-/tmp/fj-bench}"
 
 files="${FILES:-10000}"
 decls="${DECLS:-5}"
@@ -22,17 +22,17 @@ conns="${CONNS:-8}"
 runs="${RUNS:-200}"
 block="${BLOCK:-1000}"
 
-cargo build --release --manifest-path "$root/Cargo.toml" --bin aperture --example loadgen
+cargo build --release --manifest-path "$root/Cargo.toml" --bin fjord --example loadgen
 
-aperture="$root/target/release/aperture"
+fjord="$root/target/release/fjord"
 loadgen="$root/target/release/examples/loadgen"
 
 rm -rf "$dir"
 mkdir -p "$dir"
 
-"$aperture" --data-dir "$dir" create code
+"$fjord" --data-dir "$dir" create code
 
-"$aperture" --data-dir "$dir" serve --ready-file "$dir/ready" >"$dir/server.log" 2>&1 &
+"$fjord" --data-dir "$dir" serve --ready-file "$dir/ready" >"$dir/server.log" 2>&1 &
 server=$!
 
 cleanup() {
@@ -42,7 +42,7 @@ cleanup() {
     else
         echo
         echo "server left running (pid $server) over $dir"
-        echo "  $aperture --data-dir $dir query code 'F where src.File F' --format count --timing"
+        echo "  $fjord --data-dir $dir query code 'F where src.File F' --format count --timing"
     fi
 }
 trap cleanup EXIT
@@ -54,12 +54,12 @@ done
 
 [ -e "$dir/ready" ] || { echo "the server never became ready; see $dir/server.log" >&2; exit 1; }
 
-echo "aperture bench — $files files x $decls decls, $conns connections"
+echo "fjord bench — $files files x $decls decls, $conns connections"
 echo "  data dir $dir"
 echo
 
 "$loadgen" \
-    --socket "$dir/aperture.sock" \
+    --socket "$dir/fjord.sock" \
     --database code \
     --files "$files" \
     --decls-per-file "$decls" \
@@ -68,4 +68,4 @@ echo
     --block "$block"
 
 echo
-"$aperture" --data-dir "$dir" describe code | head -20
+"$fjord" --data-dir "$dir" describe code | head -20

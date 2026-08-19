@@ -1,6 +1,6 @@
-# Aperture — build plan
+# Fjord — build plan
 
-The living phase tree for taking *Aperture DB* and **focus** from prototype to production.
+The living phase tree for taking *Fjord DB* and **sigla** from prototype to production.
 This file owns the **sequence**; the *design* is ground truth in the [design book](README.md)
 and the [invariant registry](docs/invariants.md); the *working rules* live in
 [`CLAUDE.md`](CLAUDE.md). Each phase references the design rather than restating it.
@@ -51,7 +51,7 @@ either break the record or require rewriting it, which is worse than untidy. The
 fix: read it for *what is done*, read the [dependency graph](#dependency-graph) for *what depends on
 what*, and treat a number as a name rather than a position.
 
-The engine spine exists in `crates/aperture-engine/`:
+The engine spine exists in `crates/fjord-engine/`:
 
 - **Codec** (`tuple.rs`) — heavily property-tested: order-preservation, round-trip, and
   skip are covered, and the golden marker table now pins the on-disk values
@@ -65,12 +65,12 @@ The engine spine exists in `crates/aperture-engine/`:
   [I4](docs/invariants.md#i4)–[I9](docs/invariants.md#i9) green. `enumerate` consumes the
   executor, so releasing the snapshot at every stop is structural
   ([I8](docs/invariants.md#i8)).
-- **Front end** — `lex → parse → lower → typecheck` is live in `crates/aperture-engine/` (Phase 2 done):
+- **Front end** — `lex → parse → lower → typecheck` is live in `crates/fjord-engine/` (Phase 2 done):
   the full intended surface parses, lowers to the `SyntaxTree` store, and typechecks, with
   every construct deferred to a later phase drawing one specific diagnostic naming it. Three
-  acceptance artifacts: `aperture_engine::corpus` (the audit table as data, with a parse gate and a
-  diagnostic-code gate over it), **`parse ∘ print == id` on generated trees** (`aperture_engine::print`
-  renders a tree back to focus source, so the corpus is worked examples rather than the whole
+  acceptance artifacts: `fjord_engine::corpus` (the audit table as data, with a parse gate and a
+  diagnostic-code gate over it), **`parse ∘ print == id` on generated trees** (`fjord_engine::print`
+  renders a tree back to sigla source, so the corpus is worked examples rather than the whole
   specification), and **a node's span is where the printer emitted it** — the half spans are
   checkable at all, since a tree comparison is blind to them.
 - **Flatten → reorder** (`flatten.rs`, `reorder.rs`, Phase 4 done) — `Compilation::plan`
@@ -88,13 +88,13 @@ The engine spine exists in `crates/aperture-engine/`:
   ([chapter 7](docs/07-compilation.md#what-flatten-defers-and-why)). Phase 5 added **following
   a fact reference** (a fact-id splice and compare) and **hoisting a nested generator**, which
   retired the last of `src/lens/`.
-- **The compilation driver** (`aperture_engine::compile`, Phase 3 done) — one `Compilation` carrying
+- **The compilation driver** (`fjord_engine::compile`, Phase 3 done) — one `Compilation` carrying
   the source, schema, interner, diagnostics sink and the trees the phases produce. A phase
   reports by pushing into the sink and cannot return diagnostics; codes are a `Code` enum
   rather than strings; rendering sorts into source order while the sink keeps arrival order.
-- **A focus shell** (`src/main.rs`, Phase 5 done) — reads a query, highlights it from the
+- **A sigla shell** (`src/main.rs`, Phase 5 done) — reads a query, highlights it from the
   compiler's own lexer, **compiles it through the driver and runs it** against a real `FjallDb`
-  seeded from `aperture_store::fixture`; `:plan` shows the plan without running it and `:facts` scans a
+  seeded from `fjord_store::fixture`; `:plan` shows the plan without running it and `:facts` scans a
   predicate. Its database is the corpus's, so anything the corpus classifies `Supported` is
   typeable at the prompt and returns the rows recorded there.
 - **Store** (`store.rs`) — the fjall store is complete and guarded (Phase 1 done): a pair of
@@ -104,10 +104,10 @@ The engine spine exists in `crates/aperture-engine/`:
   oracle. [I8](docs/invariants.md#i8), [I11](docs/invariants.md#i11),
   [I12](docs/invariants.md#i12) green — the I12 crash case aborts a child process mid-write,
   and the I8 guard cross-checks a drop probe against fjall's own open-snapshot count.
-- **One fixture database** (`aperture_store::fixture`) — the schema, the facts and the example queries
+- **One fixture database** (`fjord_store::fixture`) — the schema, the facts and the example queries
   the corpus, the batteries and the shell all share, deliberately not test-gated. Before it
   there were two databases and a corpus entry was not something a person could run.
-- **Writing a fact by hand** (`aperture_store::fact`) — `FjallDb::put(&schema, &fact)` takes a
+- **Writing a fact by hand** (`fjord_store::fact`) — `FjallDb::put(&schema, &fact)` takes a
   **well-typed value** whose key fields are *named* and resolved against the schema, because
   `put_fact` takes bytes and three of its preconditions fail **silently**: a stored key is
   flat, field order is the schema's declaration order, and only the schema says whether a
@@ -124,7 +124,7 @@ The engine spine exists in `crates/aperture-engine/`:
   row per *level*, and a derive step is recomputed on restore instead of saved
   ([I14](docs/invariants.md#i14)). A **constant bind folds** rather than becoming a step, so
   `X where X = 42` compiles to no steps at all and a plan with no levels is the unit relation.
-  Nothing in focus lowers a derive step yet: the machinery is exercised by hand-built plans, and
+  Nothing in sigla lowers a derive step yet: the machinery is exercised by hand-built plans, and
   its first producer will be a primitive or a subquery.
 - **The deferred query surface** (`flatten.rs`, `ty.rs`, `iter.rs`, `plan.rs`, Phase 6b) — the four
   constructs that parsed and typechecked-as-deferred now compile: **disjunction** is a level with a
@@ -133,7 +133,7 @@ The engine spine exists in `crates/aperture-engine/`:
   *reads*, which is the whole of the placement rule Datalog states separately. The machine grew one
   step kind and no control flow. What each construct still refuses is narrower than the code that
   reports it suggests, and each refusal has a corpus entry.
-- **Schemas are files** (`aperture-schema/src/syntax`, Phase 8.2–8.5) — lex → parse → lower →
+- **Schemas are files** (`fjord-schema/src/syntax`, Phase 8.2–8.5) — lex → parse → lower →
   identity, plus **imports** (`resolve`) and the three commands `schema check` / `fingerprint` /
   `diff`. A database is **created against a schema file**, embeds it as source, and is *served
   from that copy* rather than from whatever the server was started with — which is what lets one
@@ -250,7 +250,7 @@ themselves in the [registry](docs/invariants.md).
 - *upholds:* [I1](docs/invariants.md#i1), [I2](docs/invariants.md#i2).
 
 **Tasks (each ends green):**
-- **0a. Shared test machinery.** Promote `aperture_store::mem_store` (started) + a schema/fixture
+- **0a. Shared test machinery.** Promote `fjord_store::mem_store` (started) + a schema/fixture
   builder into support modules tests import. Add the **NFR guard machinery**: an
   `allocation-counter` dev-dependency (I9), a `FactStore` spy that fails on unexpected `point()`
   (I6), a decode-counter probe (I5). ([testing](docs/testing.md#nfr-guards-are-mechanical-not-eyeballed).)
@@ -289,7 +289,7 @@ re-runs).
 
 **Design of record:** [storage model](docs/03-storage-model.md) (two CFs, keyspace-per-
 predicate, FactId allocation, atomic write); [resume](docs/05-resume.md) (snapshot release);
-[operations §9/§10](docs/aperture-cli-design.md) (on-disk layout; the executor consumes a
+[operations §9/§10](docs/fjord-cli-design.md) (on-disk layout; the executor consumes a
 `(handle, snapshot)` — no connection assumption).
 
 **Why here, not later.** The fjall impl and seeding `put_fact` depend only on the
@@ -335,14 +335,14 @@ single-fact seeding primitive — the bulk pipeline (Phase 7) builds on the same
 
 ---
 
-## Phase 2 — focus grammar: permissive-early, catch-in-compilation
+## Phase 2 — sigla grammar: permissive-early, catch-in-compilation
 
-**Goal.** Bring the focus grammar in `crates/aperture-engine/` up to the full intended feature surface,
+**Goal.** Bring the sigla grammar in `crates/fjord-engine/` up to the full intended feature surface,
 deferring "not-yet-implemented" to later phases via clear diagnostics — so no grammar
 reshape is needed as features land.
 
 **Depends on:** nothing engine-side (parallel with Phase 1). Used `src/lens/` as the
-reference to **re-implement into `focus`** (against the `Plan` IR), deleting it file-by-file;
+reference to **re-implement into `sigla`** (against the `Plan` IR), deleting it file-by-file;
 the last of it went with hoisting in Phase 5.
 
 **Design of record:** [chapter 7](docs/07-compilation.md) (three tree layers; permissive-
@@ -380,27 +380,27 @@ not in the book; each pinned by a test in `parse.rs` or `lexer.rs`):
 discriminants at schema-load). No engine invariant made green here.
 
 **Tasks:**
-- **2a.** ✅ Audit the `focus` grammar/lexer vs the target feature list. The table is
-  **executable** — `aperture_engine::corpus` holds it as data (37 entries, since grown), each classified
+- **2a.** ✅ Audit the `sigla` grammar/lexer vs the target feature list. The table is
+  **executable** — `fjord_engine::corpus` holds it as data (37 entries, since grown), each classified
   `Supported` / `Diagnosed(code)` / `ParseError`, so it cannot drift from what the compiler
   does. Running it before touching the grammar gave the audit empirically: 6 entries did not
   parse, and they were exactly the six constructs 2c adds.
 - **2b.** ✅ Lexer: token boundaries pinned (`E.from` ≠ qualname, `a.B.c`, `..` munch,
   keywords) and the literal decoders added — `parse_nat`, `signed_literal`, `unescape_str`,
   each reporting by code. **Prerequisite discovered:** nothing in the grammar was testable,
-  because `focus` had no parse entry point and no CST façade; those landed first
-  (`aperture_engine::cst`, `aperture_engine::parse`).
+  because `sigla` had no parse entry point and no CST façade; those landed first
+  (`fjord_engine::cst`, `fjord_engine::parse`).
 - **2c.** ✅ Grammar: parens (group + subquery), `never`, union select, flat disjunction,
   statement negation. Resolutions above.
-- **2d.** ✅ Façade → `SyntaxTree` store lowering (`aperture_engine::lower`), with sorted-slice record
+- **2d.** ✅ Façade → `SyntaxTree` store lowering (`fjord_engine::lower`), with sorted-slice record
   fields and a duplicate-field rejection. The boxed ergonomic AST (representation 3) is **not**
   built — nothing needs it yet — so `lens/query.rs` survives.
-- **2e.** ✅ Typecheck (`aperture_engine::ty`, re-implemented from `lens/ty.rs`) against `PredicateTy`,
+- **2e.** ✅ Typecheck (`fjord_engine::ty`, re-implemented from `lens/ty.rs`) against `PredicateTy`,
   emitting one specific diagnostic per deferred construct. No `Ty::Never`: `never` reports as
   not-yet-implemented, so a type for it would be speculative.
 
 **Acceptance:**
-- [x] The target-feature corpus parses in `focus` (incl. constructs deferred to later phases) —
+- [x] The target-feature corpus parses in `sigla` (incl. constructs deferred to later phases) —
       `corpus::every_entry_parses_as_classified`.
 - [x] The implemented subset typechecks; every deferred construct yields a specific, tested
       diagnostic — never a parse error or panic —
@@ -440,14 +440,14 @@ parse), and a side table of *resolved* types. What was left is the sink, the con
 rendering.
 
 **Tasks:**
-- **3a.** ✅ `aperture_engine::diag` — the sink and the code taxonomy. `Code` is an enum (20 variants,
+- **3a.** ✅ `fjord_engine::diag` — the sink and the code taxonomy. `Code` is an enum (20 variants,
   `as_str` rendering exactly the strings Phase 2 used, `kind` deriving the prefix); the
   `Diagnostic` alias moves out of `parser.rs`, which is generated-parser glue; `Diagnostics`
   reports with either span type and filters `has_errors` by severity.
 - **3b.** ✅ Phases take the sink and cannot return diagnostics — `parse → Option<Cst>`,
   `lower → Ast`, `check → Typed`. *Done:* the corpus gates pass **unchanged**, which is what
   proves the signature change altered no behaviour.
-- **3c.** ✅ `aperture_engine::compile::Compilation` — source, schema, interner, sink, tree and side
+- **3c.** ✅ `fjord_engine::compile::Compilation` — source, schema, interner, sink, tree and side
   tables in one context; `check()` sequences the phases; rendering lives here. The CST is
   deliberately not stored (it borrows the source; storing it buys a self-referential struct).
 - **3d.** ✅ `plan()` as the Phase 4 seam: type-checks, then reported `nyi/flatten`
@@ -587,7 +587,7 @@ human — invaluable for integration gaps unit tests miss.
 **Depends on:** Phase 4 (a runnable `Plan` from text) + Phase 1 (a store to run against).
 
 **Design of record:** the iteratee/portal seam it drives is [chapter 5](docs/05-resume.md);
-the remote-first product shell is [operations §5](docs/aperture-cli-design.md).
+the remote-first product shell is [operations §5](docs/fjord-cli-design.md).
 
 **Early now, remote-first later.** The Phase 5 REPL runs in-process against a fixture store
 for fast iteration. The *product* shell is remote-first — always speaks the wire protocol,
@@ -602,10 +602,10 @@ Phase 9; don't build in state a wire shell can't reproduce.
   projected `Value`s with references resolved to the facts they name; `:plan` shows the plan
   without running it. The loop, line editing, highlighting and codespan rendering already
   existed from Phase 2.
-- **5b.** ✅ **One fixture database** (`aperture_store::fixture`): the schema, the facts and the example
+- **5b.** ✅ **One fixture database** (`fjord_store::fixture`): the schema, the facts and the example
   queries the corpus, the batteries and the shell share. Not test-gated, because the shell is
   not a test.
-- **5c.** ✅ Rendering a `Plan` for a person, in `aperture_engine::print` beside the two renderings of a
+- **5c.** ✅ Rendering a `Plan` for a person, in `fjord_engine::print` beside the two renderings of a
   tree it already owned — fields named from the schema, since `of = r0#` is the answer to "did
   it follow the reference?" and `1 = r0#` is not.
 - **5d.** ✅ Both halves of ["reaching a fact through a
@@ -628,7 +628,7 @@ prefix is still a plan. It now carries **the rows the entry answers with**, chec
 real `FjallDb`, and a `Supported` entry cannot be added without saying what it returns.
 
 **Acceptance:**
-- [x] Typing a focus query returns rows (or a well-rendered diagnostic) against a fixture store, end-to-end, through the real compiler and executor.
+- [x] Typing a sigla query returns rows (or a well-rendered diagnostic) against a fixture store, end-to-end, through the real compiler and executor.
 - [x] Diagnostics from typecheck/flatten render nicely (source spans).
 - [x] Every `Supported` corpus entry runs against a real store and returns its recorded rows.
 - [x] Every example the shell offers is a corpus entry that runs.
@@ -713,7 +713,7 @@ and [chapter 5](docs/05-resume.md) (one cursor entry per *level*).
 - [x] A constant bind answers at the prompt — `X where X = 42`, `X where X = {name = "foo", y =
       24}` — and narrows a seek where the written literal would.
 
-**What is left unlowered, deliberately.** Nothing in focus produces a `Step::Derive`: a constant
+**What is left unlowered, deliberately.** Nothing in sigla produces a `Step::Derive`: a constant
 folds, and anything else is a value that differs per row. The nearest candidate, `Y = X.name`,
 would most likely become another *substitution* (an alias for a field of `X`'s register) rather
 than a value slot — so the first real producer is a **primitive**
@@ -813,7 +813,7 @@ Phase 6 built derived binds ahead of a producer: a level's rows come from a list
 so zero is the empty relation, one is a scan and many is a disjunction; a cursor entry carries
 the alternative that produced it; and [I4](docs/invariants.md#i4) is re-proved over generated
 multi-source plans with a census asserting a cut is taken while a later alternative is live.
-Nothing in focus lowers one yet — `nyi/disjunction` is still reported — so what is left of 6b-a
+Nothing in sigla lowers one yet — `nyi/disjunction` is still reported — so what is left of 6b-a
 is `flatten` and `ty.rs`, plus `never` decided alongside them.
 
 **Tasks (coarse — decompose at pickup, per the rule at the top of this file):**
@@ -899,9 +899,9 @@ holding a working implementation. It also puts the **primary ingestion API** fir
 what a client actually programs against.
 
 **Design of record:** the write stream, the wire fact encoding and what a reference is on the
-way in are [operations §6](docs/aperture-cli-design.md#6-wire-protocol--the-write-stream); the
+way in are [operations §6](docs/fjord-cli-design.md#6-wire-protocol--the-write-stream); the
 parallel decode-and-intern pipeline and the fact-file format + sync
-markers are [operations §5 & §8](docs/aperture-cli-design.md) (`ops-I5` one-write-funnel,
+markers are [operations §5 & §8](docs/fjord-cli-design.md) (`ops-I5` one-write-funnel,
 `ops-I4` reproducibility). Interning is
 [chapter 3](docs/03-storage-model.md#interning-a-nested-fact); the storage-vs-transport codec
 split — which runs **both ways** — is
@@ -915,7 +915,7 @@ answers all put a map from every entity to its assigned id inside the *indexer*;
 producer emits what it has in hand where it stands. Both file format and wire format inherit it,
 so there is one fact encoding rather than two.
 
-**What already exists, and what this phase must *not* do to it.** `aperture_store::fact` +
+**What already exists, and what this phase must *not* do to it.** `fjord_store::fact` +
 `FjallDb::put` are the **single-fact** seam ([chapter
 3](docs/03-storage-model.md#writing-a-fact-by-hand)): a well-typed value, key fields resolved
 against the schema by name. It materialises a `Value` per fact, which is right for a deriver
@@ -988,19 +988,19 @@ stays genuinely 7b's is the format, the splitter, and that a file and a socket c
 bytes.
 
 **Acceptance — 7a:**
-- [x] Facts are writable over a socket and queried back on the same connection. Twice over: a Rust client (`aperture-server/tests/over_a_socket.rs`) and a **C# one** (`clients/dotnet`), the second because a client in this repository can agree with the server by accident.
+- [x] Facts are writable over a socket and queried back on the same connection. Twice over: a Rust client (`fjord-server/tests/over_a_socket.rs`) and a **C# one** (`clients/dotnet`), the second because a client in this repository can agree with the server by accident.
 - [x] Transport encoder/decoder round-trip property green (tier-1), nested references included.
 - [x] A nested reference interns to the same `FactId` a second occurrence of that target resolves to — one row, however many parents name it.
 - [x] A nested fact disagreeing with a stored one under the same key is rejected by name (`ops-I5`), and the connection's other streams survive.
 - [x] Interning is bottom-up and total on any well-typed nested value: no order in which a parent is written before the child its key holds. **Narrowed by the property that proved it:** total up to *self-consistency*. A fact naming one target twice with two different value sides is well-typed and contradictory, and is refused as an ordinary conflict — the criterion as written was too strong. The census proves both outcomes are reached, so the weakened property is not vacuous.
 
-**7a is done.** The transport codec and its framing (`aperture-wire` — `varint`, `value`, `crc`,
-`block`, `desc`, `frame`), the write funnel (`aperture-ingest` — `FactSink`, `intern_fact`,
-`intern_block`), the protocol and socket (`aperture-server`), a binary to run it
-(`src/bin/aperture-serve.rs`), and a C# client that proves the protocol is implementable from
+**7a is done.** The transport codec and its framing (`fjord-wire` — `varint`, `value`, `crc`,
+`block`, `desc`, `frame`), the write funnel (`fjord-ingest` — `FactSink`, `intern_fact`,
+`intern_block`), the protocol and socket (`fjord-server`), a binary to run it
+(`src/bin/fjord-serve.rs`), and a C# client that proves the protocol is implementable from
 outside (`clients/dotnet`).
 
-**What 7a deliberately left, each named as deferred in [operations §5](docs/aperture-cli-design.md)
+**What 7a deliberately left, each named as deferred in [operations §5](docs/fjord-cli-design.md)
 rather than discovered later:** fair interleaving between streams (frames carry a stream id and
 the server honours it, but a long query still delays a short one behind it), chunked incremental
 results (the executor already suspends; the loop that resumes it between chunks is missing),
@@ -1034,7 +1034,7 @@ permissive-then-narrow grammar discipline it reuses).
 fingerprints, subset-containment compatibility, embed-and-freeze) are
 [chapter 6](docs/06-types-and-schema.md); the schema *syntax*, Go-style import/`mod`-tree
 resolution, `schema_path` roots, and redeclaration errors are
-[operations §7](docs/aperture-cli-design.md).
+[operations §7](docs/fjord-cli-design.md).
 
 **The step tree is [`docs/phase-8-schemas.md` §4](docs/phase-8-schemas.md)** — `8.1`–`8.6`, and
 numbered rather than lettered because this file already has a *separate* Phase 8b. **8.1–8.5 are
@@ -1104,7 +1104,7 @@ needed the machine change, and everything about it needs a schema.
 finish; derivers read the frozen base via a *sealed snapshot*, write only derived predicates;
 prefix-disjointness makes read/write disjointness structural; embarrassingly parallel, no
 stratification in P0), [chapter 7](docs/07-compilation.md#two-kinds-and-only-one-of-them-is-the-executors-business)
-(the two kinds), and [operations §9](docs/aperture-cli-design.md) (per-predicate trees, which
+(the two kinds), and [operations §9](docs/fjord-cli-design.md) (per-predicate trees, which
 make dropping a re-derived predicate an O(1) tree delete rather than range tombstones).
 
 **Invariants in scope:**
@@ -1127,7 +1127,7 @@ discover after schemas exist:**
   incrementality, not of derivation, so **an immutable DB does not need it**: nothing can be added
   to a Complete DB, so nothing can invalidate a derived fact (`ops-I2`). Record it as a decision
   rather than leaving it implicit — and record it as a **one-way door**: if `ops-I9` ever reopens,
-  every stored derivation containing a `!` becomes unsound, and because focus negates a
+  every stored derivation containing a `!` becomes unsound, and because sigla negates a
   *statement* rather than a pattern the transitive analysis would be at a different granularity
   than Glean's.
 - **Write the query's *results*, not the body's output.** Glean's
@@ -1144,7 +1144,7 @@ discover after schemas exist:**
   because no fact is derived yet.
 
 **Tasks (coarse — decompose at pickup):** a `derivation` on the schema's `Predicate` (there is
-none today, and `focus`'s grammar has no `predicate` keyword — both are Phase 8's to add); the
+none today, and `sigla`'s grammar has no `predicate` keyword — both are Phase 8's to add); the
 derive phase in the lifecycle, reading a sealed snapshot and writing through the one write funnel
 (`ops-I5`); `DerivedAndStored` vs derive-on-demand as a schema-level distinction; re-derivation
 (**not simply a tree drop** — see below); derived-on-derived via sealed rounds — for which the
@@ -1192,10 +1192,10 @@ CLI the design has specified all along.
 [ordering principle](#ordering-principle) for why a hardcoded schema satisfies what 9 needs from
 it, and what pulling 9 forward buys.
 
-**Design of record:** [`docs/aperture-cli-design.md`](docs/aperture-cli-design.md) **in full** —
+**Design of record:** [`docs/fjord-cli-design.md`](docs/fjord-cli-design.md) **in full** —
 CLI tree (§4), per-command requirements (§5), operational invariants `ops-I1`–`ops-I10` (§1), wire
 protocol (§6), on-disk layout (§9), workspace structure (§10). Note §10 puts lifecycle, sidecar
-read/write and store-root enumeration in **`aperture-store`**, not a crate of their own.
+read/write and store-root enumeration in **`fjord-store`**, not a crate of their own.
 
 **Invariants in scope:** *makes enforceable & tested:* `ops-I1`–`ops-I10`. *upholds under a real
 connection layer:* [I8](docs/invariants.md#i8), now exercised through portals rather than only by
@@ -1204,29 +1204,29 @@ the Phase 1 guard. *first interactive exerciser for:* [I4](docs/invariants.md#i4
 ### What "usable if incomplete" means
 
 ```
-aperture create mydb                      # Writable DB, built-in schema stamped in
-aperture serve                            # owns the store root
-aperture list / describe mydb             # sidecar scan; works while the server holds them
-aperture query mydb 'X where src.File X'  # over the wire, streamed, Ctrl-C cancels
-aperture shell mydb                       # REPL over the wire; \more holds the cursor
-aperture finish mydb                      # seal: Writable → Complete, immutable
-aperture db rm mydb
+fjord create mydb                      # Writable DB, built-in schema stamped in
+fjord serve                            # owns the store root
+fjord list / describe mydb             # sidecar scan; works while the server holds them
+fjord query mydb 'X where src.File X'  # over the wire, streamed, Ctrl-C cancels
+fjord shell mydb                       # REPL over the wire; \more holds the cursor
+fjord finish mydb                      # seal: Writable → Complete, immutable
+fjord db rm mydb
 ```
 
 Facts arrive over the wire — the C# client under `clients/dotnet` already does this, and
-`aperture-client` is its Rust twin.
+`fjord-client` is its Rust twin.
 
 **Deliberately outside it**, so the phase has an edge: fact files (7b), schema parsing and the
 `schema` subcommands (8), `db backup`/`restore`/`verify`, shell completions, derivation (8b),
 cross-DB (`ops-I9`), authentication (`ops-I10` stays default-closed), provenance/properties, and
-per-predicate stats. Each is already listed in [operations §11](docs/aperture-cli-design.md) with
+per-predicate stats. Each is already listed in [operations §11](docs/fjord-cli-design.md) with
 the seam that keeps it cheap.
 
 ### 9a — The database as an artifact ✅
 
-`aperture-store` grows the lifecycle §10 assigns it.
+`fjord-store` grows the lifecycle §10 assigns it.
 
-- `APERTURE_META` sidecar, **versioned**, written temp → fsync → rename. Fields exactly §9's:
+- `FJORD_META` sidecar, **versioned**, written temp → fsync → rename. Fields exactly §9's:
   name, instance, status, format version, schema fingerprint, content fingerprint (at finish),
   counts, size, created_at. **No `externally_modified` and no provenance** — `ops-I6` and §5 say
   so, and the versioned format is what makes them later additions rather than migrations.
@@ -1239,7 +1239,7 @@ the seam that keeps it cheap.
 - `create` materialises every predicate's keyspaces up front (§9: a keyspace costs ~30 ms) and
   embeds the canonical schema under `schema/` beside the sidecar.
 - **One built-in schema.** It is currently written twice — `src/main.rs` and
-  `src/bin/aperture-serve.rs` — and becomes one definition in the CLI package's lib target. The
+  `src/bin/fjord-serve.rs` — and becomes one definition in the CLI package's lib target. The
   catalog never sees it: `create` takes `&Schema` and records its fingerprint, which is the
   down payment on [I13](docs/invariants.md#i13) that Phase 8 completes.
 
@@ -1278,13 +1278,13 @@ which is what `ops-I3` actually requires.
 
 ### 9c — The CLI, and the lifecycle commands ✅
 
-`aperture-cli` (the root package, renamed). **First usable checkpoint.**
+`fjord-cli` (the root package, renamed). **First usable checkpoint.**
 
 - clap tree per §4; every global arg `#[arg(global = true)]`.
-- §2 address resolution: bare name → local socket, `aperture://host:port/db` → TCP, `--embedded
+- §2 address resolution: bare name → local socket, `fjord://host:port/db` → TCP, `--embedded
   <path>` → in-process. **Never a silent fallback** from connect to open (`ops-I1`); a missing
   server is a psql-style actionable error.
-- Config layering per §3 (figment: defaults → file → `APERTURE_` env → flags, every field
+- Config layering per §3 (figment: defaults → file → `FJORD_` env → flags, every field
   `Option<T>` so an unset flag does not clobber a lower layer).
 - Commands: `create`, `list`, `describe`, `finish`, `db rm`, `serve`.
 - Output rendering is **client-side** (`--format table|json|raw`); the server never produces JSON.
@@ -1292,7 +1292,7 @@ which is what `ops-I3` actually requires.
 *Acceptance:* **done.** `create → list → describe → finish → list → db rm` end to end against the
 real binary, with `list` showing the status change; `--format json`; a held root refusing every
 lifecycle command by name while `list` and `describe` keep working (`ops-I1` with no silent
-fallback, `ops-I7` needing no lock). 5 tests, no `assert_cmd` — `CARGO_BIN_EXE_aperture` is set
+fallback, `ops-I7` needing no lock). 5 tests, no `assert_cmd` — `CARGO_BIN_EXE_fjord` is set
 for integration tests, so the dependency buys nothing.
 
 **Two things this step did not do**, both deliberately: figment's config *file* layer (defaults →
@@ -1347,7 +1347,7 @@ held every database under the root — they were never the commands being refuse
 `finish` and `remove` mutate, and those became control frames on an ordinary stream: fair
 queueing, per-stream errors and task isolation all come free, and a `create` costing tens of
 milliseconds per keyspace does not stall the connection's reader. §5's *remote* `list` is the
-virtual predicate `aperture.db.List`, which is 9f's and is the normal query machinery.
+virtual predicate `fjord.db.List`, which is 9f's and is the normal query machinery.
 
 **How a command decides, in one place.** `commands::route` — a server listening on the derived
 socket takes the command; nothing listening means this process does the work under the root lock.
@@ -1383,7 +1383,7 @@ correct one: descriptor and row come from the same head type walked in the same 
 `encode_value` zips positionally too. The names are not lost — they live in the `Desc` the client
 receives.
 
-### 9e — `aperture-client` ✅
+### 9e — `fjord-client` ✅
 
 The Rust twin of the C# client: connect, handshake, session modes, stream multiplexing, the write
 stream, and a query stream **that holds its cursor**. Used by the CLI, the shell, and any Rust
@@ -1396,12 +1396,12 @@ says *which* of the two things disagreed. The corpus is chosen for what it reach
 two levels of nesting, a record inside a key, two references to two predicates, and integers on
 both sides of the varint's one-byte boundary. 10 client tests.
 
-**One edge had to be turned round first.** The message vocabulary lived in `aperture-server`, so a
+**One edge had to be turned round first.** The message vocabulary lived in `fjord-server`, so a
 Rust client would have had to depend on the server — fjall, the engine and a runtime, to send a
 handshake — or keep a second copy of the message formats. The second is worse than it sounds: the
 .NET client exists to *detect* drift between two implementations of this protocol, and a second
-Rust copy would be drift we caused ourselves. `protocol` is in `aperture-wire` now, which is where
-[operations §10](docs/aperture-cli-design.md) always put it.
+Rust copy would be drift we caused ourselves. `protocol` is in `fjord-wire` now, which is where
+[operations §10](docs/fjord-cli-design.md) always put it.
 
 **A result is a bookmark, not an iterator**, and that is the design decision worth carrying into
 9f. `Rows` holds no borrow of the connection, so several results can be open at once — which is
@@ -1424,7 +1424,7 @@ two-results-open test and nothing else.
 - `query`: streams incrementally, `--timeout`, Ctrl-C → a per-stream Cancel rather than a
   connection teardown.
 - `shell`: **remote-first, always over the wire**, so the wire format has a permanent exerciser.
-  `\l` (via `aperture.db.List`), `\d [pred]` with prefix fallback, `\c`, `\timing`, `\cancel`,
+  `\l` (via `fjord.db.List`), `\d [pred]` with prefix fallback, `\c`, `\timing`, `\cancel`,
   `\q`, readline history.
 - **`\more` holds the cursor and resumes it.** The highest-value item in operations §5 by a
   distance: the Phase 5 REPL discards the resume token at both call sites, so
@@ -1436,11 +1436,11 @@ two-results-open test and nothing else.
   **Built ahead of the shell**, because it is the instrument performance work needs and the shell
   is not: `Executor::enumerate_profiled` hands back the counter the cancellation stride was already
   keeping, per step, and the server pairs it with the plan's names and a full-scan flag. Reached
-  today through `aperture query --profile`; `\profile` is the same thing with a prompt in front of
+  today through `fjord query --profile`; `\profile` is the same thing with a prompt in front of
   it. The counter is per **step of the plan's body**, not per predicate, because that is what the
   machine counts and what a disjunction, a fetch and a negation each need a slot of; the server is
   where positions become names, since a client holds a query's text and never its plan.
-- `aperture.db.List` as a **virtual predicate** through the normal query machinery — no bespoke
+- `fjord.db.List` as a **virtual predicate** through the normal query machinery — no bespoke
   control message for enumeration.
 - **TCP opt-in**: `--listen-tcp host:port`, default-closed (`ops-I10`), operator responsible for
   the gateway in front of it.
@@ -1454,7 +1454,7 @@ repeated another. Mutation-checked by dropping one row per page.
 **Two shells, not one re-pointed.** This step's plan said 9f would re-point the Phase 5 REPL
 at the wire client. It added a second one instead, and the reason is worth keeping: `:plan`
 and `:type` need a compiler in the same process as the question, and a client holds a query's
-text and never its plan. `aperture shell <db>` is the wire shell; `aperture shell` is still
+text and never its plan. `fjord shell <db>` is the wire shell; `fjord shell` is still
 the embedded demo over its own scratch database.
 
 **And the reason turned out to be half right, which is worth more than the rule.** A client
@@ -1466,12 +1466,12 @@ mistake is the compiler's own diagnostic with a caret and a colour, and `:plan` 
 are answered locally. Both shells still exist, for the honest reason rather than that one —
 the demo *seeds its own database*, which is the thing no wire client can do.
 
-**`aperture.db.List` is a virtual predicate, and it is answered at the `FactStore` seam.**
+**`fjord.db.List` is a virtual predicate, and it is answered at the `FactStore` seam.**
 The obvious home for one is the executor — a `Source::Virtual` beside `Seek` and `Fetch` —
 and that is the wrong place: `FactStore` is already the answer to "where do rows come from",
 and the executor is generic over it, so answering a predicate from memory is a different
 answer to the same question rather than a new question. `Catalogued` wraps the store,
-encodes the listing through `aperture_store::fact::encode` so every row is `predicate_id ++
+encodes the listing through `fjord_store::fact::encode` so every row is `predicate_id ++
 key` byte for byte, and sorts it — after which nothing above it can tell the difference. The
 plan IR gains no variant, the cursor gains no case, `enumerate` is untouched, and I4 needs no
 re-proving, because the resume battery is already written over an arbitrary `FactStore`. What
@@ -1481,12 +1481,12 @@ live.
 Virtuality is a property of the **server**, not of the database, and three things follow that
 nothing had to be told twice: it is skipped by the handshake fingerprint, skipped by the
 schema copy embedded at create, and given no keyspaces. So a client that has never heard of
-`aperture.db.List` still connects — the .NET clients were not touched — and no artifact
+`fjord.db.List` still connects — the .NET clients were not touched — and no artifact
 claims to hold a kind of fact nothing can write.
 
 **`--listen-tcp` needed both halves.** The server binding a port is untestable while the
 client speaks only Unix sockets, so `Connection` grew a `Transport` enum and the CLI grew
-§2's `aperture://host:port/db` form, resolved in the one place `query` and `shell` share. The
+§2's `fjord://host:port/db` form, resolved in the one place `query` and `shell` share. The
 test asks one server the same question through both doors. `ops-I10` stays default-closed:
 no config-file entry, no environment variable, and the startup banner says so when a port is
 open.
@@ -1503,7 +1503,7 @@ open.
 - [x] `\more` is an interactive [I4](docs/invariants.md#i4) exerciser, and the pages concatenate to an uninterrupted run.
 - [x] The same inputs built twice produce the same content fingerprint (`ops-I4`) — including
       when one of them was sealed through a handle the server already held.
-- [x] The workspace matches [operations §10](docs/aperture-cli-design.md) (see the cross-cutting note),
+- [x] The workspace matches [operations §10](docs/fjord-cli-design.md) (see the cross-cutting note),
       including the dependency direction it states: `client → wire`, and nothing depends on the server.
 
 **What is deliberately still missing afterwards**, so "incomplete" is a statement rather than a
@@ -1515,7 +1515,7 @@ here rather than found later.
 
 ## Phase 10 — Capacity: measure it
 
-**Goal.** Find out whether Aperture holds up for a few hundred to ~1000 concurrent users
+**Goal.** Find out whether Fjord holds up for a few hundred to ~1000 concurrent users
 issuing overlapping queries of mixed complexity — by building a ladder of measurement
 surfaces from the executor upward, recording what each costs, and writing the findings
 down. **Measurement, not optimisation.**
@@ -1543,7 +1543,7 @@ good or bad against is a number nobody can act on.
 - **10a. Write the capacity target down.** ✅ [`docs/performance.md`](docs/performance.md) §1
   — corpus size, population, mix, latency objective, and what is deliberately *not*
   targeted. Stated as a proposal derived from measurement rather than from a requirement,
-  because [operations §1](docs/aperture-cli-design.md) is right that this repo cannot settle
+  because [operations §1](docs/fjord-cli-design.md) is right that this repo cannot settle
   a requirements question on its own; it is written to be argued with and replaced.
 - **10b. `docs/performance.md`** ✅ — the method beside [`docs/testing.md`](docs/testing.md):
   the ladder, what each rung isolates, the four rules that make a number reportable, host
@@ -1604,8 +1604,8 @@ migration once somebody's index is in production.
 
 ## Cross-cutting — workspace extraction
 
-The design's target layout ([operations §10](docs/aperture-cli-design.md)) is a Cargo
-**workspace** (`aperture-schema` / `-encoding` / `-store` / `-engine` / `-ingest` / `-wire` /
+The design's target layout ([operations §10](docs/fjord-cli-design.md)) is a Cargo
+**workspace** (`fjord-schema` / `-encoding` / `-store` / `-engine` / `-ingest` / `-wire` /
 `-client` / `-server` / `-cli`).
 
 **The first four are done**, ahead of Phase 7 and on purpose: ingestion is the first thing that
@@ -1632,7 +1632,7 @@ Not on the critical path; each is additive: order comparisons (`ResidualOp`
 arms); `pattern = pattern` full unification (easy half in Phase 4, reject the three hard
 cases); `evolves`; cross-DB query. Detail and kept seams:
 [`CLAUDE.md` scope](CLAUDE.md#scope-phases--open-decisions),
-[open decisions](docs/open-decisions.md), [operations §11](docs/aperture-cli-design.md). The
+[open decisions](docs/open-decisions.md), [operations §11](docs/fjord-cli-design.md). The
 two *non-additive* constructs — derived facts (Phase 6) and the now-resolved `FactRef` marker
 — are handled as deliberate changes above.
 
@@ -1686,8 +1686,8 @@ work rather than auditing rules: the write funnel's single thread is what holds
   available today: per-predicate keyspaces plus insert-only make fjall's `approximate_len()`
   reliable rather than approximate, and it is unused. This is better than Glean, which maintains
   a stats column family incrementally and still returns bounds. Surface it as a **virtual
-  predicate** with a `:stat` alias — the shape `aperture.db.List` established and the home
-  [`stats.rs`](crates/aperture-server/src/stats.rs)'s module doc already names, so it needs no
+  predicate** with a `:stat` alias — the shape `fjord.db.List` established and the home
+  [`stats.rs`](crates/fjord-server/src/stats.rs)'s module doc already names, so it needs no
   new frame kind. Spend it on **pruning**, not join ordering.
 - **`hasRefs` precomputed per predicate**, consulted before walking a fact's references. Glean's
   traversal generator skips subtrees that cannot contain a reference; ours walks everything.
@@ -1715,7 +1715,7 @@ work rather than auditing rules: the write funnel's single thread is what holds
   KV-separation decision. **Measure, do not assume.** Two constraints this puts on the bench
   harness: keyspace options are fixed at *creation*, so a comparison must **build a database per
   setting** rather than toggle a knob; and the effect is on point-read latency at a size where
-  filters matter, so it needs an `ap-runtime`-scale corpus rather than a fixture. Until that
+  filters matter, so it needs an `fj-runtime`-scale corpus rather than a fixture. Until that
   exists, fjall's defaults are the right answer — they already do most of what Glean sets by
   hand.
 
@@ -1776,7 +1776,7 @@ above it *produces* rather than per row a scan examines — which is why
 
 ## Phase 11 — A code-search site, and what it took ✅
 
-**Goal.** Build Glean's code-navigation demo on Aperture — browse a repository, open a
+**Goal.** Build Glean's code-navigation demo on Fjord — browse a repository, open a
 file, click a symbol, land on its definition — plus the three things that demo implies
 and Glass actually serves: search, find-references, a symbol panel. Then fix what
 building it turned out to need.
@@ -1797,12 +1797,12 @@ analysis is kept as written rather than edited to match the outcome.
 - **Order comparisons**, as a byte compare over the order-preserving encoding
   ([I1](docs/invariants.md#i1)) rather than a decode. `X < 3` was a **lex** error before
   this — the one place the grammar broke its own permissive-early rule.
-- **Arithmetic**, which is the first thing in focus to lower a `Step::Derive` at all.
+- **Arithmetic**, which is the first thing in sigla to lower a `Step::Derive` at all.
 - **A cursor the client can hold**, so paging stops needing the connection — which
   nothing could work around, since "everything after key K" is not expressible.
 - **`QUERY_COUNT`**: the same plan with a different accumulator, so a search UI can say
   how many results there are without receiving them.
-- **[`aperture-viewer`](crates/aperture-viewer)**, over `aperture-client` and nothing
+- **[`fjord-viewer`](crates/fjord-viewer)**, over `fjord-client` and nothing
   below it.
 
 **Not built, and each for a stated reason:** stored derivation (Phase 8b, gated on
@@ -1847,7 +1847,7 @@ for it rather than what justifies it.
 **Design of record — read these, don't restate them:** the decision, its reversal and every accepted
 tradeoff are
 [open decisions](docs/open-decisions.md#parallel-writes-to-a-writable-database--settled-yes-behind-a-striped-merge-frontier);
-the corrected invariant reasoning is [operations §1](docs/aperture-cli-design.md) (`ops-I1`,
+the corrected invariant reasoning is [operations §1](docs/fjord-cli-design.md) (`ops-I1`,
 `ops-I4`, `ops-I5`) and [I12](docs/invariants.md#i12); the mechanism and why it needs no lock
 ordering are [chapter 3](docs/03-storage-model.md#the-other-half-of-the-bijection--one-key-one-fact);
 the measurement is [findings §12](bench/FINDINGS.md); the two work-cutting items and Glean's
@@ -1880,7 +1880,7 @@ lands in the middle with the suite green around it, and the item that depends on
 lands last.
 
 - **12a — a write rung. ✅** `examples/ingest.rs`, with the corpus stated once in
-  `aperture_cli::workload::Corpus` beside the query catalogue. Five layers — `commit`, `create`,
+  `fjord_cli::workload::Corpus` beside the query catalogue. Five layers — `commit`, `create`,
   `dedup:warm`, `dedup:cold`, `block:*` — arranged so the *differences* are the answers:
   committing is 41% of interning, the cache is 23% of a resolve pass, block decode is 32% on top
   ([findings §13](bench/FINDINGS.md)). Two things it does differently from the read ladder, both
@@ -1898,13 +1898,13 @@ lands last.
   its evidence is a re-index, which is hours. The projection stands unverified until someone runs
   one, and should be labelled that way wherever it is quoted.
 - **12c — cut the redundant work. ✅** The
-  [lookup cache](crates/aperture-store/src/lookup_cache.rs) in front of `fact_at`, and the
+  [lookup cache](crates/fjord-store/src/lookup_cache.rs) in front of `fact_at`, and the
   `entities` read skipped on key-only predicates (22 of the 27 in `code_index`). The trade is
   stated rather than taken silently: that second read doubled as an I12 spot-check, and it is given
   up in favour of the tests that already own the property. Guarded by a **read-count probe, not a
   timing test** — `interning_reads_a_key_once_however_many_references_name_it` and
   `a_key_only_predicate_never_reads_the_entities_tree` in
-  `aperture-ingest/tests/against_a_real_store.rs`, each run against a cold cache as well as a warm
+  `fjord-ingest/tests/against_a_real_store.rs`, each run against a cold cache as well as a warm
   one because creating a fact and *finding* one are different code. Both were proved non-vacuous by
   neutering the mechanisms and watching the counts go 201 → 400 and (3,1) → (3,3). The cache is
   bounded in **bytes**, not entries: an entry count bounds nothing when the keys are encoded fact
@@ -1976,7 +1976,7 @@ lands last.
   all, and that is genuinely cheaper than resolve-or-create per fact. What Phase 12 did was make the
   *simple* path correct, so 7b is no longer blocked on choosing — the stratum design survives as an
   optimisation to be justified by measurement rather than assumed.
-  Rewritten: [operations §5](docs/aperture-cli-design.md)'s `aperture write` pipeline, which is 7b's
+  Rewritten: [operations §5](docs/fjord-cli-design.md)'s `fjord write` pipeline, which is 7b's
   design of record and described a scheme that would no longer be built; two stale spots in §8; and
   7b's own tasks and acceptance above.
 
@@ -2027,18 +2027,18 @@ a rule mechanical and removes a ceiling; the throughput claim belongs to 12b and
 
 - **[The design book](README.md)** — the engine design of record (codec, storage, executor,
   resume, types, compilation) with every invariant and its rationale.
-- **[`docs/aperture-cli-design.md`](docs/aperture-cli-design.md)** — the operational design
+- **[`docs/fjord-cli-design.md`](docs/fjord-cli-design.md)** — the operational design
   of record: lifecycle, `ops-I*` invariants, ingestion pipeline, fact-file format, schema
   resolution/identity, wire protocol, on-disk + workspace layout. **Primary reference for
   Phases 7–9.**
 - **VM / ISA design** (external note) — a fixed-width 64-bit ISA from rewriting Glean's C++
-  query VM. Relevant *only if* Aperture ever moves to a bytecode VM (currently a deliberate
+  query VM. Relevant *only if* Fjord ever moves to a bytecode VM (currently a deliberate
   divergence — we implement the abstract machine directly). Not needed for any current phase.
 - **`src/lens/`** — the disconnected first-attempt front end, which was the reference for
-  re-implementing parse/typecheck/lower/flatten into `focus` (Phases 2–5). **Deleted**, its last
+  re-implementing parse/typecheck/lower/flatten into `sigla` (Phases 2–5). **Deleted**, its last
   file retired by hoisting. Recoverable from git history if a later phase wants to look.
 
-## Phase 13 — Aperture against Glean, on one corpus
+## Phase 13 — Fjord against Glean, on one corpus
 
 **Both write paths are measured; the read paths are not.**
 [Findings §15](bench/FINDINGS.md) and [§16](bench/FINDINGS.md) put the same 18,258,385 facts

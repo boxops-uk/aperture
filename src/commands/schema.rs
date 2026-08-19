@@ -1,4 +1,4 @@
-//! `aperture schema check | fingerprint | diff` — [operations §5](../../docs/aperture-cli-design.md).
+//! `fjord schema check | fingerprint | diff` — [operations §5](../../docs/fjord-cli-design.md).
 //!
 //! The three questions a schema can be asked **before any database holds one**, which
 //! is what makes them worth having: a schema is a build artifact long before it is an
@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use aperture_schema::{
+use fjord_schema::{
     fingerprint::{self, Compatibility, Identity},
     schema::Schema,
     syntax::resolve,
@@ -155,11 +155,11 @@ fn side(what: &str, root: &Path, roots: &[PathBuf]) -> Result<(Identity, String)
 
     let catalog = commands::readable(root)?;
     let entry = catalog.resolve(
-        &aperture_store::catalog::Selector::parse(what)?,
-        aperture_store::catalog::Intent::Read,
+        &fjord_store::catalog::Selector::parse(what)?,
+        fjord_store::catalog::Intent::Read,
     )?;
 
-    let Some(schema) = aperture_store::schema_doc::read(&entry.path)? else {
+    let Some(schema) = fjord_store::schema_doc::read(&entry.path)? else {
         return Err(CliError::Schema(format!(
             "`{what}` embeds no schema copy — it predates one being kept, and there is \
              nothing to compare"

@@ -7,12 +7,12 @@
 
 use std::fmt::Write as _;
 
-use aperture_schema::{
+use fjord_schema::{
     fingerprint,
     schema::{PredicateId, Schema},
     syntax::print,
 };
-use aperture_store::catalog::Entry;
+use fjord_store::catalog::Entry;
 
 /// A table with a header, aligned to its widest cell.
 ///

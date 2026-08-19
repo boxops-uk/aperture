@@ -1,15 +1,15 @@
 ---
 title: Schema language
-description: The .aps schema DSL — blocks, predicates, types, imports, identity and compatibility. Field order is key order, so read that part twice.
+description: The .sigla schema DSL — blocks, predicates, types, imports, identity and compatibility. Field order is key order, so read that part twice.
 ---
 
-A schema is a text file, conventionally `.aps`. It declares namespaces and the predicates
+A schema is a text file, conventionally `.sigla`. It declares namespaces and the predicates
 in them. A database is created **against** a schema, embeds a canonical copy of it, and is
 served from that copy for the rest of its life ([I13](invariants.html#i13)).
 
 ## A whole schema
 
-```aps
+```schema
 # Comments start with `#`.
 schema demo {
 
@@ -84,7 +84,7 @@ wrote is unavailable. See [what is not available yet](#what-is-not-available-yet
 
 A **value side** is `-> T`, and `T` may be any of the above, including a record:
 
-```aps
+```schema
 predicate Decl : { module : Module, name : string, line : int } -> string
 predicate Boxed : { id : int } -> { lo : int, hi : int }
 ```
@@ -97,7 +97,7 @@ A predicate's key is encoded field by field, in **declaration order**, and the e
 order-preserving. A query can therefore narrow the scan on a **leading run** of key fields
 and can only *filter* on the rest.
 
-```aps
+```schema
 # Fast at: "the declarations in this module", "…narrowed by name".
 # Slow at:  "every declaration called X, anywhere".
 predicate Decl : { module : Module, name : string, line : int } -> string
@@ -134,7 +134,7 @@ hold several blocks, so nothing ties a namespace to a file.
 
 An **import names a namespace, never a path**:
 
-```aps
+```schema
 schema app {
   import base
 
@@ -142,25 +142,25 @@ schema app {
 }
 ```
 
-`base` resolves to `base.aps`, and `lang.rust` to `lang/rust.aps`, under a **root**. Roots
+`base` resolves to `base.sigla`, and `lang.rust` to `lang/rust.sigla`, under a **root**. Roots
 are the entry file's own directory first, then `--schema-path` (also
-`APERTURE_SCHEMA_PATH`, separated the way `PATH` is), first match wins.
+`FJORD_SCHEMA_PATH`, separated the way `PATH` is), first match wins.
 
 ```bash
-aperture --schema-path ./schemas schema check ./app.aps
+fjord --schema-path ./schemas schema check ./app.sigla
 ```
 
 ```text
 2 predicate(s) in 2 file(s)
-  ./app.aps
-  ./base.aps
+  ./app.sigla
+  ./base.sigla
 fingerprint 0x72e0ddfeda09028f
 ```
 
-:::note Write `./file.aps`, not `file.aps`
+:::note Write `./file.sigla`, not `file.sigla`
 The entry file's *own directory* is the first root — and a bare relative filename has no
 directory component, so a schema that imports a sibling will not resolve when named as
-`app.aps`. Use `./app.aps` or an absolute path (or pass the directory as `--schema-path`).
+`app.sigla`. Use `./app.sigla` or an absolute path (or pass the directory as `--schema-path`).
 :::
 
 Resolution semantics, in four lines:
@@ -184,11 +184,11 @@ A schema's identity is independent of file layout and declaration order **by con
    schema.
 
 ```bash
-aperture schema fingerprint ./app.aps --canonical
+fjord schema fingerprint ./app.sigla --canonical
 ```
 
 ```text
-aperture-schema-v1
+fjord-schema-v1
 app.Marker:{file:@base.File#0beb86474c616b93,at:{line:int,col:int}}
 base.File:string
 ```
@@ -218,8 +218,8 @@ value — including reordering fields — is `Breaking`, because values are quer
 positionally encoded, so a field change shifts stored bytes.
 
 ```bash
-aperture schema diff people.aps people2.aps
-aperture schema diff people.aps people3.aps
+fjord schema diff people.sigla people2.sigla
+fjord schema diff people.sigla people3.sigla
 ```
 
 ```text
@@ -249,8 +249,8 @@ schema for a projection to live between.
 
 | Moment | What happens |
 |---|---|
-| `aperture schema check` | Resolve imports, union the blocks, lower — reports syntax errors, unresolved imports and redeclarations |
-| `aperture create --schema F` | Resolve, canonicalise, fingerprint, and **embed** the result in the new database |
+| `fjord schema check` | Resolve imports, union the blocks, lower — reports syntax errors, unresolved imports and redeclarations |
+| `fjord create --schema F` | Resolve, canonicalise, fingerprint, and **embed** the result in the new database |
 | A client connecting | The startup frame carries the predicates the client claims, each with its fingerprint; a claim that is not an exact match is checked by subset containment |
 | A client asking `H` | The server answers with the schema **that database** is served with, as source — which is what lets a client compile locally |
 | Every write | Validated against the embedded schema |
@@ -259,7 +259,7 @@ schema for a projection to live between.
 
 Each of these parses and then names itself in a diagnostic:
 
-```aps
+```schema
 schema t {
   predicate A : [ int ]                          # nyi/array
   predicate B : maybe string                     # nyi/maybe
@@ -274,7 +274,7 @@ schema t evolves u                                # nyi/evolves
 ```text
 error[nyi/union]: a union is not available until `PredicateTy` has one — its discriminants
                  are frozen the moment a union fact is written (I10)
-  ┌─ /tmp/nyi.aps:4:17
+  ┌─ /tmp/nyi.sigla:4:17
   │
 4 │   predicate C : { a : int = 0 | b : string = 1 }
   │                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -294,7 +294,7 @@ Two of them are worth understanding rather than just noting:
 
 ## The built-in schema
 
-With no `--schema`, `create` uses `schemas/code.aps`: twenty-seven predicates in three
+With no `--schema`, `create` uses `schemas/code.sigla`: twenty-seven predicates in three
 layers, and the joins between the layers are the point.
 
 | Layer | Predicates | Answerable by |
@@ -303,12 +303,12 @@ layers, and the joins between the layers are the point.
 | Build | `Project`, `Assembly`, `Compilation`, `ProjectSource`, `ProjectRef`, `Package`, `PackageRef` | Something holding a build system |
 | Declarations | `Member`, `Extends`, `Implements`, `Override`, `DerivesFrom`, `Param`, `TypeOf`, `Doc`, `Attribute`, `AttributeOf` | Something holding a compiler |
 
-Read `schemas/code.aps` itself if you are designing a schema: every predicate carries a
+Read `schemas/code.sigla` itself if you are designing a schema: every predicate carries a
 comment saying which question its key order answers, and four of them exist purely because
 a derived predicate cannot yet be declared.
 
-There is also a **virtual** predicate, `aperture.db.List`, declared in
-`schemas/catalogue.aps`. It is answered by the server out of what it knows rather than read
+There is also a **virtual** predicate, `fjord.db.List`, declared in
+`schemas/catalogue.sigla`. It is answered by the server out of what it knows rather than read
 from a keyspace, which is why it is a file of its own: it is deliberately absent from the
 handshake fingerprint, from the copy embedded at create, and from every artifact's
 keyspaces. A client that has never heard of it connects exactly as before.

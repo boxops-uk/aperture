@@ -1,8 +1,8 @@
-# Aperture vs Glean — what we take, what we changed, what we have not decided
+# Fjord vs Glean — what we take, what we changed, what we have not decided
 
-> [Aperture design book](../README.md) · reference doc
+> [Fjord design book](../README.md) · reference doc
 
-[Chapter 1](01-concepts.md) says Aperture is "inspired by [Glean](https://glean.software/),
+[Chapter 1](01-concepts.md) says Fjord is "inspired by [Glean](https://glean.software/),
 not a clone." This is the ledger behind that sentence, because "not a clone" is only
 meaningful if each difference is one of three things, and it is clear which:
 
@@ -15,7 +15,7 @@ meaningful if each difference is one of three things, and it is clear which:
 
 **This ledger is verified against Glean's source**, not against its published design — commit
 `95c0fb6` (~105k lines of Haskell, ~44k of C++, 21k lines of `.angle` schemas, against
-Aperture's 24k of Rust). That matters, because the first version of this file was written from
+Fjord's 24k of Rust). That matters, because the first version of this file was written from
 the public docs and **most of its rows were in the wrong bucket**. The corrections all ran one
 way: we were over-claiming lineage from Glean and under-claiming our own mechanisms. Four
 invariants presented as inherited — [I1](invariants.md#i1), [I2](invariants.md#i2),
@@ -49,7 +49,7 @@ already are that:
   self-delimiting, canonical encoding — **not** an order-preserving one. That is a separate
   bet, and it is ours (§2).
 - **Write once, then read forever.** Glean finishes a DB; we seal it (`Writable → Complete`,
-  [ops-I2/I3](aperture-cli-design.md)). Every cheap thing downstream — free snapshots,
+  [ops-I2/I3](fjord-cli-design.md)). Every cheap thing downstream — free snapshots,
   bytes-only resume, fearless parallel ingest — is bought with this.
 - **Execution is a nested loop with backtracking**, one loop level per generator, and the
   generator order *is* the loop nesting (`glean/db/Glean/Query/Codegen.hs:994-1042`;
@@ -64,7 +64,7 @@ already are that:
   last-writer-wins: `Define::define` returns `Id::INVALID` (`glean/rts/define.h:20-30`) and
   `defineBatch` raises "invalid fact redefinition" (`glean/rts/define.cpp:91-102`). Identical
   facts dedup in both. This was previously filed as a divergence; it is Glean's default rule,
-  and [ops-I5](aperture-cli-design.md) adopts it. What Glean does that we refuse is *disable*
+  and [ops-I5](fjord-cli-design.md) adopts it. What Glean does that we refuse is *disable*
   it on three paths — see §2.
 - **Both maps written atomically** — Glean uses one `WriteBatch` over entities, keys, the id
   counter and stats (`glean/rocksdb/database-impl.cpp:480-537`);
@@ -89,7 +89,7 @@ already are that:
   needs no second fetch (`glean/db/Glean/Query/Flatten.hs:549-586`), which we do not need
   because [I5](invariants.md#i5) already puts the whole row in the register. The seam split —
   dynamic ([Phase 6](../PLAN.md), built) versus stored (Phase 8b) — *is* Glean's seam, and
-  [ops-I8](aperture-cli-design.md) matches its documented derive-before-finish ordering
+  [ops-I8](fjord-cli-design.md) matches its documented derive-before-finish ordering
   almost verbatim.
 - **A self-describing DB** — the schema travels with the data, and identity is a fingerprint
   over a canonical form. Glean's `SchemaId` is a hash over a sorted name environment, which is
@@ -102,9 +102,9 @@ already are that:
 
 ## 2. Deliberate divergences
 
-| Dimension | Glean | Aperture | Why, and where it is recorded |
+| Dimension | Glean | Fjord | Why, and where it is recorded |
 |---|---|---|---|
-| **Deployment** | A Thrift service holding many DBs; clients are remote | **Embedded library first**, with a wire protocol added for a server that reuses the same executor | The executor consumes a `(handle, snapshot)` and assumes no connection ([chapter 3](03-storage-model.md), [ops §5](aperture-cli-design.md)) |
+| **Deployment** | A Thrift service holding many DBs; clients are remote | **Embedded library first**, with a wire protocol added for a server that reuses the same executor | The executor consumes a `(handle, snapshot)` and assumes no connection ([chapter 3](03-storage-model.md), [ops §5](fjord-cli-design.md)) |
 | **Query execution** | Angle compiles to **bytecode for a query VM** (C++) — a flat 60-instruction register machine | A **defunctionalised abstract machine** — an explicit frame stack, no bytecode | [I7](invariants.md#i7). The reason is *not* that an interpreter's stack would have to be saved: Glean's VM has **no call stack** ("we don't have a stack (yet)", `glean/db/Glean/Query/Codegen.hs:573-576`). It is that Glean's continuation carries the **entire bytecode program**, PC, literals, every register and every output buffer, plus a second `traverse` subroutine (`glean/rts/bytecode/subroutine.cpp:370-381`) — and is **version-locked** to the bytecode ABI, so any bytecode change invalidates every in-flight continuation ([chapter 4](04-executor.md)) |
 | **Resume state** | A continuation is opaque client-held bytes — self-contained down to the program, resumable in another process | A **bytes-only `Cursor`**: one detached row per open level, ~two orders of magnitude smaller | [I4](invariants.md#i4). Both are client-held; the divergences are *size*, the absence of an ABI lock, and the **verification direction** — we re-seek the saved key and check the fact id, where Glean maps id → key and carries no `Repo`, so a continuation replayed against the wrong DB silently resumes at the wrong row ([chapter 5](05-resume.md)) |
 | **Query isolation** | **No snapshot at all** — fresh iterators at whatever LSM version is current, even *within* a page (`GetSnapshot` appears nowhere in `glean/rocksdb/`) | One immutable snapshot per query, **released at every suspend** | [I8](invariants.md#i8). Stronger than Glean in both directions: a real per-query view that Glean lacks, which nonetheless pins no LSM generation while a portal idles ([chapter 5](05-resume.md)) |
@@ -115,12 +115,12 @@ already are that:
 | **Fact ids** | A **dense** monotonic id space per DB — `glean/rts/lookup.h:92-99` says ids "are supposed to be dense", and five subsystems depend on it: substitution vectors, `FactSet` indexing, Elias-Fano ownership sets, the `factOwners` interval map, and the `id < mid` stacking test | A **snowflake**: 24-bit predicate tag + 40-bit per-predicate sequence | [I11](invariants.md#i11). Density is load-bearing in Glean far beyond stacking, so this costs more than the first version of this file said — but *within* a predicate our ids are dense, so each predicate is the same dense-map shape, and only a fact set **spanning** predicates degrades. In exchange: Glean has **no concurrent writer** at the storage layer and buys parallelism back with its whole rebase/substitution subsystem, where two of our ingest workers on different predicates share no counter ([chapter 3](03-storage-model.md#factid-allocation-i11)) |
 | **Scan order** | **No guarantee** — "in no specified order" (`glean/rts/lookup.h:125-127`); Glean *removed* its reliance on ordered iteration to support limited key sizes (`db.md:143`) | Lexicographic order is depended on absolutely | [I1](invariants.md#i1). Ours is the stricter commitment, and it has a price: it forecloses the key truncation Glean adopted, and we carry no key-size budget or degradation path ([chapter 3](03-storage-model.md)) |
 | **Physical layout** | One store per DB; the predicate is an 8-byte key prefix with a fixed-prefix transform | **One keyspace pair per predicate** (`keys.<id>`, `entities.<id>`) | Physical isolation makes bulk ingest embarrassingly parallel, and fjall's `ingest()` wants strictly ascending keys. Two consequences we get free: no predicate id in every `entities` row, and no stats column family in the write batch to answer `count(pid)` ([chapter 3](03-storage-model.md)) |
-| **Schema versioning** | **Edit in place with an automatic per-predicate transform** triggered by a hash mismatch (`glean/db/Glean/Database/Schema.hs:640-657`). `schema all.N` is the *name-resolution scope*, not the version axis; `evolves` is the manual path and only takes effect when **no facts** of the old schema exist | **One schema per DB, embedded and frozen at create**; compatibility is subset containment | [I13](invariants.md#i13). Glean's own escape hatch for a breaking change is "bump the version and treat it as separate" or "produce two DBs" — which *is* our default workflow, so the freeze promotes Glean's fallback to a rule ([chapter 6](06-types-and-schema.md), [ops §11](aperture-cli-design.md)) |
+| **Schema versioning** | **Edit in place with an automatic per-predicate transform** triggered by a hash mismatch (`glean/db/Glean/Database/Schema.hs:640-657`). `schema all.N` is the *name-resolution scope*, not the version axis; `evolves` is the manual path and only takes effect when **no facts** of the old schema exist | **One schema per DB, embedded and frozen at create**; compatibility is subset containment | [I13](invariants.md#i13). Glean's own escape hatch for a breaking change is "bump the version and treat it as separate" or "produce two DBs" — which *is* our default workflow, so the freeze promotes Glean's fallback to a rule ([chapter 6](06-types-and-schema.md), [ops §11](fjord-cli-design.md)) |
 | **Reorder algorithm** | Transitive **lookup-chasing**, then greedy tier selection over a ranked cost lattice, then a **separate feasibility pass that can give up** (`glean/db/Glean/Query/Reorder.hs:420-430,539-544,575-639`). The heuristic is key-prefix boundness, **not** cardinality — `PredicateStats` is never imported by `Reorder.hs` | A greedy **runnable frontier**, **provably complete**, with no cost model yet | [chapter 7](07-compilation.md). Neither side does topological sort or antichains; the earlier claim was false in both directions. Completeness is ours to claim — Glean's pass can fail to order a satisfiable query |
-| **Incrementality — stacking** | **Stacked DBs**: compose two DBs by fact-id range (`glean/rts/stacked.h:20-144`). Needs no ownership | **None** | [ops-I9](aperture-cli-design.md). The cheaper half, and the one the snowflake could carve for; the seam that would carry it is `FactStore::{scan, point}` — exactly where Glean puts `Stacked` |
-| **Incrementality — ownership** | **Ownership sets**: per-fact set expressions letting a delta *hide* base facts, ~7% of DB size, checked as a **per-row filter** on every iterator (`glean/rts/ownership/slice.h:167-233`) | **None** | [ops-I9](aperture-cli-design.md). The expensive half, and the one to keep declining: the filter is literally our [I6](invariants.md#i6)/[I9](invariants.md#i9) anti-patterns, propagation is O(facts) in time *and* space, and it **bans negation in stored derived predicates** purely for invalidation cost. It is also Glean's **authorization** substrate, which ties this row to [ops-I10](aperture-cli-design.md) |
-| **Ingest** | JSON/binary batches over Thrift; a binary `Batch` is one opaque sequential blob and is **not splittable** — parallelism is *across* batches | **Fact files** with sync markers, chunk-split and merged in parallel, and a **single write funnel** every writer passes | [ops-I4/I5](aperture-cli-design.md). The argument is Glean's own: it must set `ignoreRedef` on three paths, with the source comment *"we are ignoring actual errors and silently picking one of the two facts… That's bad, but I don't see an alternative"* (`glean/db/Glean/Write/SendAndRebaseQueue.hs:408-426`) — first-writer-wins, order-dependent, and exactly what reproducibility forbids ([Phase 7](../PLAN.md)) |
-| **Negation** | Angle's `!` is *written* as pattern syntax but is unit-typed and **desugars to a negated statement group** (`glean/db/Glean/Query/Typecheck.hs:626-654`); placement is forced by an `Ordered`/`Floating` tag plus a reorder rule | focus negates a **statement**, compiled to a `Step::Test`; placement is forced by the **reads edge** the frontier already had | Both negate statements, so the level is not the divergence — what differs is that Angle can write `(!A) | B` (only bare `!A | B` fails, on precedence), and that Glean needs a tag where `reads` = "the variables it names, captures nothing" says the same thing to a frontier that only ever runs what is runnable. Glean's rule is *adopted*, verbatim in effect: negations run after their parent-scope binds "to ensure consistent semantics regardless of order" (`glean/db/Glean/Query/Reorder.hs:547-573`). Still ours to build: a negated **group**, which needs a level inside a test ([`PLAN.md`](../PLAN.md) Phase 6b) |
+| **Incrementality — stacking** | **Stacked DBs**: compose two DBs by fact-id range (`glean/rts/stacked.h:20-144`). Needs no ownership | **None** | [ops-I9](fjord-cli-design.md). The cheaper half, and the one the snowflake could carve for; the seam that would carry it is `FactStore::{scan, point}` — exactly where Glean puts `Stacked` |
+| **Incrementality — ownership** | **Ownership sets**: per-fact set expressions letting a delta *hide* base facts, ~7% of DB size, checked as a **per-row filter** on every iterator (`glean/rts/ownership/slice.h:167-233`) | **None** | [ops-I9](fjord-cli-design.md). The expensive half, and the one to keep declining: the filter is literally our [I6](invariants.md#i6)/[I9](invariants.md#i9) anti-patterns, propagation is O(facts) in time *and* space, and it **bans negation in stored derived predicates** purely for invalidation cost. It is also Glean's **authorization** substrate, which ties this row to [ops-I10](fjord-cli-design.md) |
+| **Ingest** | JSON/binary batches over Thrift; a binary `Batch` is one opaque sequential blob and is **not splittable** — parallelism is *across* batches | **Fact files** with sync markers, chunk-split and merged in parallel, and a **single write funnel** every writer passes | [ops-I4/I5](fjord-cli-design.md). The argument is Glean's own: it must set `ignoreRedef` on three paths, with the source comment *"we are ignoring actual errors and silently picking one of the two facts… That's bad, but I don't see an alternative"* (`glean/db/Glean/Write/SendAndRebaseQueue.hs:408-426`) — first-writer-wins, order-dependent, and exactly what reproducibility forbids ([Phase 7](../PLAN.md)) |
+| **Negation** | Angle's `!` is *written* as pattern syntax but is unit-typed and **desugars to a negated statement group** (`glean/db/Glean/Query/Typecheck.hs:626-654`); placement is forced by an `Ordered`/`Floating` tag plus a reorder rule | sigla negates a **statement**, compiled to a `Step::Test`; placement is forced by the **reads edge** the frontier already had | Both negate statements, so the level is not the divergence — what differs is that Angle can write `(!A) | B` (only bare `!A | B` fails, on precedence), and that Glean needs a tag where `reads` = "the variables it names, captures nothing" says the same thing to a frontier that only ever runs what is runnable. Glean's rule is *adopted*, verbatim in effect: negations run after their parent-scope binds "to ensure consistent semantics regardless of order" (`glean/db/Glean/Query/Reorder.hs:547-573`). Still ours to build: a negated **group**, which needs a level inside a test ([`PLAN.md`](../PLAN.md) Phase 6b) |
 | **Cancellation** | **Global only** (`interruptRunningQueries`) | A per-query cancellation token | [chapter 5](05-resume.md). Small, and ours |
 | **Diagnostics** | One `Doc ()`, fail-fast on the first error, no codes, a text location prefix — and `Reorder.hs` can show a user flattened IR they never wrote | A closed `Code` enum, an accumulating sink, rendered source spans, and corpus entries asserting exact code sets | [testing.md](testing.md). Not a Glean idea, and the clearest place we are simply better |
 | **Design method** | — | An **invariant registry** with a numbered guard test each, and non-functional claims held by *mechanical* guards (allocation counters, decode probes, drop probes) | [testing.md](testing.md), [invariants.md](invariants.md). Glean's equivalent for the same properties is a header comment and code review — its resume safety rests on a hand-maintained "don't keep pointers in registers across `Suspend`" rule with a live workaround |
@@ -176,9 +176,9 @@ Order comparisons and arithmetic are in the language. A comparison is a residual
 **byte** compare, since the key encoding is order-preserving
 ([I1](invariants.md#i1)) — which is wider than Angle, whose comparisons are nat-only;
 strings compare here for the same reason integers do. Arithmetic is `+` and `-` on
-integers, wrapping, and it is the first thing in focus to lower a `Step::Derive` at all.
+integers, wrapping, and it is the first thing in sigla to lower a `Step::Derive` at all.
 
-**Aggregation is still an Aperture-only absence, and the shape of the absence changed.**
+**Aggregation is still a Fjord-only absence, and the shape of the absence changed.**
 There is no `count` in the language and no `all q` to build a set from. What there is
 instead is `QUERY_COUNT`: the same plan with a different accumulator, counted at the
 consumer, which is where this design has always put aggregation — the difference is
@@ -201,7 +201,7 @@ Two corrections on our side. Order comparisons are **not** "deferred with a seam
 a deliberate exception to *permissive grammar, narrow later*. And **aggregation is not a shared
 absence**: Angle has `all q` set construction plus `prim.size`/`prim.length`, so
 `prim.size (all …)` is a count. Results are aggregated by the caller here, and that is now an
-Aperture-only position rather than a shared one.
+Fjord-only position rather than a shared one.
 
 The seam for all of this exists — Glean's `PrimCall` is structurally a one-row generator, which
 is exactly `Step::Derive` ([I14](invariants.md#i14)) — so it is additive when wanted.
@@ -240,13 +240,13 @@ the claim that a nested pattern and its two-statement spelling compile to the sa
 stays declined. What the tag is for here is `preserves_written_order`, a property rather than a
 rule. **Generator synthesis for an unbound variable does not port at all**: it fires in Glean
 because prim args, `all`, `if`/`then`/`else` and or-branches can mention a predicate-typed
-variable no generator binds, and in focus a `Fact` type can only come from a fact pattern
+variable no generator binds, and in sigla a `Fact` type can only come from a fact pattern
 (which binds it) or a fact-typed key field (which captures it), so the precondition never
 holds. [Chapter 7](07-compilation.md).
 
 ### No on-disk format version — closed
 
-Glean versions both its DB format and its bytecode ABI; Aperture versioned nothing, so
+Glean versions both its DB format and its bytecode ABI; Fjord versioned nothing, so
 [I3](invariants.md#i3) had to hold forever, a reader having no way to detect which encoding it was
 looking at. It was an omission rather than a decision, and it is now
 [I15](invariants.md#i15): twelve bytes in a `meta` keyspace, `codec` and `storage` numbered
@@ -269,7 +269,7 @@ nearly free here; no retention policy. **`:more` is closed** — Phase 9f's wire
 cursor across a round trip, and Phase 11 went further: a cursor now crosses the wire as bytes, so
 paging survives the connection that started it, which is more than Glean's continuations do for a
 stateless caller.
-[Operations](aperture-cli-design.md).
+[Operations](fjord-cli-design.md).
 
 ### The idiomatic spelling of a join — closed
 
@@ -280,10 +280,10 @@ different size; **Phase 5 landed all three**
 nested spelling now compiles — to the *same plan* as the two-statement form, which is the sense
 in which it is a spelling rather than a second way to run a query.
 
-Aperture and Angle agree on the mechanism, too: a reference is followed by its **id**, so a
+Fjord and Angle agree on the mechanism, too: a reference is followed by its **id**, so a
 join through one reads no second fact. Reading *through* a reference — a field or value of the
 fact it names — is the other half, and a lookup rather than a compare; Angle does it freely, and
-Aperture now does it as a
+Fjord now does it as a
 [`Source::Fetch`](04-executor.md#fetching-through-a-reference) level, one point read per row of
 the level above it. The two halves stay distinct in the IR on purpose: the cheap one is a
 compare against an id already in a register, and conflating them is how a key gets spliced where
@@ -313,7 +313,7 @@ of these are places Glean's source shows the cost of *not* having done it.
 - **A provably complete reorder**, a **per-query cancellation token**, and **signed integers**.
 - **Diagnostics and literal hygiene** — Angle silently wraps nat overflow and silently takes
   the first of duplicate fields; both are rejected here with codes. Angle's own guide shows an
-  inference failure that focus handles with no annotation.
+  inference failure that sigla handles with no annotation.
 - **Concurrent per-predicate writers**, and a high-water mark recovered from data rather than
   a persisted counter that can go missing.
 - **"Deferred" as a first-class executable category** — no unimplemented feature may surface as

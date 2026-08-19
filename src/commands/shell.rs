@@ -1,10 +1,10 @@
-//! `aperture shell <db>` — the REPL, always over the wire.
+//! `fjord shell <db>` — the REPL, always over the wire.
 //!
 //! **Remote-first, and that is the point rather than a limitation**
-//! ([operations §5](../../docs/aperture-cli-design.md)). The shell is the permanent
+//! ([operations §5](../../docs/fjord-cli-design.md)). The shell is the permanent
 //! exerciser of the wire format: every query a person types here is a real handshake, a
 //! real stream and a real page of `DATA_ROW` frames, so a format change that the tests
-//! happen not to cover still cannot survive somebody using the tool. `aperture shell`
+//! happen not to cover still cannot survive somebody using the tool. `fjord shell`
 //! with no database is the *other* shell — [`crate::shell`], Phase 5's embedded demo
 //! over a scratch database it seeds itself.
 //!
@@ -42,9 +42,9 @@
 //! # `:expand` is the other thing a wire client could not do
 //!
 //! A row carries a reference as a `FactId`, so a query over a code index answers with
-//! numbers naming facts a person cannot see — and focus cannot ask what one names, since
+//! numbers naming facts a person cannot see — and sigla cannot ask what one names, since
 //! it names a fact by its key. `:expand` asks the *protocol*
-//! ([`kinds::FETCH`](aperture_wire::kinds::FETCH)) and shows the fact instead, recursively:
+//! ([`kinds::FETCH`](fjord_wire::kinds::FETCH)) and shows the fact instead, recursively:
 //! `{"to": "#4:1"}` becomes `{"to": {"module": {…}, "name": "encode", "line": 1}}`, which
 //! is the same nested shape a producer sends when it writes one. It costs a point read
 //! per distinct reference, cached across pages, which is why it is off until asked for.
@@ -67,15 +67,15 @@ use std::{
     time::Instant,
 };
 
-use aperture_client::{ClientError, Connection, Expander, FULL_DEPTH, Mode, Rows};
-use aperture_engine::{compile::Compilation, print};
-use aperture_schema::{
-    schema::{PredicateId, Schema},
-    syntax::print as schema_print,
-};
 use codespan_reporting::term::{
     self,
     termcolor::{Ansi, NoColor},
+};
+use fjord_client::{ClientError, Connection, Expander, FULL_DEPTH, Mode, Rows};
+use fjord_engine::{compile::Compilation, print};
+use fjord_schema::{
+    schema::{PredicateId, Schema},
+    syntax::print as schema_print,
 };
 
 use crate::{
@@ -85,7 +85,7 @@ use crate::{
         Target,
         query::{connect, render_profile},
     },
-    prompt::{self, Command, FocusHelper},
+    prompt::{self, Command, SiglaHelper},
     rows::Sink,
 };
 
@@ -98,12 +98,12 @@ const PAGE: usize = 40;
 
 /// What `:list` runs.
 ///
-/// Every column the design's listing names, and it is ordinary focus — a whole-row bind
+/// Every column the design's listing names, and it is ordinary sigla — a whole-row bind
 /// and six field reads, no different from anything a person types. `facts` and `bytes`
 /// read `-1` until a database is sealed, which is when they are counted.
 const LISTING: &str = "{name = D.name, status = D.status, facts = D.facts, \
                        bytes = D.bytes, instance = D.instance} \
-                       where D = aperture.db.List _";
+                       where D = fjord.db.List _";
 
 /// What `:interning` runs.
 ///
@@ -117,13 +117,13 @@ const LISTING: &str = "{name = D.name, status = D.status, facts = D.facts, \
 /// present an arithmetic accident as a hit rate.
 const INTERNING: &str = "{name = I.name, hits = I.hits, misses = I.misses, \
                           keys = I.keys, entities = I.entities} \
-                          where I = aperture.db.Interning _";
+                          where I = fjord.db.Interning _";
 
 /// The commands, in the order `:help` lists them: what a query *is*, then what it
 /// costs, then what is stored, then the session, then the shell itself.
 ///
 /// **Two prefixes, one meaning.** `:` is this tool's, and the `\` spellings are what a
-/// hand trained on psql types without thinking; neither can begin a focus query, so
+/// hand trained on psql types without thinking; neither can begin a sigla query, so
 /// accepting both costs nothing. Aliases are not advertised — a help screen that lists
 /// every spelling twice is one nobody reads to the end.
 pub const COMMANDS: [Command; 16] = [
@@ -197,13 +197,13 @@ pub const COMMANDS: [Command; 16] = [
         name: ":list",
         aliases: &["\\l", ":l"],
         argument: None,
-        help: "the databases on this server — a query over aperture.db.List",
+        help: "the databases on this server — a query over fjord.db.List",
     },
     Command {
         name: ":interning",
         aliases: &["\\i", ":i"],
         argument: None,
-        help: "what the write path's lookup cache did — a query over aperture.db.Interning",
+        help: "what the write path's lookup cache did — a query over fjord.db.Interning",
     },
     Command {
         name: ":connect",
@@ -261,7 +261,7 @@ struct Held {
 pub struct Repl {
     connection: Connection,
     /// The address this session was opened with — a bare name, or §2's
-    /// `aperture://host:port/database`.
+    /// `fjord://host:port/database`.
     ///
     /// Kept whole because it is what a *reconnect* needs: a shell started against a
     /// remote server and then told `:connect other` means the other database on that
@@ -440,7 +440,7 @@ impl Repl {
             // written out rather than hidden behind a control message precisely so that
             // it can be edited: the text is a starting point a person can paste, narrow
             // with a `status =`, or page with `:more`, which is what
-            // [operations §5](../../docs/aperture-cli-design.md) means by putting
+            // [operations §5](../../docs/fjord-cli-design.md) means by putting
             // enumeration through the normal machinery.
             ":list" => self.run_or_report(LISTING, out)?,
             ":interning" => self.run_or_report(INTERNING, out)?,
@@ -1043,7 +1043,7 @@ fn predicate_line(schema: &Schema, index: usize) -> String {
 }
 
 fn help(out: &mut impl Write) -> Result<(), CliError> {
-    writeln!(out, "  <query>          run a focus query, e.g.")?;
+    writeln!(out, "  <query>          run a sigla query, e.g.")?;
     writeln!(out, "                     X where src.File X")?;
     writeln!(out, "                     {{file = F, line = L}} where …")?;
 
@@ -1084,18 +1084,15 @@ pub fn run(target: &Target) -> Result<(), CliError> {
     // says nothing leaves a person to guess whether `\?` or `:help` or `help` is the
     // one — and this shell has commands the last one did not, prints rows in a shape
     // the last one did not, and pages. Each of those is a sentence long.
-    println!(
-        "aperture shell — `{}` on {}",
-        repl.database, target.endpoint
-    );
+    println!("fjord shell — `{}` on {}", repl.database, target.endpoint);
     println!(
         "  {} predicate(s) · rows print as jsonl · :help for commands",
         repl.schema.len()
     );
 
-    let mut editor: Editor<FocusHelper, DefaultHistory> =
+    let mut editor: Editor<SiglaHelper, DefaultHistory> =
         Editor::new().map_err(|error| CliError::Shell(error.to_string()))?;
-    editor.set_helper(Some(FocusHelper::new(&COMMANDS)));
+    editor.set_helper(Some(SiglaHelper::new(&COMMANDS)));
 
     if let Some(helper) = editor.helper() {
         helper.knows(repl.names());
@@ -1178,11 +1175,11 @@ pub fn run(target: &Target) -> Result<(), CliError> {
             // server restarted under a shell should cost a line rather than a session;
             // if that fails too, there is nothing left to talk to.
             Err(error) => {
-                eprintln!("aperture: {error}");
+                eprintln!("fjord: {error}");
 
                 match Repl::connect(&repl.target.clone()) {
                     Ok(fresh) => {
-                        eprintln!("aperture: reconnected to `{}`", fresh.database);
+                        eprintln!("fjord: reconnected to `{}`", fresh.database);
                         let interrupt = Arc::clone(&repl.interrupt);
                         repl = fresh;
                         repl.interrupt = interrupt;
@@ -1192,7 +1189,7 @@ pub fn run(target: &Target) -> Result<(), CliError> {
                         }
                     }
                     Err(again) => {
-                        eprintln!("aperture: {again}");
+                        eprintln!("fjord: {again}");
                         return Err(error);
                     }
                 }
@@ -1245,7 +1242,7 @@ mod tests {
     /// answer says otherwise.
     /// The server computes at most this many rows before suspending to a cursor.
     ///
-    /// `aperture_server`'s own `CHUNK_ROWS`, restated because it is private — and the
+    /// `fjord_server`'s own `CHUNK_ROWS`, restated because it is private — and the
     /// number is load-bearing *here* rather than incidental: a result smaller than one
     /// chunk is answered without the executor ever suspending, so a paging test that
     /// stayed under it would exercise the client's arithmetic and nothing else.
@@ -1348,7 +1345,7 @@ mod tests {
         let all = typed(&mut repl, ":schema");
         assert!(all.contains("schema src {"), "it is source: {all}");
         assert!(
-            all.contains("aperture.db"),
+            all.contains("fjord.db"),
             "including what the server answers itself: {all}"
         );
 
@@ -1546,7 +1543,7 @@ mod tests {
 
         let narrowed = typed(
             &mut repl,
-            "N where aperture.db.List {name = N, status = \"complete\"}",
+            "N where fjord.db.List {name = N, status = \"complete\"}",
         );
         assert!(
             narrowed.contains("0 row(s)"),

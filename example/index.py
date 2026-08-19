@@ -2,7 +2,7 @@
 """Index the Python under `src/`, and write the facts out as JSON.
 
 This is a **real indexer**: it parses with the standard library's `ast`, resolves
-the references it can resolve, and emits exactly the facts the `aperture` shell
+the references it can resolve, and emits exactly the facts the `fjord` shell
 writes into its store. Python is here because its parser ships with it — the
 point of the exercise is the *facts*, not the front end that finds them.
 
@@ -11,7 +11,7 @@ Run it from anywhere; it rewrites `index.json` next to itself:
     python3 example/index.py
 
 The shell compiles that file in with `include_str!`, so `cargo build` picks the
-new facts up. It is checked in because Aperture has no ingestion yet (PLAN
+new facts up. It is checked in because Fjord has no ingestion yet (PLAN
 phase 7) — a fact file and a loader are what eventually replace both this script's
 output format and the seeding code that reads it.
 

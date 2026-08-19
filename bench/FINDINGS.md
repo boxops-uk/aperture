@@ -1,6 +1,6 @@
 # Findings — Phase 10, rungs S1 through S7
 
-> [Aperture design book](../README.md) · the register [`docs/phase-10-capacity.md`](../docs/phase-10-capacity.md)
+> [Fjord design book](../README.md) · the register [`docs/phase-10-capacity.md`](../docs/phase-10-capacity.md)
 > asks for. One entry per thing measured: what was measured, the number, and what it costs
 > to act on.
 >
@@ -14,7 +14,7 @@
 > Everything else here is measurement.
 
 **The corpus.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree indexed by
-`clients/dotnet/Aperture.Indexer --syntax-only --jobs 8`: 32,710 files, **18,176,899
+`clients/dotnet/Fjord.Indexer --syntax-only --jobs 8`: 32,710 files, **18,176,899
 facts** across 22 predicates, 1.8 GB on disk, 4,613 s to build. This is the first
 database in the project's history large enough for a scaling question to mean anything,
 and every number below is from it.
@@ -102,7 +102,7 @@ major compaction of the whole index confirms it end to end:
 **Nothing in the tree compacted.** `grep -rn major_compact crates/ src/` was empty, and
 `Catalog::finish` — the one operation that declares a database immutable forever — wrote
 an identity hash and a sidecar and never touched the LSM. So the artifact that
-[operations §5](../docs/aperture-cli-design.md) says gets copied per reader process was
+[operations §5](../docs/fjord-cli-design.md) says gets copied per reader process was
 shipped in the shape a random write order left it.
 
 ### Fixed: sealing now merges
@@ -110,7 +110,7 @@ shipped in the shape a random write order left it.
 `FjallDb::compact` merges every tree, and `seal` calls it after the durability sync and
 before the identity walk — before the walk so the fingerprint is computed over the tree
 that ships, before the sidecar so the byte count it records is the artifact's rather than
-the ingest's. Two guards in `aperture-store/tests/finish.rs`:
+the ingest's. Two guards in `fjord-store/tests/finish.rs`:
 `sealing_merges_every_tree_into_one_table` (which flushes three batches first and asserts
 it had something to merge, because at test sizes it otherwise would not) and
 `merging_does_not_change_the_identity`, which is `ops-I4` — compaction rewrites the bytes
@@ -119,7 +119,7 @@ and must not move the fingerprint.
 Measured through the real command, on the 18M-fact index:
 
 ```
-$ aperture --data-dir … finish code
+$ fjord --data-dir … finish code
 sealing code — merging trees, then computing identity
 sealed code: 18176899 facts, 853606008 bytes, identity 0xa0a07894b275e6a0
         4m16s
@@ -202,7 +202,7 @@ fields *are* in alphabetical order. They are not in that order because anything 
    (`flatten.rs:2341`). Nothing sorts; the slice's order is the key's order. `ty.rs:695`
    says as much in a comment — *"both sides are sorted, but the schema's order is Phase
    8's to guarantee, not this pass's to assume."*
-2. **A test already pins it.** `aperture-store`'s `the_encoding_order_is_the_declared_order`
+2. **A test already pins it.** `fjord-store`'s `the_encoding_order_is_the_declared_order`
    (`fact.rs:538`) builds a predicate declaring `z` before `a` precisely because *"the
    schemas here happen to be sorted by name, and nothing in the codec depends on it"*.
 3. **Directly.** Two schemas over the same two fields, differing only in declaration order,
@@ -291,7 +291,7 @@ Two more from the same table:
 Found while writing the catalogue, and it bounds what any of these numbers can cover.
 
 > `src.Line` is `{ file, line } -> string` and holds 8,583,810 line texts — 133 MB, the
-> largest predicate in the index. No focus query can read one. There is no `->` in the
+> largest predicate in the index. No sigla query can read one. There is no `->` in the
 > grammar, and every spelling tried is a parse error; a query binds *key fields* only,
 > and a bare `X = src.Line _` binds the fact reference.
 >
@@ -305,11 +305,11 @@ Found while writing the catalogue, and it bounds what any of these numbers can c
 process and over the wire:
 
 ```
-focus> :plan L.value where L = src.Line _
+sigla> :plan L.value where L = src.Line _
   r0 <- src.Line scan
   head r0.value
 
-$ aperture query code '{n = D.name, k = D.value} where D = src.Decl _' --limit 5
+$ fjord query code '{n = D.name, k = D.value} where D = src.Decl _' --limit 5
 K      N
 def    key_of
 class  CodecError
@@ -483,7 +483,7 @@ So the exposure is **the busiest single connection**, and what it sets is a high
 
 | client shape | queries per connection | retained while open |
 |---|---|---|
-| `aperture query`, one per process | 1 | nothing |
+| `fjord query`, one per process | 1 | nothing |
 | `soak`'s users, reconnecting | ~45 | ~160 kB |
 | a pooled connection held open at 67 q/s for an hour | 240k | **~840 MB** |
 
@@ -500,7 +500,7 @@ live", and would have made this a five-minute test rather than the afternoon it 
 **F2 is refuted.** A cancel landing mid-chunk on the most stride-tripping query available —
 56,274 rows examined per row produced — returns a clean end (256 rows drained), sends no
 error frame, and leaves the connection usable for the next query. Tested through the client
-API and through `aperture query --limit`; both are clean.
+API and through `fjord query --limit`; both are clean.
 
 ## 8. Steady state holds: fifty minutes, 145,582 queries, no drift
 
@@ -811,7 +811,7 @@ defect in the client and it is worth about 1.9× on its own (`4,828 → ~2,600 s
 facts/s`) by handing full blocks to a writer thread behind a bounded queue.
 
 The second mechanism is the 73.6%. It is genuine work, not waiting, and it is what a
-[lookup cache](../crates/aperture-store/src/lookup_cache.rs) and skipping the `entities` read on
+[lookup cache](../crates/fjord-store/src/lookup_cache.rs) and skipping the `entities` read on
 key-only predicates (22 of 27) remove.
 
 **What the arithmetic then says, and it is the finding that mattered.** After pipelining, the two
@@ -863,7 +863,7 @@ The rows are there to be subtracted:
   free at these rates, and it is the one term the read ladder already had an opinion about
   (finding 9's 1.5× row encoder, in the other direction).
 - **`reads/fact` is 1.00 on both create rows**, which is
-  [12c's guard](../crates/aperture-ingest/tests/against_a_real_store.rs) priced rather than
+  [12c's guard](../crates/fjord-ingest/tests/against_a_real_store.rs) priced rather than
   counted: one live `keys` read per distinct key across four levels of nesting, where 4.63
   interns per fact would otherwise mean 4.63 reads.
 
@@ -937,12 +937,12 @@ cost 20–30% before that. `queueing` on a real index is 1,019.4 s of 3,977.7 s 
 
 ---
 
-## 15. Aperture and Glean over one corpus and one producer: the walk is 30%, the tail is 45%, and Glean's write path is 3.5× cheaper
+## 15. Fjord and Glean over one corpus and one producer: the walk is 30%, the tail is 45%, and Glean's write path is 3.5× cheaper
 
 **What was measured.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree, four runs
-of the same producer: `clients/dotnet/Aperture.Indexer --syntax-only --jobs 8`, the line
-table on, `--batch 4096`. Three write into Aperture, one writes Glean JSON batches
-(`--glean-out`, [§Into Glean instead](../clients/dotnet/Aperture.Indexer/README.md)) which
+of the same producer: `clients/dotnet/Fjord.Indexer --syntax-only --jobs 8`, the line
+table on, `--batch 4096`. Three write into Fjord, one writes Glean JSON batches
+(`--glean-out`, [§Into Glean instead](../clients/dotnet/Fjord.Indexer/README.md)) which
 `glean create -j 8 --finish` then loads. **One walk, two sinks**, so what differs between
 the last two rows is the database and not the indexer.
 
@@ -968,7 +968,7 @@ the last two rows is the database and not the indexer.
 25,046,499, so 34,009 top-level keys were duplicates; both systems deduplicated exactly
 those, from 94.9M interning attempts, without either being told which.
 
-The two Aperture runs also seal to the **same identity, `0x462058b7b0671d29`** — one writer
+The two Fjord runs also seal to the **same identity, `0x462058b7b0671d29`** — one writer
 and four, over a real server and four real sockets. That is
 `writer_count_and_write_order_do_not_change_the_database` at 25M facts rather than in
 process, and it is `ops-I4` meaning what it says.
@@ -1023,11 +1023,11 @@ and together they say the writer count wants to be **adaptive rather than a flag
 inflating summed `writing` 2.5× (2,037.7 → 5,081.9 s). The stall did not vanish; it moved
 from the client's queue into the server's interning path.
 
-### 15d. What the Glean run separates that no Aperture run could
+### 15d. What the Glean run separates that no Fjord run could
 
 The emit's sink costs 107.5 s over 6,128 blocks (17 ms each, against 330 ms for a block
 through the socket) and its `queueing` is 1.5 s, so **the emit ex-tail is the walk's own
-cost: 1,110 s.** Everything else in an Aperture run is interning that failed to hide behind
+cost: 1,110 s.** Everything else in a Fjord run is interning that failed to hide behind
 it:
 
 - **the walk is ~30% of a one-writer run** (1,110 s of 3,977.7 s), or half of it ex-tail;
@@ -1038,7 +1038,7 @@ it:
   — against **2,037.7 s inside `Write` plus 327 s of `finish`** on ours. **3.5×**, with
   Glean paying a JSON parse we do not.
 
-Ex-tail, end to end and sealed: **Glean 1,689 s, Aperture 2,155 s at four writers, 2,557 s
+Ex-tail, end to end and sealed: **Glean 1,689 s, Fjord 2,155 s at four writers, 2,557 s
 at one.** Glean is 1.28× the four-writer run despite writing every fact twice — once as
 JSON, once into the database — and despite no overlap whatsoever between its two phases.
 
@@ -1061,7 +1061,7 @@ are re-reads it should be absorbing.
 
 ## 16. Without `src/tests`: 19.6k facts/s, and the cache is at its ceiling — 73.05% against an available 73.12%
 
-**What was measured.** The same producer and flags as [§15](#15-aperture-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper),
+**What was measured.** The same producer and flags as [§15](#15-fjord-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper),
 four writers, with `--exclude src/tests` — 26,924 of 32,710 files. §15b said the tail was a
 corpus decision; this is that decision taken, and it is a **larger** cut than the tail
 arithmetic predicted.
@@ -1085,7 +1085,7 @@ pre-upgrade baseline this is **3.94×**; against §15's ex-tail four-writer figu
 
 ### 16a. The lookup cache, watched rather than autopsied
 
-`aperture.db.Interning` sampled every 30 s through the ingest, and the last sample after the
+`fjord.db.Interning` sampled every 30 s through the ingest, and the last sample after the
 seal:
 
 | elapsed | hits | misses | `keys` | `entities` | hit rate |
@@ -1104,7 +1104,7 @@ only show up one way: a resolve that misses the cache and then *finds* the fact 
 — a miss and a probe that creates nothing. It is pinned from both sides,
 `misses − created` = `deduped − hits` = **45,279**, which is 0.067% of resolves. So the
 128 MiB-per-generation budget rotated a hot parent out about once in 1,500 resolves at 18.3M
-facts, and [§15](#15-aperture-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper)'s
+facts, and [§15](#15-fjord-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper)'s
 worry about the ~100 MB hot set is closed. `entities` is 0.043%: the key-only fast path
 removing the second tree read, confirmed on real data for the first time.
 
@@ -1134,7 +1134,7 @@ corpus: same producer, same flags, `--exclude src/tests`, 26,924 files. Both dat
 **18,258,385 facts and all 27 predicates agree stored-for-stored** — verified by counting
 each one on both sides, not by trusting the totals.
 
-| | Aperture (4 writers) | Glean |
+| | Fjord (4 writers) | Glean |
 |---|---|---|
 | the walk | fused with ingest | **emit 502 s** (36,445 f/s) |
 | ingest | fused; 2,668 s summed over 4 writers | **load 352 s** |
@@ -1150,11 +1150,11 @@ each one on both sides, not by trusting the totals.
 The emit's sink costs 60 s over 4,483 blocks and its `queueing` is 0.3 s, so **the walk's own
 cost is ~502 s** and everything above it is interning that failed to hide behind it:
 
-- **Aperture's ingest costs 380 s of wall clock** it could not overlap (882 − 502);
+- **Fjord's ingest costs 380 s of wall clock** it could not overlap (882 − 502);
 - **Glean's entire load costs 352 s** — parsing 4.9 GB of JSON, interning 68M nested
   references into 18.26M facts, renaming local ids onto global ones, committing, and sealing.
 
-**Those are within 8% of each other.** [§15](#15-aperture-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper)
+**Those are within 8% of each other.** [§15](#15-fjord-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper)
 reported 3.5× on the same comparison and named the likely confound in its own text: Glean's
 load ran alone on the box after the walk had exited, while our server interned with a
 16–20 GB Roslyn process squeezing 30 GB of RAM down to ~3 GB of page cache. Dropping
@@ -1166,7 +1166,7 @@ told by the other end.
 **What still separates them end to end is our `finish`.** 220 s of merging trees and hashing
 an identity, which Glean does inside its 352 s. Take that out and the two are 1,102 − 220 =
 882 s against 854 s — 3%. Whether sealing can be folded into ingest, or is simply the price
-of [`ops-I4`](../docs/aperture-cli-design.md)'s content hash being computable at all, is a
+of [`ops-I4`](../docs/fjord-cli-design.md)'s content hash being computable at all, is a
 question this makes worth asking.
 
 ### 17b. Two things the comparison did not set out to measure
@@ -1182,7 +1182,7 @@ two sinks:
 | | gate held | gate wait (8 walkers) | queueing |
 |---|---|---|---|
 | Glean sink (files) | 187.9 s | 928.1 s | 0.3 s |
-| Aperture sink (socket) | 335.9 s | 2,669.8 s | 70.3 s |
+| Fjord sink (socket) | 335.9 s | 2,669.8 s | 70.3 s |
 
 **148 s more time holding the gate costs 1,742 s of summed walker wait.** That is the cheapest
 lever left on the producer side and it is `clients/dotnet`'s, not the database's: the gate is
@@ -1218,8 +1218,8 @@ eight threads are queued behind.
 - **Finding 13 is a synthetic corpus.** The ratio is dialled to bracket the real one, not taken
   from it. Re-measuring finding 12 through the rung needs a `dotnet/runtime` re-index — hours,
   and it must not run while anything else is being measured. The re-index now exists
-  ([§15](#15-aperture-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper)),
-  so what is left is running the rung over it — and [§15d](#15d-what-the-glean-run-separates-that-no-aperture-run-could)
+  ([§15](#15-fjord-and-glean-over-one-corpus-and-one-producer-the-walk-is-30-the-tail-is-45-and-gleans-write-path-is-35-cheaper)),
+  so what is left is running the rung over it — and [§15d](#15d-what-the-glean-run-separates-that-no-fjord-run-could)
   is why that matters: the 3.5× against Glean is pipeline against pipeline, and only the rung
   splits interning from the socket.
 - **The interning lookup cache is measured and closed** —
@@ -1227,7 +1227,7 @@ eight threads are queued behind.
   at 18.3M facts, `keys` equal to `misses` exactly, and 45,279 resolves (0.067%) as the whole
   cost of eviction. What follows is below, and it is no longer about caching.
 - **The interning lookup cache is now visible, and on a small corpus it is perfect.**
-  `aperture.db.Interning` reports it as facts, so a running server can be asked
+  `fjord.db.Interning` reports it as facts, so a running server can be asked
   (`:interning` in the shell). Over this repository's own `clients/dotnet` — 14,072 facts,
   36,093 deduped — it answers `hits 36,093, misses 14,072, keys 14,072, entities 0`: **every
   repeat reference was a cache hit**, every miss was a genuinely new fact costing exactly one
@@ -1241,7 +1241,7 @@ eight threads are queued behind.
   25M-fact re-index is where a rotation would show up — as `hits` falling and `keys` climbing
   past the created count. That measurement is now one query.
 - **Storage is 3.7× Glean's for the same facts** (886 MB against 3.2 GB sealed). Three candidates
-  named in [§15d](#15d-what-the-glean-run-separates-that-no-aperture-run-could), none measured.
+  named in [§15d](#15d-what-the-glean-run-separates-that-no-fjord-run-could), none measured.
 - **The writer count wants to be adaptive**, not a flag: the crossover in
   [§15c](#15c-the-ingestion-upgrade-is-157-and-concurrent-writers-cross-over-at-16000-files) is a
   property of tree depth, which the server knows and the producer does not.

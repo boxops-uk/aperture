@@ -1,14 +1,14 @@
 # 3. The storage model
 
-> [Aperture design book](../README.md) · [← 2. The tuple codec](02-tuple-codec.md) · **Chapter 3** · [4. The executor →](04-executor.md)
+> [Fjord design book](../README.md) · [← 2. The tuple codec](02-tuple-codec.md) · **Chapter 3** · [4. The executor →](04-executor.md)
 
 This chapter is how facts live on disk: the two column families, one keyspace per predicate
 for each of them, how a `FactId` is allocated (and why it is a snowflake), and why the two
 halves of a fact are always written together. It builds directly on the
 [order-preserving codec](02-tuple-codec.md).
 
-Backend: **fjall**, an LSM key–value store. The `FactStore` trait (`crates/aperture-engine/src/plan.rs`) is
-the seam; an in-memory `MemStore` (`crates/aperture-store/src/mem_store.rs`) implements it for tests
+Backend: **fjall**, an LSM key–value store. The `FactStore` trait (`crates/fjord-engine/src/plan.rs`) is
+the seam; an in-memory `MemStore` (`crates/fjord-store/src/mem_store.rs`) implements it for tests
 *only*.
 
 ---
@@ -123,7 +123,7 @@ consequences, all load-bearing:
 
 - **Physical isolation.** Facts of different predicates cannot affect each other's storage.
   This is what makes bulk ingestion embarrassingly parallel — per-predicate ingests are
-  independent trees that can overlap freely (see [Operations](aperture-cli-design.md) and
+  independent trees that can overlap freely (see [Operations](fjord-cli-design.md) and
   [ops-I8](invariants.md#ops-i8)). It is not merely a nicety: fjall's bulk `ingest()`
   requires *strictly ascending* keys, so a single shared tree would force one globally
   ordered serial sink, and concurrent ingestions into it would pile up overlapping L0 runs
@@ -196,14 +196,14 @@ cross-keyspace and consistent, making [I8](invariants.md#i8) identical under eit
 **The seam is narrow enough to reverse.** The executor reaches the store only through
 `FactStore::scan(lo, hi)`, whose bounds already carry the 4-byte predicate prefix, so
 "one tree per predicate" versus "one tree, prefix-partitioned" is a change inside
-`crates/aperture-store/src/store.rs` and nowhere else. The `FactId` layout below is the part that is *not*
+`crates/fjord-store/src/store.rs` and nowhere else. The `FactId` layout below is the part that is *not*
 reversible once data exists.
 
 ### The scan contract
 
 Because that seam is the only way in, what `scan` promises is a contract on the **trait**, not
 on any one store — and both halves of it are asserted directly against every implementation
-(`aperture_engine::fixtures`), never inferred from two stores agreeing, since two stores that leak
+(`fjord_engine::fixtures`), never inferred from two stores agreeing, since two stores that leak
 identically would satisfy a differential and both still be wrong.
 
 - **A scan never leaves the predicate its lower bound names**
@@ -286,7 +286,7 @@ has two causes and the tag addresses one of them.
   predicate still share that predicate's counter, which is why the bullet above is careful to
   say "on different predicates".
 - **Dedup.** Two producers independently emit a fact with the same key. At the merge frontier
-  they are one fact with one id ([operations §5](aperture-cli-design.md) dedups byte-identical
+  they are one fact with one id ([operations §5](fjord-cli-design.md) dedups byte-identical
   facts), so one of the two ids loses and every reference to it has to be redirected. That is
   a substitution, and no id scheme deletes it.
 
@@ -294,7 +294,7 @@ And there is a third thing, specific to this design rather than inherited from G
 reference can sit in a key**, and it does — `test.Ref : { of : test.Foo }` in the fixture
 schema, `Reference` in the example code index. A key containing a reference has no bytes until
 the target's id is final, and therefore no sort position either. The ingest pipeline in
-[operations §5](aperture-cli-design.md) has workers encode storage tuples *and sort* before the
+[operations §5](fjord-cli-design.md) has workers encode storage tuples *and sort* before the
 per-predicate merge assigns ids, which those two steps cannot both satisfy.
 
 Ordinary hand-written facts are unaffected, and the reason is worth stating: `put` returns the
@@ -512,12 +512,12 @@ hand a person. Four of its preconditions are invisible at the call site, and eac
 That last one is the one the [snowflake](#factid-allocation-i11) makes cheap to close: the id
 carries its own predicate in its tag, so checking it is a compare rather than a lookup, and the
 typed codec is the only boundary holding both the declared type and the id. It is checked there
-and in `aperture_store::fact`, before any bytes exist. Sequence 0 is refused in the same places, for the
+and in `fjord_store::fact`, before any bytes exist. Sequence 0 is refused in the same places, for the
 same reason it is reserved — zeroed or truncated bytes should be *detectably* not a fact
 ([I11](invariants.md#i11)).
 
 So `FjallDb::put(&schema, &fact)` takes a **well-typed value** instead: a type implementing
-`aperture_store::fact::Fact` names its predicate and gives its key fields *by name*, and the write
+`fjord_store::fact::Fact` names its predicate and gives its key fields *by name*, and the write
 resolves those against the schema — reordering into declared order and reporting an unknown
 field, a missing one, a wrong shape or a stray value side before any bytes exist. A fact whose
 fields are listed in whatever order reads well still writes a findable fact, which is the whole
@@ -532,14 +532,14 @@ there is no id for it yet.
 its caller — it is the primitive bulk ingest is built on, and the check is a point lookup per
 fact. `put` is not that caller: it already pays schema resolution and a full encode per fact, so
 it pays the lookup too, with the semantics the merge frontier already commits to
-([operations §5](aperture-cli-design.md)) — a **byte-identical** fact dedups to the id already
+([operations §5](fjord-cli-design.md)) — a **byte-identical** fact dedups to the id already
 assigned, and a **same-key, different-value** fact is refused. Inheriting a bulk primitive's
 contract is what made the fourth silent precondition: writing a key twice overwrites its `keys`
 row and strands the first fact's entity, an orphan no query can reach and no bijection check can
 attribute to anything ([I12](invariants.md#i12)), which is last-writer-wins in a store whose whole
 premise is that nothing changes. It is a check and not a lock — two threads writing the *same*
 key can both miss it — and what rules that out is
-[ops-I1](aperture-cli-design.md)'s single writer per DB, not this lookup, which is here for the
+[ops-I1](fjord-cli-design.md)'s single writer per DB, not this lookup, which is here for the
 sequential mistake, the one that actually happens.
 
 Two things this is deliberately not. It is **not bulk ingestion** — it materialises a value per
@@ -573,12 +573,12 @@ snapshot guarantee.
 ## The format stamp ([I15](invariants.md#i15))
 
 Every database carries, in a metadata keyspace of its own, twelve bytes that say which
-encoding wrote it: the magic `APERTURE`, then two `u16` version numbers.
+encoding wrote it: the magic `FJORD DB`, then two `u16` version numbers.
 
 ```
    0            8      10      12
   ┌─────────────┬───────┬───────┐
-  │ "APERTURE"  │ codec │storage│
+  │ "FJORD DB"  │ codec │storage│
   └─────────────┴───────┴───────┘
 ```
 
@@ -607,7 +607,7 @@ that cannot affect it, and could not tell a reader which half it failed to under
 | **holds facts, no stamp** | **refused** |
 
 An unstamped database with predicate trees in it was written by something else — an older
-build, or not Aperture at all. Stamping it on the way past would be this build certifying
+build, or not Fjord at all. Stamping it on the way past would be this build certifying
 bytes it has never read, which is precisely the silent misread the stamp exists to prevent.
 Every database written before this existed is that shape, and refusing them is the honest
 answer: there is nothing to migrate *to* yet, and nothing that could say what to migrate
@@ -638,7 +638,7 @@ Worth stating once, clearly (it recurs):
 - **Transport / wire codec** — a separate, framed binary format, **not** order-preserving,
   never touching stored bytes. It runs **both ways**: rows out after they leave the executor
   (post-yield), and facts in on a write stream. Details in
-  [Operations §6](aperture-cli-design.md#6-wire-protocol--the-write-stream).
+  [Operations §6](fjord-cli-design.md#6-wire-protocol--the-write-stream).
 
 Don't blur them: a constraint that applies to one (order-preservation, self-delimiting)
 does not apply to the other.

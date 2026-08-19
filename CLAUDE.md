@@ -1,7 +1,7 @@
-# Aperture — working contract
+# Fjord — working contract
 
-**Aperture** (the product: *Aperture DB*) is an embedded, immutable **fact database**;
-**focus** is its typed, Datalog-flavoured query and schema language (the `aperture-engine`
+**Fjord** (the product: *Fjord DB*) is an embedded, immutable **fact database**;
+**sigla** is its typed, Datalog-flavoured query and schema language (the `fjord-engine`
 crate). This file is the **working contract** loaded every session — how to work here, the
 invariants by number, and where to read the rest. It is deliberately tight.
 
@@ -23,16 +23,16 @@ this list, and the compiler is what enforces that now; there is no edge pointing
 
 | Crate | Holds |
 |---|---|
-| `aperture-schema` | the type model (`schema`), the physical row id (`id`), schema **identity** (`fingerprint`: the canonical form, per-predicate and whole-schema numbers, subset containment) and — since Phase 8.2 — the schema DSL's front end (`syntax`: lexer, `lelwel` grammar, parse, lower, `print` and `resolve` (imports), the executable corpus). Depends on no Aperture crate, which is the direction that matters; [operations §10](docs/aperture-cli-design.md) puts "parse → AST → canonical model; imports/resolution; fingerprints" here, so the bottom of the stack has a grammar in it and nothing above needs to know a schema was ever text |
-| `aperture-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
-| `aperture-wire` | the **transport** codec, its framing, and the protocol's message vocabulary — `varint`, the schema-driven `value`/fact encoding, `crc`, `block` (a run of one predicate's facts behind a sync marker), `frame` (`[kind][stream][length]`), and `protocol` (what a startup frame carries, what a stream's life looks like — shared by server and client, **no I/O policy**). A sibling of `aperture-encoding`, not a layer on it: it depends on `aperture-schema` alone and shares no bytes with the storage codec |
-| `aperture-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, the errors the storage layer raises — and the **lifecycle**: `catalog` (the store root, `ops-I1`'s lock, `ops-I7`'s filesystem-as-catalog), `meta` (the `APERTURE_META` sidecar), `schema_doc` (the embedded schema copy — **source**, since Phase 8.4, and what a server reads a database's schema back from), `identity` (`ops-I4`'s content hash), `ulid`, and `lookup_cache` (what `(predicate, key)` already names — interning's point-read cache, [Phase 12](PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier)) |
-| `aperture-ingest` | the **write funnel** (`ops-I5`): `FactSink` (the write seam, as `FactStore` is the read seam), and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up. Sits above `store` and `wire` because it is the crossing between them, and neither should know the other |
-| `aperture-engine` | **focus** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here. `iter::Profile` is what a run *examined*, per step of the body: the counter the cancellation stride already kept, handed back by `enumerate_profiled` instead of thrown away |
-| `aperture-client` | the **client**: `address` (§2's `[where//]name[@instance]`, parsed once for every client there is — the CLI, the viewer, and `ApertureAddress` restating it in C#), `connection` (connect over a Unix socket **or TCP** — one `Transport` enum, since the protocol is the same and only the pipe differs — handshake, the write stream, lifecycle requests, `fetch` (what facts these ids name), and the frame demultiplexer that parks another stream's frames rather than dropping them), `rows` (a query result as a **bookmark** — no borrow of the connection, so several are open at once, and `take` is the page `\more` is built on), `expand` (a reference replaced by the fact it names, recursively — the breadth-first walk, the depth bound and the cache, since how deep to expand is a display decision and the point read behind it is not). Depends on `wire` and nothing else |
-| `aperture-server` | the wire protocol over a Unix socket (and TCP, opt-in): one connection's life (`session`), the store root and the databases open under it (`registry` — what makes `create`/`finish`/`remove` work against a *running* server), the fair writer (`outbound`), rows out without a fourth encoder (`rows`), the hop off the reactor (`blocking`), the listener (`server`), this server's counters (`stats`), and `catalogue` — `aperture.db.List` and `aperture.db.Interning` answered at the `FactStore` seam, which is what makes a **virtual predicate** need nothing from the machine. The second one is the write path's own counters (cache hits, misses, and the two trees' point reads), which is how *is the interning cache working* became a query (`:interning`) rather than a debugger session; `schemas/catalogue.aps` is the whole virtual set, and `code_index::with_catalogue` marks **every** predicate it declares virtual, because one left stored acquires keyspaces, enters `ops-I4`'s identity and moves the fingerprint every client agrees with |
-| `aperture-viewer` | the **site**: `query` (every question a code-search page asks, in one place, each saying which key order answers it), `render` (HTML by hand, no assets), `pool` (a recycled pool, since the client is blocking and this is not), and the routes — browse, file, search, symbol. Depends on `aperture-client` and nothing below it, which is the claim: a viewer is an ordinary consumer of the protocol. The binary is `aperture-viewer`; [phase 11](docs/phase-11-code-search.md) is what it was built from |
-| root `aperture-cli` | the **tool**: `cli` (the clap tree, §4), `config` (where things live), `commands/` (create — with `--schema`, since 8.4 — list, describe, finish, rm, serve, query, **shell** (the wire REPL: `:`-prefixed commands with the psql `\` spellings as aliases, JSON rows, `:more` holding a real cursor, and queries **compiled client-side** against the schema the server serves — so a refusal is a caret in colour and `:plan`/`:type` are answered without running anything), **schema** (`check`/`fingerprint`/`diff`, 8.5), plus `Target`, §2's address resolution stated once over `aperture_client::address`), `output` (rendering, always client-side), `prompt` (what both shells share: the highlighter over the focus lexer, the palettes, the command-table shape, completion, the continue-while-a-brace-is-open rule, history), `shell` (Phase 5's *embedded demo*, kept because it seeds its own database — which is the thing no wire client can do), `code_index` — the **default** schema, parsed from `schemas/code.aps`, which is what a database gets when `create` was not given a path — and `workload`, the one statement of what the `examples/` instruments measure (Phase 10's S0). The binary is `aperture` |
+| `fjord-schema` | the type model (`schema`), the physical row id (`id`), schema **identity** (`fingerprint`: the canonical form, per-predicate and whole-schema numbers, subset containment) and — since Phase 8.2 — the schema DSL's front end (`syntax`: lexer, `lelwel` grammar, parse, lower, `print` and `resolve` (imports), the executable corpus). Depends on no Fjord crate, which is the direction that matters; [operations §10](docs/fjord-cli-design.md) puts "parse → AST → canonical model; imports/resolution; fingerprints" here, so the bottom of the stack has a grammar in it and nothing above needs to know a schema was ever text |
+| `fjord-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
+| `fjord-wire` | the **transport** codec, its framing, and the protocol's message vocabulary — `varint`, the schema-driven `value`/fact encoding, `crc`, `block` (a run of one predicate's facts behind a sync marker), `frame` (`[kind][stream][length]`), and `protocol` (what a startup frame carries, what a stream's life looks like — shared by server and client, **no I/O policy**). A sibling of `fjord-encoding`, not a layer on it: it depends on `fjord-schema` alone and shares no bytes with the storage codec |
+| `fjord-store` | the `FactStore` seam, the fjall backend, the in-memory model, `fact`, the format stamp, the errors the storage layer raises — and the **lifecycle**: `catalog` (the store root, `ops-I1`'s lock, `ops-I7`'s filesystem-as-catalog), `meta` (the `FJORD_META` sidecar), `schema_doc` (the embedded schema copy — **source**, since Phase 8.4, and what a server reads a database's schema back from), `identity` (`ops-I4`'s content hash), `ulid`, and `lookup_cache` (what `(predicate, key)` already names — interning's point-read cache, [Phase 12](PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier)) |
+| `fjord-ingest` | the **write funnel** (`ops-I5`): `FactSink` (the write seam, as `FactStore` is the read seam), and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up. Sits above `store` and `wire` because it is the crossing between them, and neither should know the other |
+| `fjord-engine` | **sigla** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor — all new query work lands here. `iter::Profile` is what a run *examined*, per step of the body: the counter the cancellation stride already kept, handed back by `enumerate_profiled` instead of thrown away |
+| `fjord-client` | the **client**: `address` (§2's `[where//]name[@instance]`, parsed once for every client there is — the CLI, the viewer, and `FjordAddress` restating it in C#), `connection` (connect over a Unix socket **or TCP** — one `Transport` enum, since the protocol is the same and only the pipe differs — handshake, the write stream, lifecycle requests, `fetch` (what facts these ids name), and the frame demultiplexer that parks another stream's frames rather than dropping them), `rows` (a query result as a **bookmark** — no borrow of the connection, so several are open at once, and `take` is the page `\more` is built on), `expand` (a reference replaced by the fact it names, recursively — the breadth-first walk, the depth bound and the cache, since how deep to expand is a display decision and the point read behind it is not). Depends on `wire` and nothing else |
+| `fjord-server` | the wire protocol over a Unix socket (and TCP, opt-in): one connection's life (`session`), the store root and the databases open under it (`registry` — what makes `create`/`finish`/`remove` work against a *running* server), the fair writer (`outbound`), rows out without a fourth encoder (`rows`), the hop off the reactor (`blocking`), the listener (`server`), this server's counters (`stats`), and `catalogue` — `fjord.db.List` and `fjord.db.Interning` answered at the `FactStore` seam, which is what makes a **virtual predicate** need nothing from the machine. The second one is the write path's own counters (cache hits, misses, and the two trees' point reads), which is how *is the interning cache working* became a query (`:interning`) rather than a debugger session; `schemas/catalogue.sigla` is the whole virtual set, and `code_index::with_catalogue` marks **every** predicate it declares virtual, because one left stored acquires keyspaces, enters `ops-I4`'s identity and moves the fingerprint every client agrees with |
+| `fjord-viewer` | the **site**: `query` (every question a code-search page asks, in one place, each saying which key order answers it), `render` (HTML by hand, no assets), `pool` (a recycled pool, since the client is blocking and this is not), and the routes — browse, file, search, symbol. Depends on `fjord-client` and nothing below it, which is the claim: a viewer is an ordinary consumer of the protocol. The binary is `fjord-viewer`; [phase 11](docs/phase-11-code-search.md) is what it was built from |
+| root `fjord-cli` | the **tool**: `cli` (the clap tree, §4), `config` (where things live), `commands/` (create — with `--schema`, since 8.4 — list, describe, finish, rm, serve, query, **shell** (the wire REPL: `:`-prefixed commands with the psql `\` spellings as aliases, JSON rows, `:more` holding a real cursor, and queries **compiled client-side** against the schema the server serves — so a refusal is a caret in colour and `:plan`/`:type` are answered without running anything), **schema** (`check`/`fingerprint`/`diff`, 8.5), plus `Target`, §2's address resolution stated once over `fjord_client::address`), `output` (rendering, always client-side), `prompt` (what both shells share: the highlighter over the sigla lexer, the palettes, the command-table shape, completion, the continue-while-a-brace-is-open rule, history), `shell` (Phase 5's *embedded demo*, kept because it seeds its own database — which is the thing no wire client can do), `code_index` — the **default** schema, parsed from `schemas/code.sigla`, which is what a database gets when `create` was not given a path — and `workload`, the one statement of what the `examples/` instruments measure (Phase 10's S0). The binary is `fjord` |
 
 **A non-Rust client is part of the test surface.** `clients/dotnet` is a C#
 implementation of the wire protocol plus a console producer that writes a nested code
@@ -40,11 +40,11 @@ index into a real database and queries it back — `./clients/dotnet/run-demo.sh
 exists to answer what the Rust tests cannot: whether the protocol is implementable from
 outside, by something that shares no constants, no enums and no unwritten assumptions.
 It has already earned that twice.
-Beside it, **`Aperture.Indexer` is that client pointed at somebody's real source** —
+Beside it, **`Fjord.Indexer` is that client pointed at somebody's real source** —
 Buildalyzer runs a design-time build per project out of process, Roslyn answers what
 every name in the result means, and the facts go down the same socket:
 `./clients/dotnet/index-repo.sh <checkout>`
-([its README](clients/dotnet/Aperture.Indexer/README.md)). That is where a database large
+([its README](clients/dotnet/Fjord.Indexer/README.md)). That is where a database large
 enough to be worth measuring comes from, and it is the same argument as the demo's made
 at a size where it stops being an argument: a producer holding no fact ids, every
 reference nested, emitting in whatever order a syntax walk reaches things.
@@ -55,13 +55,13 @@ extends, implements, override, parameter, type, doc, attribute) — each answera
 by something holding a compiler and a build system, which is what makes this client part
 of the schema rather than a consumer of it.
 It is also **a checked-in golden**: `./clients/dotnet/emit-golden.sh` writes the blocks
-it encodes for a fixed corpus, and `aperture-client`'s
+it encodes for a fixed corpus, and `fjord-client`'s
 `byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes
 (Phase 9e's criterion). The corpus and the schema are stated independently on each side
 on purpose — a shared statement would make the two agree by construction, which is the
 agreement being tested. The Rust test needs no `dotnet`; regenerating the golden does.
 **And it writes to Glean too** — `--glean-out <dir>` puts the same facts into Glean's own
-JSON batch format against `clients/dotnet/glean/apbench.angle`
+JSON batch format against `clients/dotnet/glean/fjbench.angle`
 (`./clients/dotnet/index-repo-glean.sh <checkout>`), because a number comparing the two
 systems needs one producer: the walk, the batching and the writer threads are shared and
 only `IBlockTarget.Write` differs. References stay **nested** on that path as well — Glean
@@ -74,23 +74,23 @@ clock, and the honest total for Glean is emit plus load.
 plan. The index is a real one — `example/` holds a small Python corpus, the `ast`-based indexer
 that reads it and the JSON it emits, which the shell compiles in and writes as facts at startup
 ([`example/README.md`](example/README.md)). Regenerate with `python3 example/index.py`. Keep
-logic out of it — the plan renderer it needed lives in `aperture_engine::print`.
-**`aperture_store::fact` is how a fact is written by hand**: a well-typed value whose key
+logic out of it — the plan renderer it needed lives in `fjord_engine::print`.
+**`fjord_store::fact` is how a fact is written by hand**: a well-typed value whose key
 fields are named, resolved against the schema (`FjallDb::put`), because `put_fact` takes bytes
 and three of its preconditions fail silently — see
-[chapter 3](docs/03-storage-model.md#writing-a-fact-by-hand). `aperture_store::fixture` is the
+[chapter 3](docs/03-storage-model.md#writing-a-fact-by-hand). `fjord_store::fixture` is the
 fixture database the corpus and the batteries share.
-`aperture-engine/src/lib.rs` is the module list plus a commented-out graveyard (~20 live lines;
+`fjord-engine/src/lib.rs` is the module list plus a commented-out graveyard (~20 live lines;
 only the transport-codec sketch is worth keeping). See [chapter 1](docs/01-concepts.md).
 
-**Test support spans two crates, and the split is load-bearing.** `aperture_store::fixtures`
+**Test support spans two crates, and the split is load-bearing.** `fjord_store::fixtures`
 holds everything store-shaped — the probes, the model stores, the scan-contract assertions,
 the value helpers — because a probe has to be *the same* `FactStore` as the store it wraps;
-`aperture_engine::fixtures` holds the plan runners and re-exports the rest, so a battery still
+`fjord_engine::fixtures` holds the plan runners and re-exports the rest, so a battery still
 has one place to import from. A test in a lower crate that needs to run a query belongs in that
 crate's `tests/` directory, not its `src/`: a unit test reaching back through the engine
 compiles a second copy of its own crate, and the two `FactStore`s are then different types
-(`aperture-store/tests/i8_snapshot.rs` is the one such guard).
+(`fjord-store/tests/i8_snapshot.rs` is the one such guard).
 
 ---
 
@@ -129,17 +129,17 @@ cargo fmt --all
 `--workspace`. That is deliberate: the coverage ledger silently narrowing to one package as
 crates are extracted would be a ledger that stops counting.
 
-`fjall` is the storage backend; the `FactStore` trait (`aperture_store::fact_store`) is the
+`fjall` is the storage backend; the `FactStore` trait (`fjord_store::fact_store`) is the
 seam — its own module, so neither implementation can be mistaken for the definition — with an
-in-memory `MemStore` (`aperture_store::mem_store`) **for tests only**. The focus grammar is a
-`lelwel` grammar (`crates/aperture-engine/src/grammar.llw`, compiled by that crate's
+in-memory `MemStore` (`fjord_store::mem_store`) **for tests only**. The sigla grammar is a
+`lelwel` grammar (`crates/fjord-engine/src/grammar.llw`, compiled by that crate's
 `build.rs`).
 
 ---
 
 ## Architecture, in one breath
 
-`lex → parse → typecheck → flatten → reorder` compiles focus text to a **`Plan` IR** (the
+`lex → parse → typecheck → flatten → reorder` compiles sigla text to a **`Plan` IR** (the
 fixed contract — an ordered `[Step]`, a scan to iterate or a value to compute); the executor
 runs the plan as a **nested loop** (`enumerate` over a frame
 stack) against two sorted column families (`keys` = index, `entities` = identity), and can
@@ -147,7 +147,7 @@ stack) against two sorted column families (`keys` = index, `entities` = identity
 [storage](docs/03-storage-model.md) · [executor](docs/04-executor.md) ·
 [resume](docs/05-resume.md) · [codec](docs/02-tuple-codec.md) ·
 [types/schema](docs/06-types-and-schema.md) · [compilation](docs/07-compilation.md) ·
-[operations](docs/aperture-cli-design.md).
+[operations](docs/fjord-cli-design.md).
 
 ---
 
@@ -176,14 +176,14 @@ Know these by number — they are the guardrails every change is checked against
 
 **Operational invariants `ops-I1`–`ops-I10`** (lifecycle, single-*process* ownership,
 reproducibility, one-write-*funnel*) are a **separate namespace** — always written `ops-Ix` — and live in
-[`docs/aperture-cli-design.md §1`](docs/aperture-cli-design.md), summarised in the
+[`docs/fjord-cli-design.md §1`](docs/fjord-cli-design.md), summarised in the
 [registry](docs/invariants.md#operational-invariants-ops-i1ops-i10).
 
 ---
 
 ## Conventions (essentials — full list in [`docs/conventions.md`](docs/conventions.md))
 
-- **Errors, not panics, on data paths.** Corrupt bytes surface as an `ApertureError` /
+- **Errors, not panics, on data paths.** Corrupt bytes surface as an `FjordError` /
   `StoreCodecError` variant, never `unwrap`/`panic` (unwrap only where an invariant makes it
   impossible, with a comment).
 - **Record fields are ordered `[(Symbol, T)]` slices everywhere** (`Box<[…]>` owned,
@@ -252,7 +252,7 @@ decoded data.
   cannot be built before a derived predicate can be *declared*.
 - **A constant bind folds.** `X = 42` — and a record of constants to any depth — is substituted
   at every use, taking no register and no step; a plan whose every bind folded has no steps and
-  means exactly one row. Nothing in focus lowers a `Step::Derive` yet, so that machinery is
+  means exactly one row. Nothing in sigla lowers a `Step::Derive` yet, so that machinery is
   exercised by hand-built plans; its first producer will be a primitive or a subquery. Do not
   "simplify" it away — its resume behaviour is the expensive thing to get wrong later
   ([chapter 7](docs/07-compilation.md#folding-a-constant-bind)).
@@ -279,7 +279,7 @@ decoded data.
 - **Unsettled decisions:** [`docs/open-decisions.md`](docs/open-decisions.md) — **one**, and it
   gates a phase. The two the file was opened for have both settled since: **multiplicity** (one
   fact per element, taken with the rest of Phase 8's one-way doors) and **primitives**
-  (comparisons and arithmetic, built in Phase 11 — arithmetic is the first thing in focus to
+  (comparisons and arithmetic, built in Phase 11 — arithmetic is the first thing in sigla to
   lower a `Step::Derive`). What is left is what an external audit found asserted but never
   decided, **gating a phase and cheapest to answer before it**: **re-derivation vs I11** (the high-water mark is recovered from
   the `entities` tree, so Phase 8b's O(1) tree drop restarts sequences at 1 and reuses ids that
@@ -291,17 +291,17 @@ decoded data.
   impossibility. And **what a reference is on the way in** is the target fact, nested — see
   below.
 - **Reading one back is the same shape**, by asking: a row carries a reference as a `FactId`, and
-  focus cannot name a fact by its number, so `kinds::FETCH` (`F`/`f`) answers *what fact does this
+  sigla cannot name a fact by its number, so `kinds::FETCH` (`F`/`f`) answers *what fact does this
   id name* with the target's **key**. `:expand` in the shell and `query --expand` walk that
   recursively — the logical form `ops-I4` already hashes, and the shape a producer would have
   written. The recursion, the depth bound and the cache are the **client's**
-  (`aperture_client::expand`), because how deep to expand is a display decision; the server does
+  (`fjord_client::expand`), because how deep to expand is a display decision; the server does
   one point read per id and nothing else. Not a query kind: expansion is orthogonal to paging,
-  profiling and counting ([operations §5 and §6](docs/aperture-cli-design.md)).
+  profiling and counting ([operations §5 and §6](docs/fjord-cli-design.md)).
 - **A reference a producer sends is the whole target fact, not an id** — nested inline to any
   depth, and **interned** at ingest into a `FactId`
   ([chapter 3](docs/03-storage-model.md#interning-a-nested-fact),
-  [operations §6](docs/aperture-cli-design.md#6-wire-protocol--the-write-stream)). A producer
+  [operations §6](docs/fjord-cli-design.md#6-wire-protocol--the-write-stream)). A producer
   holding an id may send it, so the inbound form is id-or-nested; **stored, a reference is a
   `FactId` and nothing else** — this is transport, never disk. Settled because every id-based
   answer puts a map from each entity to its assigned identity inside the *indexer*, plus an

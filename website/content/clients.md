@@ -3,7 +3,7 @@ title: Clients & the viewer
 description: The .NET client and real indexer, the code-search viewer, and what it takes to write a client of your own.
 ---
 
-Everything that talks to Aperture is a client of one protocol. There is no privileged path: the
+Everything that talks to Fjord is a client of one protocol. There is no privileged path: the
 CLI, the shell, the viewer and a C# program written outside the repository all use the same
 frames.
 
@@ -13,9 +13,9 @@ frames.
 
 | Project | What it is |
 |---|---|
-| `Aperture.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection |
-| `Aperture.Demo` | A console program that writes a small code index and queries it back |
-| `Aperture.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is |
+| `Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection |
+| `Fjord.Demo` | A console program that writes a small code index and queries it back |
+| `Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is |
 
 It exists to answer a question the Rust tests cannot: **is the protocol implementable from
 outside?** A client written in the same repository, against the same types, can agree with the
@@ -61,7 +61,7 @@ self-delimiting and frozen on disk; none of that is on the wire, and a client ne
 ./clients/dotnet/emit-golden.sh
 ```
 
-That writes the blocks the C# client encodes for a fixed corpus, and `aperture-client`'s
+That writes the blocks the C# client encodes for a fixed corpus, and `fjord-client`'s
 `byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes. The
 corpus and the schema are stated **independently on each side on purpose** — a shared statement
 would make the two agree by construction, which is the agreement being tested. The Rust test
@@ -110,11 +110,11 @@ of this codec against constants copied from the Rust would only prove the consta
 ## The viewer
 
 ```bash
-aperture --data-dir ./db serve &
-aperture-viewer ./db/aperture.sock//code --bind 127.0.0.1:8088
+fjord --data-dir ./db serve &
+fjord-viewer ./db/fjord.sock//code --bind 127.0.0.1:8088
 ```
 
-A code-search site over an Aperture database: HTML written by hand, no assets, no framework.
+A code-search site over a Fjord database: HTML written by hand, no assets, no framework.
 
 | Route | Page |
 |---|---|
@@ -168,8 +168,8 @@ reference is either an id or **the whole target fact**:
 
 ```rust
 use std::sync::Arc;
-use aperture_client::{Connection, Mode};
-use aperture_wire::{WireFact, WireRef, WireValue};
+use fjord_client::{Connection, Mode};
+use fjord_wire::{WireFact, WireRef, WireValue};
 
 let mut connection = Connection::connect(
     socket,          // &Path

@@ -1,6 +1,6 @@
 # Authentication, and what a principal may never be
 
-> [Aperture design book](../README.md) · reference doc
+> [Fjord design book](../README.md) · reference doc
 
 **Nothing here is built.** This is the design of record for authentication, written before
 the phase that would build it, so that the shape is argued once rather than discovered
@@ -47,7 +47,7 @@ lease, and at expiry runs the revocation statement that drops the role. The appl
 never holds a static credential; the credential's lifetime is the lease's; a compromised one
 is revocable by name.
 
-Every part of that depends on the database owning a **mutable principal namespace**. Aperture
+Every part of that depends on the database owning a **mutable principal namespace**. Fjord
 has none, and giving it one lands in one of two places, both bad:
 
 - **Principals as facts.** They enter [`ops-I4`](invariants.md#ops-i4)'s identity — a database's
@@ -60,7 +60,7 @@ has none, and giving it one lands in one of two places, both bad:
   `finish` would need an opinion about it. `ops-I4`'s reproducibility would need a carve-out
   for it. And the deployment model this repo has actually planned for — horizontal read
   scaling as more processes each holding their own **copy** of a Complete database
-  ([operations §5](aperture-cli-design.md)) — would replicate a grant table that goes stale
+  ([operations §5](fjord-cli-design.md)) — would replicate a grant table that goes stale
   the moment anything revokes, silently, per replica.
 
 **So the pattern does not port, and the capability does.** What the lease buys — a credential
@@ -90,7 +90,7 @@ consequence of writing the verifier against a bundle, and the reason to write it
 ## 3. Attested identity, end to end
 
 The chain is worth stating in full because its links are usually conflated, and because
-**IMDS attestation is one link that never touches Aperture**.
+**IMDS attestation is one link that never touches Fjord**.
 
 1. **Node attestation.** A SPIRE agent on an EC2 host presents the instance identity document
    from IMDSv2; the SPIRE server verifies its signature against the AWS public certificate and
@@ -104,7 +104,7 @@ The chain is worth stating in full because its links are usually conflated, and 
 4. The agent returns an **X.509-SVID** — a leaf certificate whose only meaningful field is a URI
    SAN, `spiffe://corp/ns/index/sa/roslyn-indexer` — plus the trust bundle, and **re-issues at
    half TTL** (an hour by default). Nothing on disk, no file to reload, no restart.
-5. Aperture's client presents it. Aperture's server verifies the chain against the bundle and
+5. Fjord's client presents it. Fjord's server verifies the chain against the bundle and
    reads the URI SAN as the principal.
 
 **Step 2 is a mechanism this repo already has and throws away.** `server.rs` binds `_address`
@@ -164,7 +164,7 @@ Three things make it cheap on this side too:
   those halves and the session is untouched.
 - **The client's `Transport` is deliberately an enum, not a generic** — `Unix` and `Tcp` today,
   with the module documentation stating the trade. A third variant is the extension point it
-  was shaped for. The constraint to respect is that `aperture-client` is **blocking** by design,
+  was shaped for. The constraint to respect is that `fjord-client` is **blocking** by design,
   so the TLS choice must have a blocking API (`rustls::StreamOwned` over a `TcpStream`);
   `tokio-rustls` server-side.
 - **The listener is the only new machinery** — a third bind beside the socket and the TCP port,
@@ -176,7 +176,7 @@ Three things make it cheap on this side too:
 gateway / mTLS terminator / tunnel"*. **That does not survive contact with workload identity**:
 a gateway that terminates TLS has consumed the peer certificate, and the identity in it exists
 nowhere downstream. Preserving it means the gateway re-asserts it in a header — an
-`X-Forwarded-Client-Cert` shape — which Aperture's protocol has no room for and should not
+`X-Forwarded-Client-Cert` shape — which Fjord's protocol has no room for and should not
 grow, because a forwarded identity is one the server must take on trust from a hop it cannot
 verify.
 
@@ -185,7 +185,7 @@ boundary" stays exactly true when the server *is* the transport's terminator. Wh
 boundary: into the process that enforces it, out of a gateway trusted to have done it. And the
 other half of `ops-I10` — no in-DB auth — survives untouched, strengthened into `ops-I11`.
 
-The consequence for [§2 of operations](aperture-cli-design.md#2-addressing--connection-resolution)
+The consequence for [§2 of operations](fjord-cli-design.md#2-addressing--connection-resolution)
 is that its `user@` decision **stands, with a better reason**. It was dropped as syntax with
 nothing behind it. With attested identity there is no user to name: the address says where the
 database is, and the certificate says who is asking.
@@ -244,7 +244,7 @@ Two consequences worth writing down before they are discovered:
 - **A database a principal may not see answers `UnknownDatabase`, not a refusal.** A refusal
   that distinguishes *"no such database"* from *"not yours"* enumerates the catalogue for
   anybody who can open a connection.
-- **`aperture.db.List` must filter by principal**, or the line above is a fiction. This is the
+- **`fjord.db.List` must filter by principal**, or the line above is a fiction. This is the
   point at which authorization enters the query language, and it is worth being precise about
   how little it costs: the catalogue is a **virtual predicate answered at the `FactStore`
   seam**, not a source in the executor — deliberately, so the plan IR gains no variant and
@@ -260,7 +260,7 @@ enforcement surface sits *outside* the machine.
 - **Per-predicate** — "may query `src.File`, not `build.Assembly`" — is enforceable at
   compile time in the server, still outside the hot loop, but it puts a principal into query
   compilation and needs an answer for derived and virtual predicates. Not taken.
-- **Per-fact** is already priced by [operations §1](aperture-cli-design.md) and declined. Glean's
+- **Per-fact** is already priced by [operations §1](fjord-cli-design.md) and declined. Glean's
   per-fact visibility *is* ownership with different units: ACL groups are allocated as ownership
   units and ANDed into the same slices. So reopening `ops-I10` for per-fact authorization
   reopens [`ops-I9`](invariants.md#ops-i9) with it, at ownership's price — visibility moves
@@ -299,10 +299,10 @@ Recorded here so the amendments are a list rather than a search. **None of them 
 
 | Where | What it says now | What this design needs |
 |---|---|---|
-| [operations §1](aperture-cli-design.md), `ops-I10` | authentication delegated to a gateway / mTLS terminator; *"a credential slot in the handshake is reserved in this document"* | the server terminates; the reserved slot is **retired**, because mTLS needs no bytes and a token needs a frame kind |
+| [operations §1](fjord-cli-design.md), `ops-I10` | authentication delegated to a gateway / mTLS terminator; *"a credential slot in the handshake is reserved in this document"* | the server terminates; the reserved slot is **retired**, because mTLS needs no bytes and a token needs a frame kind |
 | [invariants](invariants.md#ops-i10) | the `ops-I1`–`ops-I10` range | `ops-I11`, and the range text in three files |
-| `crates/aperture-server/src/lib.rs` | *"the handshake has a reserved credential slot and accepts anonymous"* | the first half deleted; the second half becomes `Principal::Anonymous` |
-| `crates/aperture-server/src/server.rs` | *"a reserved credential slot nothing fills"* | same |
+| `crates/fjord-server/src/lib.rs` | *"the handshake has a reserved credential slot and accepts anonymous"* | the first half deleted; the second half becomes `Principal::Anonymous` |
+| `crates/fjord-server/src/server.rs` | *"a reserved credential slot nothing fills"* | same |
 | `src/cli.rs`, `src/commands/serve.rs` | *"the handshake accepts anonymous"* | true, and now a value rather than an absence |
 
 The retirement is the one to get right: leaving a reserved slot documented in three files while
@@ -319,7 +319,7 @@ the middle.
   socket path, `Anonymous` on TCP. Nothing refuses anything. This is the shape, with a real value
   in it.
 - **b — a policy that can refuse.** Parse, load at `serve`, reload on `SIGHUP`, evaluate once in
-  the handshake. `UnknownDatabase` for an invisible database; `aperture.db.List` filtered.
+  the handshake. `UnknownDatabase` for an invisible database; `fjord.db.List` filtered.
 - **c — mTLS.** `--listen-tls` with certificate, key and bundle, default-closed on `--listen-tcp`'s
   terms; `tokio-rustls` server-side, a `Transport::Tls` variant client-side. URI SAN →
   `Principal::Spiffe`. **Acceptance: `protocol::VERSION` does not move, and the .NET client still
@@ -340,4 +340,4 @@ the middle.
 
 ---
 
-> [Index](../README.md) · [Operations](aperture-cli-design.md) · [Invariants](invariants.md) · [Open decisions](open-decisions.md)
+> [Index](../README.md) · [Operations](fjord-cli-design.md) · [Invariants](invariants.md) · [Open decisions](open-decisions.md)

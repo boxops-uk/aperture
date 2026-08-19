@@ -1,4 +1,4 @@
-//! `aperture db rm <db>`.
+//! `fjord db rm <db>`.
 
 use std::path::Path;
 
@@ -19,7 +19,7 @@ pub fn run(root: &Path, target: &Target) -> Result<(), CliError> {
         // this process has nothing open to close.
         Route::Server(mut server) => Ok(server.remove(&target.database)?),
         Route::Local(catalog, _lock) => {
-            Ok(catalog.remove(&aperture_store::catalog::Selector::parse(&target.database)?)?)
+            Ok(catalog.remove(&fjord_store::catalog::Selector::parse(&target.database)?)?)
         }
     }
 }

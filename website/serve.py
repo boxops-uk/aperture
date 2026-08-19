@@ -100,7 +100,7 @@ def main() -> int:
     handler = functools.partial(Handler, directory=str(OUT))
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     with socketserver.ThreadingTCPServer((args.host, args.port), handler) as server:
-        print(f"\n  Aperture docs → http://{args.host}:{args.port}/  (Ctrl-C to stop)\n")
+        print(f"\n  Fjord docs → http://{args.host}:{args.port}/  (Ctrl-C to stop)\n")
         try:
             server.serve_forever()
         except KeyboardInterrupt:

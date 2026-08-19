@@ -8,7 +8,7 @@ layer described elsewhere; where a subject has more depth, there is a link.
 
 The query:
 
-```focus
+```sigla
 {f = F, l = L} where src.Ref {to = src.Decl {name = "encode_str"}, file = F, at = {line = L}}
 ```
 
@@ -73,7 +73,7 @@ error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
   │         ^^^^^^^^^^
 ```
 
-`aperture query` works the other way round: it sends the text, and *if* the server refuses
+`fjord query` works the other way round: it sends the text, and *if* the server refuses
 with a bad-query code, it fetches the schema and recompiles locally purely to render the
 caret. Same diagnostic, one extra round trip only on the failure path.
 
@@ -295,7 +295,7 @@ A row carries a reference as a `FactId`, because that is what a reference is onc
 {"to": "#4:1", "file": "#9:2", "at": {"line": 2, "col": 4, "length": 12}}
 ```
 
-focus cannot ask what `#4:1` names — a query names a fact by its key, never by its number. So
+sigla cannot ask what `#4:1` names — a query names a fact by its key, never by its number. So
 the question goes on the **protocol**:
 
 ```text

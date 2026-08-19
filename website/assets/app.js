@@ -1,4 +1,4 @@
-/* Aperture docs — theme, nav, copy buttons, TOC tracking, search, highlighting. */
+/* Fjord docs — theme, nav, copy buttons, TOC tracking, search, highlighting. */
 (function () {
   "use strict";
 
@@ -6,7 +6,7 @@
 
   var root = document.documentElement;
   var stored = null;
-  try { stored = localStorage.getItem("aperture-theme"); } catch (e) {}
+  try { stored = localStorage.getItem("fjord-theme"); } catch (e) {}
   if (stored === "dark" || stored === "light") root.setAttribute("data-theme", stored);
 
   function currentTheme() {
@@ -20,7 +20,7 @@
     themeButton.addEventListener("click", function () {
       var next = currentTheme() === "dark" ? "light" : "dark";
       root.setAttribute("data-theme", next);
-      try { localStorage.setItem("aperture-theme", next); } catch (e) {}
+      try { localStorage.setItem("fjord-theme", next); } catch (e) {}
     });
   }
 
@@ -243,7 +243,7 @@
   /* ----------------------------------------------------- highlighting --- */
 
   var RULES = {
-    focus: [
+    sigla: [
       ["com", /#[^\n]*/],
       ["str", /"(?:[^"\\\n]|\\.)*"/],
       ["kw", /\b(?:where|never)\b/],
@@ -252,7 +252,7 @@
       ["var", /\b[A-Z][A-Za-z0-9_]*\b/],
       ["pun", /[{}()=|!<>+\-;,?]+|\.\./]
     ],
-    aps: [
+    schema: [
       ["com", /#[^\n]*/],
       ["str", /"(?:[^"\\\n]|\\.)*"/],
       ["kw", /\b(?:schema|predicate|import|type|derive|stored|evolves|enum|maybe|set)\b/],
@@ -297,7 +297,7 @@
     bash: [
       ["com", /#[^\n]*/],
       ["str", /"(?:[^"\\\n]|\\.)*"|'[^'\n]*'/],
-      ["kw", /\b(?:cargo|python3|dotnet|aperture|aperture-viewer|git|export|cd|rm|mkdir|sleep|while|do|done|if|then|fi|kill|tar|curl|echo)\b/],
+      ["kw", /\b(?:cargo|python3|dotnet|fjord|fjord-viewer|git|export|cd|rm|mkdir|sleep|while|do|done|if|then|fi|kill|tar|curl|echo)\b/],
       ["num", /\b\d+\b/],
       ["fn", /(?:^|\s)--?[A-Za-z][\w-]*/],
       ["pun", /[|&;<>(){}$]/]

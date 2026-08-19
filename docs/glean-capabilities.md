@@ -1,6 +1,6 @@
-# Aperture vs Glean — capabilities, efficiency, and what a query costs
+# Fjord vs Glean — capabilities, efficiency, and what a query costs
 
-> [Aperture design book](../README.md) · reference doc
+> [Fjord design book](../README.md) · reference doc
 
 [`glean-comparison.md`](glean-comparison.md) is the **lineage** ledger: for each idea, is it
 adopted, a deliberate divergence, or an undecided gap. This file asks three different
@@ -146,7 +146,7 @@ Marked from source on both sides. "—" means absent, not merely unused.
 
 ### 1.1 Query language
 
-| Capability | Glean | Aperture | Notes |
+| Capability | Glean | Fjord | Notes |
 |---|---|---|---|
 | Conjunction, disjunction | ✅ | ✅ | Both compile `\|` without DNF expansion |
 | Negation of a statement | ✅ | ✅ | Glean desugars pattern-`!` to a negated group (`Typecheck.hs:626-654`); ours is a `Step::Test` |
@@ -184,7 +184,7 @@ a variable to any record or sum containing at least the named fields
 
 This row is much closer than the language rows, and in two places we are ahead.
 
-| Capability | Glean | Aperture |
+| Capability | Glean | Fjord |
 |---|---|---|
 | Paging by opaque client-held token | ✅ `UserQueryCont` | ✅ `Cursor` |
 | Token survives the connection | ✅ | ✅ |
@@ -249,13 +249,13 @@ relaxed without touching the cursor.
 Glean: `all q` builds a set, `prim.size` counts it, and sets are a first-class runtime type with
 nine dedicated syscalls and a `maxSetSize` budget (`query.cpp:612-620,563`).
 
-Aperture: no set construction, no `count` in the language. `QUERY_COUNT` runs the same plan with
+Fjord: no set construction, no `count` in the language. `QUERY_COUNT` runs the same plan with
 a counting accumulator, so a count costs no rows over the wire — but `prim.size (all …)` as a
 *term inside a query* has no spelling. This remains the clearest single capability gap.
 
 ### 1.5 Lifecycle and operations
 
-| Capability | Glean | Aperture |
+| Capability | Glean | Fjord |
 |---|---|---|
 | Multi-database server | ✅ | ✅ `registry` |
 | Cross-database query | ✅ *in the service layer only* (§0) | — |
@@ -279,7 +279,7 @@ Two properties we already have make ours strictly better, and neither cost anyth
   than a tally to maintain.
 - **Insert-only, by construction.** Nothing deletes a row from `keys` or `entities` — the only
   `remove` in the store is `FORMAT_KEY` in the `meta` keyspace
-  (`crates/aperture-store/src/store.rs:1429`). fjall's `approximate_len()` is O(1) and its doc
+  (`crates/fjord-store/src/store.rs:1429`). fjall's `approximate_len()` is O(1) and its doc
   says it is *reliable* for exactly this workload (`fjall-3.1.8/src/keyspace/mod.rs:480-506`);
   `len()` is an O(n) scan and is not needed.
 
@@ -288,10 +288,10 @@ So an **exact O(1) count per predicate** is available today and unused. Two bonu
 and the numbers are what a cost model would need if one is ever built
 ([§3.1](#31-what-is-known-before-running--almost-nothing-on-both-sides)).
 
-Where it should surface is already decided and written down: `aperture-server/src/stats.rs`'s own
+Where it should surface is already decided and written down: `fjord-server/src/stats.rs`'s own
 module doc names *"a virtual predicate over the socket that exists"* as the durable home for
-counters, and [`catalogue`](../crates/aperture-server/src/catalogue.rs) is the built precedent —
-`aperture.db.List` is answered at the `FactStore` seam, so it gains the plan IR no variant, the
+counters, and [`catalogue`](../crates/fjord-server/src/catalogue.rs) is the built precedent —
+`fjord.db.List` is answered at the `FactStore` seam, so it gains the plan IR no variant, the
 cursor no case, and filtering, joining and paging all work the first time. A predicate-stats
 virtual predicate plus a `:stat` alias is the same shape as `:list`, and needs no new frame kind.
 
@@ -351,7 +351,7 @@ naive LRU:
 
 Now ours. Interning a fact does `resolve_or_create` → `FjallDb::intern` → `fact_at`, and
 `fact_at` performs **two live LSM point reads per fact**: one on `keys` to find the id, then one
-on `entities` to compare the stored value (`crates/aperture-store/src/store.rs:459-520`). There
+on `entities` to compare the stored value (`crates/fjord-store/src/store.rs:459-520`). There
 is no cache anywhere on that path. For a nested code index every reference resolution is a
 `fact_at`, and the vast majority *hit* — a single `src.File` is referenced by thousands of facts,
 and each reference re-reads it from the LSM.
@@ -405,7 +405,7 @@ are skipped without being walked (`glean/hs/Glean/RTS/Traverse.hs:27-60`). A ref
 costs a pointer bump; a ref-free predicate costs nothing.
 
 Our `references()` walks the whole decoded value structurally every time, with no such test
-(`crates/aperture-client/src/expand.rs:364-375`). Since `hasRefs` is a pure function of a
+(`crates/fjord-client/src/expand.rs:364-375`). Since `hasRefs` is a pure function of a
 predicate's declared type, it can be precomputed once per schema and consulted before the walk —
 so `:expand` over a result whose predicates hold no references would do no work instead of
 walking every field of every row. Small, self-contained, and exactly the kind of thing the
@@ -433,7 +433,7 @@ The `block_size_deviation` comment is a production incident written down:
 > for fetching all keys in that block.
 
 **We create both keyspaces with `KeyspaceCreateOptions::default`** — every call site in
-`crates/aperture-store/src/store.rs` (`:175,298,304,1399,1414,1426`). The honest reading is not
+`crates/fjord-store/src/store.rs` (`:175,298,304,1399,1414,1426`). The honest reading is not
 "untuned": fjall 3.1.8's defaults already do most of what Glean sets by hand — bloom filters at
 1e-4 FPR on L0 and 10 bits/key above it, L0 index and filter blocks pinned, 4 KiB data blocks
 (`fjall-3.1.8/src/keyspace/options.rs:84-113`). What is left on the table is the part that is a
@@ -462,7 +462,7 @@ makes it a thing to decide before the next large corpus is built, not after.
 Glean **materialises the whole page**, into nine parallel vectors plus two hash sets
 (`query.cpp:239-257`) — four for results, five for expanded nested facts — and counts bytes as
 it goes. We stream rows into a chunk of at most
-`CHUNK_ROWS = 256` (`crates/aperture-server/src/session.rs:1235`) and hand it to the outbound
+`CHUNK_ROWS = 256` (`crates/fjord-server/src/session.rs:1235`) and hand it to the outbound
 writer.
 
 Ours is the better shape and it is already an anti-pattern in
@@ -479,7 +479,7 @@ by a predicate allowlist (`nestedFact`, `query.cpp:438-448`). Expanded facts rid
 separate set of vectors, so the client gets one round trip with everything in it.
 
 Ours is the opposite decision — client-side, breadth-first, one round trip per level, depth
-bounded, cached across the rows of a page (`crates/aperture-client/src/expand.rs`). The
+bounded, cached across the rows of a page (`crates/fjord-client/src/expand.rs`). The
 reasoning is recorded: how deep to expand is a display decision, and expansion is orthogonal to
 paging, profiling and counting.
 
@@ -537,12 +537,12 @@ that queue's recent latency, clamped to 1–1000 s (`Write/Queue.hs:126-155`).
 
 Ours is round-robin too, on a different axis: `outbound` interleaves **per-stream queues within
 one connection**, because *"a query returning a million rows"* would otherwise starve every
-other stream on the socket (`crates/aperture-server/src/outbound.rs:1-11,180`). Backpressure is
+other stream on the socket (`crates/fjord-server/src/outbound.rs:1-11,180`). Backpressure is
 the bounded per-stream queue plus the socket.
 
 The two are complementary, and neither system has the other's:
 
-| Axis | Glean | Aperture |
+| Axis | Glean | Fjord |
 |---|---|---|
 | Writes across databases | ✅ round-robin, checkpoint-aware | single funnel, `ops-I5` |
 | Frames across streams on one connection | — (Thrift request/response) | ✅ round-robin |
@@ -638,12 +638,12 @@ Above that, the *service* adds its own ceilings — Glass caps every query at
 
 Ours charges **one** way — rows per page (`page.limit`, chunked at `CHUNK_ROWS = 256`) — and
 cancels through a per-query `CancellationToken` polled every `CANCELLATION_STRIDE = 4096` rows
-examined (`crates/aperture-engine/src/iter.rs:389-480`).
+examined (`crates/fjord-engine/src/iter.rs:389-480`).
 
 The asymmetry is worth naming precisely, because it is a real gap and not merely a different
 taste:
 
-- **Aperture has no time budget and no byte budget.** A single pathological query cannot be
+- **Fjord has no time budget and no byte budget.** A single pathological query cannot be
   stopped by the server on its own initiative; it can only be cancelled by whoever holds the
   token. On a shared server that is an availability hole, and it is the one place the cost model
   is genuinely thinner rather than differently shaped.
@@ -711,7 +711,7 @@ recorded in [`PLAN.md`'s deferred features](../PLAN.md#deferred-features-additiv
    ([§1.5](#15-lifecycle-and-operations)). An exact O(1) count is available today via
    `approximate_len()` and unused, because per-predicate keyspaces plus insert-only make it
    exact rather than approximate. Surface it as a **virtual predicate** with a `:stat` alias —
-   the shape `aperture.db.List` already established, and the home `stats.rs`'s module doc already
+   the shape `fjord.db.List` already established, and the home `stats.rs`'s module doc already
    names. Spend it on **pruning**, not join ordering: Glean never wired its statistics into
    `Reorder` and its section-pruning use is where the payoff showed up
    ([§3.1](#31-what-is-known-before-running--almost-nothing-on-both-sides)).
@@ -733,7 +733,7 @@ recorded in [`PLAN.md`'s deferred features](../PLAN.md#deferred-features-additiv
    constraints on the harness this needs: keyspace options are fixed at *creation*, so a
    comparison has to **build a database per setting** rather than toggle a knob on an existing
    one; and the effect being looked for is on point-read latency at a size where the filters
-   matter, which means a corpus at the `ap-runtime` scale rather than a fixture. Until that
+   matter, which means a corpus at the `fj-runtime` scale rather than a fixture. Until that
    exists, fjall's defaults are the right answer, because they already do most of what Glean sets
    by hand.
 8. **A deadline on the cancellation stride, and a byte budget in the chunk accumulator**
@@ -793,4 +793,4 @@ recorded in [`PLAN.md`'s deferred features](../PLAN.md#deferred-features-additiv
 
 ---
 
-> [← Aperture vs Glean](glean-comparison.md) · [Index](../README.md) · [Glossary →](glossary.md)
+> [← Fjord vs Glean](glean-comparison.md) · [Index](../README.md) · [Glossary →](glossary.md)

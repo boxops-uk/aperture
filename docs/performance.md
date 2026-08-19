@@ -1,6 +1,6 @@
-# Measuring Aperture — the method, and the target
+# Measuring Fjord — the method, and the target
 
-> [Aperture design book](../README.md) · the performance counterpart to
+> [Fjord design book](../README.md) · the performance counterpart to
 > [`testing.md`](testing.md). That file says how a *claim* is held to evidence; this one
 > says how a *number* is, which is a different discipline with a different failure mode.
 > The register of what has actually been measured is [`bench/FINDINGS.md`](../bench/FINDINGS.md).
@@ -10,7 +10,7 @@
 ## 1. The target
 
 **Everything below is a proposal, and it is the first one this repository has had.**
-[Operations §1](aperture-cli-design.md) admits the hole in as many words — *"Aperture
+[Operations §1](fjord-cli-design.md) admits the hole in as many words — *"Fjord
 states no target corpus size, no churn rate and no freshness budget anywhere, so `ops-I9`
 is ultimately a requirements question this repo cannot settle on its own"* — and a
 measurement with no target is a number with nothing to be good or bad against. So this is
@@ -34,11 +34,11 @@ thing it replaces.
 - **Write throughput under concurrency** — *not targeted, and no longer for the reason once given
   here*. This used to read "one writer per database, held across an ingest (`ops-I1`, `ops-I5`), so
   adding writers adds queueing by design." Neither invariant asks for that: `ops-I1` is a rule about
-  processes and `ops-I5` about pipelines, not threads ([Operations §1](aperture-cli-design.md)). The
+  processes and `ops-I5` about pipelines, not threads ([Operations §1](fjord-cli-design.md)). The
   serialisation existed because [I12](invariants.md#i12)'s key-to-fact bijection had no primitive and
   borrowed a single thread instead. **Since Phase 12 it has one**, writers are excluded per key
   rather than per database, and two connections writing one database
-  ([`two_connections_write_one_database_at_the_same_time`](../crates/aperture-client/tests/against_a_server.rs))
+  ([`two_connections_write_one_database_at_the_same_time`](../crates/fjord-client/tests/against_a_server.rs))
   genuinely proceed together.
   It stays off this table because indexing is still a build-time cost measured in hours rather than
   something a user waits on — and because **there is no target yet and one must not be back-filled
@@ -156,4 +156,4 @@ that fails on a busy machine and teaches everyone to re-run it.
 
 ---
 
-> [← Testing methodology](testing.md) · [Index](../README.md) · [Operations →](aperture-cli-design.md)
+> [← Testing methodology](testing.md) · [Index](../README.md) · [Operations →](fjord-cli-design.md)

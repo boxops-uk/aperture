@@ -1,4 +1,4 @@
-//! `aperture query <db> <QUERY>`.
+//! `fjord query <db> <QUERY>`.
 //!
 //! **Always over the wire**, and that is §2's rule 1 rather than a simplification: a
 //! bare name means "ask the local server", and there is no silent fallback to opening
@@ -12,7 +12,7 @@
 
 use std::{sync::Arc, time::Instant};
 
-use aperture_client::{ClientError, Connection, Expander, Mode};
+use fjord_client::{ClientError, Connection, Expander, Mode};
 
 use crate::{CliError, cli::RowFormat, code_index, commands::Target, rows::Sink};
 
@@ -38,7 +38,7 @@ pub struct Summary {
     /// Whether anything cut it short, and what.
     pub stopped: Stopped,
     /// What the server said it examined, when asked.
-    pub profile: Option<aperture_client::QueryProfile>,
+    pub profile: Option<fjord_client::QueryProfile>,
     /// Point reads spent expanding references — distinct ids, so the difference between
     /// this and the references printed is what the cache saved. Zero when not expanding.
     pub fetched: u64,
@@ -235,9 +235,9 @@ pub fn run(
 /// Anything that is not the query's fault, or any schema this cannot fetch, falls
 /// straight through as the server's own words.
 fn diagnosed(connection: &mut Connection, query: &str, refusal: ClientError) -> CliError {
-    use aperture_engine::compile::Compilation;
+    use fjord_engine::compile::Compilation;
 
-    if refusal.code() != Some(aperture_client::ErrorCode::BadQuery) {
+    if refusal.code() != Some(fjord_client::ErrorCode::BadQuery) {
         return refusal.into();
     }
 
@@ -280,7 +280,7 @@ fn diagnosed(connection: &mut Connection, query: &str, refusal: ClientError) -> 
 /// `(full scan)` is the line worth having: it is the one that names something to go
 /// and fix, and Glean prints it for the same reason.
 #[must_use]
-pub fn render_profile(profile: &aperture_client::QueryProfile, rows: u64) -> String {
+pub fn render_profile(profile: &fjord_client::QueryProfile, rows: u64) -> String {
     let steps: Vec<Vec<String>> = profile
         .steps
         .iter()
@@ -540,7 +540,7 @@ mod catalogue {
     fn the_catalogue_is_queryable() {
         let serving = serving(0);
 
-        let (summary, _) = ask(&serving, "N where aperture.db.List {name = N}");
+        let (summary, _) = ask(&serving, "N where fjord.db.List {name = N}");
 
         assert_eq!(summary.rows, 1, "the one database this server holds");
         assert_eq!(summary.stopped, Stopped::No);
@@ -557,13 +557,13 @@ mod catalogue {
 
         let (writable, _) = ask(
             &serving,
-            "N where aperture.db.List {name = N, status = \"writable\"}",
+            "N where fjord.db.List {name = N, status = \"writable\"}",
         );
         assert_eq!(writable.rows, 1, "created, and not yet sealed");
 
         let (complete, _) = ask(
             &serving,
-            "N where aperture.db.List {name = N, status = \"complete\"}",
+            "N where fjord.db.List {name = N, status = \"complete\"}",
         );
         assert_eq!(complete.rows, 0, "nothing has been sealed");
     }
@@ -580,7 +580,7 @@ mod catalogue {
 
         let summary = run(
             &Target::at(&serving.socket, "code"),
-            "I where aperture.db.List {name = \"code\", instance = I}",
+            "I where fjord.db.List {name = \"code\", instance = I}",
             Rendering::plain(RowFormat::Count),
             Limits::default(),
             true,
@@ -621,7 +621,7 @@ mod catalogue {
 mod over_tcp {
     use std::sync::atomic::AtomicBool;
 
-    use aperture_client::{ClientError, Endpoint};
+    use fjord_client::{ClientError, Endpoint};
 
     use super::{Limits, Rendering, Stopped, Target, run};
 
@@ -718,7 +718,7 @@ mod mixed {
         let serving = serving(FILES);
 
         assert_eq!(
-            count(&serving, "I where I = aperture.db.Interning _"),
+            count(&serving, "I where I = fjord.db.Interning _"),
             1,
             "one row per database this server holds open"
         );
@@ -737,7 +737,7 @@ mod mixed {
             assert_eq!(
                 count(
                     &serving,
-                    &format!("{{n = I.name}} where I = aperture.db.Interning _; I.{field} > 0")
+                    &format!("{{n = I.name}} where I = fjord.db.Interning _; I.{field} > 0")
                 ),
                 1,
                 "{field}: {why}"
@@ -764,7 +764,7 @@ mod mixed {
         // re-opened per outer row.
         let rows = count(
             &serving,
-            "{db = D.name, file = F} where D = aperture.db.List _; src.File F",
+            "{db = D.name, file = F} where D = fjord.db.List _; src.File F",
         );
         assert_eq!(rows, FILES as u64, "one database × {FILES} files");
     }
@@ -782,11 +782,11 @@ mod mixed {
 
         let catalogue_first = count(
             &serving,
-            "{db = D.name, file = F} where D = aperture.db.List _; src.File F",
+            "{db = D.name, file = F} where D = fjord.db.List _; src.File F",
         );
         let files_first = count(
             &serving,
-            "{db = D.name, file = F} where src.File F; D = aperture.db.List _",
+            "{db = D.name, file = F} where src.File F; D = fjord.db.List _",
         );
 
         assert_eq!(catalogue_first, files_first);
@@ -809,7 +809,7 @@ mod mixed {
 
         let absent = count(
             &serving,
-            "F where src.File F; !aperture.db.List {name = \"no-such-database\"}",
+            "F where src.File F; !fjord.db.List {name = \"no-such-database\"}",
         );
         assert_eq!(
             absent, FILES as u64,
@@ -818,7 +818,7 @@ mod mixed {
 
         let present = count(
             &serving,
-            "F where src.File F; !aperture.db.List {name = \"code\"}",
+            "F where src.File F; !fjord.db.List {name = \"code\"}",
         );
         assert_eq!(
             present, 0,
@@ -850,7 +850,7 @@ mod mixed {
         let beside = count(
             &serving,
             "{db = C.name, d = D.name, m = D.module.name} \
-             where C = aperture.db.List _; D = src.Decl _",
+             where C = fjord.db.List _; D = src.Decl _",
         );
         assert_eq!(
             beside, FILES as u64,
@@ -872,7 +872,7 @@ mod mixed {
         const _: () = assert!(FILES > 3 * SERVER_CHUNK);
 
         let serving = serving(FILES);
-        let query = "{db = D.name, file = F} where D = aperture.db.List _; src.File F";
+        let query = "{db = D.name, file = F} where D = fjord.db.List _; src.File F";
 
         let whole = count(&serving, query);
         assert_eq!(whole, FILES as u64);
@@ -915,7 +915,7 @@ mod mixed {
         // case below evidence rather than an absence.
         let matched = count(
             &serving,
-            "{db = N, file = F} where aperture.db.List {name = N}; src.File F; N = \"code\"",
+            "{db = N, file = F} where fjord.db.List {name = N}; src.File F; N = \"code\"",
         );
         assert_eq!(matched, FILES as u64, "the one database × every file");
 
@@ -924,7 +924,7 @@ mod mixed {
         // either side would answer zero to both, and the pair separates them.
         let unmatched = count(
             &serving,
-            "{db = N, file = F} where aperture.db.List {name = N}; src.File F; N = \"nope\"",
+            "{db = N, file = F} where fjord.db.List {name = N}; src.File F; N = \"nope\"",
         );
         assert_eq!(unmatched, 0, "no database is called `nope`");
     }
@@ -979,7 +979,7 @@ mod surface {
             "D where src.Decl D",
             Rendering {
                 format: RowFormat::Count,
-                expand: aperture_client::FULL_DEPTH,
+                expand: fjord_client::FULL_DEPTH,
             },
             Limits::default(),
             false,
@@ -1031,7 +1031,7 @@ mod surface {
 
     /// **A reference into a virtual predicate expands, like any other reference.**
     ///
-    /// `X where X = aperture.db.List _` heads on the fact type rather than on its key, so
+    /// `X where X = fjord.db.List _` heads on the fact type rather than on its key, so
     /// the row is a *reference to a catalogue row* — the shape that has to work if
     /// "virtual predicates behave like facts" is to mean anything on the read path. It
     /// does, because `Catalogued` answers `point` as well as `scan`, and the fetch handler
@@ -1047,10 +1047,10 @@ mod surface {
 
         let summary = run(
             &Target::at(&serving.socket, "code"),
-            "X where X = aperture.db.List _",
+            "X where X = fjord.db.List _",
             Rendering {
                 format: RowFormat::Count,
-                expand: aperture_client::FULL_DEPTH,
+                expand: fjord_client::FULL_DEPTH,
             },
             Limits::default(),
             false,
@@ -1077,7 +1077,7 @@ mod surface {
     /// **A virtual predicate answers a fetch like any other**, and an id past its end is
     /// an *unstored* absence rather than a missing fact.
     ///
-    /// The whole claim `aperture.db.List` makes is that a virtual predicate is ordinary:
+    /// The whole claim `fjord.db.List` makes is that a virtual predicate is ordinary:
     /// `Catalogued` answers both halves of the store seam for it, so a `point` read finds
     /// a catalogue row exactly as it finds a stored one, and nothing above the seam knows
     /// the difference. Refusing here — which is what this test used to assert — made the
@@ -1091,9 +1091,9 @@ mod surface {
     /// says which.
     #[test]
     fn a_virtual_predicate_resolves_an_id_and_says_when_one_has_moved_on() {
-        use aperture_client::{Mode, WireValue};
-        use aperture_schema::id::FactId;
-        use aperture_wire::protocol::Found;
+        use fjord_client::{Mode, WireValue};
+        use fjord_schema::id::FactId;
+        use fjord_wire::protocol::Found;
 
         let serving = serving(FILES);
         let mut connection = super::connect(&Target::at(&serving.socket, "code"), Mode::ReadOnly)
@@ -1126,7 +1126,7 @@ mod surface {
 
         // And the session still answers about the catalogue the ordinary way.
         let mut rows = connection
-            .query("N where aperture.db.List {name = N}")
+            .query("N where fjord.db.List {name = N}")
             .expect("it compiles");
         assert_eq!(
             connection.drain(&mut rows).expect("the rows arrive").len(),
@@ -1145,7 +1145,7 @@ mod surface {
     fn a_disjunction_draws_one_branch_from_each_store() {
         let serving = serving(FILES);
 
-        let both = count(&serving, "N where aperture.db.List {name = N} | src.File N");
+        let both = count(&serving, "N where fjord.db.List {name = N} | src.File N");
         assert_eq!(
             both,
             FILES as u64 + 1,
@@ -1154,7 +1154,7 @@ mod surface {
 
         // Each branch alone, so the sum above is a sum of two known things rather than a
         // number that happens to be right.
-        assert_eq!(count(&serving, "N where aperture.db.List {name = N}"), 1);
+        assert_eq!(count(&serving, "N where fjord.db.List {name = N}"), 1);
         assert_eq!(count(&serving, "N where src.File N"), FILES as u64);
     }
 
@@ -1168,12 +1168,12 @@ mod surface {
         let serving = serving(FILES);
 
         // No file is named `code`, so the database survives the negation.
-        let survives = count(&serving, "N where aperture.db.List {name = N}; !src.File N");
+        let survives = count(&serving, "N where fjord.db.List {name = N}; !src.File N");
         assert_eq!(survives, 1, "no file is called `code`");
 
         // The assertion's partner: with the negation the other way up, the same row is
         // excluded — so the pair says the probe ran rather than that it matched nothing.
-        let excluded = count(&serving, "N where aperture.db.List {name = N}; src.File N");
+        let excluded = count(&serving, "N where fjord.db.List {name = N}; src.File N");
         assert_eq!(excluded, 0, "and asserting it instead answers nothing");
     }
 
@@ -1183,7 +1183,7 @@ mod surface {
     fn a_negation_of_the_catalogue_reads_a_stored_binding() {
         let serving = serving(FILES);
 
-        let all = count(&serving, "F where src.File F; !aperture.db.List {name = F}");
+        let all = count(&serving, "F where src.File F; !fjord.db.List {name = F}");
         assert_eq!(all, FILES as u64, "no file shares a name with a database");
     }
 
@@ -1201,16 +1201,10 @@ mod surface {
         // Denying a prefix one of the three carries: the other two survive. A filter
         // picking rows apart says more than an all-or-nothing answer, which would hold
         // just as well for a listing that was never read.
-        let kept = count(
-            &serving,
-            "N where aperture.db.List {name = N}; N != \"co\"..",
-        );
+        let kept = count(&serving, "N where fjord.db.List {name = N}; N != \"co\"..");
         assert_eq!(kept, 2, "alpha and zulu, but not code");
 
-        let all = count(
-            &serving,
-            "N where aperture.db.List {name = N}; N != \"q\"..",
-        );
+        let all = count(&serving, "N where fjord.db.List {name = N}; N != \"q\"..");
         assert_eq!(all, 3, "nothing starts with q");
     }
 
@@ -1223,7 +1217,7 @@ mod surface {
     /// string prefix into a seek **and** a residual, and the residual re-checks every
     /// row the range let through. The bound is defence in depth and no query can
     /// isolate it, which is why it has a unit test of its own next to the code
-    /// (`aperture_server::catalogue`).
+    /// (`fjord_server::catalogue`).
     #[test]
     fn a_prefix_constraint_bounds_the_listing() {
         let serving = serving(0);
@@ -1231,24 +1225,18 @@ mod surface {
         create_database(&serving, "zulu");
 
         assert_eq!(
-            count(&serving, "N where aperture.db.List {name = N}"),
+            count(&serving, "N where fjord.db.List {name = N}"),
             3,
             "alpha, code, zulu"
         );
 
         assert_eq!(
-            count(
-                &serving,
-                "N where aperture.db.List {name = N}; N = \"co\".."
-            ),
+            count(&serving, "N where fjord.db.List {name = N}; N = \"co\".."),
             1,
             "`code` is in the range; `alpha` is below it and `zulu` above"
         );
         assert_eq!(
-            count(
-                &serving,
-                "N where aperture.db.List {name = N}; N = \"cp\".."
-            ),
+            count(&serving, "N where fjord.db.List {name = N}; N = \"cp\".."),
             0,
             "and one letter later it is not"
         );
@@ -1262,7 +1250,7 @@ mod surface {
 
         let rows = count(
             &serving,
-            "{db = N, file = F} where N = (M where aperture.db.List {name = M}); src.File F",
+            "{db = N, file = F} where N = (M where fjord.db.List {name = M}); src.File F",
         );
         assert_eq!(rows, FILES as u64, "the subquery's one row × every file");
     }

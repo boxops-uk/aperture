@@ -1,11 +1,11 @@
 # Invariant registry
 
-> [Aperture design book](../README.md) · reference doc
+> [Fjord design book](../README.md) · reference doc
 
 Every invariant in one place. **Engine invariants `I1`–`I14`** are the codec / executor /
 storage / identity rules explained in chapters 2–6. **Operational invariants
 `ops-I1`–`ops-I10`** are the lifecycle / connection rules explained in
-[Operations](aperture-cli-design.md). The two namespaces are separate — always write
+[Operations](fjord-cli-design.md). The two namespaces are separate — always write
 `ops-Ix` for the operational ones.
 
 Each invariant names a **guard test**: the test that pins it. Guards are written *up front*
@@ -15,12 +15,12 @@ coverage ledger. A phase is done only when the invariants it touches are un-igno
 green. See [testing](testing.md).
 
 > **Reading a guard name.** The prefix is the *subsystem* as this book names it, not a Rust
-> path: `codec::` is `crates/aperture-encoding/src/tuple.rs`, `exec::` is
-> `crates/aperture-engine/src/iter.rs`, `store::` is `crates/aperture-store/src/store.rs`, and
-> `schema::` is `crates/aperture-schema/src/schema.rs`. The part after `::` is the test
+> path: `codec::` is `crates/fjord-encoding/src/tuple.rs`, `exec::` is
+> `crates/fjord-engine/src/iter.rs`, `store::` is `crates/fjord-store/src/store.rs`, and
+> `schema::` is `crates/fjord-schema/src/schema.rs`. The part after `::` is the test
 > function — every one of them is greppable, and the real module path is
 > `<file>::tests::<name>` within its crate. One guard is an integration test and names its
-> file instead: `i8_snapshot::` is `crates/aperture-store/tests/i8_snapshot.rs`.
+> file instead: `i8_snapshot::` is `crates/fjord-store/tests/i8_snapshot.rs`.
 
 ---
 
@@ -137,7 +137,7 @@ the fetched buffer. **Navigated** is now real and not a promissory note:
 [`Source::Fetch`](04-executor.md#fetching-through-a-reference) reads `entities` for the fact a
 reference names — its *identity*, which is what that CF is for — and it is a level, so it is
 opened once per row the level above it **produces**, never once per row a scan examines. That
-distinction is the whole of I6: a lookup inside the filter loop is what it forbids. **An Aperture strengthening, not an adopted idea:** Glean has the same
+distinction is the whole of I6: a lookup inside the filter loop is what it forbids. **A Fjord strengthening, not an adopted idea:** Glean has the same
 key-only/key-value split at its iterator, but a non-wild value pattern marks the seek as needing a
 value and it then fetches one for every row the scan *examines* — a second store lookup per row,
 which is exactly what I6 forbids. Cheap to hold here partly because value patterns are deferred
@@ -171,8 +171,8 @@ discipline:** `Executor::enumerate` takes `self` by value, so every exit path �
 suspend, cancel, error unwind — drops the frame stack and the store handle, and no shape of
 caller can park a live iterator across a suspend. *Why & how:*
 [chapter 5](05-resume.md#the-two-invariants-at-stake). *Guard:*
-`i8_snapshot::snapshot_released_at_suspend` — an **integration** test of `aperture-store`
-(`crates/aperture-store/tests/`), because it is the one store guard that has to run a query and
+`i8_snapshot::snapshot_released_at_suspend` — an **integration** test of `fjord-store`
+(`crates/fjord-store/tests/`), because it is the one store guard that has to run a query and
 a unit test reaching back through the engine would compile a second copy of the store
 ([testing](testing.md)). All four stops, against two independent witnesses: a
 drop probe over the store handle and every scan it opened, and fjall's own open-snapshot
@@ -199,7 +199,7 @@ scheme"; they are the only safe scheme *without* that transform layer, which [I1
 by freezing the schema instead. *Why & how:*
 [chapter 6](06-types-and-schema.md#unions-and-stable-discriminants-i10). *Guard:*
 `schema::discriminants_append_only` (renumber/reuse rejected at load) — which also owes the one
-case the invariant needs and Aperture has not settled: what a decoder does with a tag no schema
+case the invariant needs and Fjord has not settled: what a decoder does with a tag no schema
 declares. Glean has a defined answer there; this design does not yet.
 
 <a id="i11"></a>
@@ -230,7 +230,7 @@ so each of those survives as a per-predicate instance keyed by the tag; only a f
 predicates degrades. Against that, Glean has **no concurrent writer at all** at the storage layer
 and buys parallelism back with the whole rebase/substitution subsystem, whose *allocation* half
 per-predicate counters delete — not its reference-relocation half, which no id scheme deletes.
-What Aperture does instead is not relocate: a producer sends
+What Fjord does instead is not relocate: a producer sends
 [the target fact, not an id](open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline),
 and ingest [interns](03-storage-model.md#interning-a-nested-fact) it into one.
 **One live tension, unresolved:** "never reused" and Phase 8b's O(1) re-derivation by *tree
@@ -295,13 +295,13 @@ racing on the same key, the bijection intact and one id handed to all of them).
 Canonical schema + fingerprint embedded at `create`, immutable for the DB's lifetime (no
 `evolves` in P0); every ingest validated by subset containment; the DB is self-describing.
 *Why & how:* [chapter 6](06-types-and-schema.md#the-schema-is-embedded-and-frozen-i13).
-*Guards:* `aperture-client/tests/i13_embedded_schema.rs`'s
+*Guards:* `fjord-client/tests/i13_embedded_schema.rs`'s
 `ingest_rejects_incompatible_schema` (**green** at 8.4) +
 `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` (**green** since
-8.3, when the canonical form and fingerprints landed in `aperture_schema::fingerprint`).
+8.3, when the canonical form and fingerprints landed in `fjord_schema::fingerprint`).
 
 The first one moved crates to run at all, and the move is the rule
-[testing](testing.md) states: it was specified in `aperture-schema` in Phase 0, and validating
+[testing](testing.md) states: it was specified in `fjord-schema` in Phase 0, and validating
 an ingest needs a database to validate against, a schema that was *parsed* rather than built,
 and a write path — none of which is below that crate. What it checks is containment from the
 producer's end: everything a producer claims must be in the database **identically**, so a
@@ -312,7 +312,7 @@ containment check fails it, and so does refusing every subset.
 
 The second one's specification is **predicate order free, field order significant**: two source orderings of the same predicates — spread across files differently,
 declared in a different sequence — must share a fingerprint, and permuting the *fields* of a
-predicate must **change** it. Field order is encoding order (`aperture_store::fact` resolves a fact's named
+predicate must **change** it. Field order is encoding order (`fjord_store::fact` resolves a fact's named
 fields into declared order before any bytes exist) and it decides the seek prefix, so a field
 permutation is a semantic change; a guard that certified it as identity would certify two DBs with
 one fingerprint and incompatible bytes. Glean agrees: field order sits inside its `fingerprintDef`,
@@ -334,7 +334,7 @@ point, with the derive step **both above and below** a scan. The order is the te
 scan the machine re-enters the derive from beneath and recomputes it anyway, so only the
 *above* case observes a resume that failed to recompute (mutation-checked).
 
-> **Scope, honestly.** The guard drives hand-built plans, because nothing in focus lowers a
+> **Scope, honestly.** The guard drives hand-built plans, because nothing in sigla lowers a
 > derive step yet — a constant bind is [folded](07-compilation.md#folding-a-constant-bind)
 > instead, and the first real producer will be a primitive or a subquery. So this invariant is
 > currently held by construction rather than by pressure from the language, and the guard is
@@ -383,7 +383,7 @@ any other and gets no more trust than a row does. Both mutation-checked.
 
 ## Operational invariants (`ops-I1`–`ops-I10`)
 
-Explained in full in [Operations §1](aperture-cli-design.md). Summarised here so the whole
+Explained in full in [Operations §1](fjord-cli-design.md). Summarised here so the whole
 invariant surface is visible in one place; cite them `ops-Ix`.
 
 <a id="ops-i1"></a>**ops-I1 — Single-process store ownership.** A fjall directory is opened
@@ -408,7 +408,7 @@ disables that rule land on *first*-writer-wins). This is why [I11](#i11) fact-id
 cross-DB identity — and, since the hash is a **multiset** over each fact's logical form, why write
 order and writer count cannot move it. The "⇒ no concurrent writers" arrow once drawn from this
 invariant has been **cut**; what needed the serial writer was [I12](#i12)'s bijection
-([Operations §1](aperture-cli-design.md), Phase 12).
+([Operations §1](fjord-cli-design.md), Phase 12).
 
 <a id="ops-i5"></a>**ops-I5 — One write funnel.** Every writer (bulk ingest, wire COPY,
 tools) passes the same pipeline: schema-validate → sort/merge → dedup identical → reject

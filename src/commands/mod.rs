@@ -17,8 +17,8 @@ pub mod shell;
 
 use std::{path::Path, sync::Arc};
 
-use aperture_client::{Address, ClientError, Connection, Endpoint};
-use aperture_store::{
+use fjord_client::{Address, ClientError, Connection, Endpoint};
+use fjord_store::{
     catalog::{Catalog, RootLock},
     error::StoreError,
 };
@@ -39,7 +39,7 @@ pub struct Target {
     ///
     /// **True only when nobody named a target.** Having asked for a particular server,
     /// "it is not there" is an answer rather than an invitation to open some other
-    /// root — so `box//code` and `APERTURE_TARGET=box` both take the offline path away,
+    /// root — so `box//code` and `FJORD_TARGET=box` both take the offline path away,
     /// and only the plain local socket keeps it. That is the same reasoning as §2's
     /// no-silent-fallback rule, applied one level up: the rule forbids reaching past a
     /// server that might be holding the root, and reaching past a server somebody

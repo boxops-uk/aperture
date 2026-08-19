@@ -1,6 +1,6 @@
-# The Aperture documentation site
+# The Fjord documentation site
 
-A static documentation site for Aperture DB, plus a small server to preview it. Standard
+A static documentation site for Fjord DB, plus a small server to preview it. Standard
 library Python only — no toolchain, no dependencies, no network access at build time.
 
 ```bash
@@ -62,7 +62,7 @@ A pipe character inside a table cell ends the cell, so write "a second source" r
 
 The language tag drives a small client-side highlighter in `assets/app.js`:
 
-`focus` · `aps` (schema DSL) · `plan` (the `:plan` renderer's output) · `rust` · `csharp` ·
+`sigla` · `schema` (the schema DSL) · `plan` (the `:plan` renderer's output) · `rust` · `csharp` ·
 `python` · `bash` · `json` · `text` (no highlighting).
 
 The highlighter is lossless — it only wraps spans — so a code block always shows exactly what

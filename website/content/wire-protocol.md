@@ -188,7 +188,7 @@ parsing English; the message exists because a person reads it.
 ```
 
 The read-path twin of a nested reference on the way in. Stored, a reference is a `FactId`, so a
-row carries a number — and focus cannot ask what it names, because a query names a fact by its
+row carries a number — and sigla cannot ask what it names, because a query names a fact by its
 key. Five properties, each deliberate:
 
 - **The key, not the value side.** A reference names an *identity*, and the identity is the key.
@@ -249,7 +249,7 @@ The same bytes on the wire and on disk — a `COPY_DATA` payload **is** a block,
 test rather than an intention.
 
 ```text
-  [sync: FF × 10][magic "APBK"][name_len u32][count u32][length u32][crc32 u32][name][payload]
+  [sync: FF × 10][magic "FJBK"][name_len u32][count u32][length u32][crc32 u32][name][payload]
    └──────────────────── 30 bytes of framing ────────────────────┘
 ```
 
@@ -354,7 +354,7 @@ gives lifecycle requests the same per-stream error handling everything else has.
 
 `list` and `describe` are deliberately **not** control frames: they read sidecars and never open
 the storage engine, so they already work while a server holds every database under the root. The
-remote form of `list` is a query over the virtual predicate `aperture.db.List`.
+remote form of `list` is a query over the virtual predicate `fjord.db.List`.
 
 ## Server obligations
 

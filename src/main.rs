@@ -1,10 +1,10 @@
-//! `aperture` — the command-line tool.
+//! `fjord` — the command-line tool.
 //!
 //! Parse, resolve where things live, dispatch. The commands themselves are in
 //! [`commands`]; this file is deliberately thin, because the interesting decisions
 //! are about *ownership* and *addressing* rather than about argument parsing.
 //!
-//! See [operations §4](../docs/aperture-cli-design.md) for the tree and §2 for the
+//! See [operations §4](../docs/fjord-cli-design.md) for the tree and §2 for the
 //! addressing rules it is built to obey.
 
 mod cli;
@@ -21,8 +21,8 @@ use std::{path::PathBuf, process::ExitCode};
 
 use clap::Parser;
 
-pub use aperture_cli::code_index;
 use cli::{Cli, Command, DbCommand, SchemaCommand};
+pub use fjord_cli::code_index;
 
 /// Why a command could not run.
 ///
@@ -31,7 +31,7 @@ use cli::{Cli, Command, DbCommand, SchemaCommand};
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
     #[error("{0}")]
-    Store(#[from] aperture_store::error::StoreError),
+    Store(#[from] fjord_store::error::StoreError),
 
     /// Writing failed — usually a pipe the reader closed, which is how `| head` ends
     /// a query rather than a fault worth a stack trace.
@@ -39,10 +39,10 @@ pub enum CliError {
     Io(#[from] std::io::Error),
 
     #[error("{0}")]
-    Server(#[from] aperture_server::ServerError),
+    Server(#[from] fjord_server::ServerError),
 
     #[error("{0}")]
-    Engine(#[from] aperture_engine::error::ApertureError),
+    Engine(#[from] fjord_engine::error::FjordError),
 
     /// The client could not do it — a server that said no, or a socket that failed.
     ///
@@ -50,11 +50,11 @@ pub enum CliError {
     /// that knows what happened, and a tool that paraphrased would be one more place
     /// for the two answers to drift apart.
     #[error("{0}")]
-    Client(#[from] aperture_client::ClientError),
+    Client(#[from] fjord_client::ClientError),
 
     /// A config file that was named and could not be read, or that is not a config file.
     ///
-    /// A *missing* `./aperture.json` is not this — nobody asked for one. A missing
+    /// A *missing* `./fjord.json` is not this — nobody asked for one. A missing
     /// `--config` is, because somebody did.
     #[error("{path}: {detail}", path = path.display())]
     Config {
@@ -69,10 +69,10 @@ pub enum CliError {
     /// because a server may be holding it (`ops-I1`). So the failure has to say what
     /// to do about it rather than quietly doing something else.
     #[error(
-        "could not connect to the Aperture server at {target}\n           \
-         is one running? `aperture serve` starts one over this data directory"
+        "could not connect to the Fjord server at {target}\n           \
+         is one running? `fjord serve` starts one over this data directory"
     )]
-    NoServer { target: aperture_client::Endpoint },
+    NoServer { target: fjord_client::Endpoint },
 
     /// A store root held by a process that is **not** listening on this socket.
     ///
@@ -89,19 +89,19 @@ pub enum CliError {
     )]
     RootHeld { root: PathBuf, socket: PathBuf },
 
-    /// An address that is not one — `aperture://` with nothing after it, or no
+    /// An address that is not one — `fjord://` with nothing after it, or no
     /// database on the end.
     ///
     /// Its own variant so the message can show the form rather than whatever the
     /// resolver failed at: somebody who mistyped an address needs to be told the shape,
     /// not told that a hostname did not resolve.
-    #[error("`{address}` is not an address — try aperture://host:port/database")]
+    #[error("`{address}` is not an address — try fjord://host:port/database")]
     Address { address: String },
 
     /// A refusal that has **already been rendered**, spans and all.
     ///
     /// Its own variant so that [`main`] can print it alone: everything else here is a
-    /// sentence and reads as `aperture: <sentence>`, while this is a codespan block
+    /// sentence and reads as `fjord: <sentence>`, while this is a codespan block
     /// whose first line a prefix would push out of alignment with its own caret.
     #[error("{0}")]
     Diagnosed(String),
@@ -115,7 +115,7 @@ pub enum CliError {
     #[error("{0}")]
     Schema(String),
 
-    /// The terminal, rather than anything Aperture did.
+    /// The terminal, rather than anything Fjord did.
     ///
     /// Its own variant because it is the one failure here that says nothing about the
     /// database: a readline that cannot open a tty is a fact about where the tool was
@@ -139,7 +139,7 @@ fn main() -> ExitCode {
         }
 
         Err(error) => {
-            eprintln!("aperture: {error}");
+            eprintln!("fjord: {error}");
             ExitCode::FAILURE
         }
     }
@@ -152,7 +152,7 @@ struct Context {
     /// The socket this root's server listens on, and the default target's path.
     socket: std::path::PathBuf,
     /// Where an address that named no target goes.
-    default: aperture_client::Endpoint,
+    default: fjord_client::Endpoint,
     /// Whether that default is this machine's own socket, which is the only case with
     /// an offline half — see [`commands::Target`].
     default_is_local: bool,
@@ -181,7 +181,7 @@ fn start(cli: &Cli) -> Result<Context, CliError> {
     // Only the plain local socket keeps an offline half. A target from the environment
     // or a config file is one somebody named, and reaching past a named server to open
     // a directory is what §2 forbids.
-    let default_is_local = default == aperture_client::Endpoint::Unix(socket.clone());
+    let default_is_local = default == fjord_client::Endpoint::Unix(socket.clone());
 
     Ok(Context {
         root,
@@ -337,31 +337,31 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
             match summary.stopped {
                 commands::query::Stopped::No => {}
                 commands::query::Stopped::Limit => eprintln!(
-                    "aperture: stopped at {} rows; raise or drop --limit to see the rest",
+                    "fjord: stopped at {} rows; raise or drop --limit to see the rest",
                     summary.rows
                 ),
                 commands::query::Stopped::Timeout => eprintln!(
-                    "aperture: gave up after {} rows; raise or drop --timeout to see the rest",
+                    "fjord: gave up after {} rows; raise or drop --timeout to see the rest",
                     summary.rows
                 ),
                 // Nothing to suggest — they asked. What is worth saying is that the
                 // rows above are real and the query was stopped, not that it failed.
                 commands::query::Stopped::Interrupt => {
-                    eprintln!("aperture: cancelled at {} rows", summary.rows);
+                    eprintln!("fjord: cancelled at {} rows", summary.rows);
                 }
             }
 
             // Where expansion could not go, and why — one line per predicate. On stderr
             // with everything else that is not a row.
             for notice in &summary.notices {
-                eprintln!("aperture: {notice}");
+                eprintln!("fjord: {notice}");
             }
 
             // **Never silent**, and never on stdout: a reference naming no fact is a
             // damaged database, not a row somebody chose not to expand.
             if summary.unresolved > 0 {
                 eprintln!(
-                    "aperture: {} reference(s) named no fact and were printed as ids; \
+                    "fjord: {} reference(s) named no fact and were printed as ids; \
                      this database is damaged",
                     summary.unresolved
                 );
@@ -420,7 +420,7 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
             if !*yes {
                 // Deleting a database is not undoable and the tool has no trash, so
                 // the default is to ask. `--yes` is what a script passes.
-                eprintln!("aperture: refusing to delete `{name}` without --yes");
+                eprintln!("fjord: refusing to delete `{name}` without --yes");
                 return Ok(());
             }
 

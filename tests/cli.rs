@@ -1,15 +1,15 @@
 //! The command tree, driven as a person drives it.
 //!
-//! Runs the real binary — `CARGO_BIN_EXE_aperture` is set for integration tests, so
+//! Runs the real binary — `CARGO_BIN_EXE_fjord` is set for integration tests, so
 //! this needs no `assert_cmd` and no dependency. What it checks is the *sequence*: a
 //! database's life is create → write → seal → remove, and each step has to see what
 //! the last one did.
 
 use std::{path::Path, process::Command};
 
-/// Run `aperture` against a scratch store root.
-fn aperture(root: &Path, args: &[&str]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_aperture"))
+/// Run `fjord` against a scratch store root.
+fn fjord(root: &Path, args: &[&str]) -> (bool, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_fjord"))
         .arg("--data-dir")
         .arg(root)
         .args(args)
@@ -24,17 +24,14 @@ fn aperture(root: &Path, args: &[&str]) -> (bool, String, String) {
 }
 
 fn ok(root: &Path, args: &[&str]) -> String {
-    let (success, stdout, stderr) = aperture(root, args);
-    assert!(success, "`aperture {args:?}` failed:\n{stderr}");
+    let (success, stdout, stderr) = fjord(root, args);
+    assert!(success, "`fjord {args:?}` failed:\n{stderr}");
     stdout
 }
 
 fn fails(root: &Path, args: &[&str]) -> String {
-    let (success, stdout, stderr) = aperture(root, args);
-    assert!(
-        !success,
-        "`aperture {args:?}` was supposed to fail:\n{stdout}"
-    );
+    let (success, stdout, stderr) = fjord(root, args);
+    assert!(!success, "`fjord {args:?}` was supposed to fail:\n{stdout}");
     stderr
 }
 
@@ -134,7 +131,7 @@ fn json_output_is_a_rendering_not_a_different_query() {
     // the rendering.
     assert_eq!(
         described["schema"]["predicates"].as_array().unwrap().len(),
-        aperture_cli::code_index::schema().len()
+        fjord_cli::code_index::schema().len()
     );
 }
 
@@ -204,7 +201,7 @@ fn a_held_store_root_refuses_lifecycle_commands() {
 
     ok(root, &["create", "code"]);
 
-    let catalog = aperture_store::catalog::Catalog::open(root).expect("a store root");
+    let catalog = fjord_store::catalog::Catalog::open(root).expect("a store root");
     let held = catalog.lock().expect("this process holds it");
 
     for args in [
@@ -220,7 +217,7 @@ fn a_held_store_root_refuses_lifecycle_commands() {
         assert!(stderr.contains(&root.display().to_string()), "{stderr}");
 
         // Both halves, because "held" alone leaves someone with nowhere to look.
-        assert!(stderr.contains("aperture.sock"), "{stderr}");
+        assert!(stderr.contains("fjord.sock"), "{stderr}");
     }
 
     // ...but reading works throughout, because enumeration never opens fjall
@@ -236,14 +233,14 @@ fn a_held_store_root_refuses_lifecycle_commands() {
 }
 
 /// **A schema is a file the tool reads**, and the three questions it can be asked
-/// before any database holds one — [operations §5](../docs/aperture-cli-design.md)'s
+/// before any database holds one — [operations §5](../docs/fjord-cli-design.md)'s
 /// `check`, `fingerprint` and `diff`.
 #[test]
 fn a_schema_is_checked_fingerprinted_and_diffed_as_a_file() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let root = dir.path();
 
-    let schema = root.join("tiny.aps");
+    let schema = root.join("tiny.sigla");
     std::fs::write(
         &schema,
         "schema log {\n  predicate Line : string\n  predicate Entry : { line : Line, level : int } }\n",
@@ -273,19 +270,19 @@ fn a_schema_is_checked_fingerprinted_and_diffed_as_a_file() {
             "--canonical",
         ],
     );
-    assert!(canonical.starts_with("aperture-schema-v1\n"), "{canonical}");
+    assert!(canonical.starts_with("fjord-schema-v1\n"), "{canonical}");
     assert!(canonical.contains("log.Line:string"), "{canonical}");
 
     // A schema that is wrong is refused with the reason, against the file it is in.
-    let broken = root.join("broken.aps");
+    let broken = root.join("broken.sigla");
     std::fs::write(&broken, "schema log { predicate Line : bananas }\n").expect("it writes");
 
     let refused = fails(root, &["schema", "check", broken.to_str().expect("utf-8")]);
     assert!(refused.contains("bananas"), "{refused}");
-    assert!(refused.contains("broken.aps"), "{refused}");
+    assert!(refused.contains("broken.sigla"), "{refused}");
 
     // An import nothing answers says what it looked for and where.
-    let importing = root.join("importing.aps");
+    let importing = root.join("importing.sigla");
     std::fs::write(&importing, "schema app { import lang.rust }\n").expect("it writes");
 
     let unresolved = fails(
@@ -293,7 +290,7 @@ fn a_schema_is_checked_fingerprinted_and_diffed_as_a_file() {
         &["schema", "check", importing.to_str().expect("utf-8")],
     );
     assert!(unresolved.contains("lang.rust"), "{unresolved}");
-    assert!(unresolved.contains("lang/rust.aps"), "{unresolved}");
+    assert!(unresolved.contains("lang/rust.sigla"), "{unresolved}");
 }
 
 /// **`create --schema` is the one moment a database's schema can be chosen** (I13), and
@@ -304,7 +301,7 @@ fn a_database_is_created_against_a_schema_file_and_carries_it() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let root = dir.path();
 
-    let schema = root.join("tiny.aps");
+    let schema = root.join("tiny.sigla");
     std::fs::write(
         &schema,
         "# a schema of one's own\nschema log { predicate Line : string }\n",
@@ -354,7 +351,7 @@ fn a_database_is_created_against_a_schema_file_and_carries_it() {
     );
 
     // A schema that does not resolve creates nothing at all.
-    let broken = root.join("broken.aps");
+    let broken = root.join("broken.sigla");
     std::fs::write(&broken, "schema log { predicate Line : bananas }\n").expect("it writes");
 
     let refused = fails(
@@ -381,9 +378,9 @@ fn adding_a_predicate_is_the_one_compatible_change() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let root = dir.path();
 
-    let before = root.join("before.aps");
-    let after = root.join("after.aps");
-    let changed = root.join("changed.aps");
+    let before = root.join("before.sigla");
+    let after = root.join("after.sigla");
+    let changed = root.join("changed.sigla");
 
     std::fs::write(&before, "schema log { predicate Line : string }\n").expect("it writes");
     std::fs::write(

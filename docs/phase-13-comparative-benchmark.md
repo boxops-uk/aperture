@@ -1,6 +1,6 @@
-# Phase 13 — Aperture against Glean, measured
+# Phase 13 — Fjord against Glean, measured
 
-> [Aperture design book](../README.md) · the method: [`performance.md`](performance.md) ·
+> [Fjord design book](../README.md) · the method: [`performance.md`](performance.md) ·
 > what has been measured so far: [`bench/FINDINGS.md`](../bench/FINDINGS.md) · what each
 > system can be *asked*: [`glean-capabilities.md`](glean-capabilities.md)
 
@@ -23,8 +23,8 @@ decision one of them made on purpose.
 
 - **One corpus.** Same producer, same walk, same 18.26M facts, same per-predicate counts,
   both `Complete`/sealed ([§16](../bench/FINDINGS.md)).
-- **One schema, field order included.** `apbench.angle` preserves every predicate, field and
-  *field order* from `code.aps`, because on both systems the record's field order is the
+- **One schema, field order included.** `fjbench.angle` preserves every predicate, field and
+  *field order* from `code.sigla`, because on both systems the record's field order is the
   key's byte order and therefore the index design.
 - **Both key orders pre-materialised on both sides.** `SearchByName`, `SearchByLowerName`,
   `FileXRef`, `DerivesFrom` and `AttributeOf` are written by the indexer into both
@@ -35,7 +35,7 @@ decision one of them made on purpose.
 
 **Not comparable, and treated as capability-with-a-price rather than hidden:**
 
-| | Glean | Aperture |
+| | Glean | Fjord |
 |---|---|---|
 | recursion | yes | no ([comparison §3](glean-comparison.md)) |
 | stored derivation | `glean derive` | Phase 8b |
@@ -48,10 +48,10 @@ feature only one has.
 
 **Two rungs, and they must not be mixed.**
 
-| rung | Glean | Aperture |
+| rung | Glean | Fjord |
 |---|---|---|
 | **in-process** — the engine alone | `glean --db-root … query` (local backend, no Thrift) | `cargo run --release --example engine -- --store …` |
-| **over the wire** — the service | `glean server` + `--service host:port` | `aperture serve` + client |
+| **over the wire** — the service | `glean server` + `--service host:port` | `fjord serve` + client |
 
 `glean query --db-root` runs the engine inside the CLI process, which is the right partner
 for `examples/engine`. Comparing our socket against their local backend would be measuring
@@ -65,7 +65,7 @@ Glean's `UserQueryStats` (`glean/if/glean.thrift`) reports `compile_time_ns`,
 `execute_time_ns`, `elapsed_ns`, `result_count` and — with `--profile` — **`facts_searched`
 per predicate**. Ours reports the same shape:
 
-| what | Glean | Aperture |
+| what | Glean | Fjord |
 |---|---|---|
 | compiling the query | `compile_time_ns` | the compile rung (S2), `:plan` |
 | running it | `execute_time_ns` | the executor rung (S1) |
@@ -103,7 +103,7 @@ only milliseconds cannot tell those apart, and they have opposite fixes.
 ## 3. The suite
 
 Sixteen families. The first eleven reuse `workload::catalogue`'s questions — they already
-have stated rationale and are what the Aperture numbers in §1–§11 were taken over — and each
+have stated rationale and are what the Fjord numbers in §1–§11 were taken over — and each
 is paired with its Angle spelling. **The prediction column is what makes this an experiment
 rather than a table**: it is drawn from the design docs, so a run can falsify one.
 
@@ -115,7 +115,7 @@ rather than a table**: it is drawn from the design docs, so a run can falsify on
 | F4 | prefix search | `SearchByLowerName {name = "parse"..}` | range seek plus fan-out | parity |
 | F5 | scan curve | full scans of File → Module → Decl → Ref → Line (26.9k → 7.5M rows) | **raw scan throughput against database size** | Glean, on residency: 2.4 GB against 886 MB for comparable facts means more of it fits. If *we* win, lazy field decode ([I5](invariants.md#i5)) beats their residency, which is the more interesting result |
 | F6 | projection width | one field against three off a nested key | per-row decode cost | parity; ours should be flat in field count ([I5](invariants.md#i5)) |
-| F7 | **value read** | `Decl.name` (key) against `Decl.value` (kind) | **the sharpest prediction in the suite** | a large Aperture penalty: a value is a second point read per row ([I6](invariants.md#i6)), where Glean's value is inline. If the penalty is small, the page cache is absorbing it and the trade in [capabilities §2.2](glean-capabilities.md) is cheaper than it reads |
+| F7 | **value read** | `Decl.name` (key) against `Decl.value` (kind) | **the sharpest prediction in the suite** | a large Fjord penalty: a value is a second point read per row ([I6](invariants.md#i6)), where Glean's value is inline. If the penalty is small, the page cache is absorbing it and the trade in [capabilities §2.2](glean-capabilities.md) is cheaper than it reads |
 | F8 | joins | leading-field join against trailing-field join | what a key's field order is worth | both degrade, and similarly: neither planner consults statistics ([capabilities §3.1](glean-capabilities.md)) |
 | F9 | reference | *following* one (id compare) against *reading through* one (fetch) | the split our IR makes explicit | ours flat on the compare, one point read per row on the fetch; Glean's nested pattern match should behave like the compare |
 | F10 | expansion | shallow ids, then 1/2/3 hops | server-side against client-side ([capabilities §2.7](glean-capabilities.md)) | Glean wins with depth (one round trip), we win shallow (no expansion work at all); the crossover is the number |
@@ -133,7 +133,7 @@ costs nobody has priced:
   server-side from `Ref` against having the producer write both. This is what Phase 8b buys
   and what it would cost.
 - **F18 — open cost.** Time from process start to a database being answerable, on both, at
-  this size. Ours opens every database under the root at startup ([`ops-I7`](aperture-cli-design.md));
+  this size. Ours opens every database under the root at startup ([`ops-I7`](fjord-cli-design.md));
   it has never been measured at 18M facts.
 
 ---

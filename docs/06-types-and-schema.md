@@ -1,11 +1,11 @@
 # 6. Types & schema
 
-> [Aperture design book](../README.md) · [← 5. Suspend & resume](05-resume.md) · **Chapter 6** · [7. Compilation →](07-compilation.md)
+> [Fjord design book](../README.md) · [← 5. Suspend & resume](05-resume.md) · **Chapter 6** · [7. Compilation →](07-compilation.md)
 
 Every fact is typed, and the types come from a **schema**. This chapter covers the type
 model, how names are interned, unions and their frozen discriminants, and **schema
 identity** — the canonical form and fingerprint that make a DB self-describing and let
-compatibility be a set-containment check. Code: `crates/aperture-schema/src/schema.rs`.
+compatibility be a set-containment check. Code: `crates/fjord-schema/src/schema.rs`.
 
 The one-way-door invariants here ([I10](invariants.md#i10), [I13](invariants.md#i13)) join
 the [codec's I3](02-tuple-codec.md): together they freeze the on-disk type world the moment
@@ -46,8 +46,8 @@ distinction. The gap to Glean is smaller than Glean's surface syntax suggests. G
 *runtime* type model is **eight** constructors — byte, nat, string, array, tuple, sum, set,
 predicate-ref (`glean/hs/Glean/RTS/Types.hs:185-194`) — and `bool`, `maybe`, `enum`, tuples
 and named types are **sugar, lowered before storage**, so they cost its codec nothing.
-Measured against that runtime model, Aperture is **three** constructors short (array, sum, and
-the byte/nat pair), not eight behind a surface list — and one constructor **wider**: focus's
+Measured against that runtime model, Fjord is **three** constructors short (array, sum, and
+the byte/nat pair), not eight behind a surface list — and one constructor **wider**: sigla's
 `Int` is a signed `i64` with its own negative marker band
 ([chapter 2](02-tuple-codec.md#the-marker-table)), where Glean has no signed integer at all.
 
@@ -143,7 +143,7 @@ stability at read time instead: alternatives are matched **by name** and the sel
 with a synthetic `unknown` tag for one the target schema no longer has
 (`glean/db/Glean/Query/Transform.hs:551-579`).
 
-Aperture declines that layer — [I13](invariants.md#i13) freezes the schema at create, so there
+Fjord declines that layer — [I13](invariants.md#i13) freezes the schema at create, so there
 is no second schema to project from and nowhere for a transform to live. **I10 is therefore a
 consequence of that choice, not an idea inherited from Glean**: the protobuf-style explicit tag
 is what remains once query-time projection is off the table, and given the freeze it is the
@@ -154,8 +154,8 @@ writing any union facts — after that it's an on-disk migration
 **What I10 does not yet say is what a decoder does with a tag it has never seen.** Append-only
 tags do not make that impossible: a fact file can outlive the schema that wrote it, and a
 retired alternative's tag is still on disk. Glean has a defined answer, the synthetic `unknown`;
-Aperture has none, and per errors-not-panics ([conventions](conventions.md)) it must surface as
-an `ApertureError` rather than a panic or a mis-decode. Decide it with the discriminant encoding
+Fjord has none, and per errors-not-panics ([conventions](conventions.md)) it must surface as
+an `FjordError` rather than a panic or a mis-decode. Decide it with the discriminant encoding
 in Phase 8.
 
 ### How unions are used (mostly) needs no new machine
@@ -192,7 +192,7 @@ hashing field names *and* order into a definition's fingerprint
 (`glean/db/Glean/Database/Schema/ComputeIds.hs:264-274`) and handling a field reorder as a
 transform rather than as identity.
 
-**Here Aperture and Glean converge, and it is worth stating as shared ground rather than
+**Here Fjord and Glean converge, and it is worth stating as shared ground rather than
 coincidence.** Glean's `SchemaId` is `hashBinary (sort (toList nameEnv))` — a hash of the sorted
 qualified-name → definition-id environment
 (`glean/db/Glean/Database/Schema/ComputeIds.hs:307,340-342`) — structurally the same object as
@@ -201,8 +201,8 @@ the schema set.
 
 **One difference constrains the canonical form.** Glean's per-predicate hash is a **Merkle**
 hash: a reference inside a type is a `PredicateId` that *carries* the referent's hash, so
-changing a predicate changes the fingerprint of everything transitively referencing it. Aperture's
-`PredicateId` is a **position** in the schema, not a hash (`crates/aperture-schema/src/schema.rs`) — so the
+changing a predicate changes the fingerprint of everything transitively referencing it. Fjord's
+`PredicateId` is a **position** in the schema, not a hash (`crates/fjord-schema/src/schema.rs`) — so the
 canonical form must not spell a `Fact`-typed field as its id: a position would make the
 fingerprint depend on declaration order, the very thing it exists to be independent of, and a
 bare name would not propagate the referent's change. Spell it as the referent's
@@ -222,7 +222,7 @@ so **the only compatible change is adding a new predicate.** Any in-place modifi
 predicate's key or value is *Breaking* until schema evolution exists — because values are
 queryable and positionally encoded, so a field change shifts stored bytes. No field-level
 diffing is needed in P0. (Richer evolution is deferred with the seam kept — see
-[Operations](aperture-cli-design.md) §11 and [open decisions](open-decisions.md).)
+[Operations](fjord-cli-design.md) §11 and [open decisions](open-decisions.md).)
 
 **Do not model that seam on Glean's `evolves`, which is not the mechanism its name suggests.**
 Glean's dominant path is *edit the schema in place*: two instances of a predicate sharing a
@@ -246,8 +246,8 @@ Glean's docs and `inherit` is deprecated.
 > containment; the DB carries its own schema.
 >
 > *Guard:* `i13_embedded_schema::ingest_rejects_incompatible_schema` (subset containment
-> enforced at ingest, in `aperture-client/tests/` since 8.4 — it needs a database, a parsed
-> schema and a write path, none of which is in `aperture-schema`) +
+> enforced at ingest, in `fjord-client/tests/` since 8.4 — it needs a database, a parsed
+> schema and a write path, none of which is in `fjord-schema`) +
 > `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` (tier-2
 > metamorphic).
 
@@ -259,7 +259,7 @@ reproducibility).
 **The freeze is Glean's own fallback promoted to a rule.** When a change is incompatible, Glean's
 documented escape hatch is to bump the version and treat the new schema as entirely separate, or
 to *produce two databases* and point clients at the one they want
-(`glean/website/docs/schema/changing.md:80-117`) — which is precisely Aperture's default
+(`glean/website/docs/schema/changing.md:80-117`) — which is precisely Fjord's default
 workflow: a fresh, sealed artifact per run. Subset containment is a strictly stronger and simpler
 rule than Glean's `canEvolve`, and it cannot fail the way a compatibility check that ships
 disabled can. Three ways it can still bite, each cheaper to decide in **Phase 8** than after:
@@ -267,7 +267,7 @@ disabled can. Three ways it can still bite, each cheaper to decide in **Phase 8*
 - **Adding an *optional* field is Breaking here.** Under subset containment the only migration is
   a new predicate name and a rewrite of every query — where Glean makes field addition routine
   with a per-type default-value table (`changing.md:64-77`; "defaultable" is anything that is not
-  a predicate reference, since a reference has no default). If Aperture ever wants that, the two
+  a predicate reference, since a reference has no default). If Fjord ever wants that, the two
   things to fix while the DSL is being written are a per-type default rule and the guarantee that
   a record's trailing fields are skippable — which [I2](invariants.md#i2)'s self-delimiting
   encoding already gives.
@@ -282,13 +282,13 @@ disabled can. Three ways it can still bite, each cheaper to decide in **Phase 8*
   every artifact already produced and take [ops-I4](invariants.md#ops-i4) with it. Glean hit
   exactly this and now **persists** the externally-visible `SchemaId` in the DB so that "the
   SchemaIds that were previously computed remain unchanged" even if its internal fingerprinting
-  changes (`glean/if/internal.thrift:24-33`). Version the algorithm in the `APERTURE_META`
-  sidecar ([Operations](aperture-cli-design.md)) and treat the *stored* fingerprint as
+  changes (`glean/if/internal.thrift:24-33`). Version the algorithm in the `FJORD_META`
+  sidecar ([Operations](fjord-cli-design.md)) and treat the *stored* fingerprint as
   authoritative — this is the load-bearing one for Phase 8.
 
 > **Schema *syntax* and import/`mod`-tree resolution** (the schema DSL, Go-style import
 > edges, `schema_path` roots, redeclaration errors) are a front-end concern covered in
-> [Operations §7](aperture-cli-design.md) and built in **Phase 8** ([`PLAN.md`](../PLAN.md)).
+> [Operations §7](fjord-cli-design.md) and built in **Phase 8** ([`PLAN.md`](../PLAN.md)).
 > This chapter is the *type model and identity*; that chapter is *how schemas are written and
 > resolved*.
 

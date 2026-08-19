@@ -1,6 +1,6 @@
 # Open decisions
 
-> [Aperture design book](../README.md) · reference doc
+> [Fjord design book](../README.md) · reference doc
 
 What is **not yet settled** — do not treat anything here as an invariant. Below the open
 items is a short record of decisions that *have* settled, kept so they aren't re-litigated,
@@ -36,7 +36,7 @@ and which one is used is decided by *address* rather than by syntax, the relatio
 where the field turned out to be on the right. Where neither side is a row it is a
 `Step::Test` instead, which is what a filter with no row of its own is.
 
-Arithmetic is integers, wrapping, and it is **the first thing in focus to lower a
+Arithmetic is integers, wrapping, and it is **the first thing in sigla to lower a
 `Step::Derive` at all** — the machinery Phase 6 built and only hand-written plans had
 exercised. `Computed` grew from one arm to four; nothing about the machine moved.
 
@@ -51,16 +51,16 @@ Angle's primitive surface is **narrower than "arithmetic, string operations, com
 exactly 15 `prim.*` ops — arithmetic is `+` on nat *only*, string functions are `toLower` and
 `reverse` *only*, comparisons are nat-only plus a generic `!=`, and the rest are container and
 byte-span helpers ([the ledger](glean-comparison.md#primitives-expressions-and-aggregation) cites
-them). That makes this decision **smaller than it looks**. What Angle has that focus has no answer
+them). That makes this decision **smaller than it looks**. What Angle has that sigla has no answer
 to at all is
 **if-then-else** and **element iteration over an array or set** (`X[..]`) — and the second is the
-multiplicity decision above, not this one. focus has string prefix matching and nothing else.
+multiplicity decision above, not this one. sigla has string prefix matching and nothing else.
 
 **Order comparisons are not "deferred with a seam", and this file said they were.** There is no
-pending `ResidualOp` arm — all four are live (`crates/aperture-engine/src/plan.rs`) — and there is no lexer token
-for `<`, `>` or `+` (`crates/aperture-engine/src/lexer.rs`), so `X < 3` is a **parse error**, not a diagnosed
+pending `ResidualOp` arm — all four are live (`crates/fjord-engine/src/plan.rs`) — and there is no lexer token
+for `<`, `>` or `+` (`crates/fjord-engine/src/lexer.rs`), so `X < 3` is a **parse error**, not a diagnosed
 deferral. That is the one deliberate exception to *permissive grammar, narrow later*
-([conventions](conventions.md)) and to `aperture_engine::corpus`'s claim to parse the full intended surface,
+([conventions](conventions.md)) and to `fjord_engine::corpus`'s claim to parse the full intended surface,
 and it is recorded here because "deferred with a seam" hid it.
 
 Arithmetic, string functions and conditionals are in neither place: not built, not deferred,
@@ -132,7 +132,7 @@ The *second* arrow died when Phase 7 settled
 [what a reference is on the way in](#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline),
 which is the same event that made identity computable: identity is a **multiset hash of each fact's
 logical form**, no physical `FactId` in it, order-independent by construction
-(`crates/aperture-store/src/identity.rs`). Write order cannot move the artifact's identity, so
+(`crates/fjord-store/src/identity.rs`). Write order cannot move the artifact's identity, so
 reproducibility does not need a serial writer, and never has since that decision.
 
 **What the serial writer was actually doing** — the part worth keeping. [I12](invariants.md#i12)
@@ -151,8 +151,8 @@ leaf-then-parent and never nested.
 - **Fact id *values* stop being a function of the input alone.** Accepted. They already were not —
   the indexer walks on eight threads, so arrival order already varies run to run — and identity
   excludes them by construction. The real cost is in the **test surface**: assertions that pin a
-  concrete id (`crates/aperture-client/tests/against_a_server.rs`,
-  `crates/aperture-ingest/tests/against_a_real_store.rs`) hold today only because the funnel is
+  concrete id (`crates/fjord-client/tests/against_a_server.rs`,
+  `crates/fjord-ingest/tests/against_a_real_store.rs`) hold today only because the funnel is
   serial. Phase 12 owns rewriting them to assert the *relation* (all references to one target
   resolve to one id) rather than the number.
 - **Which of two contradictory producers gets refused may vary.** Accepted, and it is not a change
@@ -249,7 +249,7 @@ compute the new fingerprint" as real work. **Glean does not ask that of a client
 at compile time from `schema_id` in the generated `builtin.thrift` file"*, its schema compiler
 emits the constant, and it generates client bindings for seven languages from the same schema.
 
-So: **a client carries the number rather than deriving it.** `aperture schema fingerprint`
+So: **a client carries the number rather than deriving it.** `fjord schema fingerprint`
 prints it, a client holds it as a constant, and a stale one fails the handshake loudly — which
 is what the assertion is for. What that constant is, precisely, is a *provenance* tag rather
 than a checksum of the shapes a hand-written client implements; the byte-identical golden is
@@ -276,7 +276,7 @@ satisfies all three — declaration order breaks the second, sorted-by-name brea
 **The answer is that it need not be a function of the text at all.** Glean splits identity from the
 physical tag: `PredicateId` is a content hash with no number in it, while `Pid` is a small integer
 assigned by sorted name, **persisted in the stored schema**, and append-only afterwards
-(`nextPid = max + 1`), so a database keeps its numbering for life. Aperture takes the same split —
+(`nextPid = max + 1`), so a database keeps its numbering for life. Fjord takes the same split —
 no ids in the DSL, the map embedded in the database at create.
 
 **And the wire carries names, so the database's numbering never leaves it.** A predicate id is
@@ -317,7 +317,7 @@ all along; the implementation was the thing that disagreed.
 It disagreed because the counter was a local inside a single `StackFrame::next` call, so it
 reset on every call and the poll was only reachable while a residual was rejecting rows: **a
 plan whose rows all matched never polled the token**, and ran to completion regardless of
-cancellation. The count now belongs to the run (`CancellationPoll`, `crates/aperture-engine/src/iter.rs`), and
+cancellation. The count now belongs to the run (`CancellationPoll`, `crates/fjord-engine/src/iter.rs`), and
 `exec::a_matching_scan_observes_cancellation` is the guard — a scan with no residual, cancelled
 mid-run, must stop. The bounded overrun a stride buys (a run shorter than the stride can finish
 despite a cancelled token) is the intended trade and is documented on the constant.
@@ -349,7 +349,7 @@ unification. Unification means *two things compared at runtime*; each of these h
 already determined, so the answer is where in the plan it comes from:
 
 - `test.Ref {of = P}; P = test.Foo {id = 1}` is one variable named twice by statements written
-  in the order that reads before it binds. It needs **reordering**, and `aperture_engine::reorder` does it
+  in the order that reads before it binds. It needs **reordering**, and `fjord_engine::reorder` does it
   (the runnable frontier, greedily).
 - `test.Foo {id = N}; N = 1` says what `N` *is*. It needs **substitution**, and the constant
   fold already did it — in the other order. The fold is collected from the whole body before any
@@ -408,7 +408,7 @@ unification ever lands after disjunction (Phase 6b).
 
 **Decision: `FactRef` has its own fixed-width marker.** This is **implemented** in the
 codec — `MARK_FACT_REF = 0x51` (a fixed-width band right above the positive-integer band),
-with `put_fact_id` on the encoder and a matching decode path (`crates/aperture-encoding/src/tuple.rs`). So a
+with `put_fact_id` on the encoder and a matching decode path (`crates/fjord-encoding/src/tuple.rs`). So a
 value's bytes are self-describing without the schema, and the byte-level `Int`/`Fact`
 distinction is enforced. The earlier "share the integer encoding for byte-uniform join
 splices" rationale was found overstated (splices work with a distinct marker too). See
@@ -416,7 +416,7 @@ splices" rationale was found overstated (splices work with a distinct marker too
 
 The engine-side effect (the [Phase 7 gate](../PLAN.md) "resolve `FactRef` before ingesting
 fact-typed fields") is satisfied by the marker existing, and `CLAUDE.md` no longer lists it as
-open. A fact-typed field is written end to end by the shared fixture (`aperture_store::fixture`), and as
+open. A fact-typed field is written end to end by the shared fixture (`fjord_store::fixture`), and as
 of Phase 5 it is also **queried** end to end: `test.Ref {of = test.Foo {id = 1}}` follows the
 reference by splicing the id the marker distinguishes, which is the use the distinct marker was
 doubted to support.
@@ -457,7 +457,7 @@ may send that instead, so the wire form is *id or nested fact*; stored, a refere
 `FactId` and nothing else. This is a **transport** decision only — it changes what a producer
 sends, never what is on disk. Lives in
 [chapter 3](03-storage-model.md#interning-a-nested-fact) and
-[Operations §6](aperture-cli-design.md#6-wire-protocol--the-write-stream).
+[Operations §6](fjord-cli-design.md#6-wire-protocol--the-write-stream).
 
 **The reason is the producer, not the pipeline.** Every id-based answer — local ids plus a
 substitution table (Glean's), logical `(predicate, key)` references, ids that must already exist
@@ -472,7 +472,7 @@ a traversal is *written* since Phase 5 ([the comparison](glean-comparison.md#the
 it is now how a fact is *sent*.
 
 What made this look hard was a pipeline problem, and it is narrowed rather than solved:
-[operations §5](aperture-cli-design.md) has parallel workers encode storage tuples **and sort**
+[operations §5](fjord-cli-design.md) has parallel workers encode storage tuples **and sort**
 in step 2, while ids are assigned at the step-3 merge — and a key holding a reference has no
 bytes, so no sort position, until then. Interning does not remove that ordering; it names it. On
 a **write stream** the ordering is free, because there is one writer consuming one stream and
@@ -517,7 +517,7 @@ queries can eventually *match on values* and `Project::Value` becomes decode-not
 FoundationDB-*inspired*, **not** FDB-compatible (don't call it "FDB"). A **distinct
 transport/wire codec**: a framed binary format, **not** order-preserving, never touching stored
 bytes. Lives in [chapter 3](03-storage-model.md#storage-codec-vs-transport-codec) and
-[Operations §6](aperture-cli-design.md#6-wire-protocol--the-write-stream).
+[Operations §6](fjord-cli-design.md#6-wire-protocol--the-write-stream).
 
 **Amended when Phase 7 was sequenced:** this entry was written read-only-shaped — "applies only
 to rows *after* they leave the executor (post-yield)" — because the read path was the only one
@@ -533,7 +533,7 @@ on its way out has been read from storage, where a reference is a `FactId` alrea
 Compatibility is `old_map ⊆ new_map` — the only compatible change is adding a predicate;
 any in-place field change is Breaking until `evolves` exists. Recorded in
 [chapter 6](06-types-and-schema.md#compatibility--subset-containment) and
-[Operations §7](aperture-cli-design.md). (`evolves` + field-level compatibility is deferred
+[Operations §7](fjord-cli-design.md). (`evolves` + field-level compatibility is deferred
 with the seam kept.)
 
 ---
@@ -542,7 +542,7 @@ with the seam kept.)
 
 Features that are *designed-for and additive* (a new enum arm, a new access kind) aren't
 "open decisions" — they have a settled shape and a kept seam, listed in
-[`PLAN.md`](../PLAN.md) "Deferred features" and [Operations §11](aperture-cli-design.md):
+[`PLAN.md`](../PLAN.md) "Deferred features" and [Operations §11](fjord-cli-design.md):
 order comparisons (a *new* `ResidualOp` arm — plus a token, since they do not lex today; see
 above), `evolves`, cross-DB queries. The two that are *not* additive — derived facts and (now-resolved) the
 `FactRef` marker — are handled as deliberate machine/codec changes
@@ -557,4 +557,4 @@ union freezes its discriminants on disk the moment one is written
 
 ---
 
-> [← Conventions](conventions.md) · [Index](../README.md) · [Aperture vs Glean →](glean-comparison.md)
+> [← Conventions](conventions.md) · [Index](../README.md) · [Fjord vs Glean →](glean-comparison.md)
