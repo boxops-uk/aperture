@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "allocation-counter",
  "clap",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-client"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fjord-schema",
  "fjord-server",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-encoding"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fjord-schema",
  "lasso",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-engine"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "allocation-counter",
  "byteview",
@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-ingest"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fjord-encoding",
  "fjord-schema",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-schema"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "codespan-reporting",
  "lasso",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-server"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "byteview",
  "fjord-encoding",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-store"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "allocation-counter",
  "byteview",
@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-viewer"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "axum 0.8.9",
  "clap",
@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-wire"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fjord-encoding",
  "fjord-schema",

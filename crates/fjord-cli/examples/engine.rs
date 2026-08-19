@@ -537,7 +537,7 @@ fn run_paged(db: &FjallDb, plan: &Plan, limit: u64) -> (Run, Paging) {
                 total,
                 |n, _row| {
                     let n = n + 1;
-                    if n >= limit || n.is_multiple_of(CHUNK_ROWS) {
+                    if n >= limit || n % CHUNK_ROWS == 0 {
                         Ok(Stream::Suspend(n))
                     } else {
                         Ok(Stream::Continue(n))
@@ -879,7 +879,7 @@ fn store_layer(db: &FjallDb, schema: &Schema, options: &Options) {
             .expect("a predicate scan opens")
         {
             let (key, _id) = entry.expect("a row decodes");
-            if facts.is_multiple_of(SAMPLE_STRIDE) && sampled.len() < SAMPLE_KEYS {
+            if facts % SAMPLE_STRIDE == 0 && sampled.len() < SAMPLE_KEYS {
                 sampled.push(key.to_vec());
             }
             facts += 1;
@@ -1155,7 +1155,7 @@ fn thousands(n: u64) -> String {
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
 
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
             out.push(',');
         }
         out.push(digit);

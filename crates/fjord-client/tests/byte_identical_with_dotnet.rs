@@ -496,7 +496,7 @@ fn golden() -> Golden {
 }
 
 fn unhex(text: &str) -> Vec<u8> {
-    assert!(text.len().is_multiple_of(2), "hex comes in pairs");
+    assert!(text.len() % 2 == 0, "hex comes in pairs");
 
     (0..text.len())
         .step_by(2)

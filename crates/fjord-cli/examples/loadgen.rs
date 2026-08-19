@@ -204,7 +204,7 @@ fn decl(file_index: usize, n: usize) -> WireFact {
             WireValue::Int((n * 17 + 1) as i64),
         ])),
         value: Some(WireValue::Str(
-            if n.is_multiple_of(3) { "class" } else { "def" }.to_owned(),
+            if n % 3 == 0 { "class" } else { "def" }.to_owned(),
         )),
     }
 }
@@ -582,7 +582,7 @@ fn thousands(n: u64) -> String {
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
 
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
             out.push(',');
         }
         out.push(digit);

@@ -8717,7 +8717,7 @@ pub mod proptest {
             // they are is what makes the branches agree about what they bind, which
             // is the rule flatten enforces and the one a generator has to respect to
             // draw a query at all.
-            let branches = match draw.branch.is_multiple_of(4) {
+            let branches = match draw.branch % 4 == 0 {
                 true => vec![
                     alternative_branch(&fields, &facts[predicate], draw.branch / 4),
                     fields,
@@ -8749,8 +8749,7 @@ pub mod proptest {
             .iter()
             .filter(|v| var_tys[**v] == FieldTy::Str)
             .find_map(|v| {
-                constraint
-                    .is_multiple_of(2)
+                (constraint % 2 == 0)
                     .then(|| (*v, MATCHES[constraint as usize / 2 % MATCHES.len()]))
             })
             .into_iter()
@@ -8820,7 +8819,7 @@ pub mod proptest {
                 .filter(|candidate| !occurs.contains(candidate))
                 .collect();
 
-            match candidates.is_empty() || !negation.is_multiple_of(4) {
+            match candidates.is_empty() || negation % 4 != 0 {
                 true => vec![],
                 false => {
                     let (predicate, field, var) =
@@ -8846,7 +8845,7 @@ pub mod proptest {
                     // A **second branch** for the negation too, on half of them:
                     // `!(A | B)` is the shape De Morgan's law is about, and it is
                     // also the only way a *test* gets more than one source.
-                    let branches = match negation_branches.is_multiple_of(2) {
+                    let branches = match negation_branches % 2 == 0 {
                         true => vec![
                             alternative_branch(&branch, &facts[predicate], negation_branches / 2),
                             branch,

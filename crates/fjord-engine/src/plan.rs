@@ -1625,7 +1625,7 @@ pub mod proptest {
 
     impl FieldTy {
         pub fn of(pick: u8) -> Self {
-            if pick.is_multiple_of(2) {
+            if pick % 2 == 0 {
                 FieldTy::Int
             } else {
                 FieldTy::Str
@@ -2056,7 +2056,7 @@ pub mod proptest {
             // and, at a cut point, a suspend taken while the *second* one is live.
             let mut sources = vec![residual];
 
-            if draw.alternative.is_multiple_of(3) {
+            if draw.alternative % 3 == 0 {
                 sources.push(Some(ResidualSpec::EqConst {
                     field,
                     val: constant_for(

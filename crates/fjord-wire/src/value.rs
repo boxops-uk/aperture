@@ -596,14 +596,12 @@ pub mod proptest {
                 // the pick: an id and a nested fact are two different encodings of
                 // one field, and a battery that only ever drew one would say nothing
                 // about the other.
-                PredicateTy::Fact(target) => {
-                    WireValue::Ref(if self.next_pick().is_multiple_of(2) {
-                        let sequence = 1 + (self.next_int().unsigned_abs() % 1_000);
-                        WireRef::Id(FactId::new(*target, sequence).expect("a generated id"))
-                    } else {
-                        WireRef::Nested(Box::new(self.fact(schema, *target)))
-                    })
-                }
+                PredicateTy::Fact(target) => WireValue::Ref(if self.next_pick() % 2 == 0 {
+                    let sequence = 1 + (self.next_int().unsigned_abs() % 1_000);
+                    WireRef::Id(FactId::new(*target, sequence).expect("a generated id"))
+                } else {
+                    WireRef::Nested(Box::new(self.fact(schema, *target)))
+                }),
 
                 PredicateTy::Record(fields) => WireValue::Record(
                     fields

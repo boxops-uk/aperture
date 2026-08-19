@@ -1,7 +1,11 @@
 [package]
 name = "fjord-schema"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The type model, schema language and schema identity for Fjord DB, an embedded immutable fact database"
 
 [dependencies]
 # The schema DSL's front end. [Operations §10](../../docs/fjord-cli-design.md)

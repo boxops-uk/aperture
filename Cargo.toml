@@ -14,8 +14,23 @@ resolver = "3"
 # `--no-default-features` habit from quietly narrowing the ledger.
 default-members = ["crates/*"]
 
-# Versions live here so a crate cannot drift from the root package's pin — the
-# fjall pin in particular is load-bearing (see below).
+# **One version for the whole workspace, and one licence.**
+#
+# Every crate inherits these with `x.workspace = true`, so a release is one edit here
+# rather than ten that can disagree. crates.io refuses a package without `description`
+# and `license`, so those are per-crate — a description is the one field that has to
+# differ — and everything a release stamps identically is stated once.
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/boxops-uk/fjord"
+# Edition 2024's floor. Stated rather than left implicit so crates.io and docs.rs can
+# advertise it, and so raising it is a visible decision rather than a `cargo update`.
+rust-version = "1.85"
+
+# Versions live here so a crate cannot drift — the fjall pin in particular is
+# load-bearing (see `fjord-store`).
 [workspace.dependencies]
 byteview = "0.10.1"
 fjall = "=3.1.8"
