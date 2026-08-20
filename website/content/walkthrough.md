@@ -4,15 +4,18 @@ description: One session from an empty directory to a sealed artifact — with t
 ---
 
 This is the tour. Every command was run and every block of output is what it printed. The
-database is a synthetic code index — 200 files, five declarations each, plus modules,
-references and a line table — because it is large enough for the interesting answers and
-small enough to seed in 50 ms.
+database is a **real code index of real code**: the repository's own .NET solution — the
+client library, the demo producer, and the indexer — indexed by that same indexer, through
+a real design-time build, with Roslyn answering what every name means. Three projects, so
+the build graph is in the data too.
 
-Set up once:
+Set up once (`FJ` is a Fjord checkout with `cargo build --release` done and the .NET SDK
+on the path):
 
 ```bash
 cd /tmp && mkdir fj-tour && cd fj-tour
-AP=/path/to/fjord/target/release/fjord
+FJ=/path/to/fjord
+AP=$FJ/target/release/fjord
 ```
 
 ## 1. A schema you can read
@@ -21,7 +24,7 @@ The sample schema is a file, `schemas/code.sigla`, and it parses like any other.
 what it thinks it is:
 
 ```bash
-$AP schema check schemas/code.sigla
+$AP schema check $FJ/schemas/code.sigla
 ```
 
 ```text
@@ -35,7 +38,7 @@ comments, no whitespace, no declaration order. Two files that mean the same thin
 same number. Per-predicate fingerprints come out too:
 
 ```bash
-$AP schema fingerprint schemas/code.sigla
+$AP schema fingerprint $FJ/schemas/code.sigla
 ```
 
 ```text
@@ -55,13 +58,13 @@ design — and [step 6](#6-read-the-plan) is where it becomes visible.
 ## 2. Create, and serve
 
 ```bash
-$AP --data-dir ./db create code --schema schemas/code.sigla
+$AP --data-dir ./db create code --schema $FJ/schemas/code.sigla
 $AP --data-dir ./db serve --ready-file ./ready &
 while [ ! -e ./ready ]; do sleep 0.1; done
 ```
 
 ```text
-created code (01M0BNMTQ3RWQFMM755NV1MWA3) against schemas/code.sigla
+created code (01M0G64F9Q2YYKDAG6459JGZJ5) against schemas/code.sigla
 fjord serve
   data dir   ./db
   socket     ./db/fjord.sock
@@ -77,32 +80,59 @@ guess how its rows decode.
 
 ## 3. Write facts, holding no ids
 
+The producer is `Boxops.Fjord.Indexer`, pointed at the .NET code it is itself part of:
+
 ```bash
-cargo run --release --example loadgen -- --data-dir ./db --files 200 --decls-per-file 5
+dotnet run --project $FJ/clients/dotnet/Boxops.Fjord.Indexer --configuration Release -- \
+  --source $FJ/clients/dotnet --at ./db/fjord.sock//code
 ```
 
 ```text
-seeding 1,000 declarations over 200 files, 1,000 facts per block
-  5,200 created, 11,000 deduped in 46.76ms — 346,440 facts/s touched, 21,385 decls/s
+indexing /path/to/fjord/clients/dotnet
+  schema fingerprint b08eea634e866a75
+  entry point /path/to/fjord/clients/dotnet/Boxops.Fjord.slnx
+  3 C# project(s) in the solution
+  built Boxops.Fjord.Demo.csproj (net10.0, 4 files, 2.7s)
+  built Boxops.Fjord.Indexer.csproj (net10.0, 12 files, 2.7s)
+  built Boxops.Fjord.Client.csproj (net10.0, 13 files, 4.9s)
+  build layer: 3 project(s), 3 from a design-time build, 20 file(s) attributed exactly
+
+connecting to ./db/fjord.sock//code, 1 writer(s)
+  connected: protocol 2, 29 predicates, schema b08eea634e866a75
+
+indexed 20 file(s) in 4.0s
+  src.File                        20
+  src.Decl                       617
+  src.Ref                      2,672
+  src.Project                      3
+  src.ProjectRef                   2
+  src.Line                     6,183
+  …
+  total                       15,441 facts in 28 blocks
+  server                      15,039 created, 40,382 deduped
+
+references: 2,672 resolved, 1,718 to declarations outside the index, 1 unresolved
 ```
 
-Read the two counts together. The producer sent 16,200 facts and 5,200 rows exist, because
-every reference it wrote was **the target fact nested inline** rather than an id:
+Read the two server counts together: 55,421 facts touched, 15,039 rows exist — because
+every reference the walk wrote was **the target fact nested inline** rather than an id:
 
 ```text
 src.Decl {
-  module = src.Module {                    ← a whole fact, not an id
-    file = src.File "src/f0000000.py",     ← nested again
-    name = "m0000000"
+  module = src.Module {                              ← a whole fact, not an id
+    file = src.File "Boxops.Fjord.Client/Crc32.cs",  ← nested again
+    name = "Boxops.Fjord.Client"
   },
-  name = "symbol_0000000_000", line = 1
+  name = "Crc32", line = 7
 }
 ```
 
 The server interns each nested fact bottom-up — a parent's key has no bytes until its
-children have ids — and substitutes the id. A file named a thousand times is written once
-and deduplicated 999 times. That is why an indexer needs no map from entities to
-identities and no emission order: it emits what it holds where it stands.
+children have ids — and substitutes the id. A file named a few thousand times is written
+once and deduplicated the rest. That is why an indexer needs no map from entities to
+identities and no emission order: it emits what it holds where the syntax walk stands. (The
+`1,718 to declarations outside the index` are references to the BCL and packages — real
+code points at code nobody walked, and the indexer says so rather than inventing targets.)
 
 ## 4. Ask the first questions
 
@@ -112,9 +142,9 @@ $AP --data-dir ./db query code 'F where src.File F' --limit 3
 
 ```text
 VALUE
-src/f0000000.py
-src/f0000001.py
-src/f0000002.py
+Boxops.Fjord.Client/Blocks.cs
+Boxops.Fjord.Client/Buffers.cs
+Boxops.Fjord.Client/Crc32.cs
 3 row(s)
 fjord: stopped at 3 rows; raise or drop --limit to see the rest
 ```
@@ -131,11 +161,11 @@ $AP --data-dir ./db query code \
 
 ```text
 LINE  NAME
-1     symbol_0000000_000
-18    symbol_0000000_001
-35    symbol_0000000_002
-52    symbol_0000000_003
-69    symbol_0000000_004
+37    Block
+56    Block.Encode
+44    Block.HeaderLength
+41    Block.Magic
+49    Block.MaxFacts
 5 row(s)
 ```
 
@@ -150,11 +180,11 @@ $AP --data-dir ./db query code 'R where R = src.Ref _' --format jsonl --limit 2
 ```
 
 ```json
-"#23:1"
-"#23:2"
+"#23:60"
+"#23:62"
 ```
 
-`#23:1` is a `FactId`: predicate 23, sequence 1. sigla cannot ask what it names — a query
+`#23:60` is a `FactId`: predicate 23, sequence 60. sigla cannot ask what it names — a query
 names a fact by its key, never by its number, and putting an id in the language would put a
 storage detail in a query. So the question goes to the **protocol**, and the client asks it:
 
@@ -163,8 +193,8 @@ $AP --data-dir ./db query code 'R where R = src.Ref _' --format jsonl --limit 2 
 ```
 
 ```json
-{"to": {"module": {"file": "src/f0000000.py", "name": "m0000000"}, "name": "symbol_0000000_000", "line": 1}, "file": "src/f0000001.py", "at": {"line": 2, "col": 4, "length": 12}}
-{"to": {"module": {"file": "src/f0000000.py", "name": "m0000000"}, "name": "symbol_0000000_001", "line": 18}, "file": "src/f0000001.py", "at": {"line": 15, "col": 4, "length": 12}}
+{"to": {"module": {"file": "Boxops.Fjord.Client/Crc32.cs", "name": "Boxops.Fjord.Client"}, "name": "Crc32", "line": 7}, "file": "Boxops.Fjord.Client/Blocks.cs", "at": {"line": 98, "col": 24, "length": 5}}
+{"to": {"module": {"file": "Boxops.Fjord.Client/Crc32.cs", "name": "Boxops.Fjord.Client"}, "name": "Crc32", "line": 7}, "file": "Boxops.Fjord.Client/Blocks.cs", "at": {"line": 99, "col": 13, "length": 5}}
 ```
 
 That is the **logical form**: the same shape a producer sends, and the same shape the
@@ -184,9 +214,9 @@ $AP --data-dir ./db shell code
 Find-references, which is the question this schema is shaped for:
 
 ```text
-sigla> :plan {f = F, l = L} where src.Ref {to = src.Decl {name = "symbol_0000000_000"}, file = F, at = {line = L}}
+sigla> :plan {f = F, l = L} where src.Ref {to = src.Decl {name = "Crc32"}, file = F, at = {line = L}}
   r0 <- src.Decl scan
-       where name == "symbol_0000000_000"
+       where name == "Crc32"
   r1 <- src.Ref seek[to = r0#, file = _, at = _]
   head {f = r1.file, l = r1.at.line}
 ```
@@ -201,26 +231,31 @@ Ask for the outcome as well as the intent:
 
 ```bash
 $AP --data-dir ./db query code \
-  '{f = F, l = L} where src.Ref {to = src.Decl {name = "symbol_0000000_000"}, file = F, at = {line = L}}' \
+  '{f = F, l = L} where src.Ref {to = src.Decl {name = "Crc32"}, file = F, at = {line = L}}' \
   --profile
 ```
 
 ```text
 F     L
-#9:2  2
-1 row(s)
+#9:2  98
+#9:2  99
+#9:2  99
+#9:2  99
+#9:2  99
+5 row(s)
 STEP      EXAMINED
-src.Decl  1000      full scan
-src.Ref   1
-1001 examined, 1 produced
+src.Decl  483       full scan
+src.Ref   5
+488 examined, 5 produced
 ```
 
-1,000 rows examined to find one declaration, then exactly one row for its references. The
-fix is not a query change; it is the schema — and it is what `src.SearchByName` exists for:
+Every declaration in the index examined to find one, then exactly five rows for its
+references. The fix is not a query change; it is the schema — and it is what
+`src.SearchByName` exists for:
 
 ```text
-sigla> :plan D where D = src.SearchByName {name = "symbol"..}
-  r0 <- src.SearchByName seek[name = "symbol".., to = _]
+sigla> :plan D where D = src.SearchByName {name = "Fjord"..}
+  r0 <- src.SearchByName seek[name = "Fjord".., to = _]
   head r0#
 ```
 
@@ -255,9 +290,9 @@ sigla> :plan Y where src.Decl {line = L}; Y = L + 1
 source is drained only to its first row, because the question is whether a witness exists:
 
 ```text
-sigla> :plan F where F = src.File _; !src.Module {file = F, name = "m0000000"}
+sigla> :plan F where F = src.File _; !src.Module {file = F, name = "Boxops.Fjord.Client"}
   r0 <- src.File scan
-  absent src.Module seek[file = r0#, name = "m0000000"]
+  absent src.Module seek[file = r0#, name = "Boxops.Fjord.Client"]
   head r0#
 ```
 
@@ -265,9 +300,9 @@ sigla> :plan F where F = src.File _; !src.Module {file = F, name = "m0000000"}
 written: "does not start with X" is the two ranges either side of one, and a seek walks one.
 
 ```text
-sigla> :plan N where src.Decl {name = N}; N != "symbol_0000000"..
+sigla> :plan N where src.Decl {name = N}; N != "Block"..
   r0 <- src.Decl scan
-       where name does not start with "symbol_0000000"
+       where name does not start with "Block"
   head r0.name
 ```
 
@@ -288,14 +323,14 @@ sigla> :limit 3
   3 row(s) per page
 sigla> F where src.File F
   : str
-"src/f0000000.py"
-"src/f0000001.py"
-"src/f0000002.py"
+"Boxops.Fjord.Client/Blocks.cs"
+"Boxops.Fjord.Client/Buffers.cs"
+"Boxops.Fjord.Client/Crc32.cs"
   :more for the next 3 — 3 so far
 sigla> :more
-"src/f0000003.py"
-"src/f0000004.py"
-"src/f0000005.py"
+"Boxops.Fjord.Client/Errors.cs"
+"Boxops.Fjord.Client/FjordAddress.cs"
+"Boxops.Fjord.Client/FjordConnection.cs"
   :more for the next 3 — 6 so far
 ```
 
@@ -390,7 +425,7 @@ $AP --data-dir ./db finish code
 
 ```text
 sealing code — merging trees, then computing identity
-sealed code: 5200 facts, 849350 bytes, identity 0xf2c2e86612f579e0
+sealed code: 15039 facts, 2378056 bytes, identity 0xdd0fe1300c88a3fa
 ```
 
 `finish` makes the data durable, **merges every tree**, computes
@@ -398,23 +433,23 @@ sealed code: 5200 facts, 849350 bytes, identity 0xf2c2e86612f579e0
 act. Now the database is an artifact:
 
 ```text
-NAME  INSTANCE                    STATUS    SCHEMA        CONTENT       FACTS  BYTES   CREATED
-code  01M0BNMTQ3RWQFMM755NV1MWA3  complete  b08eea634e86  f2c2e86612f5  5200   849350  2026-08-19 00:09:58Z
+NAME  INSTANCE                    STATUS    SCHEMA        CONTENT       FACTS  BYTES    CREATED
+code  01M0G64F9Q2YYKDAG6459JGZJ5  complete  b08eea634e86  dd0fe1300c88  15039  2378056  2026-08-20 18:15:05Z
 ```
 
 and every writer is refused at the handshake, structurally rather than per fact:
 
 ```text
-loadgen: cannot connect to ./db/fjord.sock: `code` is complete: it takes no more writes
+Boxops.Fjord.Client.FjordServerException: ModeRefused: `code` is complete: it takes no more writes
 ```
 
 ## What the tour showed
 
 | You saw | The rule behind it |
 |---|---|
-| 11,000 facts deduped | Interning **is** the dedup; a nested reference resolves to one row |
+| 40,382 facts deduped | Interning **is** the dedup; a nested reference resolves to one row |
 | A name that filtered and an id that seeked | Field order is key order, and key order is the index design |
-| `#23:1` in a row, expanded on request | Stored, a reference is a `FactId`; expansion is a protocol question, not a query one |
+| `#23:60` in a row, expanded on request | Stored, a reference is a `FactId`; expansion is a protocol question, not a query one |
 | `absent`, `r1 = …`, a second source on one level | Three step kinds and no more: a level, a test, a derive |
 | `:more` returning the next three | A resume token is bytes, so paging holds nothing open |
 | A caret with no round trip | The client compiles; the server decides what runs |

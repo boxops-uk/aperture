@@ -448,16 +448,16 @@ X where test.Foo {id = X, name = "ann"}      → 1; 3              (a scan, then
 
 ```plan
   r0 <- src.Decl scan
-       where name == "symbol_0000000_000"
+       where name == "Crc32"
   r1 <- src.Ref seek[to = r0#, file = _, at = _]
   head {f = r1.file, l = r1.at.line}
 ```
 
 ```text
 STEP      EXAMINED
-src.Decl  1000      full scan
-src.Ref   1
-1001 examined, 1 produced
+src.Decl  483       full scan
+src.Ref   5
+488 examined, 5 produced
 ```
 
 If a question you ask often reads far more rows than it produces, the answer is usually the
