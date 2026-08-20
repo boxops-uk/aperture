@@ -11,8 +11,8 @@ printed.
 | You need | Why | Optional? |
 |---|---|---|
 | A Rust toolchain (edition 2024, stable) | Builds `fjord`, the server and the viewer | no |
-| `python3` | Regenerates the example index, and serves these docs | for the example corpus |
-| .NET SDK 8+ | The C# client, the demo producer and the real indexer | yes |
+| .NET SDK 10 | Runs the indexer that seeds the tour's corpus (step 4) | for the corpus |
+| `python3` | Serves these docs locally | yes |
 
 There is nothing else — no database to install, no daemon to configure. The storage engine
 ([fjall](https://github.com/fjall-rs/fjall)) is a Rust dependency, and a database is a
@@ -35,7 +35,6 @@ are worth knowing about:
 
 ```bash
 cargo build --release --bin fjord-viewer        # the code-search site
-cargo build --release --example loadgen         # a producer that can fill a database
 ```
 
 For a first run, `--release` matters more than usual: a debug build of the executor is
@@ -107,27 +106,45 @@ pass `--socket /tmp/fjord.sock` explicitly and name it in the address —
 ## 4. Put some facts in it
 
 There is no `fjord write` command yet — [file ingestion](status.html) is unbuilt. Facts
-arrive over the wire, from a producer. Three exist today:
+arrive over the wire, from a producer. The one this tour uses is the repository's own:
+`Boxops.Fjord.Indexer` runs a real design-time build per project, asks Roslyn what every
+name in the result means, and writes the answers down the socket — pointed, here, at the
+.NET code it is itself part of. Three projects: the client library, the demo producer, and
+the indexer indexing itself.
 
 ```bash
-# a synthetic index: 200 files x 5 declarations, plus lines, refs and modules
-cargo run --release --example loadgen -- --data-dir ./db --files 200 --decls-per-file 5
+dotnet run --project clients/dotnet/Boxops.Fjord.Indexer --configuration Release -- \
+  --source clients/dotnet --at ./db/fjord.sock//code
 ```
 
 ```text
-seeding 1,000 declarations over 200 files, 1,000 facts per block
-  5,200 created, 11,000 deduped in 46.87ms — 345,662 facts/s touched, 21,337 decls/s
+indexing /path/to/fjord/clients/dotnet
+  schema fingerprint b08eea634e866a75
+  entry point /path/to/fjord/clients/dotnet/Boxops.Fjord.slnx
+  3 C# project(s) in the solution
+  built Boxops.Fjord.Demo.csproj (net10.0, 4 files, 2.7s)
+  built Boxops.Fjord.Indexer.csproj (net10.0, 12 files, 2.7s)
+  built Boxops.Fjord.Client.csproj (net10.0, 13 files, 4.9s)
+  build layer: 3 project(s), 3 from a design-time build, 20 file(s) attributed exactly
+
+connecting to ./db/fjord.sock//code, 1 writer(s)
+  connected: protocol 2, 29 predicates, schema b08eea634e866a75
+
+indexed 20 file(s) in 4.0s
+  total                       15,441 facts in 28 blocks
+  server                      15,039 created, 40,382 deduped
+
+references: 2,672 resolved, 1,718 to declarations outside the index, 1 unresolved
 ```
 
-The other two are the .NET client's demo (a tiny hand-written index) and
-`Boxops.Fjord.Indexer`, which runs a real design-time build with Roslyn over a checkout — see
-[Clients & the viewer](clients.html). To write facts from your own program, see
-[the client section](clients.html#writing-facts-from-rust).
-
-`11,000 deduped` is the interesting number. The producer holds **no fact ids**: it sends
+`40,382 deduped` is the interesting number. The indexer holds **no fact ids**: it sends
 each declaration with its module nested inside it, and the module with its file nested
-inside that. The server interns each nested fact, so a file named a thousand times is
-written once and deduplicated 999 times.
+inside that. The server interns each nested fact, so a file named a few thousand times is
+written once and deduplicated the rest — 55,421 facts touched, 15,039 rows exist.
+
+To write facts from your own program, see
+[the client section](clients.html#writing-facts-from-rust); the .NET demo producer is the
+same idea at fixture size.
 
 ## 5. Ask it something
 
@@ -137,9 +154,9 @@ fjord --data-dir ./db query code 'F where src.File F' --limit 3
 
 ```text
 VALUE
-src/f0000000.py
-src/f0000001.py
-src/f0000002.py
+Boxops.Fjord.Client/Blocks.cs
+Boxops.Fjord.Client/Buffers.cs
+Boxops.Fjord.Client/Crc32.cs
 3 row(s)
 fjord: stopped at 3 rows; raise or drop --limit to see the rest
 ```
@@ -154,27 +171,32 @@ fjord --data-dir ./db query code \
 
 ```text
 LINE  NAME
-1     symbol_0000000_000
-18    symbol_0000000_001
-35    symbol_0000000_002
-52    symbol_0000000_003
-69    symbol_0000000_004
+37    Block
+56    Block.Encode
+44    Block.HeaderLength
+41    Block.Magic
+49    Block.MaxFacts
 5 row(s)
 ```
 
 Find-references — the question a code index exists to answer — is a join through a
-reference, and the schema is laid out so that it seeks:
+reference, and the schema is laid out so that it seeks. `Crc32` is the client's checksum
+type, and every use of it turns out to be in the block encoder:
 
 ```bash
 fjord --data-dir ./db query code \
-  '{f = F, l = L} where src.Ref {to = src.Decl {name = "symbol_0000000_000"}, file = F, at = {line = L}}' \
+  '{f = F, l = L} where src.Ref {to = src.Decl {name = "Crc32"}, file = F, at = {line = L}}' \
   --expand
 ```
 
 ```text
-F                L
-src/f0000001.py  2
-1 row(s)
+F                              L
+Boxops.Fjord.Client/Blocks.cs  98
+Boxops.Fjord.Client/Blocks.cs  99
+Boxops.Fjord.Client/Blocks.cs  99
+Boxops.Fjord.Client/Blocks.cs  99
+Boxops.Fjord.Client/Blocks.cs  99
+5 row(s)
 ```
 
 Without `--expand`, `F` prints as `#9:2` — a fact id, because that is what a reference is
@@ -189,7 +211,7 @@ fjord --data-dir ./db shell code
 
 ```text
 fjord shell — `code` on ./db/fjord.sock
-  28 predicate(s) · rows print as jsonl · :help for commands
+  29 predicate(s) · rows print as jsonl · :help for commands
 ```
 
 The shell compiles what you type **locally**, against the schema the server said it
@@ -199,9 +221,9 @@ show you the plan without running anything.
 ```text
 sigla> :limit 3
 sigla> F where src.File F
-"src/f0000000.py"
-"src/f0000001.py"
-"src/f0000002.py"
+"Boxops.Fjord.Client/Blocks.cs"
+"Boxops.Fjord.Client/Buffers.cs"
+"Boxops.Fjord.Client/Crc32.cs"
   :more for the next 3 — 3 so far
 sigla> :more
 ```
@@ -220,7 +242,7 @@ fjord --data-dir ./db finish code
 
 ```text
 sealing code — merging trees, then computing identity
-sealed code: 5200 facts, 849350 bytes, identity 0xf2c2e86612f579e0
+sealed code: 15039 facts, 2378056 bytes, identity 0xdd0fe1300c88a3fa
 ```
 
 The identity is `hash(canonical schema, base facts)` — a content hash, so the same inputs
@@ -229,7 +251,7 @@ database as `complete`, with that number under `CONTENT`, and any writer is refu
 handshake:
 
 ```text
-loadgen: cannot connect to ./db/fjord.sock: `code` is complete: it takes no more writes
+Boxops.Fjord.Client.FjordServerException: ModeRefused: `code` is complete: it takes no more writes
 ```
 
 Merging at `finish` is not cosmetic: an unmerged tree was measured seeking at up to 180×

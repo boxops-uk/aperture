@@ -308,7 +308,7 @@ distinct id, cached across pages because a page of references into one file name
 forty times.
 
 ```json
-{"to": {"module": {"file": "src/f0000000.py", "name": "m0000000"}, "name": "symbol_0000000_000", "line": 1}, "file": "src/f0000001.py", "at": {"line": 2, "col": 4, "length": 12}}
+{"to": {"module": {"file": "Boxops.Fjord.Client/Crc32.cs", "name": "Boxops.Fjord.Client"}, "name": "Crc32", "line": 7}, "file": "Boxops.Fjord.Client/Blocks.cs", "at": {"line": 98, "col": 24, "length": 5}}
 ```
 
 Four things about that answer are deliberate:

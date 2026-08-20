@@ -70,14 +70,14 @@ sigla> :limit 3
   3 row(s) per page
 sigla> F where src.File F
   : str
-"src/f0000000.py"
-"src/f0000001.py"
-"src/f0000002.py"
+"Boxops.Fjord.Client/Blocks.cs"
+"Boxops.Fjord.Client/Buffers.cs"
+"Boxops.Fjord.Client/Crc32.cs"
   :more for the next 3 — 3 so far
 sigla> :more
-"src/f0000003.py"
-"src/f0000004.py"
-"src/f0000005.py"
+"Boxops.Fjord.Client/Errors.cs"
+"Boxops.Fjord.Client/FjordAddress.cs"
+"Boxops.Fjord.Client/FjordConnection.cs"
   :more for the next 3 — 6 so far
 ```
 
@@ -99,11 +99,12 @@ piping.
 
 ```text
 sigla> R where R = src.Ref _
-{"to": "#4:1", "file": "#9:2", "at": {"line": 2, "col": 4, "length": 12}}
+"#23:60"
 
 sigla> :expand
+  references expand into the facts they name, all the way down
 sigla> R where R = src.Ref _
-{"to": {"module": {"file": "src/f0000000.py", "name": "m0000000"}, "name": "symbol_0000000_000", "line": 1}, "file": "src/f0000001.py", "at": {"line": 2, "col": 4, "length": 12}}
+{"to": {"module": {"file": "Boxops.Fjord.Client/Crc32.cs", "name": "Boxops.Fjord.Client"}, "name": "Crc32", "line": 7}, "file": "Boxops.Fjord.Client/Blocks.cs", "at": {"line": 98, "col": 24, "length": 5}}
 ```
 
 A row carries a reference as a fact id, because that is what one is once stored — and sigla
@@ -119,11 +120,11 @@ a field somebody chose not to expand.
 
 ```text
 sigla> :profile
-sigla> {f = F, l = L} where src.Ref {to = src.Decl {name = "symbol_0000000_000"}, file = F, at = {line = L}}
+sigla> {f = F, l = L} where src.Ref {to = src.Decl {name = "Crc32"}, file = F, at = {line = L}}
 STEP      EXAMINED
-src.Decl  1000      full scan
-src.Ref   1
-1001 examined, 1 produced
+src.Decl  483       full scan
+src.Ref   5
+488 examined, 5 produced
 ```
 
 Per **step of the plan's body**, which is what the machine counts — so a fetch, a disjunction and
