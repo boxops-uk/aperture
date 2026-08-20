@@ -3,10 +3,10 @@ title: Performance
 description: The measurement method, the capacity target every number is read against, and what has actually been measured — with the two findings that changed the design.
 ---
 
-The project keeps two separate documents about numbers: a **method** (how a number is held to
-evidence, and what target it is read against) and a **register** of what has actually been
-measured. This page is a summary of both. `docs/performance.md` and `bench/FINDINGS.md` in the
-repository are the originals.
+The project separates the **method** (how a number is held to evidence, and what target it
+is read against — this page) from the **register** of what has actually been measured —
+`bench/FINDINGS.md` in the repository, which is deliberately a history: a number is only
+worth reading against the tree that produced it.
 
 :::note Ratios travel, absolutes do not
 Every absolute below is from one box: 8 cores, 32 GB, Linux 6.8, release build. Read the ratios

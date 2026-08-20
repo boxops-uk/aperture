@@ -105,7 +105,7 @@ jobs:
       # `default-members` is the whole workspace, so this means everything.
       - name: Tests
         run: cargo test --locked
-      # The coverage ledger (`docs/testing.md`): guards written up front and not
+      # The coverage ledger (AGENTS.md, testing): guards written up front and not
       # yet live. Printed rather than asserted — a number here would have to be
       # edited by whoever un-ignores one, and the list is what a reviewer reads.
       - name: Invariant coverage ledger
@@ -242,7 +242,7 @@ jobs:
   #
   # It runs after `test`, `package` and `attest` — a tag that does not pass them produces
   # no release rather than a released failure. What it does *not* do is publish to
-  # crates.io or nuget.org: `docs/repository-rules.md` records that publishing is not
+  # crates.io or nuget.org: AGENTS.md's repository-rules section records that publishing is not
   # gated, and the reason it stays manual is that a registry upload is irreversible while
   # a GitHub Release can be deleted. `package` has already proven both would be accepted.
   release:

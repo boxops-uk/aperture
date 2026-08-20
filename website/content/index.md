@@ -126,8 +126,9 @@ a producer writes:
 - **Operating it?** [CLI reference](cli.html) and [Operations](operations.html).
 
 :::note About these docs
-This site is generated from the design record in the Fjord repository — the design
-book in `docs/`, the invariant registry, the phase plan and the measured findings. Where
-this site says something is built, the repository has a test that says so; where
-something is not built, it is listed as not built rather than described as if it were.
+This site **is** the Fjord design book — the design of record, including the invariant
+registry. Where it says something is built, the repository has a test that says so; where
+something is not built, it is listed as not built rather than described as if it were. The
+roadmap and the record of settled decisions live in the repository's `PLAN.md`; the
+measured findings in `bench/FINDINGS.md`.
 :::

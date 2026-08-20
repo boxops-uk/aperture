@@ -46,7 +46,7 @@ built rather than described as if it were.
 ## The one open decision
 
 **Re-derivation, and what happens to the high-water mark.** It gates stored derivation, and it is
-cheapest to answer before that phase writes anything down.
+cheapest to answer before that work writes anything down.
 
 Two things the design states are both true and, together, inconsistent:
 
@@ -106,27 +106,21 @@ control flow, no cursor consequence. A step is a case in the driver *and* a case
 *and* an obligation to re-prove that resume is exact.
 
 **Additive is not the same as small.** Disjunction, `never`, negation and subqueries were all
-"additive" and still needed a phase each, because disjunction extends the resume token. Union types
+"additive" and still needed acceptance criteria of their own, because disjunction extends the
+resume token. Union types
 are additive and freeze their discriminants on disk the moment one is written. Both got acceptance
 criteria rather than a bullet.
 
 ## Where the roadmap lives
 
-`PLAN.md` in the repository is the living phase tree: what each phase is, what it depends on, and
-its current state. The numbers are historical labels rather than positions — the tree is
-deliberately out of chronological order, and renumbering was considered and rejected because
-hundreds of references across the repository point at these numbers.
+`PLAN.md` in the repository is the roadmap: each unbuilt piece with its acceptance criteria,
+and — so they are not re-litigated — the record of decisions already settled. The build's
+history lives in git, where every step can be cited by commit.
 
-| Phase | What | State |
-|---|---|---|
-| 0–5 | Guards and harness · store · grammar · driver · flatten/reorder · REPL | done |
-| 6, 6b | Dynamic derivation · the deferred query surface | done |
-| 7a | Wire ingestion: write stream, interning | done |
-| 7b | File ingestion | **open** |
-| 8 (8.1–8.6) | Schema parsing, identity, imports, embedding, union types | done |
-| 8b | Stored derivation | **open**, gated on the decision above |
-| 9 (a–f) | Operations: lifecycle, runtime, client, CLI, shell | done |
-| 10 | Capacity: measure it | done |
-| 11 | The code-search site, and what it took | done |
-| 12 | Parallel ingestion: the striped merge frontier | done |
-| 13 | Fjord against Glean, on one corpus | part done — the write paths are measured and within 8%; the read-path comparison is planned and not yet run |
+| Remaining | State |
+|---|---|
+| File ingestion (`fjord write`) | designed; the format is built and shared with the wire path |
+| Stored derivation | designed; gated on the re-derivation decision above |
+| The read-path comparison against Glean | planned with predictions; the write paths are measured and within 8% |
+| Authentication | design of record written; nothing built |
+| Operational gaps and the language backlog | each listed with the seam that keeps it cheap |

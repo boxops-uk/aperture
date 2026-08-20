@@ -196,4 +196,4 @@ paging possible.
 Four invariants that look inherited are not — order-preserving keys, a self-delimiting
 encoding, values kept out of the scan loop, and stable union discriminants. Glean does the
 opposite, or nothing, in each case. The repository keeps a full ledger of what was taken,
-what was changed and what has not been decided (`docs/glean-comparison.md`).
+what was changed and what has not been decided (`docs/glean.md`).

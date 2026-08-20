@@ -131,11 +131,13 @@ fjord/
 │                       the `fjord` binary; its examples/ are the instruments
 ├── schemas/             code.sigla, the sample schema every client here builds against
 ├── clients/dotnet/      the C# client, demo producer and real indexer
-├── docs/                the design book — chapters 1–7 plus operations and references
+├── docs/glean.md        where every idea stands against Glean
 ├── bench/FINDINGS.md    what has actually been measured
-├── PLAN.md              the phase tree and current state
-└── website/             this documentation site
+├── AGENTS.md            the working contract for contributors
+├── PLAN.md              the roadmap, and the record of settled decisions
+└── website/             this site — which is the design book
 ```
 
-The design book in `docs/` is the source of record. This site is written from it and links
-back into it by chapter where a subject has more depth than a docs site should carry.
+**This site is the design book and the source of record.** The pages are ordinary Markdown
+under `website/content/`, built by `website/build.py`; CI builds it with `--strict`, so a
+page falling out of the nav is a failed check rather than a silent loss.

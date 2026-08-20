@@ -300,7 +300,7 @@ fn collect<'s>(
         Some(Rule::DeriveItem) => diags.push(Code::NyiDerivation.at(
             cst.span(item),
             "a derived predicate needs the query language, which is not available to a \
-             schema yet — see PLAN Phase 8b",
+             schema yet — see PLAN.md, stored derivation",
         )),
 
         Some(Rule::TypeItem) => {
@@ -327,7 +327,7 @@ fn collect<'s>(
                 diags.push(Code::NyiDerivation.at(
                     cst.span(item),
                     "`stored` marks a derived predicate, which needs the query language \
-                     a schema cannot reach yet — see PLAN Phase 8b",
+                     a schema cannot reach yet — see PLAN.md, stored derivation",
                 ));
                 return;
             }
@@ -410,7 +410,7 @@ impl Resolver<'_, '_> {
                 node,
                 Code::NyiArray,
                 "an array type is not available: a one-to-many is written as one fact \
-                 per element (see open-decisions.md)",
+                 per element (a settled decision — see PLAN.md)",
             ),
             Rule::SetTy => self.refuse(node, Code::NyiSet, "a set type is not available"),
             Rule::MaybeTy => self.refuse(

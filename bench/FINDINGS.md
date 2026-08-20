@@ -1,8 +1,11 @@
-# Findings — Phase 10, rungs S1 through S7
+# Findings — the measurement register
 
-> [Fjord design book](../README.md) · the register [`docs/phase-10-capacity.md`](../docs/phase-10-capacity.md)
-> asks for. One entry per thing measured: what was measured, the number, and what it costs
-> to act on.
+> The method is [performance](../website/content/performance.md); the read-path comparison
+> plan is [`glean-read-path.md`](glean-read-path.md); the predictions this register was
+> opened to check are the [appendix](#appendix-the-eight-hypotheses-read-out-of-the-code-before-anything-was-measured).
+> One entry per thing measured: what was measured, the number, and what it costs to act on.
+> This file is deliberately a history — a number is only worth reading against the tree that
+> produced it, so entries cite commits and are amended rather than rewritten.
 >
 > **The phase was scoped as measurement only, and three findings were taken out of that
 > scope** — because leaving them would have made every later number a measurement of a bug
@@ -25,7 +28,7 @@ tokio, no wire, no server. Each workload is run once unmeasured to fix its row c
 per-step examined counts, and every timed run must reproduce both or the run aborts.
 
 **The host.** 8 cores, 32 GB, kernel 6.8.0-1061-aws, release build. Note this **corrects
-[§5 of the phase plan](../docs/phase-10-capacity.md)**, which says 4 cores / 15 GB / 5.8 GB
+[§5 of the phase plan](#appendix-the-eight-hypotheses-read-out-of-the-code-before-anything-was-measured)**, which says 4 cores / 15 GB / 5.8 GB
 free disk; the box now has 8 / 32 / 185 GB. The disk constraint that shaped the plan is
 gone. Ratios travel, absolutes do not.
 
@@ -36,7 +39,7 @@ gone. Ratios travel, absolutes do not.
 **Hypothesis F7, answered, and it turned out to be two findings.**
 
 The server computes at most `CHUNK_ROWS = 256` rows per turn, then suspends to a
-bytes-only cursor and resumes ([chapter 5](../docs/05-resume.md)). Nobody had measured
+bytes-only cursor and resumes ([chapter 5](../website/content/executor.md)). Nobody had measured
 what that costs, and it is paid on every query. Running the same plan straight through
 against the same plan suspended every 256 rows, both bounded to 100,000 rows:
 
@@ -49,7 +52,7 @@ against the same plan suspended every 256 rows, both bounded to 100,000 rows:
 | **scan decls** | 42.56 ms | 352.99 ms | **+729%** | 796.0 µs | 0.3 µs | **790.3 µs** |
 
 The three dotted columns take a page apart, and they settle where the cost is: **the
-snapshot is free** (0.1–0.3 µs, so [I8](../docs/invariants.md#i8)'s release-at-suspend
+snapshot is free** (0.1–0.3 µs, so [I8](../website/content/invariants.md#i8)'s release-at-suspend
 discipline costs nothing) and **all of it is `Executor::resume`** replaying one seek per
 level.
 
@@ -102,7 +105,7 @@ major compaction of the whole index confirms it end to end:
 **Nothing in the tree compacted.** `grep -rn major_compact crates/ src/` was empty, and
 `Catalog::finish` — the one operation that declares a database immutable forever — wrote
 an identity hash and a sidecar and never touched the LSM. So the artifact that
-[operations §5](../docs/fjord-cli-design.md) says gets copied per reader process was
+[operations §5](../website/content/operations.md) says gets copied per reader process was
 shipped in the shape a random write order left it.
 
 ### Fixed: sealing now merges
@@ -233,7 +236,7 @@ true: the order can be chosen directly, and only that test forbids it here.
 `{module, name, line}` — one line in `code_index.rs` — and retire or invert the sorted-order
 test, whose stated purpose (a swapped field list silently answering a different question)
 is served better by asserting the *intended* order per predicate than by asserting sorted.
-[I3](../docs/invariants.md#i3)/[I1](../docs/invariants.md#i1) freeze what is already
+[I3](../website/content/invariants.md#i3)/[I1](../website/content/invariants.md#i1) freeze what is already
 written, so this is a re-index rather than a migration — cheap now, at one index; not cheap
 later. Worth settling before [Phase 8](../PLAN.md)'s schema DSL fixes how a key is written
 down, since the DSL will have to say whether declaration order is load-bearing.
@@ -263,7 +266,7 @@ order `src.Decl` no longer has.
 
 ## 3. The executor's own floor is ~330 ns/row, and it is flat in database size
 
-The scaling curve, which [the phase plan](../docs/phase-10-capacity.md) calls the one
+The scaling curve, which [the phase plan](#appendix-the-eight-hypotheses-read-out-of-the-code-before-anything-was-measured) calls the one
 result that could invalidate the target outright. It does not.
 
 | Workload | rows | per row | rows/s |
@@ -326,7 +329,7 @@ class  CodecError
 The corpus said so before this finding was written —
 `"X.value where X = test.Foo _"` is `Supported`, annotated *"`.value` is the fact's value
 side — Project::Value"*. What is deferred is **matching** on a value
-([I6](../docs/invariants.md#i6)), not reading one. The `->` spellings tried here are
+([I6](../website/content/invariants.md#i6)), not reading one. The `->` spellings tried here are
 indeed parse errors; the mistake was generalising from them without trying the field
 access, and no plan was printed to check the conclusion against.
 
@@ -334,7 +337,7 @@ Two consequences. **F5 is not blocked** — a query over `src.Line`'s value side
 rows as wide as the corpus has text, which is the wide-row generator this finding said
 did not exist. And serving a file's source text out of the database is a seek plus one
 value read per row, which is what makes a code-search file view possible at all
-([phase 11](../docs/phase-11-code-search.md)).
+([phase 11](../website/content/clients.md)).
 
 *Kept rather than deleted, struck through: a findings file that quietly edits its
 mistakes is one nobody can calibrate against.*
@@ -805,7 +808,7 @@ the 4.9M-row scan came from.
 
 ## 12. Ingest is 5.2k facts/s, and the write path was never the reason — three quarters of the work was re-reading, and half the wall clock was the producer waiting
 
-The one number [glean-capabilities §2.3](../docs/glean-capabilities.md) said "nothing in
+The one number [glean-capabilities §2.3](../docs/glean.md) said "nothing in
 `bench/FINDINGS.md` yet attributes". Attributed here. **Not an S-rung measurement** — there is no
 write-path instrument yet — but read off counters the indexer already reports, on a 25M-fact
 `dotnet/runtime` index: a larger run than §1's `--syntax-only` 18.2M-fact one, reaching the build
@@ -837,9 +840,9 @@ key-only predicates (22 of 27) remove.
 sides are nearly balanced — ~2,255 s of server intern against ~2,573 s of walk. So the single
 writer is *not* today's binding constraint, and cutting its work further buys headroom rather than
 wall clock. **The reason to make it parallel anyway is not throughput** — it is that the write-once
-half of [I12](../docs/invariants.md#i12) was being held by there being one thread rather than by a
+half of [I12](../website/content/invariants.md#i12) was being held by there being one thread rather than by a
 mechanism, and that only becomes visible when you go looking for the throughput. See
-[Phase 12](../PLAN.md#phase-12--parallel-ingestion-the-striped-merge-frontier).
+[Phase 12](../PLAN.md).
 
 Two things to fix in how this was measured, before it is measured again:
 
@@ -1185,7 +1188,7 @@ told by the other end.
 **What still separates them end to end is our `finish`.** 220 s of merging trees and hashing
 an identity, which Glean does inside its 352 s. Take that out and the two are 1,102 − 220 =
 882 s against 854 s — 3%. Whether sealing can be folded into ingest, or is simply the price
-of [`ops-I4`](../docs/fjord-cli-design.md)'s content hash being computable at all, is a
+of [`ops-I4`](../website/content/operations.md)'s content hash being computable at all, is a
 question this makes worth asking.
 
 ### 17b. Two things the comparison did not set out to measure
@@ -1193,7 +1196,7 @@ question this makes worth asking.
 **Storage is still 3.7× on disk** (659 MB against 2.4 GB), 2.1× on the logical figures each
 system reports. Nothing here explains it, and it is the one gap that also acts on the read
 path — a database that fits in cache is a database that scans faster, which is
-[Phase 13](../docs/phase-13-comparative-benchmark.md)'s F5.
+[Phase 13](glean-read-path.md)'s F5.
 
 **The indexer's gate amplifies ~12×, and this run measured it by accident.** The same walk,
 two sinks:
@@ -1271,3 +1274,38 @@ eight threads are queued behind.
 - **The corpus includes a file that is 45% of it.** [§15b](#15b-the-tail-one-generated-file-is-45-of-the-wall-clock-and-contributes-365-facts).
   Quote ex-tail, or drop `src/tests` and re-baseline — a decision to take before the next
   measurement rather than after it.
+
+
+---
+
+## Appendix — the eight hypotheses, read out of the code before anything was measured
+
+Written before the first instrument ran, kept because a gap analysis edited to match the
+outcome is one nobody can calibrate against. Each was a *prediction* with the rung that
+settles it; the verdicts were filled in as the rungs ran. Inspection is not evidence here —
+that is the project's founding methodological claim, and ✅/⛔ below is its scorecard.
+
+Inspection is not evidence here — that is the project's founding methodological claim. Each
+of these is a *prediction* with the rung that settles it and the number that would.
+
+| # | Hypothesis | Where it comes from | Settled by |
+|---|---|---|---|
+| **F1** ✅ | **Stream tasks leak, per query.** `read_loop`'s `streams: HashMap<u32, StreamHandle>` (`session.rs:316`) has no removal path anywhere in the file; the client's `claim_stream` (`client/connection.rs:528`) never reuses an id. A connection issuing 10k queries leaves 10k parked tokio tasks, each holding `Arc<Session>`, `Arc<Outbound>`, a `CancellationToken` and an `mpsc(2)` buffer, until the *connection* closes — **true, and the mechanism is as described: ~3.5 kB retained per query, growth strictly proportional to queries issued on a connection, so 200k point lookups for one key took the server from 243 MB to 892 MB. It is *bounded*, though — a third such connection added 35 MB where the first added 649, and a realistic population reconnecting between queries retains 58 bytes/query. What it sets is a high-water mark for the busiest connection, not a restart schedule (§7)** | S7 — RSS and live-task count against **queries issued**, not connections open |
+| **F2** ⛔ | **A mid-chunk cancel reports `ErrorCode::Internal`, not a clean end.** `CANCELLATION_STRIDE = 4096` counts rows *examined* (`iter.rs:389`); `CHUNK_ROWS = 256` counts rows *produced*. A selective query trips the stride inside a chunk → `FjordError::Cancelled` → `ServerError::Execution` (`session.rs:859`) → an ERROR frame, where the design says *"a cancel is an early end, not a failure"*. Under load this is the common case, and no test covers the branch — **refuted: cancelling the most stride-tripping query available (56,274 examined per row produced) returns a clean end, sends no error frame, and leaves the connection usable. Tested through the client API and through `query --limit`** | S4 / S6 — cancel the `denial` workload and read the frame kind |
+| **F3** ✅ | **No plan cache.** Every query is parsed, typechecked, flattened and reordered afresh on the blocking pool (`session.rs:577`). At a ~211 µs floor on 4 cores that is a ceiling of roughly 19k q/s whatever the query does — **true, and small: 4–14 µs, 2–7% of the floor, linear in query size (§5)** | S2 — compile µs as a fraction of the floor |
+| **F4** ✅ | **Per-row framing dominates above ~100k row/s.** One `DATA_ROW` frame per row: ~3 allocations, 2 outbound-mutex acquisitions and a `Notify` each (`session.rs:617`, `outbound.rs:90-122`, `rows.rs`) — **confirmed as significant but misattributed: the row *encoder* is 1.5× (2.1× where the projection builds a record), and the framing, socket and client decode above it are a further 3.6× (§9)** | S4 — row/s with framing against S1 row/s without |
+| **F5** ⛔ | **A chunk has no byte budget.** `CHUNK_ROWS` is row-bounded only, so 256 wide rows materialise unbounded memory on a blocking thread (`session.rs:863`). The only byte cap in the system is `MAX_PAYLOAD` = 64 MiB, and it is per frame — **not reachable from the query side: a fact's *value* cannot be read by a query at all, so the widest row buildable is three narrow key fields (§4)** | S1 / S4 — a wide-row workload, RSS at the chunk boundary |
+| **F6** | **The reader head-of-line blocks the whole connection.** `read_loop` *awaits* `handle.inbound.send(..)` on a channel of capacity **2** (`session.rs:353`); a third frame for a busy stream stalls the connection's reader — including the read that would pick up a CANCEL for a *different* stream. `write_blocks` fires every block then `COPY_DONE` without waiting (`client/connection.rs:242`) | S4 / S6 — a ≥3-block ingest against a slow funnel |
+| **F7** ✅ | **Paging is not free.** Per 256 rows: two clones, a `spawn_blocking` dispatch, a **fresh fjall snapshot**, and `Executor::resume` replaying **one seek per plan level** (`iter.rs:1116`) — deliberately uncounted by `Profile`. A 1M-row query is ~3,900 of each — **true; the snapshot is free (0.1 µs) and the replayed seek is all of it: 4–12 µs a page, ~10%. On an *uncompacted* store the same seek costs up to 790 µs, +729% (§1)** | S1 — the same plan straight through vs suspended every 256 rows |
+| **F8** ~ | **No admission control of any kind.** No connection cap, no query timeout, no max rows, no concurrency limiter. tokio defaults apply: **4** worker threads (this box), **512** blocking threads, an **unbounded** submission queue. 1000 in-flight queries means 512 running and the rest queued invisibly — latency, never rejection — **observed exactly so: 2048 connections accepted without complaint, nothing ever refused, zero errors, and the queue showed up as the expensive class's p50 rising from 43 s to 315 s while the cheap class stayed under 101 ms** | S6 — the latency distribution at the knee |
+
+Two more findings from reading that need no rung, recorded so nobody re-derives them:
+
+- **Write load does not scale with connections, by design.** One writer mutex per database
+  held *across* the ingest (`session.rs:518`), and `put_fact` does one point read plus one
+  fjall batch commit per fact. Adding writer connections adds queueing, and a waiting
+  writer parks its connection's reader (F6). `loadgen` seeds on one connection, correctly.
+- **`remove` under load is essentially always refused** — `Arc::try_unwrap` is the liveness
+  test (`registry.rs:229`), so with N sessions bound there are N+1 references. Expected.
+
+---
