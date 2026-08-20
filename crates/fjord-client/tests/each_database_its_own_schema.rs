@@ -1,4 +1,4 @@
-//! **One store root, two schemas** — [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13) made real.
+//! **One store root, two schemas** — [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13) made real.
 //!
 //! Until 8.4 a server was handed one schema and served every database with it, which
 //! was true enough while the schema was compiled into the binary. Once `create` takes a

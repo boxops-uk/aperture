@@ -4,8 +4,8 @@
 //! to see what "optimise for transmission, not storage" actually buys. The storage
 //! codec encodes an integer as a **marker byte carrying the width** followed by a
 //! big-endian minimal magnitude, with negatives ones'-complemented, because
-//! [I1](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i1) requires `memcmp` to *be* semantic order and
-//! [I2](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i2) requires a value to be skippable without a
+//! [I1](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i1) requires `memcmp` to *be* semantic order and
+//! [I2](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i2) requires a value to be skippable without a
 //! schema. Both cost bytes, and neither buys anything on a socket: nothing memcmps a
 //! frame, and the reader has the schema.
 //!

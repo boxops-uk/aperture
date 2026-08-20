@@ -1,6 +1,6 @@
 //! [`Schema`] → source — the form a database **embeds**.
 //!
-//! [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13) asks a database to carry its own schema,
+//! [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13) asks a database to carry its own schema,
 //! and this is the half that makes the copy worth carrying: text in the same language
 //! `fjord create --schema` takes, so a reader needs no second format and the parser
 //! that already exists is the one that reads it back.

@@ -685,7 +685,7 @@ mod tests {
     /// every edit to a union is Breaking, including appending an alternative. That is
     /// the honest answer rather than a limitation to route around: a database is
     /// served from its own embedded schema
-    /// ([I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)) and a
+    /// ([I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)) and a
     /// client's fingerprint has to match it, so a predicate whose union grew is a
     /// predicate the old artifact cannot answer for. What I10 adds is that the *tags*
     /// of the alternatives already there did not move, which is what makes rebuilding

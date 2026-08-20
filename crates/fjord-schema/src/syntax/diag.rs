@@ -42,14 +42,14 @@ pub enum Code {
     RejectDiscriminantOnRecordField,
     /// An alternative with **no** discriminant.
     ///
-    /// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10) is
+    /// [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10) is
     /// the whole reason: a tag that is not written down would have to be derived from
     /// the position, and inserting an alternative would then renumber every one after
     /// it — silently re-reading every stored value of them as the wrong alternative.
     /// Angle derives them; this refuses to.
     RejectMissingDiscriminant,
     /// Two alternatives of one union sharing a discriminant — the *within a schema*
-    /// half of [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10),
+    /// half of [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10),
     /// and the only half a single schema can be checked for.
     RejectDuplicateDiscriminant,
     /// Two alternatives of one union sharing a name. Distinct from a shared tag: this

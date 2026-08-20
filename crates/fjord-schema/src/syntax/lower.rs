@@ -533,7 +533,7 @@ impl Resolver<'_, '_> {
     /// `{ a : int = 0 | b : string = 1 }` — **a union**.
     ///
     /// Three things are checked here and nowhere else, all of them
-    /// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10)'s
+    /// [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10)'s
     /// *within one schema* half — which is the only half a schema can be checked for
     /// on its own, since under [I13] there is no second schema at load to compare it
     /// against: every alternative carries a discriminant, no two carry the same one,
@@ -546,7 +546,7 @@ impl Resolver<'_, '_> {
     /// The canonical form sorts by tag, so permuting a declaration moves no
     /// fingerprint and renumbering one does.
     ///
-    /// [I13]: https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13
+    /// [I13]: https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13
     fn union(&mut self, list: NodeRef, depth: usize) -> Option<PredicateTy> {
         let mut alts: Vec<Alternative> = Vec::new();
 
@@ -753,7 +753,7 @@ mod tests {
     }
 
     /// **Two orderings of one schema are the same schema** — the precursor to
-    /// [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)'s fingerprint guard, at the level this
+    /// [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)'s fingerprint guard, at the level this
     /// step can already answer.
     ///
     /// Both the ids and the types have to match: ids alone would hold for a lowering

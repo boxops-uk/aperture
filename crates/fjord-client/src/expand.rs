@@ -46,8 +46,8 @@
 //!
 //! A reference that resolves to nothing is left as the id it was. That cannot happen for
 //! an id lifted out of a row — both column families are written together
-//! ([I12](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i12)) and ids are never reused
-//! ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)) — so it means corruption, and
+//! ([I12](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i12)) and ids are never reused
+//! ([I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11)) — so it means corruption, and
 //! [`unresolved`](Expander::unresolved) counts it rather than hiding it behind a
 //! plausible-looking row.
 //!
@@ -81,7 +81,7 @@ pub const FULL_DEPTH: usize = 16;
 /// How many facts the cache holds before it starts again.
 ///
 /// **A display cache, and nothing rests on it.** A fact is immutable and an id is never
-/// reused ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)), so re-reading one always gives the
+/// reused ([I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11)), so re-reading one always gives the
 /// same answer — dropping an entry costs a point read and can cost nothing else. That is
 /// what makes emptying it the right answer to a full one: a shell paging through a
 /// result keeps its working set, and `fjord query --expand` over a million rows stays

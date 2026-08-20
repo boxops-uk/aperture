@@ -7,7 +7,7 @@
 //! schema — the handshake compares the client's expected schema fingerprint against
 //! the DB's before a byte of data flows
 //! ([operations §6](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md#6-wire-protocol--the-write-stream)),
-//! and [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13) freezes a DB's schema at create — so
+//! and [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13) freezes a DB's schema at create — so
 //! the field names, their order and their types are known to the reader in advance.
 //! Sending them again is sending what the reader already has.
 //!
@@ -53,7 +53,7 @@
 //!
 //! | not sent | because |
 //! |---|---|
-//! | field names | the schema has them ([I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)) |
+//! | field names | the schema has them ([I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)) |
 //! | field types | likewise — this is why there are no markers |
 //! | record arity | the schema's field list has the count |
 //! | a record terminator | a record ends when its fields do, which the schema says |
@@ -347,7 +347,7 @@ fn decode_ref(
             // `from_raw` deliberately does not validate — it is for ids that have
             // already been checked — so a wire decode has to. Sequence 0 is
             // reserved, which is what makes a zeroed eight bytes detectably not a
-            // fact ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)).
+            // fact ([I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11)).
             if id.sequence() == 0 {
                 return Err(WireError::BadFactId(raw));
             }
@@ -983,7 +983,7 @@ mod tests {
     }
 
     /// Sequence 0 is reserved, so a zeroed id is detectably not a fact — the
-    /// property [I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11) keeps, checked where bytes
+    /// property [I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11) keeps, checked where bytes
     /// arrive from outside.
     #[test]
     fn a_zeroed_reference_is_not_a_fact() {

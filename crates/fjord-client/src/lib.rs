@@ -49,7 +49,7 @@
 //! buffered here and nothing is buffered there: the server's outbound queue for that
 //! stream fills, its query loop suspends holding a **bytes-only cursor**, and the
 //! snapshot was already released at the chunk boundary
-//! ([I8](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i8)). A pause of a millisecond and a pause of an hour
+//! ([I8](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i8)). A pause of a millisecond and a pause of an hour
 //! cost it the same thing. That is the property `\more` is built on
 //! ([Phase 9f](https://github.com/boxops-uk/fjord/blob/main/PLAN.md)), and the reason a result is a bookmark
 //! ([`Rows`]) rather than an iterator holding the socket.

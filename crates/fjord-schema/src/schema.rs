@@ -23,11 +23,11 @@ pub enum Symbol {
 /// discriminant**, and the type of its payload.
 ///
 /// The discriminant is written down rather than derived from the position, which is
-/// the whole of [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10):
+/// the whole of [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10):
 /// a tag derived from a sorted or declared order renumbers the moment an alternative
 /// is inserted, and every stored value tagged with the old number then decodes as the
 /// wrong alternative. Angle numbers by position and buys stability back with a
-/// query-time transform; [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)
+/// query-time transform; [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)
 /// leaves no schema to transform between, so the tag is explicit here instead.
 ///
 /// A struct rather than a `(Spur, u32, PredicateTy)` triple, unlike a record's
@@ -406,10 +406,10 @@ mod tests {
 
 /// Phase-8 invariant guards that are **live**.
 ///
-/// One so far: [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)'s order-independence half, which
+/// One so far: [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)'s order-independence half, which
 /// went green when the canonical form and fingerprints landed at 8.3
 /// ([`fingerprint`](crate::fingerprint)). It sits here rather than beside that module
-/// because the [registry](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md) names it `schema::…`, and a guard
+/// because the [registry](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md) names it `schema::…`, and a guard
 /// that moves is a guard the registry stops pointing at.
 #[cfg(test)]
 mod guards {
@@ -507,7 +507,7 @@ mod guards {
     }
 }
 
-/// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10) — **union
+/// [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10) — **union
 /// discriminants are stable and append-only**, built at 8.6.
 ///
 /// **What the invariant asked for, and what is actually implementable.** Its guard was
@@ -537,7 +537,7 @@ mod guards {
 /// thing: appending an alternative is a rebuild, where renumbering one would be a
 /// reindex, and anything that ever exports or migrates these bytes stands on that.
 ///
-/// [I13]: https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13
+/// [I13]: https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13
 #[cfg(test)]
 mod i10_discriminants {
     use crate::{

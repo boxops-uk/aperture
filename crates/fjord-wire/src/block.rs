@@ -73,7 +73,7 @@
 //! read `length` *before* it can trust anything else — a variable-width field would
 //! have to be parsed to be skipped, and the whole point is to skip. Little-endian
 //! because there is nothing to order: the storage codec's big-endian is an
-//! [I1](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i1) requirement, and this is the file where that
+//! [I1](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i1) requirement, and this is the file where that
 //! requirement is not inherited.
 
 use fjord_schema::schema::{PredicateId, Schema};

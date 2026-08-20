@@ -15,6 +15,16 @@ cargo test -- --ignored --list   # the coverage ledger: guards written, not yet 
 Two namespaces, never conflated: **`I1`–`I15`** are engine rules; **`ops-I1`–`ops-I10`** are
 operational ones and are always written with the prefix.
 
+:::note Reading a guard name
+The prefix is the subsystem, not a Rust path: `codec::` is `fjord-encoding/src/tuple.rs`,
+`exec::` is `fjord-engine/src/iter.rs`, `store::` is `fjord-store/src/store.rs`,
+`fingerprint::` is `fjord-schema/src/fingerprint.rs`, `flatten::` is
+`fjord-engine/src/flatten.rs`, and `i10_discriminants::` is
+`fjord-schema/src/schema.rs`. The part after `::` is a test function — every one is
+greppable. Guards named by a bare file (`i8_snapshot::`, `i13_embedded_schema::`) are
+integration tests in that crate's `tests/` directory.
+:::
+
 ## Engine invariants
 
 | # | Statement | Guard | Status |
@@ -30,15 +40,17 @@ operational ones and are always written with the prefix.
 | [I9](#i9) | The hot path is allocation-free per row | `exec::scan_is_alloc_free_per_row` | green |
 | [I10](#i10) | Union discriminants are stable and append-only | `i10_discriminants::*` — four checks, see [I10](#i10) | green |
 | [I11](#i11) | A `FactId` is stable, unique and never reused within a database | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | green |
-| [I12](#i12) | Both maps are written atomically — and a key names exactly one fact | `store::no_half_present_facts_after_writes` + the crash case + `concurrent_interning_of_one_key_creates_one_fact` | green |
-| [I13](#i13) | The database's schema is embedded and frozen at create | `i13_embedded_schema::ingest_rejects_incompatible_schema` + the fingerprint metamorphic | green |
+| [I12](#i12) | Both maps are written atomically — and a key names exactly one fact | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) + `concurrent_interning_of_one_key_creates_one_fact` | green |
+| [I13](#i13) | The database's schema is embedded and frozen at create | `i13_embedded_schema::ingest_rejects_incompatible_schema` + `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` | green |
 | [I14](#i14) | A derived bind is a pure function of the fact bindings | `iter::a_derive_is_recomputed_across_every_cut_point` | green |
 | [I15](#i15) | A database says which format wrote it; an unreadable one is refused | `store::a_database_says_which_format_wrote_it` + `a_corrupt_format_stamp_is_reported` | green |
 
 No guard is `#[ignore]`d: the coverage ledger (`cargo test -- --ignored --list`) lists
 nothing pending. I10's was the last, and unions made it live.
 
-### I1 — Key encoding is order-preserving {#i1}
+<a id="i1"></a>
+
+### I1 — Key encoding is order-preserving
 
 `memcmp(encode(a), encode(b)) == compare(a, b)`. What that buys, precisely: a **value-range**
 scan as a bounded seek rather than a filter, and rows in semantic order with no sort. An exact
@@ -52,14 +64,18 @@ against — and that is a commitment.
 
 *The gate for any codec change.* [Storage → the tuple codec](storage.html#the-tuple-codec)
 
-### I2 — The encoding is self-delimiting {#i2}
+<a id="i2"></a>
+
+### I2 — The encoding is self-delimiting
 
 The marker byte alone says how to advance past a value; a full decode consumes exactly to
 end-of-input; record nesting is bounded, so malformed bytes are an error rather than a stack
 overflow. `skip` therefore needs no schema, which is what lets the scan hot loop walk to the
 *n*th field of a row it holds no type for.
 
-### I3 — The marker table is frozen on disk {#i3}
+<a id="i3"></a>
+
+### I3 — The marker table is frozen on disk
 
 Marker values **and their relative order** are semantic, because a marker is the most significant
 part of a value's sort key. New types take a reserved band in the right skip family; renumbering
@@ -69,19 +85,26 @@ every marker so a renumber breaks loudly.
 [I15](#i15) does not soften this: a database stamped `codec 1` is bound exactly as before. What
 the stamp buys is that a *future* codec is a different number rather than an impossibility.
 
-### I4 — Resume equals an uninterrupted run {#i4}
+<a id="i4"></a>
+
+### I4 — Resume equals an uninterrupted run
 
 Resuming from a `Cursor` produces exactly the rows an uninterrupted run would, in exactly the
 order.
 
 *Guard:* a tier-3 model-based property over generated `(plan, store)` pairs **and a generated
 interruption schedule** — suspend at every cut point, in every combination, and compare against a
-run to completion. Run against the in-memory store and the real one, where the two must also agree
-row for row and id for id.
+run to completion. `exec::resume_equals_uninterrupted` runs it against the in-memory store and the
+real one, where the two must also agree row for row and id for id;
+`exec::the_battery_reaches_a_cut_inside_a_later_source` asserts the battery draws the shapes that
+matter; and over **compiled** plans it is `flatten::resume_of_a_compiled_plan_equals_the_query`,
+which draws its loop order rather than taking the identity.
 
 [Executor → the cursor](executor.html#the-cursor-bytes-and-nothing-else)
 
-### I5 — A register holds the whole row {#i5}
+<a id="i5"></a>
+
+### I5 — A register holds the whole row
 
 The *field* a variable denotes lives in the **plan**, not the register — so a generator binding N
 variables is N refcount bumps on one row, with no per-field decode at bind time. Fields decode
@@ -95,13 +118,17 @@ two branches reach a value at different paths. The rule is that it stays a row s
 branch binds it to a whole row of the same predicate, and otherwise each branch materialises it
 into a value slot. Conjunctive plans are unaffected.
 
-### I6 — Values never enter the scan hot loop {#i6}
+<a id="i6"></a>
+
+### I6 — Values never enter the scan hot loop
 
 The hot loop touches the index map only. A value is a point read, taken when a projection asks for
 it. Two consequences reach the language: **a value cannot be matched on**, and the fix for
 "I need to filter on this" is to put it in the key.
 
-### I7 — The executor is a defunctionalised state machine {#i7}
+<a id="i7"></a>
+
+### I7 — The executor is a defunctionalised state machine
 
 The driver plus the frame stack are the explicit reification of a recursive `concatMap`, chosen so
 execution can **suspend to bytes**. Closures and coroutines cannot: a suspended closure pins live
@@ -110,7 +137,9 @@ iterators and a snapshot.
 *Do not "simplify" the driver back into recursion.* The neighbouring decision — declining a
 bytecode VM — turns on token size and token stability, not on capability.
 
-### I8 — Immutable snapshot per query, released at suspend {#i8}
+<a id="i8"></a>
+
+### I8 — Immutable snapshot per query, released at suspend
 
 A query reads a snapshot, and every stop releases it: suspend, cancel, terminal unwind alike. A
 paused query that leaves an iterator alive is as much a leak as a suspended one.
@@ -118,7 +147,9 @@ paused query that leaves an iterator alive is as much a leak as a suspended one.
 *Guard:* cross-checks a drop probe against the storage engine's own count of open snapshots,
 because "we dropped our handle" and "the engine considers it closed" are two different claims.
 
-### I9 — The hot path is allocation-free per row {#i9}
+<a id="i9"></a>
+
+### I9 — The hot path is allocation-free per row
 
 Reused scratch buffers; refcount-bump clones; inline field-offset caches that never spill. Copy
 out only at escape boundaries — a suspend, and a string or bytes projection.
@@ -128,7 +159,9 @@ out only at escape boundaries — a suspend, and a string or bytes projection.
 records: the guard runs a single-level plan, and opening a level allocates — so a join allocates
 once per outer row, and no guard covers that.
 
-### I10 — Union discriminants are stable and append-only {#i10}
+<a id="i10"></a>
+
+### I10 — Union discriminants are stable and append-only
 
 Like protobuf field numbers: each alternative has an explicit discriminant, assigned once, never
 reused, new alternatives appended. Frozen the moment union-typed data is written.
@@ -150,7 +183,9 @@ permuting the declaration does not
 a stored tag no alternative declares is an error, never a mis-read of whichever alternative sat
 nearby (`tuple::an_undeclared_discriminant_is_refused_rather_than_misread`).
 
-### I11 — A `FactId` is stable, unique, never reused {#i11}
+<a id="i11"></a>
+
+### I11 — A `FactId` is stable, unique, never reused
 
 Assigned once at ingest; a snowflake, with the predicate in the high 24 bits and a per-predicate
 sequence in the low 40. Uniqueness across predicates is structural rather than enforced.
@@ -159,7 +194,9 @@ A physical id, **not** cross-database identity. It is also the prerequisite for 
 integrity check: a saved key that still resolves to the saved fact is only meaningful if ids do
 not move.
 
-### I12 — Both maps are written atomically, and a key names exactly one fact {#i12}
+<a id="i12"></a>
+
+### I12 — Both maps are written atomically, and a key names exactly one fact
 
 Two halves, and the second is the one that took a mechanism.
 
@@ -175,7 +212,9 @@ ordering because interning is bottom-up and critical sections are never nested.
 *Guard:* a bijection check over generated writes, a crash test that aborts a child process
 mid-write, and N threads racing to intern one key.
 
-### I13 — The schema is embedded and frozen at create {#i13}
+<a id="i13"></a>
+
+### I13 — The schema is embedded and frozen at create
 
 The canonical schema and its fingerprint are embedded at `create` and immutable for the database's
 lifetime. Every ingest is validated against that copy, by **subset containment**.
@@ -188,7 +227,9 @@ Its boundary condition, stated: it says nothing about a *reader* older than the 
 That mismatch is between a query and a database rather than between two schemas on disk, and
 lockstep rebuild of the reader is the answer.
 
-### I14 — A derived bind is a pure function of the fact bindings {#i14}
+<a id="i14"></a>
+
+### I14 — A derived bind is a pure function of the fact bindings
 
 Which is what makes it recomputable on resume instead of saved — the general form being the
 **recompute rule**: in an immutable database a store read is a pure function of its inputs, so
@@ -197,7 +238,9 @@ anything determined by the bindings and the frozen base may be recomputed rather
 *Guard:* a derive step is recomputed across **every** cut point, and the rows match an
 uninterrupted run.
 
-### I15 — A database says which format wrote it {#i15}
+<a id="i15"></a>
+
+### I15 — A database says which format wrote it
 
 A twelve-byte stamp in a metadata keyspace, with `codec` and `storage` versioned separately,
 checked at open. An unreadable database is **refused**, and one holding facts with no stamp at all
