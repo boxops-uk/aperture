@@ -140,4 +140,6 @@ fjord/
 
 **This site is the design book and the source of record.** The pages are ordinary Markdown
 under `website/content/`, built by `website/build.py`; CI builds it with `--strict`, so a
-page falling out of the nav is a failed check rather than a silent loss.
+page falling out of the nav is a failed check rather than a silent loss. Every push to main
+deploys it to <https://boxops-uk.github.io/fjord/>, and every release carries it as
+`fjord-docs-site.tar.gz` — attested like the binaries, servable by any static file server.

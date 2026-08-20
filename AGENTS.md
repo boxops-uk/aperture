@@ -10,7 +10,7 @@ book, not here.
 
 | What | Where |
 |---|---|
-| **The design book** (for humans — architecture, rationale, reference) | [`website/content/`](website/README.md) — build and browse with `python3 website/serve.py`. The reading order is `NAV` in `build.py` |
+| **The design book** (for humans — architecture, rationale, reference) | [`website/content/`](website/README.md) — published at <https://boxops-uk.github.io/fjord/> on every push to main; browse locally with `python3 website/serve.py`. The reading order is `NAV` in `build.py` |
 | **The invariant registry** (statement · why · guard · status) | [`website/content/invariants.md`](website/content/invariants.md) — know these by number |
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
 | Where we stand against Glean — read **before proposing a feature Glean has** | [`docs/glean.md`](docs/glean.md) |
