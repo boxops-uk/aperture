@@ -20,6 +20,10 @@ publish = false
 fjord-encoding = { path = "../fjord-encoding" }
 fjord-schema = { path = "../fjord-schema" }
 fjord-store = { path = "../fjord-store" }
+# The fjall backend by name, and deliberately: interning claims ids durably and
+# writes through a batch, so this crate needs a real database rather than the
+# seam.
+fjord-store-fjall = { path = "../fjord-store-fjall" }
 fjord-wire = { path = "../fjord-wire" }
 thiserror = { workspace = true }
 

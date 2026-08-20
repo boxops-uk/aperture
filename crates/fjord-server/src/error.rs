@@ -19,6 +19,11 @@ pub enum ServerError {
     #[error("{0}")]
     Store(#[from] fjord_store::error::StoreError),
 
+    /// A lifecycle refusal from the backend holding the store root — a database
+    /// that is not there, not writable, or named ambiguously.
+    #[error("{0}")]
+    Catalog(#[from] fjord_store_fjall::error::CatalogError),
+
     /// The peer sent a frame that makes no sense here — a `CopyData` on a stream it
     /// never opened, a second startup, a kind the server has no handler for.
     #[error("protocol: {0}")]
@@ -91,7 +96,7 @@ impl ServerError {
     /// The code a client branches on.
     #[must_use]
     pub fn code(&self) -> ErrorCode {
-        use fjord_store::error::StoreError;
+        use fjord_store_fjall::error::CatalogError;
 
         match self {
             ServerError::Protocol(_) | ServerError::Wire(_) => ErrorCode::Protocol,
@@ -110,25 +115,40 @@ impl ServerError {
             // A lifecycle request the store declined is the client's answer, not the
             // server's failure — `Internal` would tell a client to look at the logs
             // for a message that is already in its hand.
-            ServerError::Store(store) => match store {
-                StoreError::NoSuchDatabase(_) => ErrorCode::UnknownDatabase,
+            ServerError::Catalog(catalog) => match catalog {
+                CatalogError::NoSuchDatabase(_) => ErrorCode::UnknownDatabase,
                 // An instance that names nothing is the same answer as a database that
                 // names nothing: there is no such thing to bind to.
-                StoreError::NoSuchInstance { .. } => ErrorCode::UnknownDatabase,
-                StoreError::NotWritable { .. } => ErrorCode::ModeRefused,
-                StoreError::RootHeld { .. } => ErrorCode::InUse,
+                CatalogError::NoSuchInstance { .. } => ErrorCode::UnknownDatabase,
+                CatalogError::NotWritable { .. } => ErrorCode::ModeRefused,
+                CatalogError::RootHeld { .. } => ErrorCode::InUse,
                 // Ambiguity is refused rather than guessed at, and the message already
                 // lists the instances the caller may choose between.
-                StoreError::AmbiguousDatabase { .. }
-                | StoreError::BadDatabaseName { .. }
-                | StoreError::EmptyDatabase(_) => ErrorCode::Refused,
+                CatalogError::AmbiguousDatabase { .. }
+                | CatalogError::BadDatabaseName { .. }
+                | CatalogError::EmptyDatabase(_) => ErrorCode::Refused,
+                // A seam fault raised under a lifecycle call answers as itself, so
+                // splitting the type did not change what a client is told.
+                CatalogError::Store(store) => Self::store_code(store),
                 _ => ErrorCode::Internal,
             },
+
+            ServerError::Store(store) => Self::store_code(store),
 
             ServerError::Io(_) | ServerError::Unprojectable(_) | ServerError::Execution(_) => {
                 ErrorCode::Internal
             }
         }
+    }
+
+    /// What a seam fault answers as.
+    ///
+    /// Every variant the seam still carries is a fault in *our* store rather
+    /// than in what the client asked for, so the whole type is `Internal` — and
+    /// stating that here is what keeps the two paths to it (a read, and a
+    /// lifecycle call that wrapped one) answering alike.
+    fn store_code(_store: &fjord_store::error::StoreError) -> ErrorCode {
+        ErrorCode::Internal
     }
 
     /// Whether the connection can carry on after this.

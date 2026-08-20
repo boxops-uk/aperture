@@ -375,7 +375,7 @@ mod tests {
         };
 
         let dir = tempfile::tempdir().expect("a scratch directory");
-        let db = fjord_store::store::FjallDb::open(dir.path()).expect("a database");
+        let db = fjord_store_fjall::store::FjallDb::open(dir.path()).expect("a database");
         let schema = crate::sample_schema::schema();
 
         let (mut created, mut seen) = (0, 0);

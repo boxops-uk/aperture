@@ -155,11 +155,11 @@ fn side(what: &str, root: &Path, roots: &[PathBuf]) -> Result<(Identity, String)
 
     let catalog = commands::readable(root)?;
     let entry = catalog.resolve(
-        &fjord_store::catalog::Selector::parse(what)?,
-        fjord_store::catalog::Intent::Read,
+        &fjord_store_fjall::catalog::Selector::parse(what)?,
+        fjord_store_fjall::catalog::Intent::Read,
     )?;
 
-    let Some(schema) = fjord_store::schema_doc::read(&entry.path)? else {
+    let Some(schema) = fjord_store_fjall::schema_doc::read(&entry.path)? else {
         return Err(CliError::Schema(format!(
             "`{what}` embeds no schema copy — it predates one being kept, and there is \
              nothing to compare"

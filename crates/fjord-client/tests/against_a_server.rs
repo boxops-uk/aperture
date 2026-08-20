@@ -14,7 +14,7 @@ use fjord_schema::fingerprint;
 use fjord_schema::id::FactId;
 use fjord_schema::schema::{Alternative, Predicate, PredicateId, PredicateTy, Schema};
 use fjord_server::{Registry, registry::Schemas, server::Listener};
-use fjord_store::catalog::Catalog;
+use fjord_store_fjall::catalog::Catalog;
 use fjord_wire::protocol::Found;
 use lasso::Rodeo;
 

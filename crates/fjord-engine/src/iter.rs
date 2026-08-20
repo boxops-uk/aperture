@@ -1688,7 +1688,9 @@ mod tests {
     use ::proptest::prelude::*;
     use fjord_encoding::tuple::{MARK_NULL, Value, decode_probe};
     use fjord_schema::schema::{PredicateId, PredicateTy};
-    use fjord_store::{fact_store::Entity, mem_store::MemStore, store::FjallDb};
+    use fjord_store::fact_store::Entity;
+    use fjord_store_fjall::store::FjallDb;
+    use fjord_store_mem::MemStore;
     use std::{collections::BTreeSet, sync::atomic::Ordering};
     use tempfile::TempDir;
 

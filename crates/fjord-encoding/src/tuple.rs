@@ -2561,7 +2561,7 @@ pub(crate) mod tests {
 
     /// Sequence 0 is reserved so that zeroed or corrupt bytes are *detectably*
     /// not a fact ([I11]) — and a property nothing checks is only an intention.
-    /// `fjord_store::store::decode_fact_id` already enforces it for a stored
+    /// `fjord_store_fjall::store::decode_fact_id` already enforces it for a stored
     /// `keys` row; this is the same rule at the other decoder, the one that reads
     /// a reference embedded **in a key**.
     ///

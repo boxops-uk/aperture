@@ -1178,7 +1178,8 @@ mod tests {
     fn every_supported_entry_returns_its_rows() {
         use crate::compile::Compilation;
         use fjord_schema::id::FactId;
-        use fjord_store::{fixture, store::FjallDb};
+        use fjord_store::fixture;
+        use fjord_store_fjall::store::FjallDb;
 
         let dir = tempfile::tempdir().expect("a scratch directory");
         let db = FjallDb::open(dir.path()).expect("open");
@@ -1259,7 +1260,8 @@ mod tests {
     #[test]
     fn every_supported_entry_resumes_to_the_same_rows() {
         use crate::{compile::Compilation, fixtures::run_with_suspends};
-        use fjord_store::{fixture, mem_store::MemStore};
+        use fjord_store::fixture;
+        use fjord_store_mem::MemStore;
         use std::collections::BTreeSet;
 
         let schema = schema();
@@ -1344,7 +1346,7 @@ mod tests {
 
     /// Run a plan to completion and render its rows.
     fn run(
-        db: &fjord_store::store::FjallDb,
+        db: &fjord_store_fjall::store::FjallDb,
         plan: crate::plan::Plan,
         interner: &fjord_schema::schema::LocalInterner,
         schema: &Schema,

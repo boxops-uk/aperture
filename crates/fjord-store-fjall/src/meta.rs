@@ -45,7 +45,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{error::StoreError, format::FormatVersion};
+use crate::error::CatalogError;
+use fjord_store::format::FormatVersion;
 
 /// The sidecar's file name, inside a database's directory.
 pub const META_FILE: &str = "FJORD_META";
@@ -173,17 +174,17 @@ impl Meta {
     ///
     /// # Errors
     ///
-    /// [`StoreError::Meta`] if it is missing, unreadable, malformed, or written by a
+    /// [`CatalogError::Meta`] if it is missing, unreadable, malformed, or written by a
     /// sidecar format this build does not know.
-    pub fn read(directory: &Path) -> Result<Meta, StoreError> {
+    pub fn read(directory: &Path) -> Result<Meta, CatalogError> {
         let path = directory.join(META_FILE);
 
-        let text = fs::read_to_string(&path).map_err(|source| StoreError::Meta {
+        let text = fs::read_to_string(&path).map_err(|source| CatalogError::Meta {
             path: path.clone(),
             detail: format!("cannot read: {source}"),
         })?;
 
-        let meta: Meta = serde_json::from_str(&text).map_err(|source| StoreError::Meta {
+        let meta: Meta = serde_json::from_str(&text).map_err(|source| CatalogError::Meta {
             path: path.clone(),
             detail: format!("malformed: {source}"),
         })?;
@@ -191,7 +192,7 @@ impl Meta {
         // Checked after parsing rather than before, so a future sidecar that this
         // build cannot parse says *why* rather than only that it failed.
         if meta.version != Meta::VERSION {
-            return Err(StoreError::Meta {
+            return Err(CatalogError::Meta {
                 path,
                 detail: format!(
                     "sidecar format version {}, this build writes and reads {}",
@@ -213,12 +214,12 @@ impl Meta {
     ///
     /// # Errors
     ///
-    /// [`StoreError::Meta`] if any step fails.
-    pub fn write(&self, directory: &Path) -> Result<(), StoreError> {
+    /// [`CatalogError::Meta`] if any step fails.
+    pub fn write(&self, directory: &Path) -> Result<(), CatalogError> {
         let path = directory.join(META_FILE);
         let temp = directory.join(format!("{META_FILE}.tmp"));
 
-        let fail = |detail: String| StoreError::Meta {
+        let fail = |detail: String| CatalogError::Meta {
             path: path.clone(),
             detail,
         };

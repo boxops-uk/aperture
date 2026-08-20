@@ -30,7 +30,7 @@ use std::{path::PathBuf, sync::Arc, thread};
 use fjord_client::{Connection, ErrorCode, Mode, WireFact, WireValue};
 use fjord_schema::syntax;
 use fjord_server::{Registry, registry::Schemas, server::Listener};
-use fjord_store::catalog::Catalog;
+use fjord_store_fjall::catalog::Catalog;
 
 /// The database's schema: three predicates, one of them a record with two fields.
 const EMBEDDED: &str = "\

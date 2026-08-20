@@ -11,7 +11,7 @@ use fjord_schema::{
     id::FactId,
     schema::{Predicate, PredicateId, PredicateTy, Schema},
 };
-use fjord_store::store::FjallDb;
+use fjord_store_fjall::store::FjallDb;
 use fjord_wire::{WireFact, WireRef, WireValue, encode_block};
 use lasso::Rodeo;
 use std::sync::Arc;

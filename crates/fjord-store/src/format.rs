@@ -37,7 +37,7 @@ use crate::error::FormatError;
 /// The keyspace holding database-level metadata — the stamp today, the embedded
 /// schema when [I13](../../../website/content/invariants.md#i13) lands.
 ///
-/// Not a predicate keyspace: [`FjallDb::open`](crate::store::FjallDb::open)
+/// Not a predicate keyspace: the fjall backend's `FjallDb::open`
 /// recovers predicates by the `keys.`/`entities.` prefixes, which this name does
 /// not carry, so it is invisible to that walk.
 pub const META_KEYSPACE: &str = "meta";

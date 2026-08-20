@@ -17,6 +17,7 @@ publish = false
 # outside `cfg(test)` — integration tests, and the store crate's I8 guard.
 proptest = [
     "dep:proptest",
+    "dep:fjord-store-mem",
     "fjord-encoding/proptest",
     "fjord-store/proptest",
 ]
@@ -25,6 +26,9 @@ proptest = [
 fjord-encoding = { path = "../fjord-encoding" }
 fjord-schema = { path = "../fjord-schema" }
 fjord-store = { path = "../fjord-store" }
+# The store the `proptest` strategies build: a spec becomes a `MemStore`, and a
+# consumer of those strategies gets the store with them.
+fjord-store-mem = { path = "../fjord-store-mem", optional = true }
 byteview = { workspace = true }
 codespan-reporting = "0.13.1"
 lasso = { workspace = true }
@@ -42,5 +46,11 @@ lelwel = "0.10"
 allocation-counter = "0.8.1"
 fjord-encoding = { path = "../fjord-encoding", features = ["proptest"] }
 fjord-store = { path = "../fjord-store", features = ["proptest"] }
+# Both implementations, and only here: the differential batteries are what make
+# `MemStore` an oracle rather than a claim, and they have to see fjall to do it.
+# A *dependency* on this crate would put fjall back in the engine's graph and
+# take the engine out of a browser.
+fjord-store-fjall = { path = "../fjord-store-fjall", features = ["proptest"] }
+fjord-store-mem = { path = "../fjord-store-mem" }
 proptest = "1.11.0"
 tempfile = "3"

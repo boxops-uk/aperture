@@ -4601,7 +4601,8 @@ mod tests {
     };
     use fjord_encoding::tuple::Value;
     use fjord_schema::id::FactId;
-    use fjord_store::{fixture, mem_store::MemStore};
+    use fjord_store::fixture;
+    use fjord_store_mem::MemStore;
 
     // ---- driving the front end ---------------------------------------------
 
@@ -7558,7 +7559,7 @@ pub mod proptest {
         id::FactId,
         schema::{Predicate, PredicateId, PredicateTy, Schema},
     };
-    use fjord_store::mem_store::MemStore;
+    use fjord_store_mem::MemStore;
 
     /// Bounds are tight for the same reason the executor's are: the reorderability
     /// property re-runs each case once per permutation of the body, and the resume
@@ -9367,7 +9368,7 @@ mod battery {
         id::FactId,
         schema::{LocalInterner, PredicateTy, Schema},
     };
-    use fjord_store::store::FjallDb;
+    use fjord_store_fjall::store::FjallDb;
     use std::collections::BTreeSet;
     use tempfile::TempDir;
 
@@ -10327,7 +10328,8 @@ mod battery {
 mod union_laws {
     use crate::{compile::Compilation, iter::Profile, plan::Plan};
     use fjord_schema::{id::FactId, schema::Schema};
-    use fjord_store::{fixture, store::FjallDb};
+    use fjord_store::fixture;
+    use fjord_store_fjall::store::FjallDb;
 
     /// The fixture, in a real store — one per test, since a keyspace costs tens of
     /// milliseconds and these are small.

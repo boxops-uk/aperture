@@ -5,7 +5,7 @@
 //! do, since it is what someone runs when they are trying to find out what is going
 //! on.
 
-use fjord_store::catalog::Listing;
+use fjord_store_fjall::catalog::Listing;
 
 use crate::{CliError, cli::Format, commands, output};
 

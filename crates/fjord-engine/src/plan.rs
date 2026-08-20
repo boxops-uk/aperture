@@ -1647,7 +1647,7 @@ pub mod proptest {
     use crate::fixtures::{compose, i64_field, interner_with, str_field};
     use fjord_encoding::tuple::{MARK_TERM, UnionTag, Value};
     use fjord_schema::schema::{Alternative, LocalInterner, PredicateId, PredicateTy};
-    use fjord_store::mem_store::MemStore;
+    use fjord_store_mem::MemStore;
     use lasso::Spur;
     use std::sync::Arc;
 

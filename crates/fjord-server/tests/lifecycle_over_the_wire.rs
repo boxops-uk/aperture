@@ -24,7 +24,7 @@ use std::{
 
 use fjord_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use fjord_server::{Registry, registry::Schemas, server::Listener};
-use fjord_store::catalog::{Catalog, Intent, Selector};
+use fjord_store_fjall::catalog::{Catalog, Intent, Selector};
 use fjord_wire::{
     Control, ControlOp, ControlReply, ErrorCode, FrameHeader, FrameKind, Mode, Startup, StreamId,
     WireFact, WireValue, encode_block, encode_frame, frame,

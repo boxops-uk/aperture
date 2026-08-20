@@ -12,7 +12,7 @@ use fjord_schema::{
     schema::{PredicateId, Schema},
     syntax::print,
 };
-use fjord_store::catalog::Entry;
+use fjord_store_fjall::catalog::Entry;
 
 /// A table with a header, aligned to its widest cell.
 ///

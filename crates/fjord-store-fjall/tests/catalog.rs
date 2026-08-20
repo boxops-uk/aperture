@@ -8,9 +8,9 @@
 use std::{fs, sync::Arc};
 
 use fjord_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
-use fjord_store::{
+use fjord_store_fjall::{
     catalog::{Catalog, Intent, LOCK_FILE, Selector},
-    error::StoreError,
+    error::CatalogError,
     meta::{META_FILE, Meta, Status},
     schema_doc, ulid,
 };
@@ -49,7 +49,7 @@ fn schema() -> Schema {
 
 /// Seal an instance, allowing zero facts — these tests are about directories, not
 /// about what is in them.
-fn seal(catalog: &Catalog, entry: &fjord_store::catalog::Entry) {
+fn seal(catalog: &Catalog, entry: &fjord_store_fjall::catalog::Entry) {
     catalog
         .finish(&Selector::at(entry.name(), &entry.meta.instance), true)
         .expect("it seals");
@@ -159,7 +159,7 @@ fn a_name_that_could_escape_the_root_is_refused() {
         assert!(
             matches!(
                 catalog.create(bad, &schema()),
-                Err(StoreError::BadDatabaseName { .. })
+                Err(CatalogError::BadDatabaseName { .. })
             ),
             "{bad:?} should be refused"
         );
@@ -180,7 +180,7 @@ fn a_complete_database_cannot_be_opened_for_writing() {
     meta.write(&entry.path).expect("it writes");
 
     match catalog.open_write(&Selector::of("code")).map(|_| ()) {
-        Err(StoreError::NotWritable { name, status }) => {
+        Err(CatalogError::NotWritable { name, status }) => {
             assert_eq!(name, "code");
             assert_eq!(status, Status::Complete);
         }
@@ -210,7 +210,7 @@ fn a_failed_create_leaves_nothing_behind() {
 
     assert!(matches!(
         catalog.create("code", &schema()),
-        Err(StoreError::Meta { .. })
+        Err(CatalogError::Meta { .. })
     ));
 
     // Nothing was built: no scratch directory survives.
@@ -280,7 +280,7 @@ fn a_second_holder_of_the_root_is_refused() {
     assert_eq!(held.root(), catalog.root());
 
     match catalog.lock() {
-        Err(StoreError::RootHeld { root }) => assert_eq!(root, catalog.root()),
+        Err(CatalogError::RootHeld { root }) => assert_eq!(root, catalog.root()),
         other => panic!("expected a refusal, got {other:?}"),
     }
 
@@ -576,7 +576,7 @@ fn a_bare_name_refuses_to_write_when_two_are_writable() {
     let b = catalog.create("code", &schema()).expect("it creates again");
 
     match catalog.resolve(&Selector::of("code"), Intent::Write) {
-        Err(StoreError::AmbiguousDatabase { name, instances }) => {
+        Err(CatalogError::AmbiguousDatabase { name, instances }) => {
             assert_eq!(name, "code");
             assert!(instances.contains(&a.meta.instance), "{instances:?}");
             assert!(instances.contains(&b.meta.instance), "{instances:?}");
@@ -615,7 +615,7 @@ fn an_ambiguous_instance_prefix_is_refused() {
     // The empty prefix matches everything, which is the sharpest form of ambiguous.
     assert!(matches!(
         catalog.resolve(&Selector::at("code", ""), Intent::Read),
-        Err(StoreError::AmbiguousDatabase { .. })
+        Err(CatalogError::AmbiguousDatabase { .. })
     ));
 }
 
@@ -625,7 +625,7 @@ fn an_unknown_instance_is_refused_by_name() {
     catalog.create("code", &schema()).expect("it creates");
 
     match catalog.resolve(&Selector::at("code", "ZZZZ"), Intent::Read) {
-        Err(StoreError::NoSuchInstance { name, instance }) => {
+        Err(CatalogError::NoSuchInstance { name, instance }) => {
             assert_eq!((name.as_str(), instance.as_str()), ("code", "ZZZZ"));
         }
         other => panic!("expected no-such-instance, got {other:?}"),
@@ -667,7 +667,7 @@ fn removing_the_last_instance_removes_the_name() {
     assert!(!catalog.root().join("code").exists());
     assert!(matches!(
         catalog.remove(&Selector::of("code")),
-        Err(StoreError::NoSuchDatabase(_))
+        Err(CatalogError::NoSuchDatabase(_))
     ));
 }
 
@@ -680,7 +680,7 @@ fn removing_a_bare_name_is_refused_when_several_exist() {
 
     assert!(matches!(
         catalog.remove(&Selector::of("code")),
-        Err(StoreError::AmbiguousDatabase { .. })
+        Err(CatalogError::AmbiguousDatabase { .. })
     ));
 }
 
@@ -691,7 +691,7 @@ fn a_name_containing_the_instance_separator_is_refused() {
     let (_dir, catalog) = catalog();
 
     match catalog.create("code@old", &schema()) {
-        Err(StoreError::BadDatabaseName { name, .. }) => assert_eq!(name, "code@old"),
+        Err(CatalogError::BadDatabaseName { name, .. }) => assert_eq!(name, "code@old"),
         other => panic!("expected a bad name, got {other:?}"),
     }
 }
@@ -746,7 +746,7 @@ fn a_listing_shows_a_names_instances_in_the_order_resolution_picks_them() {
 }
 
 /// A schema whose text does not lower back to itself is refused at `create` —
-/// [`StoreError::UnwritableSchema`] — because the embedded copy is what a server later
+/// [`CatalogError::UnwritableSchema`] — because the embedded copy is what a server later
 /// serves the database from, and embedding one that reads back as a different schema
 /// plants the disagreement where nothing would ever report it.
 #[test]
@@ -768,7 +768,7 @@ fn a_schema_that_cannot_be_written_back_is_refused_at_create() {
     assert!(
         matches!(
             catalog.create("code", &schema),
-            Err(StoreError::UnwritableSchema { .. })
+            Err(CatalogError::UnwritableSchema { .. })
         ),
         "a schema that does not round-trip must be refused before anything exists on disk"
     );

@@ -19,7 +19,7 @@
 //!   field names to check.
 //! - **A key is flat and a value is not.** `encode_typed` is the obvious function to
 //!   reach for and is wrong for a key, which is its own silent-mismatch trap; see
-//!   [`encode_key`](fjord_encoding::tuple::encode_key).
+//!   [`fjord_encoding::tuple::encode_key`].
 //!
 //! So a [`Fact`] names its fields and this module resolves them **against the
 //! schema**: a name the predicate does not declare, a field left out, a value of the

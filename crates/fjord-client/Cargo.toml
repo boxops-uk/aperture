@@ -30,6 +30,8 @@ fjord-wire = { path = "../fjord-wire", version = "0.0.1" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# A test that needs a real database builds one; the client itself links no store.
+fjord-store-fjall = { path = "../fjord-store-fjall" }
 # A real server to talk to, because a client tested against a mock is a client
 # tested against our idea of the server. Not a cycle: the server does not depend
 # on the client, and a dev-dependency would be allowed even if it did.

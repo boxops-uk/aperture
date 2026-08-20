@@ -208,7 +208,7 @@ fn a_held_store_root_refuses_lifecycle_commands() {
 
     ok(root, &["create", "code", "--schema", SAMPLE]);
 
-    let catalog = fjord_store::catalog::Catalog::open(root).expect("a store root");
+    let catalog = fjord_store_fjall::catalog::Catalog::open(root).expect("a store root");
     let held = catalog.lock().expect("this process holds it");
 
     for args in [

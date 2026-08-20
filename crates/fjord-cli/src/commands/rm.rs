@@ -18,8 +18,8 @@ pub fn run(root: &Path, target: &Target) -> Result<(), CliError> {
         // The server closes the store before deleting the directory it was holding;
         // this process has nothing open to close.
         Route::Server(mut server) => Ok(server.remove(&target.database)?),
-        Route::Local(catalog, _lock) => {
-            Ok(catalog.remove(&fjord_store::catalog::Selector::parse(&target.database)?)?)
-        }
+        Route::Local(catalog, _lock) => Ok(catalog.remove(
+            &fjord_store_fjall::catalog::Selector::parse(&target.database)?,
+        )?),
     }
 }

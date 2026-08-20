@@ -41,6 +41,9 @@ proptest = ["dep:proptest", "fjord-engine/proptest"]
 console = ["dep:console-subscriber", "fjord-server/console"]
 
 [dependencies]
+# The lifecycle the CLI drives: create, list, finish, rm — all of them the
+# filesystem catalog, which is the fjall backend's.
+fjord-store-fjall = { path = "../fjord-store-fjall" }
 # Task-level introspection for `--features console`. Optional, and nothing but the
 # feature refers to it.
 console-subscriber = { version = "0.4", optional = true }

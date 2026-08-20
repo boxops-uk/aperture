@@ -50,7 +50,7 @@ use fjord_engine::{
 };
 use fjord_schema::schema::Schema;
 use fjord_server::{Registry, registry::Schemas, server::Listener};
-use fjord_store::{catalog::Catalog, store::FjallDb};
+use fjord_store_fjall::{catalog::Catalog, store::FjallDb};
 use fjord_wire::{FrameKind, StreamId, encode_desc, encode_frame, frame};
 
 /// The query whose cost is being taken apart: every binding folds, so it compiles to

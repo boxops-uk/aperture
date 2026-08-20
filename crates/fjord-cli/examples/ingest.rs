@@ -50,7 +50,7 @@ use fjord_cli::{sample_schema, workload::Corpus};
 use fjord_encoding::tuple::{Value, encode_key};
 use fjord_ingest::{intern_block, intern_fact};
 use fjord_schema::schema::{PredicateId, PredicateTy, Schema};
-use fjord_store::store::FjallDb;
+use fjord_store_fjall::store::FjallDb;
 use fjord_wire::encode_block;
 
 fn main() {

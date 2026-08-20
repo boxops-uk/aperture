@@ -28,6 +28,9 @@ fjord-engine = { path = "../fjord-engine" }
 fjord-ingest = { path = "../fjord-ingest" }
 fjord-schema = { path = "../fjord-schema" }
 fjord-store = { path = "../fjord-store" }
+# The lifecycle is the fjall backend's: a server serves databases in a store
+# root, which is a filesystem catalog.
+fjord-store-fjall = { path = "../fjord-store-fjall" }
 fjord-wire = { path = "../fjord-wire" }
 thiserror = { workspace = true }
 # The runtime. `rt-multi-thread` because a connection's blocking work — every fjall

@@ -15,7 +15,7 @@ use std::{net::SocketAddr, sync::Arc, thread, time::Duration};
 use fjord_client::{Connection, Mode, WireFact, WireRef, WireValue};
 use fjord_schema::schema::{PredicateId, Schema};
 use fjord_server::{Registry, registry::Schemas, server::Listener};
-use fjord_store::catalog::Catalog;
+use fjord_store_fjall::catalog::Catalog;
 
 /// The built-in schema, parsed from the file the server reads.
 fn schema() -> Schema {

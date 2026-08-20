@@ -586,6 +586,7 @@ dependencies = [
  "fjord-schema",
  "fjord-server",
  "fjord-store",
+ "fjord-store-fjall",
  "fjord-wire",
  "proptest",
  "rustyline",
@@ -604,6 +605,7 @@ dependencies = [
  "fjord-schema",
  "fjord-server",
  "fjord-store",
+ "fjord-store-fjall",
  "fjord-wire",
  "lasso",
  "tempfile",
@@ -641,6 +643,8 @@ dependencies = [
  "fjord-encoding",
  "fjord-schema",
  "fjord-store",
+ "fjord-store-fjall",
+ "fjord-store-mem",
  "lasso",
  "lelwel",
  "logos",
@@ -659,11 +663,24 @@ dependencies = [
  "fjord-encoding",
  "fjord-schema",
  "fjord-store",
+ "fjord-store-fjall",
  "fjord-wire",
  "lasso",
  "proptest",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "fjord-inspect"
+version = "0.0.1"
+dependencies = [
+ "codespan-reporting",
+ "fjord-engine",
+ "fjord-schema",
+ "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -689,6 +706,7 @@ dependencies = [
  "fjord-ingest",
  "fjord-schema",
  "fjord-store",
+ "fjord-store-fjall",
  "fjord-wire",
  "lasso",
  "tempfile",
@@ -701,12 +719,27 @@ dependencies = [
 name = "fjord-store"
 version = "0.0.1"
 dependencies = [
+ "byteview",
+ "fjord-encoding",
+ "fjord-schema",
+ "lasso",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "fjord-store-fjall"
+version = "0.0.1"
+dependencies = [
  "allocation-counter",
  "byteview",
  "fjall",
  "fjord-encoding",
  "fjord-engine",
  "fjord-schema",
+ "fjord-store",
+ "fjord-store-fjall",
+ "fjord-store-mem",
  "getrandom 0.3.4",
  "lasso",
  "libc",
@@ -719,6 +752,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fjord-store-mem"
+version = "0.0.1"
+dependencies = [
+ "byteview",
+ "fjord-encoding",
+ "fjord-schema",
+ "fjord-store",
+]
+
+[[package]]
 name = "fjord-viewer"
 version = "0.0.1"
 dependencies = [
@@ -728,6 +771,7 @@ dependencies = [
  "fjord-schema",
  "fjord-server",
  "fjord-store",
+ "fjord-store-fjall",
  "fjord-wire",
  "serde",
  "tempfile",

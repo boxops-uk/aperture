@@ -29,7 +29,7 @@ use std::sync::Arc;
 use fjord_cli::{sample_schema, workload::Corpus};
 use fjord_ingest::intern_fact;
 use fjord_schema::{fingerprint, schema::Schema};
-use fjord_store::{identity, store::FjallDb};
+use fjord_store_fjall::{identity, store::FjallDb};
 use fjord_wire::WireFact;
 
 /// Small enough to run three times in a test, deep enough that every level of nesting is
