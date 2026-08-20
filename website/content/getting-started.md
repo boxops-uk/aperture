@@ -18,7 +18,13 @@ There is nothing else — no database to install, no daemon to configure. The st
 ([fjall](https://github.com/fjall-rs/fjall)) is a Rust dependency, and a database is a
 directory.
 
-## 1. Build
+## 1. Build — or download
+
+:::note Prebuilt binaries
+Every [GitHub release](https://github.com/boxops-uk/fjord/releases/latest) carries `fjord`
+and `fjord-viewer` for Linux x86_64, with SLSA provenance — verify what you downloaded with
+`gh attestation verify ./fjord --repo boxops-uk/fjord`. Downloading skips this whole step.
+:::
 
 ```bash
 cargo build --release --bin fjord

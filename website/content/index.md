@@ -124,6 +124,8 @@ a producer writes:
 - **Building a client?** [Wire protocol](wire-protocol.html) and
   [Clients & the viewer](clients.html).
 - **Operating it?** [CLI reference](cli.html) and [Operations](operations.html).
+- **Just want the binaries?** [The latest release](https://github.com/boxops-uk/fjord/releases/latest)
+  carries `fjord` and `fjord-viewer` with SLSA provenance, and this site as a bundle.
 
 :::note About these docs
 This site **is** the Fjord design book — the design of record, including the invariant

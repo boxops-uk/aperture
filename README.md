@@ -29,7 +29,7 @@ is "fearless."
 
 **The design book is a website**, and it is the design of record — architecture, the two
 languages, the wire protocol, operations, and every invariant with the guard test that pins
-it:
+it. Read it at **<https://boxops-uk.github.io/fjord/>**, or locally:
 
 ```bash
 python3 website/serve.py        # build and browse at http://127.0.0.1:8000

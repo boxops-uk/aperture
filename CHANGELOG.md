@@ -14,6 +14,11 @@ CI builds the site strictly and runs `scripts/check-docs.py`, which fails on a b
 invariant citation the registry does not declare, a reference to a retired document, or a
 build-plan phase number in code — each a way the documentation actually went stale once.
 
+**The design book is published.** Every push to main deploys the site to
+<https://boxops-uk.github.io/fjord/> (after the tests and the drift gate), and every release
+carries it as an attested `fjord-docs-site.tar.gz` beside the binaries; the site's
+getting-started page links the release downloads back.
+
 **Every error state is demonstrated by a test** that provokes it and asserts it at its
 contract layer, fjall/OS bubbles excepted; the engine's corpus gate now covers every
 diagnostic code, not only the deferrals. Comments across the workspace state the risk they

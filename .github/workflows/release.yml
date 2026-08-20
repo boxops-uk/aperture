@@ -1,6 +1,6 @@
 # What a branch must prove, and what a release must carry.
 #
-# Five jobs, because they answer different questions and are trusted differently:
+# Seven jobs, because they answer different questions and are trusted differently:
 #
 #   test    always runs, including on a pull request from a fork. `PLAN.md`'s
 #           definition of done everywhere is "a task ends in a green test", and
@@ -30,10 +30,19 @@
 #           *shipped profile* compiles — and because a release build and a debug
 #           test run share no cache.
 #
-#   release runs for a `v*` tag only, after the three below have passed, and creates the
-#           GitHub Release with the attested binaries and their checksums. It deliberately
-#           does *not* push to crates.io or nuget.org: a registry upload cannot be undone
-#           and a Release can, so that step stays a person's.
+#   site    always runs. What a *docs* consumer gets: the design book built strictly
+#           and bundled as a tarball any static file server can serve, attested like
+#           the binaries. The bundle is uploaded on every run and attached to releases.
+#
+#   pages   publishes main's site to GitHub Pages, and only main's: a pull request or
+#           a release branch never moves the public docs. Runs after `test`, so a red
+#           suite or a failed drift gate never publishes.
+#
+#   release runs for a `v*` tag only, after the checks below have passed, and creates the
+#           GitHub Release with the attested binaries, the docs bundle and their
+#           checksums. It deliberately does *not* push to crates.io or nuget.org: a
+#           registry upload cannot be undone and a Release can, so that step stays a
+#           person's.
 #
 #   attest  builds and signs SLSA provenance naming the binaries. It needs an
 #           OIDC token, which GitHub never issues to a fork's pull request, so
@@ -196,6 +205,78 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --locked -p fjord-cli -p fjord-viewer --bins
 
+  # **The docs bundle.** The site is the design book, and this is the shape a release
+  # of it takes: `website/site/` as a tarball, buildable into a public site by any
+  # static file server, no toolchain at serve time. Attested like the binaries, because
+  # "verify anything it produced" should not have an exception for documentation.
+  site:
+    name: site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC token the provenance is bound to
+      attestations: write # write the attestation back to the repository
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the site
+        run: python3 website/build.py --strict
+      - name: Bundle
+        run: |
+          tar -czf fjord-docs-site.tar.gz -C website/site .
+          sha256sum fjord-docs-site.tar.gz > fjord-docs-site.tar.gz.sha256
+          cat fjord-docs-site.tar.gz.sha256
+      # Step-level rather than job-level skip, unlike `attest`: a fork's pull request
+      # still gets the bundle built and uploaded — only the provenance needs the OIDC
+      # token a fork is never issued.
+      - name: Attest the bundle
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: fjord-docs-site.tar.gz
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: fjord-docs-site
+          path: |
+            fjord-docs-site.tar.gz
+            fjord-docs-site.tar.gz.sha256
+          if-no-files-found: error
+      # The same bytes again, in the artifact shape `deploy-pages` consumes. Uploaded
+      # from every run so the `pages` job needs no rebuild — what deploys is what was
+      # checked.
+      - name: Upload for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/site
+
+  # **Publishing the book.** Push-to-main only: the public site is main's and nothing
+  # else's, and it moves only after `test` — the suite, the strict site build and the
+  # drift gate — has said the book is true.
+  pages:
+    name: pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, site]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # deploy to Pages
+      id-token: write # verify the deployment came from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # `enablement: true` turns Pages on (source: GitHub Actions) if it never has
+      # been. If the API refuses the workflow token that one-time step is a manual
+      # flip in Settings → Pages, and a re-run of this job succeeds.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+
   attest:
     name: attest
     runs-on: ubuntu-latest
@@ -254,7 +335,7 @@ jobs:
   release:
     name: release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, package, attest]
+    needs: [test, package, attest, site]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the Release and attach files to it
@@ -263,6 +344,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: fjord-linux-x86_64
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: fjord-docs-site
           path: dist
       - name: Create the release
         env:
@@ -277,5 +362,9 @@ jobs:
 
           \`\`\`
           gh attestation verify ./fjord --repo ${GITHUB_REPOSITORY}
-          \`\`\`" \
-            dist/fjord dist/fjord-viewer dist/SHA256SUMS
+          \`\`\`
+
+          \`fjord-docs-site.tar.gz\` is the documentation site as built at this tag —
+          servable by any static file server, and attested the same way." \
+            dist/fjord dist/fjord-viewer dist/SHA256SUMS \
+            dist/fjord-docs-site.tar.gz dist/fjord-docs-site.tar.gz.sha256
