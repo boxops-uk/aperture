@@ -88,15 +88,6 @@ pub enum CliError {
     )]
     RootHeld { root: PathBuf, socket: PathBuf },
 
-    /// An address that is not one — `fjord://` with nothing after it, or no
-    /// database on the end.
-    ///
-    /// Its own variant so the message can show the form rather than whatever the
-    /// resolver failed at: somebody who mistyped an address needs to be told the shape,
-    /// not told that a hostname did not resolve.
-    #[error("`{address}` is not an address — try fjord://host:port/database")]
-    Address { address: String },
-
     /// A refusal that has **already been rendered**, spans and all.
     ///
     /// Its own variant so that [`main`] can print it alone: everything else here is a

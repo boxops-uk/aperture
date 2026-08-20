@@ -525,6 +525,68 @@ mod tests {
         ));
     }
 
+    /// A field the predicate does not declare is reported **by name** — a
+    /// misspelling that got past the missing-field check (every declared field
+    /// present, plus one) would otherwise be silently dropped.
+    #[test]
+    fn an_extra_field_the_predicate_does_not_declare_is_unknown() {
+        struct Extra;
+        impl Fact for Extra {
+            const PREDICATE: &'static str = "test.Bar";
+            fn key(&self) -> Value {
+                record([("id", 1.to_value()), ("spare", 2.to_value())])
+            }
+        }
+
+        assert!(matches!(
+            encoded(&Extra),
+            Err(FactError::UnknownField { field, .. }) if field == "spare"
+        ));
+    }
+
+    /// A well-typed fact the *codec* cannot encode is [`FactError::Codec`], never a
+    /// panic — the checks here validate shape against the schema, and the codec has
+    /// limits of its own (bounded nesting) that a schema can legitimately exceed.
+    #[test]
+    fn a_fact_nested_past_the_codec_depth_bound_is_a_codec_error() {
+        use fjord_schema::schema::{Predicate, Schema};
+        use lasso::Rodeo;
+        use std::sync::Arc;
+
+        let mut rodeo = Rodeo::new();
+        let name = rodeo.get_or_intern("deep.P");
+        let f = rodeo.get_or_intern("f");
+
+        let mut ty = PredicateTy::Int;
+        let mut value = Value::Int(1);
+        for _ in 0..300 {
+            ty = PredicateTy::Record(Arc::from([(f, ty)]));
+            value = Value::Record(Box::new([("f".to_owned(), value)]));
+        }
+
+        let schema = Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name,
+                key: ty,
+                value: None,
+            }]),
+        );
+
+        struct Deep(Value);
+        impl Fact for Deep {
+            const PREDICATE: &'static str = "deep.P";
+            fn key(&self) -> Value {
+                self.0.clone()
+            }
+        }
+
+        assert!(matches!(
+            encode(&schema, &Deep(value)),
+            Err(FactError::Codec(_))
+        ));
+    }
+
     /// A nested record is checked by name at every depth, not only the top.
     #[test]
     fn a_nested_record_is_checked_too() {

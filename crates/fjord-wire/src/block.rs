@@ -648,4 +648,82 @@ mod tests {
             }
         }
     }
+
+    /// **Each kind of damage is reported by name**, not merely refused.
+    ///
+    /// The properties above prove no corruption survives; this pins *which* error each
+    /// fault draws, because a caller routes on it — a splitter treats [`NoSyncMarker`]
+    /// as "scan on", where a [`ChecksumMismatch`] is a block to report.
+    ///
+    /// [`NoSyncMarker`]: WireError::NoSyncMarker
+    /// [`ChecksumMismatch`]: WireError::ChecksumMismatch
+    #[test]
+    fn each_kind_of_damage_is_reported_by_name() {
+        use ::proptest::{strategy::ValueTree, test_runner::TestRunner};
+
+        let mut runner = TestRunner::deterministic();
+        let spec = arb_schema_and_fact()
+            .new_tree(&mut runner)
+            .expect("a spec")
+            .current();
+        let (schema, block, _) = blocked(&spec);
+
+        // A first byte that is not the marker's: the boundary is gone, not the block.
+        let mut torn = block.clone();
+        torn[0] = 0x00;
+        assert_eq!(decode_block(&torn, &schema), Err(WireError::NoSyncMarker));
+
+        // The marker intact and the magic wrong: a boundary that is not a block.
+        let mut stamped = block.clone();
+        stamped[SYNC.len()] ^= 0xFF;
+        assert_eq!(decode_block(&stamped, &schema), Err(WireError::BadMagic));
+
+        // A payload bit flipped past every header check: caught by the checksum,
+        // and the error carries both numbers so the fault is diagnosable.
+        let mut flipped = block.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0x01;
+        assert!(matches!(
+            decode_block(&flipped, &schema),
+            Err(WireError::ChecksumMismatch { declared, computed }) if declared != computed
+        ));
+
+        // A predicate name that is not UTF-8 — refused as a bad string before the
+        // checksum is even computed, so a name is never interned from garbage.
+        let mut named = block.clone();
+        named[OVERHEAD] = 0xFF;
+        assert_eq!(decode_block(&named, &schema), Err(WireError::BadString));
+    }
+
+    /// The name resolution fails by name on both sides of the wire: an encoder
+    /// asked for a predicate its schema does not hold, and a decoder handed a block
+    /// whose named predicate its *own* schema does not declare — two databases may
+    /// number a predicate differently, so the id in the error is the caller's.
+    #[test]
+    fn a_predicate_neither_schema_knows_is_refused_by_name() {
+        use ::proptest::{strategy::ValueTree, test_runner::TestRunner};
+
+        let mut runner = TestRunner::deterministic();
+        let spec = arb_schema_and_fact()
+            .new_tree(&mut runner)
+            .expect("a spec")
+            .current();
+        let (schema, block, facts) = blocked(&spec);
+
+        // Encoding: an id the schema has no predicate for.
+        let missing = PredicateId(9_999);
+        let mut out = vec![];
+        assert_eq!(
+            encode_block(&mut out, &schema, missing, &facts),
+            Err(WireError::UnknownPredicate(9_999))
+        );
+
+        // Decoding: a well-formed block against a reader whose schema declares
+        // nothing — the name travels, so the error carries it.
+        let empty = fjord_schema::schema::Schema::empty();
+        assert!(matches!(
+            decode_block(&block, &empty),
+            Err(WireError::UnknownPredicateName(_))
+        ));
+    }
 }

@@ -739,6 +739,12 @@ pub const CORPUS: &[Entry] = &[
          accepts one because it *destructures*, and a denial names nothing",
     ),
     entry(
+        "X where X = {a = X}",
+        Diagnosed(Code::RejectInfiniteType),
+        "both occurrences of `X` are the same type variable, so a self-referential \
+         pattern is an infinite type — caught, rather than silently made two variables",
+    ),
+    entry(
         "X where X = test.Foo _; X.name != \"a\"..",
         Diagnosed(Code::NyiBindUnification),
         "an access chain on the left is **pattern-pushing**, deferred exactly as it \
@@ -1397,15 +1403,16 @@ mod tests {
 }
 
 #[cfg(test)]
-mod every_nyi_code_is_accounted_for {
+mod every_code_is_accounted_for {
     use super::*;
     use crate::diag::Code;
 
-    /// **Every `nyi/` code either has a corpus entry or is named below with a reason.**
+    /// **Every diagnostic code either has a corpus entry or is named below with a reason.**
     ///
-    /// `PLAN.md` claimed each surviving `nyi/` code "keeps a corpus entry", and it was not
-    /// true of five of them — nothing checked, so nothing said. This is the check. A new
-    /// code added without an entry fails here, and the only way past is to write the entry
+    /// Over `Code::ALL` — `reject/` and `lit/` included, not only `nyi/` — because a code
+    /// only a unit test reaches is one a refactor can silently orphan: the unit test moves
+    /// or dies with its module, and nothing says the taxonomy lost a member. A new code
+    /// added without an entry fails here, and the only way past is to write the entry
     /// or to say out loud why there cannot be one.
     ///
     /// **The five below are not merely un-exercised; they may be dead.** Two dozen candidate
@@ -1436,14 +1443,17 @@ mod every_nyi_code_is_accounted_for {
         ),
         (
             Code::NyiFactField,
-            "a reference held in a fact's *value*; reading one through `.value` at one and \
-             two hops compiles",
+            "reachable, but not from this fixture: it needs a predicate holding a \
+             reference in its *value*, which no fixture predicate does. \
+             `flatten::reading_through_a_reference_in_a_value_is_not_implemented_yet` \
+             builds the bespoke schema and asserts the code",
         ),
         (
             Code::NyiWholeKey,
-            "a whole key matched into a record field. Unreachable with this fixture for a \
-             stated reason rather than an unknown one: it needs a predicate whose whole key \
-             has the same record type as another predicate's field, and no pair here does",
+            "reachable, but not from this fixture: it needs a predicate whose whole key \
+             has the same record type as another predicate's field, and no pair here \
+             does. `flatten::matching_a_whole_key_against_a_record_field_is_not_implemented_yet` \
+             builds the bespoke schema and asserts the code",
         ),
     ];
 
@@ -1454,19 +1464,18 @@ mod every_nyi_code_is_accounted_for {
     }
 
     #[test]
-    fn each_nyi_code_has_an_entry_or_a_reason() {
+    fn each_code_has_an_entry_or_a_reason() {
         let excused: Vec<Code> = UNEXERCISED.iter().map(|(code, _)| *code).collect();
 
         let unaccounted: Vec<&str> = Code::ALL
             .iter()
-            .filter(|code| code.as_str().starts_with("nyi/"))
             .filter(|code| !diagnosed_by_the_corpus(**code) && !excused.contains(code))
             .map(|code| code.as_str())
             .collect();
 
         assert!(
             unaccounted.is_empty(),
-            "these `nyi/` codes have no corpus entry and no stated reason: {unaccounted:?}. \
+            "these codes have no corpus entry and no stated reason: {unaccounted:?}. \
              Add an entry to CORPUS, or add the code to UNEXERCISED saying why there cannot \
              be one."
         );

@@ -448,3 +448,44 @@ fn adding_a_predicate_is_the_one_compatible_change() {
     assert!(modified.contains("Breaking"), "{modified}");
     assert!(modified.contains("~ log.Line  (modified"), "{modified}");
 }
+
+/// The three refusals that never reach a server, each saying what a person acts on:
+/// a `--config` that was **named** and cannot be read (a missing `./fjord.json` is
+/// not this — nobody asked for one), a schema that does not parse rendered against
+/// its own source, and a shell run somewhere without a terminal.
+#[test]
+fn a_named_config_a_bad_schema_and_a_ttyless_shell_each_fail_by_name() {
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let root = dir.path();
+
+    // A config file somebody named and nobody wrote.
+    let missing = root.join("nope.json");
+    let stderr = fails(root, &["--config", missing.to_str().expect("utf8"), "list"]);
+    assert!(stderr.contains("nope.json"), "the path is named: {stderr}");
+
+    // ...and one that exists and is not a config file.
+    let garbage = root.join("garbage.json");
+    std::fs::write(&garbage, "not json").expect("written");
+    let stderr = fails(root, &["--config", garbage.to_str().expect("utf8"), "list"]);
+    assert!(stderr.contains("garbage.json"), "{stderr}");
+
+    // A schema that does not parse is rendered with a caret, not summarised.
+    let schema = root.join("broken.sigla");
+    std::fs::write(&schema, "schema t { predicate }").expect("written");
+    let stderr = fails(
+        root,
+        &["create", "code", "--schema", schema.to_str().expect("utf8")],
+    );
+    assert!(
+        stderr.contains("error") && stderr.contains("^"),
+        "a schema refusal is a rendered diagnostic: {stderr}"
+    );
+
+    // A shell with no terminal on stdin still needs a server to reach first —
+    // so with none listening, the failure is the actionable no-server message.
+    let stderr = fails(root, &["shell", "code"]);
+    assert!(
+        stderr.contains("is one running?"),
+        "the failure says what to do: {stderr}"
+    );
+}

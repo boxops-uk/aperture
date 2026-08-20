@@ -837,3 +837,25 @@ fn sealing_a_database_with_no_embedded_schema_is_refused() {
         .expect("it is found");
     assert_eq!(entry.status(), Status::Writable);
 }
+
+/// Stored bytes that do not decode against the schema surface as [`StoreError::Corrupt`],
+/// never a panic: `put_fact` takes bytes and trusts them, so the identity walk is the
+/// first thing to decode a row written past [`FjallDb::put`]'s checks.
+#[test]
+fn a_row_that_does_not_decode_is_corrupt_not_a_panic() {
+    let (_dir, catalog) = catalog();
+    catalog.create("code", &schema()).expect("it creates");
+    let (entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
+
+    // 0x13 is no marker at all, and `src.File`'s key is a string.
+    db.put_fact(FILE, &[0x13], &[])
+        .expect("bytes go in unchecked");
+
+    assert!(
+        matches!(
+            identity::compute(&db, &schema(), entry.meta.schema_fingerprint),
+            Err(StoreError::Corrupt(_))
+        ),
+        "an undecodable stored row must be reported as corruption"
+    );
+}

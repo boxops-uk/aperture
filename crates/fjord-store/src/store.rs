@@ -2002,6 +2002,95 @@ mod tests {
             .map(|bytes| FormatVersion::decode(&bytes).expect("decode the stamp"))
     }
 
+    /// Corrupt rows are refused **by name**, never decoded into something and
+    /// never a panic — an `entities` row is bytes this process may not have
+    /// written (conventions: errors, not panics, on data paths).
+    ///
+    /// Three corruptions, three names: a row too short for its own framing is
+    /// [`StoreError::TruncatedEntity`]; an `entities` key that is not id-width is
+    /// [`StoreError::FactIdWidth`]; and one whose id carries another predicate's
+    /// tag is [`StoreError::FactIdPredicateMismatch`]. The last two surface at
+    /// *open*, because the allocator's high-water mark is recovered from the last
+    /// key of the tree — which is exactly why they must be errors: a corrupt last
+    /// key silently mis-recovering the mark would reissue ids ([I11](../../../website/content/invariants.md#i11)).
+    #[test]
+    fn a_corrupt_entities_row_is_refused_by_name() {
+        let predicate = PredicateId(1);
+
+        // A row shorter than its own key-length framing.
+        let dir = TempDir::new().expect("tempdir");
+        let id = {
+            let db = FjallDb::open(dir.path()).expect("open");
+            db.put_fact(predicate, &[7], &[9]).expect("put")
+        };
+        {
+            let raw = Database::builder(dir.path()).open().expect("open raw");
+            let entities = raw
+                .keyspace(
+                    &format!("{ENTITIES_KEYSPACE_PREFIX}{}", predicate.0),
+                    KeyspaceCreateOptions::default,
+                )
+                .expect("entities keyspace");
+            let mut batch = raw.batch();
+            batch.insert(&entities, id.raw().to_be_bytes(), [0u8, 1]);
+            batch.commit().expect("corrupt the row");
+        }
+        let db = FjallDb::open(dir.path()).expect("reopen");
+        assert!(matches!(
+            db.reader().point(id),
+            Err(StoreError::TruncatedEntity(found)) if found == id
+        ));
+
+        // An entities key that is not id-width, sorting last so recovery reads it.
+        let dir = TempDir::new().expect("tempdir");
+        {
+            let db = FjallDb::open(dir.path()).expect("open");
+            db.put_fact(predicate, &[7], &[9]).expect("put");
+        }
+        {
+            let raw = Database::builder(dir.path()).open().expect("open raw");
+            let entities = raw
+                .keyspace(
+                    &format!("{ENTITIES_KEYSPACE_PREFIX}{}", predicate.0),
+                    KeyspaceCreateOptions::default,
+                )
+                .expect("entities keyspace");
+            let mut batch = raw.batch();
+            batch.insert(&entities, [0xFFu8, 0xFF, 0xFF], [0u8; 8]);
+            batch.commit().expect("corrupt the key");
+        }
+        assert!(matches!(
+            FjallDb::open(dir.path()),
+            Err(StoreError::FactIdWidth { len: 3, .. })
+        ));
+
+        // A well-formed id in the wrong predicate's tree.
+        let dir = TempDir::new().expect("tempdir");
+        {
+            let db = FjallDb::open(dir.path()).expect("open");
+            db.put_fact(predicate, &[7], &[9]).expect("put");
+        }
+        {
+            let raw = Database::builder(dir.path()).open().expect("open raw");
+            let entities = raw
+                .keyspace(
+                    &format!("{ENTITIES_KEYSPACE_PREFIX}{}", predicate.0),
+                    KeyspaceCreateOptions::default,
+                )
+                .expect("entities keyspace");
+            // Predicate tag 2 in predicate 1's tree, sequence 1: sorts after every
+            // legitimate row, so recovery reads it as the high-water mark.
+            let foreign = FactId::new(PredicateId(2), 1).expect("a well-formed id");
+            let mut batch = raw.batch();
+            batch.insert(&entities, foreign.raw().to_be_bytes(), [0u8; 8]);
+            batch.commit().expect("plant the foreign id");
+        }
+        assert!(matches!(
+            FjallDb::open(dir.path()),
+            Err(StoreError::FactIdPredicateMismatch { expected, .. }) if expected == predicate
+        ));
+    }
+
     /// Overwrite the stamp of the database at `path`, which must be closed.
     ///
     /// Written through a bare fjall handle rather than through [`FjallDb`], since

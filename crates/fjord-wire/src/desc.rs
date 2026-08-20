@@ -364,4 +364,13 @@ mod tests {
             prop_assert_eq!(decode_desc(&out), Ok((desc, out.len())));
         }
     }
+
+    /// A tag this vocabulary does not declare is refused **by name, carrying the
+    /// tag** — never read as whichever descriptor sits numerically nearby.
+    #[test]
+    fn an_undeclared_tag_is_refused_with_the_tag_in_the_error() {
+        let mut bytes = vec![];
+        varint::put_u64(&mut bytes, 9);
+        assert_eq!(decode_desc(&bytes), Err(WireError::UnknownRefForm(9)));
+    }
 }

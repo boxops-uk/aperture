@@ -1401,6 +1401,11 @@ impl Ord for Value {
                 },
             ) => a_disc.cmp(b_disc).then_with(|| a_value.cmp(b_value)),
             (Null, Null) => Ordering::Equal,
+            // Sound because `rank` maps each variant to a distinct `MARK_*` and
+            // equal ranks were required above — a table where two variants shared
+            // a marker would reach this on decoded bytes. The markers are pairwise
+            // distinct by I3's golden test (`marker_table_golden`), which is the
+            // invariant this rests on.
             _ => unreachable!("equal rank for different Value variants"),
         }
     }
@@ -2677,6 +2682,50 @@ pub(crate) mod tests {
         let mut out = Vec::new();
         put_i64(&mut out, v);
         out
+    }
+
+    /// Stored bytes that are not UTF-8 surface as `BadString`, never a panic —
+    /// corrupt data is an ordinary input to a decoder (errors, not panics, on
+    /// data paths).
+    #[test]
+    fn a_string_that_is_not_utf8_is_a_bad_string() {
+        use fjord_schema::schema::SchemaInterner;
+        use lasso::Rodeo;
+
+        let interner = LocalInterner::new(SchemaInterner::new(Rodeo::new().into_reader()));
+
+        // MARK_STRING, two bytes no UTF-8 sequence allows, terminator.
+        let bytes = [MARK_STRING, 0xC3, 0x28, MARK_TERM];
+        assert!(matches!(
+            decode_typed(&interner, &bytes, &PredicateTy::Str),
+            Err(StoreCodecError::BadString(_))
+        ));
+    }
+
+    /// A field symbol the interner cannot resolve is an error carrying the symbol,
+    /// never a panic and never an empty name travelling on into a `Value` — the
+    /// shape a schema from one process read against another's interner would take.
+    #[test]
+    fn a_symbol_the_interner_cannot_resolve_is_an_error() {
+        use fjord_schema::schema::{SchemaInterner, Symbol};
+        use lasso::Rodeo;
+        use std::sync::Arc;
+
+        // The field name is interned in one rodeo; the decoding interner is
+        // built over a different, empty one.
+        let mut foreign = Rodeo::new();
+        let name = foreign.get_or_intern("name");
+        let interner = LocalInterner::new(SchemaInterner::new(Rodeo::new().into_reader()));
+
+        let ty = PredicateTy::Record(Arc::from([(name, PredicateTy::Int)]));
+        let mut bytes = vec![MARK_RECORD];
+        put_i64(&mut bytes, 7);
+        bytes.push(MARK_TERM);
+
+        assert!(matches!(
+            decode_typed(&interner, &bytes, &ty),
+            Err(StoreCodecError::UnknownSymbol(Symbol::Schema(s))) if s == name
+        ));
     }
 
     proptest! {

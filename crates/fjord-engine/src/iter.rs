@@ -2678,6 +2678,77 @@ mod tests {
     /// the *answer* are different claims and only the second one matters: the rows
     /// after a resume through bytes are compared against the rows after a resume
     /// from the cursor in hand.
+    /// Stored bytes that do not decode surface as [`FjordError::Decode`], never a
+    /// panic: the store treats rows as opaque bytes, so a corrupt one is an
+    /// ordinary input to the executor (errors, not panics, on data paths).
+    #[test]
+    fn a_row_that_does_not_decode_is_a_decode_error() {
+        let p = PredicateId(0);
+
+        let store = {
+            let mut store = MemStore::new();
+            // 0x13 is no marker at all; the store neither knows nor cares.
+            store.insert(p, vec![0x13], 1);
+            store
+        };
+
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([scan_all(p, 0)]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let interner = interner_with(&[]);
+        assert!(matches!(
+            collect_rows(store, plan, &interner),
+            Err(FjordError::Decode(_))
+        ));
+    }
+
+    /// Token bytes cut anywhere are [`FjordError::CursorTruncated`] — a token
+    /// crosses the wire, so damage is an ordinary input; and **trailing** bytes are
+    /// the same refusal, because a token that decodes while leaving bytes unread is
+    /// two different tokens agreeing by accident.
+    #[test]
+    fn a_cursor_cut_or_padded_is_refused_as_truncated() {
+        let p = PredicateId(0);
+        let store = {
+            let mut store = MemStore::new();
+            store.insert(p, i64_field(1), 1);
+            store.insert(p, i64_field(2), 2);
+            store
+        };
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([scan_all(p, 0)]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let bytes = suspend_after_first_row(store, plan).to_bytes();
+
+        for cut in 0..bytes.len() {
+            assert!(
+                matches!(
+                    Cursor::from_bytes(&bytes[..cut]),
+                    Err(FjordError::CursorTruncated)
+                ),
+                "cut to {cut} of {} must be refused as truncated",
+                bytes.len()
+            );
+        }
+
+        let mut padded = bytes.clone();
+        padded.push(0);
+        assert!(matches!(
+            Cursor::from_bytes(&padded),
+            Err(FjordError::CursorTruncated)
+        ));
+    }
+
     #[test]
     fn a_cursor_round_trips_through_bytes() {
         let p = PredicateId(0);

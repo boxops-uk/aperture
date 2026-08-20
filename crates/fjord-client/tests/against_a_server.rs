@@ -1500,3 +1500,72 @@ fn a_union_is_written_and_read_back_over_the_wire() {
         [alt(TEXT, WireValue::Str("a".to_owned()))]
     );
 }
+
+/// **The positive half of the old-server translation**: a fetch answered with
+/// `ErrorCode::Protocol` — which on that stream can only mean the `F` frame itself
+/// was not understood — comes back as [`ClientError::Unsupported`], with the remedy
+/// in the message. The fake server here *is* the old server: it completes the
+/// handshake and then refuses the frame kind by code.
+#[test]
+fn a_server_that_predates_expansion_is_reported_as_unsupported() {
+    use fjord_wire::{
+        frame::{self, FrameKind},
+        protocol::{self, ErrorCode, Ready},
+    };
+    use std::io::{Read, Write};
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("old.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+        let mut buf = vec![0u8; 4096];
+
+        // The handshake: swallow STARTUP, answer READY.
+        let n = stream.read(&mut buf).expect("a startup frame");
+        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
+        assert_eq!(header.kind, protocol::kinds::STARTUP);
+
+        let ready = protocol::encode_ready(&Ready {
+            version: protocol::VERSION,
+            schema_fingerprint: 0,
+            predicates: 0,
+        });
+        let mut out = vec![];
+        frame::encode_frame(&mut out, protocol::kinds::READY, header.stream, &ready)
+            .expect("a ready frame");
+        stream.write_all(&out).expect("ready sent");
+
+        // The next frame is the fetch this server has never heard of.
+        let n = stream.read(&mut buf).expect("a fetch frame");
+        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
+
+        let refusal = protocol::encode_error(
+            ErrorCode::Protocol,
+            &format!("no handler for frame kind {:?}", header.kind),
+        );
+        let mut out = vec![];
+        frame::encode_frame(&mut out, FrameKind::ERROR, header.stream, &refusal)
+            .expect("an error frame");
+        stream.write_all(&out).expect("error sent");
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection =
+        Connection::connect(&socket, "code", Arc::clone(&schema), Mode::ReadOnly, false)
+            .expect("the handshake completes");
+
+    let id = FactId::new(FILE, 1).expect("a well-formed id");
+    let refused = connection
+        .fetch(&schema, &[id])
+        .expect_err("the fake server refuses the frame kind");
+
+    assert!(
+        matches!(&refused, ClientError::Unsupported(message)
+            if message.contains("before expansion existed")),
+        "an old server is reported as unsupported, with the remedy: {refused:?}"
+    );
+
+    server.join().expect("the fake server exits cleanly");
+}
