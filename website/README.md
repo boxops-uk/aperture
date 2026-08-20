@@ -7,6 +7,7 @@ library Python only — no toolchain, no dependencies, no network access at buil
 python3 serve.py            # build, then serve on http://127.0.0.1:8000
 python3 serve.py --watch    # …and rebuild whenever content/ or assets/ changes
 python3 build.py            # build only, into site/
+python3 build.py --strict   # what CI runs: the generator's warnings become an error
 ```
 
 Other flags: `--port N`, `--host 0.0.0.0` (to reach it from another machine), `--no-build`
@@ -41,7 +42,7 @@ entry, is reported as a warning at build time.
 ### The Markdown dialect
 
 Deliberately small — headings, paragraphs, fenced code, lists (one level of nesting), pipe
-tables, blockquotes, horizontal rules, and the usual inline marks (`**bold**`, `*italic*`,
+tables (`\|` for a literal pipe in a cell), blockquotes, horizontal rules, and the usual inline marks (`**bold**`, `*italic*`,
 `` `code` ``, `[links](x.html)`). Plus two extras:
 
 ```markdown

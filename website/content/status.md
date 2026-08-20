@@ -35,7 +35,6 @@ built rather than described as if it were.
 | Missing | What it means for you | Gating |
 |---|---|---|
 | **Ingestion from files** | Facts arrive over the wire from a producer. The file format, block encoding and splitting rule are all defined and shared with the wire path; the pipeline is not wired to a command | Was gated on parallel ingestion, which is now done |
-| **Union types** | The schema DSL parses a sum and names `nyi/union`. No `maybe`, `enum` or union-typed field yet | Discriminant encoding, and the freeze that comes with it |
 | **Stored derivation** | A derived predicate cannot be *declared*. Derived data is written by hand — which is what four predicates in the sample schema are | The schema DSL (done) plus the re-derivation decision below |
 | **Arrays and sets** | A one-to-many is one fact per element. Marker bands are reserved | An open design question, not a missing implementation |
 | **`fjord write`, `db backup/restore/verify`, `completions`** | Named in the CLI design, absent from the binary. A Complete database is a directory, so `tar` is the backup | — |
@@ -124,8 +123,7 @@ hundreds of references across the repository point at these numbers.
 | 6, 6b | Dynamic derivation · the deferred query surface | done |
 | 7a | Wire ingestion: write stream, interning | done |
 | 7b | File ingestion | **open** |
-| 8 (8.1–8.5) | Schema parsing, identity, imports, embedding | done |
-| 8.6 | Union types | **open** |
+| 8 (8.1–8.6) | Schema parsing, identity, imports, embedding, union types | done |
 | 8b | Stored derivation | **open**, gated on the decision above |
 | 9 (a–f) | Operations: lifecycle, runtime, client, CLI, shell | done |
 | 10 | Capacity: measure it | done |

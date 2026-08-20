@@ -416,12 +416,14 @@ impl Resolver<'_, '_> {
             Rule::MaybeTy => self.refuse(
                 node,
                 Code::NyiMaybe,
-                "`maybe` is sugar over a union, and waits on one",
+                "`maybe` is sugar over a union, and waits on a naming decision: the \
+                 alternative names it desugars to enter the fingerprint",
             ),
             Rule::EnumTy => self.refuse(
                 node,
                 Code::NyiEnum,
-                "an enumeration is sugar over a union, and waits on one",
+                "an enumeration is sugar over a union, and waits on a naming decision: \
+                 the payload type it desugars to enters the fingerprint",
             ),
 
             Rule::BuiltinTy => {

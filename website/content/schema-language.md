@@ -65,7 +65,7 @@ Two things about the shape:
   start something.
 
 :::note Permissive early, narrow later
-Everything the grammar accepts and the type model cannot yet hold — arrays, sums, `maybe`,
+Everything the grammar accepts and the type model cannot yet hold — arrays, `maybe`,
 `set`, `enum`, `evolves`, a `stored` derivation — **parses**, and then draws one specific
 `nyi/…` diagnostic naming it. A construct rejected by the *grammar* reports as a syntax
 error pointing between two tokens, which tells a reader nothing about why the thing they
@@ -80,6 +80,7 @@ wrote is unavailable. See [what is not available yet](#what-is-not-available-yet
 | `string` | UTF-8. Order-preserving, so a prefix is a range |
 | `Predicate` / `ns.Predicate` | A **reference** to a fact of that predicate. Stored as a `FactId`; type-checked against the predicate it names |
 | `{ a : int, b : string }` | A record. Ordered fields, nesting allowed |
+| `{ a : int = 0 \| b : string = 1 }` | A **union**. One of the alternatives, tagged by an explicit discriminant — see [unions](#unions) |
 | `type Name = …` | A named type. Structural — it is inlined, and the name does not appear in the canonical form |
 
 A **value side** is `-> T`, and `T` may be any of the above, including a record:
@@ -88,6 +89,46 @@ A **value side** is `-> T`, and `T` may be any of the above, including a record:
 predicate Decl : { module : Module, name : string, line : int } -> string
 predicate Boxed : { id : int } -> { lo : int, hi : int }
 ```
+
+## Unions
+
+A field may hold one of several **alternatives**, each carrying an explicit discriminant:
+
+```schema
+schema src {
+  predicate File : string
+  predicate Decl : { file : File, name : string }
+
+  # One of three shapes a reference can resolve to. `missing` has no payload
+  # type, which is the empty record.
+  type Target = { decl : Decl = 0 | file : File = 1 | missing = 2 }
+
+  predicate Ref : { at : int, to : Target }
+}
+```
+
+- **The discriminant is written down, never inferred from position.**
+  [I10](invariants.html#i10) requires tags to be stable and append-only, so the syntax has to
+  give somewhere to write the number; positional numbering would silently re-tag every stored
+  value the moment an alternative was inserted.
+- **A record and a sum share their braces** — the separator after the first field decides,
+  `,` for a record, `|` for a sum. A *single*-alternative union therefore needs a trailing
+  `|` to be one at all: `{ only : string = 0 | }`.
+- An alternative's payload may be any type — a scalar, a record, a reference. No payload
+  written means the empty record.
+- What lowering refuses, each by name: an alternative with no discriminant
+  (`reject/missing-discriminant`), two alternatives sharing a tag
+  (`reject/duplicate-discriminant`), and two sharing a name (`reject/duplicate-alternative`).
+
+Once a union fact is written its discriminants are **frozen on disk**, and `schema diff`
+reports **every** union edit as Breaking — appending an alternative included. A database is
+served from its embedded schema and a client's per-predicate fingerprint has to match it, so
+a union that grew is a different predicate to every client compiled against the old one.
+
+On the query side, a one-field record against a union-typed field names an alternative —
+`src.Ref {to = {decl = D}}` — and `X.to.decl?` selects one and binds its payload. Both are
+seeks when the union leads the key. See [unions in the query
+language](query-language.html#unions).
 
 ## Field order is the index design
 
@@ -263,7 +304,6 @@ Each of these parses and then names itself in a diagnostic:
 schema t {
   predicate A : [ int ]                          # nyi/array
   predicate B : maybe string                     # nyi/maybe
-  predicate C : { a : int = 0 | b : string = 1 }  # nyi/union
   predicate D : enum { x | y }                    # nyi/enum
   predicate E : set int                           # nyi/set
   derive t.A                                      # nyi/derivation
@@ -272,12 +312,12 @@ schema t evolves u                                # nyi/evolves
 ```
 
 ```text
-error[nyi/union]: a union is not available until `PredicateTy` has one — its discriminants
-                 are frozen the moment a union fact is written (I10)
-  ┌─ /tmp/nyi.sigla:4:17
+error[nyi/maybe]: `maybe` is sugar over a union, and waits on a naming decision: the
+                  alternative names it desugars to enter the fingerprint
+  ┌─ /tmp/nyi.sigla:3:17
   │
-4 │   predicate C : { a : int = 0 | b : string = 1 }
-  │                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+3 │   predicate B : maybe string
+  │                 ^^^^^^^^^^^^
 ```
 
 Two of them are worth understanding rather than just noting:
@@ -287,10 +327,10 @@ Two of them are worth understanding rather than just noting:
   front), so an array anywhere but the last key field permanently closes the seek prefix for
   every field after it. Edges — `predicate ProjectRef : { from : Project, to : Project }` —
   are how a many-to-many is said here.
-- **A union carries an explicit discriminant** — `{ a : t = 0 | b : t = 1 }` — because
-  [I10](invariants.html#i10) requires that tags be stable and append-only, and the syntax has
-  to give somewhere to write the number down. Positional numbering would silently renumber
-  every stored value when an alternative was inserted.
+- **`maybe` and `enum` are sugar over a union**, which exists — what neither has is its
+  *naming* decision. Each desugars to alternative names and payload types that enter the
+  canonical form, and the fingerprint freezes whatever is chosen, so the spelling has to be
+  right the first time.
 
 ## The sample schema
 
@@ -308,8 +348,11 @@ Read `schemas/code.sigla` itself if you are designing a schema: every predicate 
 comment saying which question its key order answers, and four of them exist purely because
 a derived predicate cannot yet be declared.
 
-There is also a **virtual** predicate, `fjord.db.List`, declared in
-`crates/fjord-server/schemas/catalogue.sigla` — the crate that answers it. It is answered by the server out of what it knows rather than read
-from a keyspace, which is why it is a file of its own: it is deliberately absent from the
-handshake fingerprint, from the copy embedded at create, and from every artifact's
-keyspaces. A client that has never heard of it connects exactly as before.
+There are also **virtual** predicates — `fjord.db.List` (the store root as rows) and
+`fjord.db.Interning` (the write path's own counters, per database) — declared in
+`crates/fjord-server/schemas/catalogue.sigla`, the crate that answers them. A virtual
+predicate is answered by the server out of what it knows rather than read from a keyspace,
+which is why it is a file of its own: it is deliberately absent from the handshake
+fingerprint, from the copy embedded at create, and from every artifact's keyspaces, and the
+whole reserved `fjord.` namespace is marked virtual so a stored predicate can never collide
+with it. A client that has never heard of them connects exactly as before.

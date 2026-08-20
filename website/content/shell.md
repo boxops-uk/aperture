@@ -43,6 +43,7 @@ fjord shell — `code` on ./db/fjord.sock
 | `:timing` | `\timing` | Toggle how long a page took |
 | `:profile` | `\profile` | Toggle what a query examined, per step of its plan |
 | `:list` | `\l`, `:l` | The databases on this server — a query over `fjord.db.List` |
+| `:interning` | `\i`, `:i` | The write path's own counters, per database — a query over `fjord.db.Interning` |
 | `:connect <db>` | `\c`, `:c` | The same session against another database |
 | `:clear` | | Clear the screen |
 | `:help` | `\?`, `:?`, `:h` | The table above, generated from the table itself |
@@ -143,7 +144,9 @@ An exact name describes one predicate; anything that does not resolve exactly fa
 **prefix matching**, so `:schema src.` dumps a namespace rather than failing.
 
 Virtual predicates are printed like any other, because the served schema is what may be *asked*
-about. `fjord.db.List` is there, and `:list` is a query over it.
+about. `fjord.db.List` is there, and `:list` is a query over it; `fjord.db.Interning` is its
+sibling — the ingest cache's hits, misses and the two trees' point reads, per database, which is
+how *is the interning cache working* is a query rather than a debugger session.
 
 ## Things worth trying
 

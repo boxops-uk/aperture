@@ -103,12 +103,24 @@ test pins every marker so a renumber breaks loudly.
 | `0x48` | `MARK_INT_ZERO` | zero | fixed, 0 bytes |
 | `0x49–0x50` | `MARK_INT_POS` | positive integers, width 1 … 8 | width in marker |
 | `0x51` | `MARK_FACT_REF` | a reference to a fact | fixed, 8 bytes |
-| `0x52–0xFE` | *reserved* | | |
+| `0x52` | `MARK_UNION` | a tagged alternative — discriminant, one payload, terminator | nested |
+| `0x53–0xFE` | *reserved* | | |
 | `0xFF` | `MARK_ESCAPE` | escapes a null element | — |
 
 Reading the integer band: zero is the centre at `0x48`; positives climb as width grows, so
 larger positives sort higher; negatives fall as width grows, so more-negative sorts lower.
-The type ordering `null < string < record < integers < fact-ref` falls out of the table.
+The type ordering `null < string < record < integers < fact-ref < union` falls out of the
+table.
+
+A union was **appended** at `0x52` — which is what I3 permits, and the only thing it permits:
+the table below it does not move. Highest in the table, so a union sorts after every other
+type, and within a union by discriminant then payload — a key's alternatives **cluster**, and
+matching one is a prefix of the key order rather than a filter over all of it. It is encoded
+as a *group*, like a record: it carries a terminator and escapes a null payload even though
+its arity of one would make the terminator redundant, so "is a group" stays a single concept
+— terminated, null-escaping, depth-counted — and `skip` needs no notion of a value still
+owed. A stored tag that no alternative declares is refused at decode
+(`UnknownDiscriminant`), never read as whichever alternative sat nearby.
 
 A fact reference has its **own** fixed-width marker rather than sharing the integer encoding,
 so a value's bytes are self-describing without the schema and the `Int`/`Fact` distinction is

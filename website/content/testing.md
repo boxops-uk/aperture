@@ -23,13 +23,14 @@ cargo test                       # the green suite
 cargo test -- --ignored --list   # the ledger
 ```
 
-A guard whose subsystem does not exist yet is `#[ignore]`d with the invariant and phase in the
-message — a real test body asserting the rule, just not yet runnable. So the ignored list *is* the
-list of specified-but-not-live invariants, and a phase is finished only when the ones it touches
-are un-ignored and green.
+A guard whose subsystem does not exist yet is `#[ignore]`d with the invariant in the message — a
+real test body asserting the rule, just not yet runnable. So the ignored list *is* the list of
+specified-but-not-live invariants, and work that touches an invariant is finished only when its
+guard is un-ignored and green. The list is currently **empty**: every guard is live.
 
-A test ignored for any other reason must say so, so reading the ledger stays unambiguous. There is
-exactly one: the child process that the crash guard spawns and aborts, which is not a test at all.
+A test ignored for any other reason must say so, so reading the ledger stays unambiguous. There
+are four: three child processes that the crash guards spawn and abort, and a printer that emits
+the union corpus's fingerprint for the C# client to carry — none of them a test at all.
 
 ## The three tiers
 

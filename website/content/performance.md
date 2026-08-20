@@ -32,8 +32,8 @@ What is deliberately **not** targeted:
 - **Unbounded queries.** A whole-predicate scan of the line table is 8.6 M rows and always will
   be. Bounding a result is the client's job — `--limit`, `:more`, and a paged UI.
 - **Write throughput under concurrency.** Not because the design forbids concurrent writers (it
-  does not, since Phase 12), but because indexing is a build-time cost measured in hours and
-  there is no target yet — and one must not be back-filled from a projection.
+  does not — a Writable database takes many), but because indexing is a build-time cost measured
+  in hours and there is no target yet — and one must not be back-filled from a projection.
 - **Anything absolute on this box.**
 
 ## The ladder

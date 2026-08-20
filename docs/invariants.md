@@ -2,8 +2,8 @@
 
 > [Fjord design book](../README.md) · reference doc
 
-Every invariant in one place. **Engine invariants `I1`–`I14`** are the codec / executor /
-storage / identity rules explained in chapters 2–6. **Operational invariants
+Every invariant in one place. **Engine invariants `I1`–`I15`** are the codec / executor /
+storage / identity / format rules explained in chapters 2–7. **Operational invariants
 `ops-I1`–`ops-I10`** are the lifecycle / connection rules explained in
 [Operations](fjord-cli-design.md). The two namespaces are separate — always write
 `ops-Ix` for the operational ones.

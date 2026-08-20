@@ -23,12 +23,11 @@ cargo fmt --all
 narrowing to one package as crates are extracted would be a ledger that had stopped
 counting.
 
-:::note The ignored tests are not skipped work
-`cargo test -- --ignored --list` prints the guards that are written but not yet live —
-each one pinned to an invariant whose subsystem does not exist yet. A phase is finished
-only when the invariants it touches are un-ignored and green. Exactly one guard is
-`#[ignore]`d today: `schema::discriminants_append_only`, which waits on union types. See
-[Testing method](testing.html).
+:::note The coverage ledger
+`cargo test -- --ignored --list` prints any guard that is written but not yet live —
+each one pinned to an invariant whose subsystem does not exist yet. Work that touches an
+invariant is finished only when its guard is un-ignored and green. The ledger currently
+lists **nothing**: every invariant's guard is live. See [Testing method](testing.html).
 :::
 
 ### Generated code

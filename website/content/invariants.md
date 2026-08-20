@@ -28,15 +28,15 @@ operational ones and are always written with the prefix.
 | [I7](#i7) | The executor is a defunctionalised state machine | structural + the resume battery | green |
 | [I8](#i8) | Immutable snapshot per query, released at suspend | `i8_snapshot::snapshot_released_at_suspend` | green |
 | [I9](#i9) | The hot path is allocation-free per row | `exec::scan_is_alloc_free_per_row` | green |
-| [I10](#i10) | Union discriminants are stable and append-only | `schema::discriminants_append_only` | **pending** unions |
+| [I10](#i10) | Union discriminants are stable and append-only | `i10_discriminants::*` — four checks, see [I10](#i10) | green |
 | [I11](#i11) | A `FactId` is stable, unique and never reused within a database | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | green |
 | [I12](#i12) | Both maps are written atomically — and a key names exactly one fact | `store::no_half_present_facts_after_writes` + the crash case + `concurrent_interning_of_one_key_creates_one_fact` | green |
 | [I13](#i13) | The database's schema is embedded and frozen at create | `i13_embedded_schema::ingest_rejects_incompatible_schema` + the fingerprint metamorphic | green |
 | [I14](#i14) | A derived bind is a pure function of the fact bindings | `iter::a_derive_is_recomputed_across_every_cut_point` | green |
 | [I15](#i15) | A database says which format wrote it; an unreadable one is refused | `store::a_database_says_which_format_wrote_it` + `a_corrupt_format_stamp_is_reported` | green |
 
-Exactly one guard is `#[ignore]`d — I10's, which waits on union types existing to have
-discriminants.
+No guard is `#[ignore]`d: the coverage ledger (`cargo test -- --ignored --list`) lists
+nothing pending. I10's was the last, and unions made it live.
 
 ### I1 — Key encoding is order-preserving {#i1}
 
@@ -136,7 +136,19 @@ reused, new alternatives appended. Frozen the moment union-typed data is written
 Why it is a one-way door: a union value is stored tagged by its discriminant, so discriminants
 derived from position or from sorted names would **silently renumber** existing ones and
 misinterpret every stored value. This is why the schema DSL has syntax for writing the number
-down — and why the type does not exist yet rather than existing with the tags left implicit.
+down.
+
+The guard is four checks, because "a renumber is rejected at load" is unimplementable under
+[I13](#i13) — a database's schema is frozen at create, so at load there is only ever one schema
+and nothing to compare it against. What together means what I10 means: **within one schema**
+every alternative has a tag and no two share one (`reject/missing-discriminant`,
+`reject/duplicate-discriminant`); **identity** — renumbering a tag moves the fingerprint while
+permuting the declaration does not
+(`i10_discriminants::a_renumbered_tag_moves_the_fingerprint_and_a_permuted_declaration_does_not`);
+**`schema diff`** — every union edit is Breaking, appending an alternative included
+(`fingerprint::changing_a_union_is_breaking_appending_an_alternative_included`); and **decode** —
+a stored tag no alternative declares is an error, never a mis-read of whichever alternative sat
+nearby (`tuple::an_undeclared_discriminant_is_refused_rather_than_misread`).
 
 ### I11 — A `FactId` is stable, unique, never reused {#i11}
 

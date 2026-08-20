@@ -110,6 +110,11 @@ jobs:
       # edited by whoever un-ignores one, and the list is what a reviewer reads.
       - name: Invariant coverage ledger
         run: cargo test --locked -- --ignored --list
+      # The website is the design book. `--strict` turns the generator's own
+      # warnings — a page missing from the nav, a nav entry with no page — into a
+      # failure, so the book cannot silently lose a page.
+      - name: Website builds clean
+        run: python3 website/build.py --strict
 
   package:
     name: package

@@ -14,13 +14,13 @@ ingestion is "fearless."
 
 > **Status: `0.0.1`, a pre-release.** Built and guarded: the storage codec and the fjall
 > store, a suspendable executor that resumes exactly, the sigla front end end to end — text
-> to `Plan` to rows, joins *through fact references* included — the schema language and schema
-> identity, the wire protocol with a second implementation in another language, parallel
+> to `Plan` to rows, joins *through fact references* included — the schema language, union
+> types and schema identity, the wire protocol with a second implementation in another language, parallel
 > ingestion, a server, a client, the command-line tool, and a code-search site built on
 > nothing but the client.
 >
-> **Not built:** authentication, union types, stored derivation, ingestion from files, arrays
-> and sets, per-predicate statistics. [`CHANGELOG.md`](CHANGELOG.md) is the full inventory
+> **Not built:** authentication, stored derivation, ingestion from files, arrays and sets,
+> per-predicate statistics. [`CHANGELOG.md`](CHANGELOG.md) is the full inventory
 > including two operational limits worth knowing before you measure anything, and
 > [`PLAN.md`](PLAN.md) is the phase tree.
 
@@ -63,7 +63,7 @@ about one subsystem.
 
 **Reference docs (look up, don't read cover-to-cover):**
 
-- [**Invariant registry**](docs/invariants.md) — every invariant (`I1`–`I14`,
+- [**Invariant registry**](docs/invariants.md) — every invariant (`I1`–`I15`,
   `ops-I1`–`ops-I10`) in one table: one-line statement, its guard test, and a link to the
   chapter that explains it. **The fastest way to check "what must I not break here."**
 - [**Testing methodology**](docs/testing.md) — property-first, generator-first testing;
@@ -118,7 +118,7 @@ it does not.
 
 ## Two invariant namespaces (don't conflate them)
 
-- **Engine invariants `I1`–`I14`** — codec, executor/resume, storage, identity, and
+- **Engine invariants `I1`–`I15`** — codec, executor/resume, storage, identity, format, and
   derived-bind purity. Explained in chapters 2–7, indexed in the [registry](docs/invariants.md).
 - **Operational invariants `ops-I1`–`ops-I10`** — lifecycle, single-writer ownership,
   reproducibility, the one-write-funnel. Explained in [Operations](docs/fjord-cli-design.md).

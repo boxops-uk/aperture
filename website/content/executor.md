@@ -63,6 +63,13 @@ two sources are two key layouts: a path that names a field of one names differen
 none, in the other. `binds` stays on the level, because every alternative binds the same
 variables.
 
+Union types are a measure of how far this shape stretches: what they cost the machine is one
+residual arm (`DiscriminantEq`, a byte-prefix compare against the tag), one branch in the
+nested-field walk, and a projection arm — no new `Source`, `Step`, frame kind or cursor entry.
+A field path stepping *into* a union payload carries the expected discriminant, checked before
+any read through it, so a payload read against the wrong alternative is an error rather than
+another type's bytes.
+
 ### Access, seek, splice
 
 An `Access` is a `predicate_id` plus a `SeekKey`, and the seek key is built from two kinds of

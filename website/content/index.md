@@ -59,8 +59,8 @@ leans on.
 :::note Status
 The engine spine, the storage layer, the language front end, the wire protocol, the
 server, the client, the CLI, the shell and a code-search viewer are **built and
-guarded**. Ingestion from **files**, **union types** and **stored derivation** are not.
-See [Status & roadmap](status.html) for the honest, per-phase list.
+guarded** — union types included. Ingestion from **files** and **stored derivation** are
+not. See [Status & roadmap](status.html) for the honest list.
 :::
 
 <p>
@@ -69,13 +69,13 @@ See [Status & roadmap](status.html) for the honest, per-phase list.
 <span class="pill ok">fjall store</span>
 <span class="pill ok">sigla front end</span>
 <span class="pill ok">schema DSL</span>
+<span class="pill ok">union types</span>
 <span class="pill ok">wire protocol</span>
 <span class="pill ok">server + client</span>
 <span class="pill ok">CLI + shell</span>
 <span class="pill ok">parallel ingest</span>
 <span class="pill ok">code-search viewer</span>
 <span class="pill todo">file ingestion</span>
-<span class="pill todo">union types</span>
 <span class="pill todo">stored derivation</span>
 </p>
 

@@ -66,6 +66,12 @@ predicate test.Ref    : { of : test.Foo }
 predicate test.Link   : { at : int, of : test.Foo }
 predicate test.Deep   : { via : test.Ref }
 predicate test.Boxed  : { id : int } -> { lo : int, hi : int }
+
+# One union, used twice: leading the key in Tagged, behind the key in Label.
+# The tags are deliberately not positions — `num` is 3 and `text` is 0.
+type test.What = { num : int = 3 | text : string = 0 }
+predicate test.Tagged : { what : test.What, id : int }
+predicate test.Label  : { id : int, what : test.What }
 ```
 
 | Predicate | Facts |
@@ -81,6 +87,8 @@ predicate test.Boxed  : { id : int } -> { lo : int, hi : int }
 | `test.Link` | `{10, Foo#1}`, `{11, Foo#2}`, `{12, Foo#2}` |
 | `test.Deep` | `→ Ref#1`, `→ Ref#2` |
 | `test.Boxed` | `{1} -> {10,20}`, `{2} -> {30,40}` |
+| `test.Tagged` | `{num 1, 10}`, `{text "a", 20}`, `{num 2, 30}`, `{text "b", 40}` |
+| `test.Label` | `{10, num 1}`, `{20, text "a"}`, `{30, num 2}`, `{40, text "b"}` |
 
 ## Statements
 
@@ -315,6 +323,36 @@ shape the schema declares. A value can be **projected** but not **matched**
 ([I6](invariants.html#i6)), and a key field literally named `value` makes `.value` ambiguous
 and is refused by name.
 
+### Unions
+
+A one-field record against a union-typed field is an **injection**: it names one
+alternative and matches its payload. `.alt?` is the **select** — it checks the tag and binds
+the payload, answering exactly what the injection does.
+
+```sigla
+X where test.Tagged {what = {num = X}, id = _}    → 1; 2
+X where test.Tagged {what = {text = X}, id = _}   → a; b
+X where test.Tagged {what = {num = _}, id = X}    → 10; 30
+Y where test.Label X; Y = X.what.num?             → 1; 2
+X where test.Label {id = X, what = {num = 2}}     → 30
+```
+
+Three things the examples pin:
+
+- **A tag is not a position.** `num` is discriminant 3 and `text` is 0; a reader taking a
+  tag for an index would answer the `text` rows for the `num` query.
+- **Where the union sits in the key decides what the match costs.** `test.Tagged` leads with
+  it, so naming an alternative is a *prefix* of the key order — a seek (the profile says 2
+  rows examined of 4). In `test.Label` the tag lands after the seek prefix has closed and
+  filters instead.
+- **A wildcard payload is still a seek** — the tag alone is the shortest prefix an
+  alternative has.
+
+A select against the wrong alternative is an **error**, never another type's bytes: the
+expected discriminant is checked before any read through the payload. And rows whose
+alternative the query never mentions pass untouched — an unmentioned union field is a
+wildcard.
+
 ### Literals
 
 ```sigla
@@ -460,6 +498,9 @@ error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
 | `reject/not-a-generator` | `X where X = test.Foo _; 42` | A statement that is neither generates nor constrains anything |
 | `reject/bind-lhs` | `X where 42 = test.Foo _` | A literal cannot be a bind target |
 | `reject/wildcard-in-head` | `_ where test.Foo _` | A wildcard head projects nothing |
+| `reject/not-a-union` | `X.alt? where X = test.Foo _` | A select on something that is not a union at all |
+| `reject/unknown-alternative` | `X where test.Tagged {what = {nosuch = X}, id = _}` | A name the union does not declare — the same class of mistake as an unknown field |
+| `reject/union-arity` | `X where test.Tagged {what = {num = X, text = _}, id = _}` | Two alternatives at once is what a *record* of two fields means, and a union cannot |
 
 ### Not implemented yet
 
@@ -475,7 +516,6 @@ error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
 | `nyi/negation` | `P where …; !test.Ref {of = test.Foo {id = 2}}` | A generator inside a negation's key: hoisting it out would change the answer when it matches nothing |
 | `nyi/fact-field` | reading through a reference held in a fact's **value** | A fetch follows a reference in a key |
 | `nyi/whole-key` | matching a whole key against a record field | A stored key is flat and a record field is wrapped, so the two are not the same bytes |
-| `nyi/union-select` | `X.alt? where X = test.Foo _` | Union types are not in the type model yet |
 
 Most of these have a one-line workaround, and the diagnostic says it. The pattern to
 remember: **name the intermediate value in a statement of its own.** An alias costs nothing —

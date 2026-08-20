@@ -28,7 +28,8 @@ pub enum Code {
     NyiArray,
     /// `set T`.
     NyiSet,
-    /// `maybe T` — sugar over a union, so it waits on one.
+    /// `maybe T` — sugar over a union, deferred on the naming decision the
+    /// desugaring would freeze into the fingerprint.
     NyiMaybe,
     /// `enum { a | b }` — likewise.
     NyiEnum,
