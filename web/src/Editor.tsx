@@ -1,6 +1,6 @@
 import { useRef } from 'react'
-import type { Span, TokenView } from './wasm'
-import { overlaps } from './span'
+import type { TokenView } from './wasm'
+import { type Highlight, within } from './span'
 
 /**
  * A textarea with the real tokens painted underneath it.
@@ -20,9 +20,9 @@ export function Editor({
 }: {
   source: string
   tokens: TokenView[]
-  highlight: Span | null
+  highlight: Highlight | null
   onChange: (next: string) => void
-  onHighlight: (span: Span | null) => void
+  onHighlight: (highlight: Highlight | null) => void
 }) {
   const painted = useRef<HTMLPreElement>(null)
 
@@ -33,9 +33,9 @@ export function Editor({
           <span
             key={index}
             className={
-              overlaps(token.span, highlight) ? `tok tok-${token.class} on` : `tok tok-${token.class}`
+              within(token.span, highlight) ? `tok tok-${token.class} on` : `tok tok-${token.class}`
             }
-            onMouseEnter={() => onHighlight(token.span)}
+            onMouseEnter={() => onHighlight({ span: token.span, node: null })}
             onMouseLeave={() => onHighlight(null)}
           >
             {token.text}

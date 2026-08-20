@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import type { Span, Tree, TreeNode } from './wasm'
-import { overlaps } from './span'
+import { useMemo, useState } from 'react'
+import type { Tree, TreeNode } from './wasm'
+import { type Highlight, litNodes } from './span'
 import { display } from './display'
 
 /**
@@ -19,10 +19,11 @@ export function TreeView({
   onHighlight,
 }: {
   tree: Tree
-  highlight: Span | null
-  onHighlight: (span: Span | null) => void
+  highlight: Highlight | null
+  onHighlight: (highlight: Highlight | null) => void
 }) {
   const [trivia, setTrivia] = useState(false)
+  const lit = useMemo(() => litNodes(tree, highlight), [tree, highlight])
 
   if (tree.root === null) {
     return (
@@ -53,9 +54,9 @@ export function TreeView({
         {rows.map(({ node, depth }) => (
           <li
             key={node.id}
-            className={overlaps(node.span, highlight) ? 'on' : undefined}
+            className={lit.has(node.id) ? 'on' : undefined}
             style={{ paddingLeft: `${depth * 1.1 + 0.75}rem` }}
-            onMouseEnter={() => onHighlight(node.span)}
+            onMouseEnter={() => onHighlight({ span: node.span, node: node.id })}
             onMouseLeave={() => onHighlight(null)}
           >
             <span className={node.token ? 'kind leaf' : 'kind'}>{node.kind}</span>

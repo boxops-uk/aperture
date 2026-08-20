@@ -1,5 +1,5 @@
-import type { Span, TokenView } from './wasm'
-import { overlaps } from './span'
+import type { TokenView } from './wasm'
+import { type Highlight, within } from './span'
 import { display } from './display'
 
 export function TokenTable({
@@ -8,8 +8,8 @@ export function TokenTable({
   onHighlight,
 }: {
   tokens: TokenView[]
-  highlight: Span | null
-  onHighlight: (span: Span | null) => void
+  highlight: Highlight | null
+  onHighlight: (highlight: Highlight | null) => void
 }) {
   return (
     <div className="scroller">
@@ -26,8 +26,8 @@ export function TokenTable({
           {tokens.map((token, index) => (
             <tr
               key={index}
-              className={overlaps(token.span, highlight) ? 'on' : undefined}
-              onMouseEnter={() => onHighlight(token.span)}
+              className={within(token.span, highlight) ? 'on' : undefined}
+              onMouseEnter={() => onHighlight({ span: token.span, node: null })}
               onMouseLeave={() => onHighlight(null)}
             >
               <td className="num">

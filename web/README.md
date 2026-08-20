@@ -35,7 +35,7 @@ written in JavaScript, because that is the thing being replaced.
 | `src/App.tsx` | the shell: the source editor, the sample queries, and the tabbed view beside them |
 | `src/Editor.tsx` | a textarea with the real tokens painted underneath it |
 | `src/TokenTable.tsx`, `src/TreeView.tsx` | the two views — the second walks the arena from its root, which is already in reading order |
-| `src/span.ts` | one span, every view. Hovering a tree node lights up the source *and* the tokens inside it because all three ask the same question of the same numbers |
+| `src/span.ts` | what the cursor is on, and the rule every view highlights by: a node lights up **its subtree** and the bytes it covers, never the path above it — that is what the indentation already shows |
 | `src/app.css` | the design book's palette, so the two sites read as one |
 | `smoke.mjs` | the end-to-end check — it drives the built bundle in Chrome and asserts the tokens are the lexer's |
 

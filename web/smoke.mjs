@@ -102,11 +102,44 @@ check('the tree is the parser\'s, rule for rule', ['Root', 'Query', 'StmtList'].
 check('a recovered parse marks where it recovered', kinds.includes('Error'))
 
 // Hovering a node highlights the source it covers: one span, two views.
-await page.hover('.tree li:nth-child(4)')
+const nodeRow = (kind) =>
+  page.evaluateHandle((kind) => {
+    const row = [...document.querySelectorAll('.tree li')].find(
+      (li) => li.querySelector('.kind')?.textContent === kind,
+    )
+    return row
+  }, kind)
+
+const stmtList = (await nodeRow('StmtList')).asElement()
+await stmtList.hover()
 await new Promise((resolve) => setTimeout(resolve, 150))
 check(
   'hovering a node highlights the source it covers',
   (await page.$$('.paint .tok.on')).length > 0,
+)
+
+// **Containment, not overlap.** Every ancestor's span covers the hovered one,
+// so an overlap test would light up the path to `Root` — true, and noise.
+check(
+  'hovering a node leaves its ancestors alone',
+  await page.$$eval('.tree li.on .kind', (ks) => {
+    const lit = ks.map((k) => k.textContent)
+    return lit.length > 1 && !lit.includes('Root') && !lit.includes('Query')
+  }),
+)
+
+// The chain `ImplicitBindStmt → Pattern → Sum → Fact → FactPattern` all cover
+// exactly the same bytes, so nothing comparing *spans* can tell them apart. The
+// highlight is by node, and this is the assertion that says so.
+const factPattern = (await nodeRow('FactPattern')).asElement()
+await factPattern.hover()
+await new Promise((resolve) => setTimeout(resolve, 150))
+check(
+  'a same-span ancestor stays dark',
+  await page.$$eval('.tree li.on .kind', (ks) => {
+    const lit = ks.map((k) => k.textContent)
+    return lit[0] === 'FactPattern' && !lit.includes('Fact') && !lit.includes('ImplicitBindStmt')
+  }),
 )
 
 // A query the corpus calls supported must parse without a word of complaint.

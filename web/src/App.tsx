@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { load, type Engine, type Span, type Tokens, type Tree } from './wasm'
+import { load, type Engine, type Tokens, type Tree } from './wasm'
+import type { Highlight } from './span'
 import { Editor } from './Editor'
 import { TokenTable } from './TokenTable'
 import { TreeView } from './TreeView'
@@ -44,7 +45,7 @@ function analyse(engine: Engine, source: string): Analysis {
 export default function App() {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
-  const [highlight, setHighlight] = useState<Span | null>(null)
+  const [highlight, setHighlight] = useState<Highlight | null>(null)
   const [tab, setTab] = useState<'tokens' | 'tree'>('tokens')
 
   // Source and analysis move together, updated by whatever changed the source —
