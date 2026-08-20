@@ -247,7 +247,7 @@ Angle features the `codemarkup` layer uses, against sigla:
 | `nat` arithmetic (`+`) | not lexed | **yes** — span ends |
 | comparisons `<`, `<=` | **lexer error** | **yes** — containment, "what is at offset N" |
 | `if … then … else` | none | no — avoidable |
-| sum types / unions | `nyi/union`, Phase 8.6 | only for multi-language `code.Entity` |
+| sum types / unions | **built at 8.6** | only for multi-language `code.Entity`, and `schemas/code.sigla` still declares none — adding one moves its fingerprint |
 | `enum` | `nyi/enum` | no — a string kind works |
 | `maybe` | `nyi/maybe` | no — a missing fact is the same answer |
 | `bool` | not in the type model | no |

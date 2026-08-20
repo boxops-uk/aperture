@@ -182,7 +182,15 @@ Flatten lowers the typed, nested query into the flat `Plan`: an ordered `[Genera
   that a *later* statement also binds is refused (`nyi/subquery`) rather than conflated.
   Reading an *outer* name is the opposite case and is how correlation works.
 - **Union select lowers to a residual**, not a generator: `x.alt?` becomes
-  `ResidualOp::DiscriminantEq(n)` + a payload bind ([chapter 6](06-types-and-schema.md)).
+  `ResidualOp::DiscriminantEq(n)` + a payload bind ([chapter 6](06-types-and-schema.md)) — built
+  at 8.6, and it held. Two things it added that are worth knowing. A select is written where a
+  value is *wanted* — in the head, or on the right of a bind — and neither can filter, so the
+  check is applied by the level that **binds the register it reads**, prepended to that source's
+  residuals: prepended, because a payload read is only meaningful once the alternative is known,
+  and putting the check at the front makes that a property of the list rather than of which pass
+  ran when. And the *other* spelling needs no residual at all: `{alt = p}` in a key field is an
+  **injection**, whose tag is a byte prefix of the field — so where the union leads the key it is
+  a seek, and only where it does not does it filter.
 - **Sargeability** decides, per key field, whether it becomes a **seek** (narrow the scan),
   a **splice** (bytes from an earlier-bound register), or a **residual** (filter during the
   scan). This is *order-dependent*: a field being *captured* (bound for the first time)

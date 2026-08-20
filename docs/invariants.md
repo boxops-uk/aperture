@@ -37,7 +37,7 @@ green. See [testing](testing.md).
 | [I7](#i7) | The executor is a defunctionalised state machine. | structural + resume battery | [ch4](04-executor.md) | ✅ green — resume battery in place |
 | [I8](#i8) | Immutable snapshot per query; released at suspend. | `i8_snapshot::snapshot_released_at_suspend` | [ch5](05-resume.md) | ✅ green |
 | [I9](#i9) | Hot path is allocation-free per row. | `exec::scan_is_alloc_free_per_row` | [ch4](04-executor.md) | ✅ green |
-| [I10](#i10) | Union discriminants are stable and append-only. | `schema::discriminants_append_only` | [ch6](06-types-and-schema.md) | Phase 8 (with unions) |
+| [I10](#i10) | Union discriminants are stable and append-only. | `i10_discriminants::*` (four checks — see below) | [ch6](06-types-and-schema.md) | ✅ green at 8.6 |
 | [I11](#i11) | `FactId` is stable, unique, never reused within a DB. | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | [ch3](03-storage-model.md) | ✅ green |
 | [I12](#i12) | A fact is written to both column families atomically — and a key names exactly one fact. | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) + `concurrent_interning_of_one_key_creates_one_fact` | [ch3](03-storage-model.md) | ✅ green — **write-once half held by the serial funnel, mechanical at Phase 12** |
 | [I13](#i13) | The DB's schema is embedded and frozen at create. | `i13_embedded_schema::ingest_rejects_incompatible_schema` + `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` | [ch6](06-types-and-schema.md) | ✅ green at 8.4 |
@@ -197,10 +197,36 @@ comes from a query-time transform that remaps alternatives **by name** and answe
 `unknown` for one that no longer exists. Explicit discriminants are therefore not "the only safe
 scheme"; they are the only safe scheme *without* that transform layer, which [I13](#i13) declines
 by freezing the schema instead. *Why & how:*
-[chapter 6](06-types-and-schema.md#unions-and-stable-discriminants-i10). *Guard:*
-`schema::discriminants_append_only` (renumber/reuse rejected at load) — which also owes the one
-case the invariant needs and Fjord has not settled: what a decoder does with a tag no schema
-declares. Glean has a defined answer there; this design does not yet.
+[chapter 6](06-types-and-schema.md#unions-and-stable-discriminants-i10).
+
+**The guard, and why it is four of them.** This invariant was specified as *"a renumber is
+rejected at load"*, and 8.6 found that unimplementable as written: under [I13](#i13) a
+database's schema is frozen at create, so at load there is only ever **one** schema and nothing
+to compare it against. What is implementable — and what together means what I10 means:
+
+1. **Within one schema**, every alternative has a tag and no two share one — the only half a
+   single schema can be checked for, and the only one that is literally at load.
+   `fjord_schema::syntax::lower`, `reject/missing-discriminant` and
+   `reject/duplicate-discriminant`, with corpus entries.
+2. **Identity** — a tag is part of the canonical form, so renumbering moves the fingerprint
+   while *permuting* the declaration does not (`i10_discriminants::a_renumbered_tag_moves_the_
+   fingerprint_and_a_permuted_declaration_does_not`). A union and a record of the same field
+   names are also different forms.
+3. **`schema diff`** — every edit to a union is Breaking under subset containment, appending an
+   alternative included, and reordering one is Identical
+   (`fingerprint::changing_a_union_is_breaking_appending_an_alternative_included`).
+4. **Decode** — a stored tag no alternative declares is `StoreCodecError::UnknownDiscriminant`,
+   never a mis-read of whichever alternative sat nearby
+   (`tuple::an_undeclared_discriminant_is_refused_rather_than_misread`). That settles the case
+   this entry used to say was open: Glean answers it with a synthetic `unknown` because it
+   projects between schemas at query time, and I13 leaves nowhere for such a projection to live,
+   so the honest answer is a refusal.
+
+**What I10 buys, given I13.** Not cross-schema compatibility — the fingerprint handshake already
+refuses a client whose schema disagrees. What it buys is that a schema's *edit history* keeps
+every fact any earlier version of it wrote meaning the same thing: appending an alternative is a
+rebuild where renumbering one would be a reindex, and anything that ever exports or migrates
+these bytes stands on that.
 
 <a id="i11"></a>
 ### I11 — `FactId` is stable, unique, never reused within a DB

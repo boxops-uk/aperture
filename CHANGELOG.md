@@ -41,6 +41,12 @@ work and are not built or tested by CI.
 - **A schema language.** Files, namespaces, imports, a canonical form, per-predicate and
   whole-schema fingerprints, subset-containment compatibility, and `schema check` /
   `fingerprint` / `diff`.
+- **Union types**, with **explicit append-only discriminants** — `{ num : int = 3 | text :
+  string = 0 }`. A tag is written down rather than taken from the position, because a derived
+  one renumbers the moment an alternative is inserted and every value already written then
+  reads as a different alternative. Written and matched as `{alt = p}`, selected as `X.alt?`,
+  and where the union is a leading key field, matching an alternative is a **seek** rather than
+  a filter.
 - **A wire protocol**, with a second implementation in C# that shares no code with the Rust
   one and a byte-for-byte golden test between the two encoders.
 - **Parallel ingestion.** Many writers per database, behind per-key exclusion striped 64 ways.
@@ -54,7 +60,7 @@ Stated because a missing feature discovered by a user is worse than one written 
 | Missing | What it means for you |
 |---|---|
 | **Authentication** | None, by design at this stage. The transport is the trust boundary: the server binds a Unix socket, TCP is opt-in per invocation, and access control belongs to a gateway in front |
-| **Union types** | A schema parses a sum and names it unimplemented. No `maybe`, no `enum`, no union-typed field |
+| **`maybe` and `enum`** | Both are sugar over a union, which *is* there — but each needs a naming decision that enters the schema fingerprint, so both still parse and report themselves. Write the union out |
 | **Stored derivation** | A derived predicate cannot be *declared*. Derived data is written by hand, which is what four predicates in the sample schema are |
 | **Ingestion from files** | Facts arrive over the wire from a producer. The file format is defined and the pipeline is not wired to a command |
 | **Arrays and sets** | A one-to-many is one fact per element |
@@ -75,6 +81,13 @@ properties of what *is* built:
 
 ### Notes for anyone who has been tracking `main`
 
+- **Unions landed (8.6), and nothing else moved with them.** The marker table gained `0x52`,
+  *appended* — the eleven markers below it are unchanged, so every database already written is
+  read by exactly the bytes that wrote it. The wire's descriptor and value tables gained a tag
+  each, also appended, so an older peer meets one and says so rather than mis-reading what
+  follows. `schemas/code.sigla` is deliberately untouched: a union there would move its
+  fingerprint and the constants two .NET clients carry, and that is a flag day with nothing to
+  do with unions working.
 - **There is no built-in schema.** `fjord create` requires `--schema <file>`; a server carries
   no data schema of its own, and a database that embeds no schema copy is listed rather than
   served. `schemas/code.sigla` is a sample rather than a default.

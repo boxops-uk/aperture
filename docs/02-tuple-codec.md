@@ -134,7 +134,7 @@ table** rather than a property of strings. An embedded NUL inside a string escap
 so within a record `encode("a") < encode("a\0")` compares the shorter string's terminator
 against the longer one's escape byte — and holds only because the byte that follows a
 terminator, the *next field's marker*, is below `0xFF`. Every marker a value can begin with is
-at most `0x51` and the reserved bands stop at `0xFE`, so it holds by construction; it is stated
+at most `0x52` and the reserved bands stop at `0xFE`, so it holds by construction; it is stated
 on [the table](#the-marker-table) because nothing else keeps it true. Glean spends two bytes on
 a terminator (`00 00`, with embedded NUL escaping to `00 01`, `glean/rts/string.h:16-26`) and
 gets the same ordering argument *locally*, with no dependence on what follows.
@@ -204,7 +204,8 @@ where future types slot in without renumbering.
 | `0x48`      | `MARK_INT_ZERO`   | zero                                 | fixed (0 bytes)  |
 | `0x49–0x50` | `MARK_INT_POS`    | positive integers / `u64`, width 1 … 8 | width-in-marker |
 | `0x51`      | `MARK_FACT_REF`   | reference to a fact (`FactId`)       | fixed (8 bytes)  |
-| `0x52–0xFE` | *(reserved)*      |                                      |                  |
+| `0x52`      | `MARK_UNION`      | tagged alternative (paired with `MARK_TERM`) | nested   |
+| `0x53–0xFE` | *(reserved)*      |                                      |                  |
 | `0xFF`      | `MARK_ESCAPE`     | escapes a null *element* (`0x00 0xFF`) | —              |
 
 Reading the integer band:
@@ -216,8 +217,8 @@ Reading the integer band:
   zero), `0x40` an 8-byte one (most negative) — so more-negative sorts lower. Width is
   `MARK_INT_ZERO - marker` for negatives, `marker - MARK_INT_ZERO` for positives.
 
-The **type ordering** falls out of the table: `null < string < record < integers <
-fact-ref`. Within a typed field all values share a type, so cross-type ordering never
+The **type ordering** falls out of the table: `null < string < record < integers < fact-ref
+< union`. Within a typed field all values share a type, so cross-type ordering never
 affects a real query; but the ordering is still frozen because the marker is part of the
 sort key.
 
@@ -230,6 +231,18 @@ is part of what [I3](invariants.md#i3) freezes, not a spare byte.
 > a value's bytes are self-describing without the schema and the byte-level `Int`/`Fact`
 > distinction is enforced. (This resolves the "does `FactRef` share the integer encoding?"
 > question — it does not. See [open decisions](open-decisions.md).)
+
+> **On `MARK_UNION`** (8.6). A union value is `MARK_UNION` · the discriminant · the payload ·
+> `MARK_TERM`: **a group**, exactly as a record is — terminated, null-escaping inside, counted
+> against the same depth bound. The terminator is redundant for a constructor of arity one, and
+> it is a deliberate byte: without it `skip` would have to carry a count of *values still owed*
+> and every one of its "this value is complete" returns would change, in the function whose
+> failure mode is a field offset one byte out. The discriminant uses the **unsigned integer
+> encoding** (`put_u64`), so it is order-preserving and self-delimiting already, costs one byte
+> for `= 0`, cannot be negative, and imposes no cap on a tag. Because the marker is the highest
+> in the table, a union sorts after every other type, and within a union by tag then payload —
+> so a key's alternatives **cluster**, and matching one is a prefix of the key order rather than
+> a filter over all of it. Reasoning: [phase 8.6](phase-8.6-unions.md).
 
 ---
 

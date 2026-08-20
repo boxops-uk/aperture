@@ -28,14 +28,14 @@ different thing; don't conflate them.
 
 | Phase | What | State |
 |---|---|---|
-| 0 | Invariant guard matrix + harness | ✅ — one guard still `#[ignore]`d (`schema::discriminants_append_only`, waits on 8.6) |
+| 0 | Invariant guard matrix + harness | ✅ — **no guard is `#[ignore]`d any more**; I10's was the last, and 8.6 made it live |
 | 1 | fjall store, snapshot & identity guards | ✅ |
 | 2 · 3 · 4 | grammar · driver · flatten/reorder | ✅ |
 | 5 | REPL (embedded demo) | ✅ |
 | 6 · 6b | dynamic derivation · the deferred query surface | ✅ |
 | 7a | wire ingestion (write stream, interning) | ✅ |
 | 7b | file ingestion | ☐ — deferred past 9, **now gated on 12** |
-| 8 | schema parsing (8.1–8.5) | ✅ — **unions (8.6) open** |
+| 8 | schema parsing (8.1–8.6) | ✅ — unions included |
 | 8b | stored derivation | ☐ — gated on 8 |
 | 9 (a–f) | operations: lifecycle, runtime, client, CLI | ✅ |
 | 10 | capacity: measure it | ✅ — [`bench/FINDINGS.md`](bench/FINDINGS.md) |
@@ -143,14 +143,21 @@ The engine spine exists in `crates/fjord-engine/`:
   store root hold artifacts built from different declarations, and what
   [I13](docs/invariants.md#i13) has been asking for since Phase 0. The provisional handshake
   fingerprint is gone: identity is chapter 6's, and a client **carries** the number rather than
-  computing it. What is left of Phase 8 is **unions** (8.6), which is why
-  `schema::discriminants_append_only` is now the *only* `#[ignore]`d guard in the ledger.
+  computing it. **Unions are 8.6, and built** — `PredicateTy::Union`, marker `0x52`, `{alt = p}`
+  and `X.alt?`, and [I10](docs/invariants.md#i10)'s guard live, which leaves the coverage ledger
+  with **nothing `#[ignore]`d at all**. What the machine cost is one residual arm, one branch in
+  the nested-field walk and a projection arm: no new `Source`, `Step`, frame kind or cursor
+  entry, so I4/I7/I8 were re-run rather than re-established. The expensive parts were the
+  *encoding* (a union is a terminated group, so `skip` needs no notion of a value still owed) and
+  the *paths* (a `FieldPath` step at a union means the discriminant, checked). Reasoning and the
+  decisions: [phase 8.6](docs/phase-8.6-unions.md).
 - **Unbuilt:** **parallel ingestion**
   ([Phase 12](#phase-12--parallel-ingestion-the-striped-merge-frontier) — the write funnel is one
   thread per database, and that thread is what holds [I12](docs/invariants.md#i12)'s write-once
   half; it is the only unbuilt item that touches an invariant), bulk ingestion (7b, gated on 12),
-  unions (8.6), **stored** derivation ([Phase 8b](#phase-8b--stored-derivation)), and the
-  operational gaps Phase 9 lists as deliberately missing.
+  **stored** derivation ([Phase 8b](#phase-8b--stored-derivation)), and the operational gaps
+  Phase 9 lists as deliberately missing. `maybe` and `enum` — both sugar over a union — are
+  deferred still, because each needs a *naming* decision that enters the fingerprint.
 
 Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the design docs.
 
@@ -164,7 +171,7 @@ Module map: [chapter 1](docs/01-concepts.md). Nothing here contradicts the desig
                            └─▶ 2  grammar ✅ ─▶ 3  driver ✅ ─▶ 4  flatten/reorder ✅ ─┬─▶ 5  REPL ✅  (→ remote-only later)
                                                                                     ├─▶ 6  dynamic derivation ✅ (machine change; I14 green)
                                                                                     │      └─▶ 6b  deferred query surface ✅ (`|`, never, `!`, subquery)
-                                                                                    └─▶ 7a wire ingestion ✅ ─▶ 9  operations ✅ ─▶ 8  schema ✅ (8.1–8.5; unions are 8.6) ─▶ 8b  stored derivation
+                                                                                    └─▶ 7a wire ingestion ✅ ─▶ 9  operations ✅ ─▶ 8  schema ✅ (8.1–8.6, unions included) ─▶ 8b  stored derivation
                                                                                                              ├─▶ 12 parallel ingestion (striped merge frontier; I12's write-once becomes mechanical)
                                                                                                              └─▶ 7b  file ingestion (deferred past 9; **now gated on 12**)
 
@@ -184,9 +191,9 @@ Cross-edges:  6 also depends on the resume battery (0) + fjall (1).   7 depends 
               is when the measurement that found it existed.
 Gates:        Codec I1–I3 green.  Executor I4–I7, I9 green on MemStore.  I8/I11/I12 at Phase 1
               (I12's *atomicity* half; its **write-once** half is held by the serial funnel until 12).
-              I13 green at 8.4; I10 waits on unions (8.6) and is the last ignored guard in the ledger.
+              I13 green at 8.4; I10 green at 8.6, and the ledger holds no ignored guard.
               FactRef marker — resolved (own marker 0x51, already in the codec); no longer gates ingestion.
-              Union types gate on the schema DSL (8), not on 6b: a union cannot be declared before it can be written down.
+              Union types gated on the schema DSL (8), not on 6b: a union cannot be declared before it can be written down.
 ```
 
 The **`Plan` IR is the fixed point** everything aims at ([chapter 4](docs/04-executor.md)):
@@ -849,7 +856,8 @@ is `flatten` and `ty.rs`, plus `never` decided alongside them.
   was retired**, and that is the honest outcome rather than a miss — each of `nyi/disjunction`,
   `nyi/negation` and `nyi/subquery` now covers a *narrower* construct than it did (an alternation
   inside a pattern; a negated group or a generator in a negation's key; a subquery rebinding an
-  outer name). `nyi/union-select` is Phase 8's.
+  outer name). `nyi/union-select` was Phase 8.6's, and is **retired**: what used to draw it is
+  now `reject/not-a-union` — a select on something that has no alternatives.
   **Correction, at 0.0.1: "and each keeps a corpus entry naming it" was not true**, and nothing
   checked it. `nyi/negation` keeps two entries; `nyi/disjunction`, `nyi/never`, `nyi/subquery`,
   `nyi/fact-field` and `nyi/whole-key` keep none — and two dozen candidate queries aimed at the
@@ -1031,8 +1039,8 @@ flag is not wired). None is on 7b's path.
 **Goal.** Parse schemas so predicate/type definitions aren't hardcoded — a separate schema
 DSL feeding the same type model the query compiler uses. **Union types land here**, not in
 [Phase 6b](#phase-6b--the-deferred-query-surface-), for three reasons that all point the same
-way: `PredicateTy` (`schema.rs:23`) has four variants and no `Union`; there is no way to
-*declare* one until this phase, because the schema is hardcoded Rust; and
+way: `PredicateTy` had four variants and no `Union`; there was no way to *declare* one until
+this phase, because the schema was hardcoded Rust; and
 [I10](docs/invariants.md#i10) freezes discriminants **the moment union data is written** —
 chapter 6's "get it right *before* writing any union facts — after that it's an on-disk
 migration". Implementing union select early would mean taking this phase's hardest one-way door
@@ -1048,15 +1056,17 @@ resolution, `schema_path` roots, and redeclaration errors are
 [operations §7](docs/fjord-cli-design.md).
 
 **The step tree is [`docs/phase-8-schemas.md` §4](docs/phase-8-schemas.md)** — `8.1`–`8.6`, and
-numbered rather than lettered because this file already has a *separate* Phase 8b. **8.1–8.5 are
-done**; 8.6 (unions) is what is left, and the acceptance boxes below say which is which.
+numbered rather than lettered because this file already has a *separate* Phase 8b. **All six are
+done.** 8.6's decisions and what they cost the machine are
+[phase 8.6](docs/phase-8.6-unions.md), written before the build and corrected by it.
 
 **Invariants in scope:**
 - *makes green:* [I13](docs/invariants.md#i13)
   (`i13_embedded_schema::ingest_rejects_incompatible_schema` +
   `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint`) — **green at
-  8.4**; [I10](docs/invariants.md#i10) (`schema::discriminants_append_only`) when unions are
-  represented, which is 8.6 and the only guard still `#[ignore]`d.
+  8.4**; [I10](docs/invariants.md#i10) — **green at 8.6**, as four checks rather than one: its
+  guard was specified as "a renumber is rejected at load", and under I13 there is only ever one
+  schema at load ([the registry](docs/invariants.md#i10) says what replaced it).
 - *upholds:* [I3](docs/invariants.md#i3) (reject schema changes that would violate on-disk marker ordering);
   [I11](docs/invariants.md#i11) — **a predicate id must fit the 24-bit fact-id tag**; the
   schema loader is where that is validated (the store rejects it today, but only at the point
@@ -1083,10 +1093,24 @@ variant.
 - [x] Ingest rejects a producing schema that isn't subset-compatible (I13) — renamed, retyped,
       dropped field, reordered key — and **accepts a compatible subset**, which is the half that
       needed the handshake to carry per-predicate claims rather than one number.
-- [ ] Invariant-violating schema edits (renumbered discriminant, reordered marker) are rejected at load (I10/I3, tested). *8.6.*
-- [ ] A union declares, ingests, round-trips through the codec, and `X.alt?` selects an
-      alternative and binds its payload — the `nyi/union-select` corpus entry reclassified to
-      `Supported` with its rows, and the code retired from `Code::ALL`. *8.6.*
+- [x] Invariant-violating schema edits are rejected: a **duplicate or missing discriminant** at
+      lowering, a **renumbered** one by the fingerprint it moves, and every union edit as
+      `Breaking` in `schema diff`. The marker table's own half is I3's golden test, edited
+      deliberately to append `0x52`.
+- [x] A union declares, ingests, round-trips through the codec, and `X.alt?` selects an
+      alternative and binds its payload — `nyi/union-select` is retired from `Code::ALL`, and
+      the corpus holds nine union entries which return their rows *and* resume to the same rows
+      at every cut point. `{alt = p}` as a pattern is the other half: where the union is a
+      leading key field it is a **seek**, and the profile says so (2 rows examined of 4).
+- [x] **The union laws**, as equalities between queries rather than expected rows
+      (`flatten::union_laws`): the alternatives partition the predicate, a select answers what an
+      injection does, an unmentioned union field is a wildcard, `!(A | B)` is `!A; !B` over
+      alternatives, denying every alternative denies the row, and — given an exhaustive union and
+      a unique key — denying one asserts the other.
+- [x] **The tag is byte-identical from outside**: `unions.txt`, a second golden over a schema of
+      its own, so the .NET client's independent statement of the same union corpus produces the
+      same blocks — including a nested reference *inside* a payload and an empty-record payload.
+      `schemas/code.sigla` is deliberately untouched, so no fingerprint moved.
 
 **What 8.4 settled that this section had wrong.** "The embedded copy becomes the canonical form"
 was the plan and is not what shipped: the canonical form exists to be hashed, and embedding it

@@ -306,8 +306,9 @@ Points the grammar has to make legible rather than merely accept:
   before canonicalisation. Worth having early — it is what stops `Position` being written out
   four times — and it costs the type model nothing.
 
-Deferred with a code, not a parse error: `[T]` (D4), `set T`, `nat`/`byte`, `evolves`, and —
-until 8.6 — `union`.
+Deferred with a code, not a parse error: `[T]` (D4), `set T`, `nat`/`byte`, `evolves`, `maybe`
+and `enum`. `union` **lowers** since 8.6, and the two sugars over it stay deferred because each
+needs a naming decision that enters the fingerprint.
 
 ---
 
@@ -399,10 +400,18 @@ before anything depends on it, and unions come last because they are the widest 
   form the number is taken over (what a second implementation is written against), and
   `describe --schema` dumps a database's copy verbatim, which is text `create --schema` takes
   back.
-- **8.6 — Unions.** `PredicateTy::Union`, marker `0x52`, the discriminant freeze, `X.alt?`
+- **8.6 — Unions.** ✅ `PredicateTy::Union`, marker `0x52`, the discriminant freeze, `X.alt?`
   lowering to `DiscriminantEq` plus a payload bind. *Done when* `discriminants_append_only` is
   green and the `nyi/union-select` corpus entry is reclassified `Supported` with its rows and
-  the code retired from `Code::ALL`.
+  the code retired from `Code::ALL`. *Done*, and the design was written down first —
+  [phase 8.6](phase-8.6-unions.md), whose four decisions (the group form, the discriminant's
+  encoding, the unknown tag, and what a payload step is) are what kept the executor's share of
+  this to three sites. Four things the plan did not predict, each a reason to write the plan:
+  the **claims walk** had to learn that a capture inside an injection is a capture (without it
+  flatten reported "nothing binds `X`" for a query that plainly does); `print` had to emit a
+  **trailing `|`** for a single-alternative union, since braces are shared with a record and the
+  separator is what tells them apart; typecheck now **defers nothing at all**, union select
+  having been its last `nyi/`; and I10's guard could not be built as specified.
 
 ---
 
@@ -429,11 +438,20 @@ before anything depends on it, and unions come last because they are the widest 
   holds the schema as source now, and it is the thing a server reads to learn what a database
   holds. It stopped being a document nothing depends on the moment a store root could hold
   two schemas.
-- **The blast radius of `PredicateTy::Union`** is **29 files** that name the enum's variants —
-  about half of them tests, but the other half is the codec, the wire value encoder,
-  `flatten`, `iter`, `intern`, `desc` and `print`, each of which has to answer what a union
-  means before it compiles again. That is the reason unions are 8.6 and not 8.3: everything
-  before them stays a schema-crate change, and 8f is the one step that reaches the machine.
+- **The blast radius of `PredicateTy::Union`** was estimated at **29 files** that name the
+  enum's variants — about half of them tests, but the other half the codec, the wire value
+  encoder, `flatten`, `iter`, `intern`, `desc` and `print`, each of which has to answer what a
+  union means before it compiles again. That is the reason unions are 8.6 and not 8.3: everything
+  before them stays a schema-crate change, and 8.6 is the one step that reaches the machine.
+
+  **What it came to: 36 files.** The compiler found nearly all of them — an exhaustive match on
+  a new variant is the good case, and it is a build error. The ones it did *not* find are the
+  ones worth recording: **twelve `let PredicateTy::Record(..) = .. else` sites** take the
+  not-a-record path in silence, and each had to be looked at rather than compiled at
+  ([phase 8.6 §5](phase-8.6-unions.md)). Two more were silent for a different reason — a
+  `WireValue` walk with every arm listed still compiles once the new arm is added, but
+  `expand::references` missing it would have *under-expanded* a reference held inside a payload,
+  and `intern` missing it would have left that reference uninterned.
 
 ---
 
@@ -444,6 +462,8 @@ before anything depends on it, and unions come last because they are the widest 
 | A database's predicate id map (D1) | that database is created | nothing, for that database — it is the tag in every `FactId` it holds. But it is now **internal**: with names on the wire, nothing outside the database ever sees it, so a new database assigning afresh costs nobody anything |
 | Union discriminants (D5) | the first union fact is written | an on-disk migration |
 | The union marker (D5) | the same moment | I3 forbids renumbering |
+| A union is a **terminated group** (8.6 D-a) | the same moment | a codec version, i.e. a different `codec` stamp (I15) |
+| The discriminant's encoding — `put_u64` (8.6 D-b) | the same moment | the same |
 | The fingerprint algorithm (D2) | the first artifact ships | a version field, if there is one |
 | No arrays (D4) | every schema written before it | rewriting schemas and re-indexing |
 | Reference cycles (D3) | the first cyclic schema | a two-pass hash, if refused early |
