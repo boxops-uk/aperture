@@ -940,7 +940,7 @@ taste:
   directly — we have no codegen — but the equivalent is a byte counter in the chunk accumulator,
   which already knows each encoded row's length.
 - **We put the safety at measurement time, Glean puts it at runtime.**
-  [`docs/performance.md`](../website/content/performance.md) states a capacity target and
+  [the performance method](../website/content/performance.md) states a capacity target and
   [`bench/FINDINGS.md`](../bench/FINDINGS.md) reads every number against it; Glean has no
   equivalent document and no capacity benchmark — its `bench/` directory is seven
   micro-benchmarks (define, redefine, rename, makefact, compile, decode, query)

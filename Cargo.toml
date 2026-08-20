@@ -9,7 +9,7 @@ members = ["crates/*"]
 # had.
 resolver = "3"
 # So `cargo test` and `cargo test -- --ignored --list` — the coverage ledger
-# (`docs/testing.md`) — keep meaning "everything". `members` is already every crate;
+# (AGENTS.md, testing) — keep meaning "everything". `members` is already every crate;
 # stating `default-members` as well is what stops a future `exclude` or a
 # `--no-default-features` habit from quietly narrowing the ledger.
 default-members = ["crates/*"]

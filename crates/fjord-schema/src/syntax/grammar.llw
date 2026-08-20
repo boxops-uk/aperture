@@ -1,8 +1,8 @@
 // The **schema DSL** — permissive-early, exactly as `sigla`'s grammar is.
 //
-// Everything this file accepts and the type model cannot yet hold — arrays, sums,
+// Everything this file accepts and the type model cannot yet hold — arrays,
 // `maybe`, `set`, `enum`, `evolves`, a `stored` derivation — parses here and draws a
-// specific `nyi/…` diagnostic downstream. That is the Phase 2 discipline applied a
+// specific `nyi/…` diagnostic downstream. That is the query grammar's discipline applied a
 // second time, and for the same reason: a construct rejected by the *grammar* reports
 // as a syntax error pointing between two tokens, which tells a reader nothing about
 // why the thing they wrote is not available yet.
@@ -18,7 +18,7 @@
 //   * **no `inherit`** (`schema a : b`) — deprecated in Angle.
 //   * **an alternative carries an explicit discriminant** — `{ a : t = 0 | b : t = 1 }`.
 //     Angle numbers alternatives by position, so inserting one renumbers the rest;
-//     [I10](../../../docs/invariants.md#i10) requires the opposite, and the syntax has
+//     [I10](../../../website/content/invariants.md#i10) requires the opposite, and the syntax has
 //     to give somewhere to write the number down.
 //   * **an import names a namespace, never a path.** See `import_item`.
 

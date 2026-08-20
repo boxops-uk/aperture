@@ -20,7 +20,7 @@ include = ["src/**/*.rs", "src/**/*.llw", "build.rs", "README.md", "LICENSE"]
 all-features = true
 
 [dependencies]
-# The schema DSL's front end. [Operations §10](../../docs/fjord-cli-design.md)
+# The schema DSL's front end. [Operations](../../website/content/operations.md)
 # puts "parse → AST → canonical model; imports/resolution; fingerprints" in this
 # crate, which is why the bottom of the stack has a lexer in it — the dependency
 # *direction* is unchanged, and everything above still reads the type model without

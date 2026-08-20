@@ -115,6 +115,12 @@ jobs:
       # failure, so the book cannot silently lose a page.
       - name: Website builds clean
         run: python3 website/build.py --strict
+      # The drift gate: site links and anchors resolve, invariant citations in the
+      # crates resolve to the registry, nothing references a retired doc, and no
+      # build-plan phase number survives in code or the book. Each check is a way
+      # the documentation actually went stale once.
+      - name: Documentation is consistent
+        run: python3 scripts/check-docs.py
 
   package:
     name: package

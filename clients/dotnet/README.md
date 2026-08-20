@@ -118,7 +118,7 @@ The client mirrors the server, so it stops where the server does. Streams are is
 sequentially — the ids are real and the server tags every reply with one, but this
 client sends a stream's frames and reads its replies before starting the next. There is
 no cancellation and no flow control. All three are named as deferred in
-[operations §5](../../docs/fjord-cli-design.md).
+[operations](../../website/content/operations.md).
 
 There is no test project: the console program *is* the test, and it is a better one
 than a unit suite would be, because it runs against the real server over a real socket.

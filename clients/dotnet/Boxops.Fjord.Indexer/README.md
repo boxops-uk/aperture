@@ -106,7 +106,7 @@ order reads well.
 Several of those deserve their reasoning stated.
 
 **`src.Decl`'s value side is the kind** — `class`, `method`, `ctor`, `property` — because
-a value cannot be matched on ([I6](../../../docs/invariants.md#i6)), which makes it
+a value cannot be matched on ([I6](../../../website/content/invariants.md#i6)), which makes it
 exactly right for something a query wants to *read* and never to filter by.
 
 **`src.SearchByName` earns itself here in a way the fixture cannot show.** A declaration's
@@ -136,7 +136,7 @@ string as a *value* rather than a key field says exactly that: read it, do not j
 it.
 
 **`src.Line` is the line table, and it is complete on purpose.** There are no arrays in
-the type model yet ([open decisions](../../../docs/open-decisions.md)), so a sequence is
+the type model yet ([the settled record](../../../PLAN.md)), so a sequence is
 said the only way this schema can say one — a fact per element with the position in the
 key. Blank lines are included: a table whose gaps mean "empty" is indistinguishable from
 one whose gaps mean "not indexed". It is the largest predicate by bytes, the widest row
@@ -297,8 +297,7 @@ one. One walk, two sinks:
 ```
 
 **Why this exists.** The comparison against Glean this repository keeps making is made
-out of documents ([capabilities](../../../docs/glean-capabilities.md),
-[divergences](../../../docs/glean-comparison.md)). A *number* needs the same corpus in
+out of documents ([the Glean ledger](../../../docs/glean.md)). A *number* needs the same corpus in
 both systems, and the same corpus needs the same producer — otherwise the measurement is
 of two indexers that happen to read the same source. So the walk, the per-predicate
 batching, the bounded queue and the writer threads are unchanged, and what differs is one
