@@ -7,12 +7,6 @@
 //! answer asserted in the other are about one database rather than two that have
 //! drifted.
 //!
-//! The **shell** has its own (`src/main.rs`): a demo wants a schema someone recognises,
-//! and this one is built out of the compiler's awkward cases rather than out of
-//! anything.
-//!
-//! Phase 8 parses schemas; until then this is hand-built.
-//!
 //! # The schema
 //!
 //! ```text
@@ -57,7 +51,7 @@
 //! [`FjallDb`](crate::store::FjallDb) is checked against what its allocator
 //! hands out.
 //!
-//! [I11]: ../../../docs/invariants.md#i11
+//! [I11]: ../../../website/content/invariants.md#i11
 
 use std::sync::Arc;
 
@@ -104,7 +98,7 @@ const TEXT: u32 = 0;
 /// declares ([chapter 6]). The built-in code index declares two of its keys otherwise, on
 /// purpose.
 ///
-/// [chapter 6]: ../../../docs/06-types-and-schema.md
+/// [chapter 6]: ../../../website/content/schema-language.md
 #[must_use]
 pub fn schema() -> Schema {
     let mut names = Rodeo::new();
@@ -437,7 +431,7 @@ fn string(value: &str) -> Vec<u8> {
 
 /// A **record-typed field**, which keeps its wrapper: inside a key it is one value
 /// among others and has to be skippable as one. A key itself is flat
-/// ([chapter 3](../../../docs/03-storage-model.md#a-stored-key-is-flat)).
+/// ([chapter 3](../../../website/content/storage.md#a-stored-key-is-flat)).
 fn record(fields: &[Vec<u8>]) -> Vec<u8> {
     let mut out = vec![MARK_RECORD];
     for field in fields {

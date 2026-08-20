@@ -6,7 +6,7 @@
 //! find-references, and a symbol panel — against a Fjord database over the
 //! ordinary wire protocol.
 //!
-//! [`docs/phase-11-code-search.md`](../../../docs/phase-11-code-search.md) is the
+//! [`website/content/clients.md`](../../../website/content/clients.md) is the
 //! analysis this was built from: which query each screen needs, and which of them
 //! seeks. Every one of them seeks now, and four schema predicates exist because of
 //! it.
@@ -63,7 +63,7 @@ const HITS: usize = 50;
 /// order — alphabetical, for a name prefix — and "best match first" is a different
 /// order that no key gives. Sorting the whole result would mean materialising it,
 /// which is an anti-pattern in this codebase for good reasons
-/// (`docs/conventions.md`), so this reads a bounded window and ranks *that*.
+/// (`AGENTS.md`), so this reads a bounded window and ranks *that*.
 ///
 /// The honesty cost is real and is stated on the page: a match ranked above the
 /// window's edge is one this never saw. Four times the page is the usual shape for a
@@ -87,7 +87,7 @@ impl App {
     /// **The schema comes from the server**, on one probe connection opened and dropped
     /// before the pool exists.
     ///
-    /// A schema belongs to the database ([I13](../../../docs/invariants.md#i13)) and this
+    /// A schema belongs to the database ([I13](../../../website/content/invariants.md#i13)) and this
     /// is a reader with nothing to claim, so asking is the only way to be right. It used
     /// to be compiled in from `schemas/code.sigla`, which was wrong twice: a database
     /// created against a newer schema was read through this binary's older copy, and the
@@ -244,7 +244,7 @@ async fn file(State(app): Shared, Path(path): Path<String>) -> axum::response::R
     let rows = run(&app, move |c| {
         // Three questions, one connection, in the order the page needs them. Not
         // batched, because the protocol has no batching — a symbol panel pays the
-        // same round trips, which `docs/phase-11-code-search.md` §3 records.
+        // same round trips, which `website/content/clients.md` §3 records.
         let text = query::drain(c, &text_query)?;
         let xrefs = query::drain(c, &xref_query)?;
         let outline = query::drain(c, &outline_query)?;

@@ -307,8 +307,7 @@ fn finishing_twice_is_a_no_op() {
     );
 }
 
-/// **A silently-empty sealed artifact is the classic CI failure that looks like
-/// success**, so making one takes saying so.
+/// Sealing an empty database takes saying so — `StoreError::EmptyDatabase` says why.
 #[test]
 fn an_empty_database_will_not_seal_without_being_told_to() {
     let (_dir, catalog) = catalog();
@@ -507,7 +506,7 @@ fn the_schema_fingerprint_reaches_the_identity() {
 /// merge passes without measuring anything. The precondition is asserted, so it cannot
 /// quietly stop being true.
 ///
-/// [operations §5]: ../../../docs/fjord-cli-design.md
+/// [operations §5]: ../../../website/content/operations.md
 #[test]
 fn sealing_merges_every_tree_into_one_table() {
     let (_dir, catalog) = catalog();
@@ -722,11 +721,10 @@ fn crashing_finisher_child_process() {
 ///
 /// [`identity::compute`] looks a predicate up by its `PredicateId`, which is a *position*.
 /// So a schema that is not this database's does not fail — it decodes every stored key
-/// against whatever type happens to sit at that position and hashes the result. `finish`
-/// used to take the schema from its caller, and the offline `fjord finish` handed it the
-/// tool's built-in one regardless of what the database embedded: sealing a database built
-/// against any other schema recorded an `ops-I4` identity over misread rows, and the
-/// `finish` that only checks that references resolve had no way to notice.
+/// against whatever type happens to sit at that position and hashes the result: an
+/// `ops-I4` identity over misread rows, which a `finish` that only checks that
+/// references resolve has no way to notice. That is why `finish` reads the embedded
+/// copy and takes no schema from its caller.
 ///
 /// The sharp case is two schemas whose position 0 holds a **different type**, since a
 /// string key read as a record is the silent misread rather than a loud one. So this seals
@@ -838,4 +836,26 @@ fn sealing_a_database_with_no_embedded_schema_is_refused() {
         .resolve(&Selector::of("ancient"), Intent::Read)
         .expect("it is found");
     assert_eq!(entry.status(), Status::Writable);
+}
+
+/// Stored bytes that do not decode against the schema surface as [`StoreError::Corrupt`],
+/// never a panic: `put_fact` takes bytes and trusts them, so the identity walk is the
+/// first thing to decode a row written past [`FjallDb::put`]'s checks.
+#[test]
+fn a_row_that_does_not_decode_is_corrupt_not_a_panic() {
+    let (_dir, catalog) = catalog();
+    catalog.create("code", &schema()).expect("it creates");
+    let (entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
+
+    // 0x13 is no marker at all, and `src.File`'s key is a string.
+    db.put_fact(FILE, &[0x13], &[])
+        .expect("bytes go in unchecked");
+
+    assert!(
+        matches!(
+            identity::compute(&db, &schema(), entry.meta.schema_fingerprint),
+            Err(StoreError::Corrupt(_))
+        ),
+        "an undecodable stored row must be reported as corruption"
+    );
 }

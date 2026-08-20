@@ -45,7 +45,7 @@ impl fmt::Display for Address {
 /// The leading field is a separate component rather than the first element of one
 /// slice, so an *empty* path — a plan naming no field at all — cannot be spelled.
 ///
-/// [chapter 3]: ../../../docs/03-storage-model.md
+/// [chapter 3]: ../../../website/content/storage.md
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldPath {
     field: usize,
@@ -87,7 +87,7 @@ impl FieldPath {
     /// plan built by hand or arriving over the wire. See [phase 8.6 D-d].
     ///
     /// [`FjordError::DiscriminantMismatch`]: crate::error::FjordError::DiscriminantMismatch
-    /// [phase 8.6 D-d]: ../../../docs/phase-8.6-unions.md
+    /// [phase 8.6 D-d]: ../../../website/content/storage.md
     #[must_use]
     pub fn payload(&self, disc: u32) -> Self {
         self.then(disc as usize)
@@ -154,7 +154,7 @@ pub enum SeekKeyPart {
     /// and matches nothing, silently. The id is already in the register, so following
     /// a reference reads nothing from `entities` and [I6] stays structural.
     ///
-    /// [I6]: ../../../docs/invariants.md#i6
+    /// [I6]: ../../../website/content/invariants.md#i6
     RegisterFactId(Address),
 }
 
@@ -192,8 +192,8 @@ pub enum ResidualOp {
     /// [`UnionTag`](fjord_encoding::tuple::UnionTag), because that is what it is: a
     /// value of one alternative begins with that alternative's tag, so this reads a
     /// borrowed span of the register's key and compares it against a stack buffer —
-    /// no decode, no allocation ([I9](../../../docs/invariants.md#i9)), nothing
-    /// fetched ([I6](../../../docs/invariants.md#i6)).
+    /// no decode, no allocation ([I9](../../../website/content/invariants.md#i9)), nothing
+    /// fetched ([I6](../../../website/content/invariants.md#i6)).
     ///
     /// Its own arm rather than a [`Prefix`](ResidualOp::Prefix) carrying those bytes,
     /// for two reasons. A plan is read by people, and `alternative 3` says what
@@ -205,7 +205,7 @@ pub enum ResidualOp {
     /// `field < constant` and its three siblings.
     ///
     /// **A byte comparison, and that is not a shortcut.** The key encoding is
-    /// order-preserving ([I1](../../../docs/invariants.md#i1)), so the lexicographic
+    /// order-preserving ([I1](../../../website/content/invariants.md#i1)), so the lexicographic
     /// order of two encoded fields of the same type *is* their value order — which is
     /// the property the whole storage model rests on, used here for the first time
     /// somewhere other than a seek. No decode, no allocation, no value read.
@@ -235,7 +235,7 @@ pub enum ResidualOp {
     ///
     /// The one comparison that cannot be a byte compare: the other side is a
     /// computed `Value`, not encoded bytes, and encoding it per row would allocate
-    /// ([I9](../../../docs/invariants.md#i9)). So this decodes the *field* instead —
+    /// ([I9](../../../website/content/invariants.md#i9)). So this decodes the *field* instead —
     /// a fixed-width integer read, which allocates nothing — and compares numbers.
     /// Integers only, which typecheck already guarantees of anything arithmetic
     /// produced.
@@ -351,7 +351,7 @@ pub enum Source {
     /// A source rather than a step, because a point read is a relation of at most
     /// one row and the machine's job over it is a scan's exactly: open, drain, move
     /// on. That is what keeps `enumerate` unchanged
-    /// ([the query-surface note](../../../docs/query-surface.md)).
+    /// ([the query-surface note](../../../website/content/query-language.md)).
     ///
     /// `predicate_id` is the field's **declared** referent, and is checked against
     /// the id actually stored. It is not redundant with [`FactId::predicate`]: every
@@ -421,7 +421,7 @@ impl Source {
 ///
 /// `binds` is the level's, not a source's: every alternative binds the same
 /// variables, which is what makes a register mean one thing whichever branch
-/// filled it (see [the query-surface note](../../../docs/query-surface.md)).
+/// filled it (see [the query-surface note](../../../website/content/query-language.md)).
 #[derive(Debug, Clone)]
 pub struct Level {
     pub sources: Box<[Source]>,
@@ -533,12 +533,10 @@ pub enum Project {
 /// Every arm is a pure function of the bindings, with no iteration and no hidden
 /// state, and that purity is the load-bearing part: it is what lets a [`Cursor`]
 /// save only generator positions and recompute the rest
-/// ([chapter 7](../../../docs/07-compilation.md#derived-facts)).
+/// ([chapter 7](../../../website/content/query-language.md#derived-facts)).
 ///
-/// This was one arm wide until Phase 11 — a constant, because nothing in the
-/// language could produce anything else. Arithmetic is the first thing that does,
-/// and it arrived as three more arms rather than as a reshape, which is what the
-/// seam was for.
+/// Arithmetic is the first producer of a computed value in the language, and it
+/// arrived as new arms rather than as a reshape — which is what this seam is for.
 ///
 /// [`Cursor`]: crate::iter::Cursor
 #[derive(Debug, Clone)]
@@ -548,7 +546,7 @@ pub enum Computed {
     /// An **integer** field of a bound row, decoded.
     ///
     /// Integers only, because arithmetic is integers only — which is what keeps
-    /// this allocation-free ([I9](../../../docs/invariants.md#i9)): a fixed-width read
+    /// this allocation-free ([I9](../../../website/content/invariants.md#i9)): a fixed-width read
     /// into an `i64`, with no `String` built per row. A string-valued arm would
     /// need one, and there is nothing yet that would use it.
     Field {
@@ -634,7 +632,7 @@ pub enum Test {
     /// Each source is drained only until its **first** row: the question is whether a
     /// witness exists, not how many there are. So a negation costs at most one
     /// matching row per row the level above it produces, and reads only `keys`
-    /// ([I6](../../../docs/invariants.md#i6) is about values, and a probe fetches
+    /// ([I6](../../../website/content/invariants.md#i6) is about values, and a probe fetches
     /// none).
     Absent(Box<[Source]>),
 
@@ -698,16 +696,15 @@ impl Plan {
     ///
     /// Distinct from `body.len()`, which counts steps, and the distinction is
     /// load-bearing: a [`Cursor`](crate::iter::Cursor) holds one row per
-    /// *level*, and resume replays it against the levels in order. `body.len()`
-    /// used to mean both, so every site that wants one or the other now has to
-    /// name which.
+    /// *level*, and resume replays it against the levels in order — so every site
+    /// that wants one count or the other has to name which.
     #[must_use]
     pub fn levels(&self) -> usize {
         self.body.iter().filter(|step| step.is_level()).count()
     }
 
     /// This plan's identity, for a resume cursor to carry
-    /// ([`PlanFingerprint`], [chapter 5](../../../docs/05-resume.md)).
+    /// ([`PlanFingerprint`], [chapter 5](../../../website/content/executor.md)).
     ///
     /// Recomputed on demand rather than cached in the struct: a `Plan` is public
     /// and its fields are `pub`, so a cached value would be a second source of
@@ -738,7 +735,7 @@ impl Plan {
 }
 
 /// A **plan's identity**, as a resume cursor carries it
-/// ([chapter 5](../../../docs/05-resume.md)).
+/// ([chapter 5](../../../website/content/executor.md)).
 ///
 /// A cursor's entries are paired with the plan's levels *by order*, and until this
 /// existed the only thing checked before that pairing was how many there were — so
@@ -997,7 +994,7 @@ impl Fingerprint {
                 // residual would otherwise accept each other's and resume against
                 // the wrong filter ([chapter 5]).
                 //
-                // [chapter 5]: ../../../docs/05-resume.md
+                // [chapter 5]: ../../../website/content/executor.md
                 ResidualOp::NotEqConst(bytes) => {
                     self.byte(4);
                     self.bytes(bytes);
@@ -1636,7 +1633,7 @@ mod tests {
 /// Draws are unconstrained small numbers **resolved modulo the legal options**,
 /// so no case is wasted and shrinking yields a *minimal valid* counterexample
 /// rather than garbage — the generator is the type checker in reverse. See
-/// [`docs/testing.md`](../../../docs/testing.md).
+/// [`website/content/testing.md`](../../../website/content/testing.md).
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use std::collections::BTreeSet;
@@ -1883,7 +1880,7 @@ pub mod proptest {
         /// register to two key layouts, which needs the exported-value rule the
         /// language cannot ask for yet ([the query-surface note]).
         ///
-        /// [the query-surface note]: ../../../docs/query-surface.md
+        /// [the query-surface note]: ../../../website/content/query-language.md
         sources: Vec<Option<ResidualSpec>>,
     }
 
@@ -1933,8 +1930,8 @@ pub mod proptest {
         /// fact, ids included, since the numbering matches what the real
         /// per-predicate allocator hands out ([I11]).
         ///
-        /// [I4]: ../../../docs/invariants.md#i4
-        /// [I11]: ../../../docs/invariants.md#i11
+        /// [I4]: ../../../website/content/invariants.md#i4
+        /// [I11]: ../../../website/content/invariants.md#i11
         pub fn facts(&self) -> impl Iterator<Item = (PredicateId, Vec<u8>, u64)> + '_ {
             self.facts.iter().enumerate().flat_map(|(predicate, keys)| {
                 keys.iter().enumerate().map(move |(i, key)| {
@@ -2058,7 +2055,7 @@ pub mod proptest {
 
     /// A composite key is its encoded fields back-to-back — the encoding is
     /// self-delimiting (I2), so no lengths or separators are needed, and no record
-    /// wrapper of its own ([chapter 3](../../../docs/03-storage-model.md)).
+    /// wrapper of its own ([chapter 3](../../../website/content/storage.md)).
     pub fn encode_key(key: &[FieldVal]) -> Vec<u8> {
         let fields: Vec<Vec<u8>> = key.iter().map(FieldVal::encode).collect();
         let fields: Vec<&[u8]> = fields.iter().map(Vec::as_slice).collect();

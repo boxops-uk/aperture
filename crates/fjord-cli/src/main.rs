@@ -4,7 +4,7 @@
 //! [`commands`]; this file is deliberately thin, because the interesting decisions
 //! are about *ownership* and *addressing* rather than about argument parsing.
 //!
-//! See [operations §4](../../../docs/fjord-cli-design.md) for the tree and §2 for the
+//! See [operations §4](../../../website/content/operations.md) for the tree and §2 for the
 //! addressing rules it is built to obey.
 
 mod cli;
@@ -87,15 +87,6 @@ pub enum CliError {
         socket.display()
     )]
     RootHeld { root: PathBuf, socket: PathBuf },
-
-    /// An address that is not one — `fjord://` with nothing after it, or no
-    /// database on the end.
-    ///
-    /// Its own variant so the message can show the form rather than whatever the
-    /// resolver failed at: somebody who mistyped an address needs to be told the shape,
-    /// not told that a hostname did not resolve.
-    #[error("`{address}` is not an address — try fjord://host:port/database")]
-    Address { address: String },
 
     /// A refusal that has **already been rendered**, spans and all.
     ///
@@ -383,9 +374,7 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
         }
 
         // **Always over the wire**, and it never silently opens a store root a server
-        // might hold: it connects, or says nothing is listening. There used to be a
-        // second, embedded shell here for an argument-less invocation, which seeded a
-        // scratch database from a corpus compiled into the binary — see `cli.rs`.
+        // might hold: it connects, or says nothing is listening.
         Command::Shell { database } => commands::shell::run(&context.target(database)?),
 
         // **Files, not databases.** Nothing here opens a store root except `diff`, and

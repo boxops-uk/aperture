@@ -23,11 +23,11 @@ pub enum Symbol {
 /// discriminant**, and the type of its payload.
 ///
 /// The discriminant is written down rather than derived from the position, which is
-/// the whole of [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10):
+/// the whole of [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10):
 /// a tag derived from a sorted or declared order renumbers the moment an alternative
 /// is inserted, and every stored value tagged with the old number then decodes as the
 /// wrong alternative. Angle numbers by position and buys stability back with a
-/// query-time transform; [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)
+/// query-time transform; [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)
 /// leaves no schema to transform between, so the tag is explicit here instead.
 ///
 /// A struct rather than a `(Spur, u32, PredicateTy)` triple, unlike a record's
@@ -55,7 +55,7 @@ pub enum PredicateTy {
     /// canonical form therefore sorts by discriminant, and a *renumber* is the change
     /// that moves the fingerprint ([chapter 6]).
     ///
-    /// [chapter 6]: https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md
+    /// [chapter 6]: https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md
     Union(Arc<[Alternative]>),
 }
 
@@ -113,10 +113,9 @@ impl<'a> PredicateRef<'a> {
     /// This predicate's name, or `None` if the schema's own interner cannot
     /// resolve it.
     ///
-    /// `None` is a broken schema, not a predicate without a name — it used to
-    /// come back as `""`, which reads as a valid empty name and travels on into
-    /// diagnostics. Both callers already have a "no such predicate" path to fold
-    /// it into.
+    /// `None` is a broken schema, not a predicate without a name — an empty-string
+    /// answer would read as a valid name and travel on into diagnostics. Both
+    /// callers already have a "no such predicate" path to fold it into.
     pub fn name(&self) -> Option<&'a str> {
         self.interner.resolve(self.inner.name)
     }
@@ -238,8 +237,8 @@ impl Schema {
 
         for (idx, predicate) in predicates.iter().enumerate() {
             // First wins, as the linear scan this replaces did. Two predicates
-            // sharing a name is a schema error for Phase 8 to reject; until then,
-            // indexing them must not silently start preferring the other one.
+            // sharing a name is a schema error lowering rejects; indexing them here
+            // must not silently start preferring the other one.
             by_name
                 .entry(predicate.name)
                 .or_insert(PredicateId(idx as u32));
@@ -393,8 +392,8 @@ mod tests {
     }
 
     /// Two predicates sharing a name resolve to the **first**, as the linear scan
-    /// this index replaced did. A duplicate is a schema error for Phase 8 to
-    /// reject; indexing them must not quietly change which one a query gets.
+    /// this index replaced did. A duplicate is a schema error lowering rejects;
+    /// indexing them must not quietly change which one a query gets.
     #[test]
     fn find_position_prefers_the_first_of_a_duplicated_name() {
         let schema = schema_of(&["a.One", "dup.Pred", "b.Two", "dup.Pred"]);
@@ -406,10 +405,10 @@ mod tests {
 
 /// Phase-8 invariant guards that are **live**.
 ///
-/// One so far: [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)'s order-independence half, which
+/// One so far: [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)'s order-independence half, which
 /// went green when the canonical form and fingerprints landed at 8.3
 /// ([`fingerprint`](crate::fingerprint)). It sits here rather than beside that module
-/// because the [registry](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md) names it `schema::…`, and a guard
+/// because the [registry](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md) names it `schema::…`, and a guard
 /// that moves is a guard the registry stops pointing at.
 #[cfg(test)]
 mod guards {
@@ -507,7 +506,7 @@ mod guards {
     }
 }
 
-/// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10) — **union
+/// [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10) — **union
 /// discriminants are stable and append-only**, built at 8.6.
 ///
 /// **What the invariant asked for, and what is actually implementable.** Its guard was
@@ -537,7 +536,7 @@ mod guards {
 /// thing: appending an alternative is a rebuild, where renumbering one would be a
 /// reindex, and anything that ever exports or migrates these bytes stands on that.
 ///
-/// [I13]: https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13
+/// [I13]: https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13
 #[cfg(test)]
 mod i10_discriminants {
     use crate::{

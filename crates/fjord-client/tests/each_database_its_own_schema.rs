@@ -1,4 +1,4 @@
-//! **One store root, two schemas** — [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13) made real.
+//! **One store root, two schemas** — [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13) made real.
 //!
 //! Until 8.4 a server was handed one schema and served every database with it, which
 //! was true enough while the schema was compiled into the binary. Once `create` takes a
@@ -215,17 +215,14 @@ fn a_copy_that_disagrees_with_the_sidecar_leaves_the_database_unserved() {
 /// **A database with no embedded copy is listed and not served**, exactly as one whose
 /// copy was edited is.
 ///
-/// It used to be served with the schema the server was started with, and the argument for
-/// that was that such an artifact predates *both* halves of the comparison — no source to
-/// read, and a sidecar number from an algorithm since retired — so there was nothing to
-/// check it against. True, and the wrong conclusion: what was left was not a lax check but
-/// a **guess**, and the guess decided how every stored row decoded. If the server's schema
-/// had moved since the database was written — a field reordered, a predicate retyped —
-/// then the loud outcome is a decode error and the quiet one is a query answering zero
+/// Serving it with any schema the server happens to hold is not a lax check but a
+/// **guess**, and the guess decides how every stored row decodes: if that schema has
+/// moved since the database was written — a field reordered, a predicate retyped —
+/// the loud outcome is a decode error and the quiet one is a query answering zero
 /// rows, with nothing anywhere saying why.
 ///
-/// So the honest answer is the one the edited-copy case already gave, and the server no
-/// longer carries a data schema for this to fall back to. The database is still *listed*:
+/// So the honest answer is the one the edited-copy case already gives, and the server
+/// carries no data schema for this to fall back to. The database is still *listed*:
 /// `ops-I7` reads sidecars and never opens a store, so `list` and `describe` keep working,
 /// which is what somebody diagnosing it needs.
 #[test]

@@ -47,12 +47,12 @@ Four constructors, and that is all of it:
 | `Str` | `string` | UTF-8 |
 | `Fact(p)` | the predicate's name | A reference to a fact of predicate `p` |
 | `Record` | `{ a : t, b : u }` | An **ordered** list of named fields; nesting allowed |
+| `Union` | `{ a : t = 0 \| b : u = 1 }` | One of several alternatives, tagged by an explicit, append-only discriminant ([I10](invariants.html#i10)) |
 
-No arrays, no sets, no unions yet, no booleans, no optionals. Union types are designed for
-and reserved ([I10](invariants.html#i10) freezes their discriminants), and are the one part
-of the schema language that parses today and does not yet have a type behind it. The codec
-reserves marker bands for arrays and sums, so the room is physically there; whether they
-are wanted is an open question rather than a missing feature.
+No arrays, no sets, no booleans, no optionals. `maybe` and `enum` are sugar over a union and
+wait on a naming decision, since what they desugar to enters the fingerprint. The codec
+reserves marker bands for arrays, so the room is physically there; whether they are wanted
+is an open question rather than a missing feature.
 
 ### Predicates are the unit of storage
 
@@ -196,4 +196,4 @@ paging possible.
 Four invariants that look inherited are not — order-preserving keys, a self-delimiting
 encoding, values kept out of the scan loop, and stable union discriminants. Glean does the
 opposite, or nothing, in each case. The repository keeps a full ledger of what was taken,
-what was changed and what has not been decided (`docs/glean-comparison.md`).
+what was changed and what has not been decided (`docs/glean.md`).

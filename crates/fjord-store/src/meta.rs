@@ -1,7 +1,7 @@
 //! `FJORD_META` — what a database says about itself, **without being opened**.
 //!
 //! The sidecar is the fast enumeration path
-//! ([`ops-I7`](../../../docs/fjord-cli-design.md)): `list` walks the store root
+//! ([`ops-I7`](../../../website/content/operations.md)): `list` walks the store root
 //! and reads these, never touching fjall — which is what lets it work while a server
 //! holds every database in the root. The copy of the schema under `schema/` is the
 //! durable fallback if a sidecar is lost; the sidecar is what is *read*.
@@ -9,7 +9,7 @@
 //! # Written atomically, or not at all
 //!
 //! Every write is temp → fsync → rename, and the rename is the moment the new
-//! contents exist. [`ops-I3`](../../../docs/fjord-cli-design.md) needs that of the
+//! contents exist. [`ops-I3`](../../../website/content/operations.md) needs that of the
 //! status flip in particular: `finish` must never be observable as "metadata says
 //! Complete while data is not durable", so the flip has to be a single atomic act and
 //! the last one.
@@ -107,7 +107,7 @@ pub struct Meta {
     pub status: Status,
 
     /// The on-disk format the database was written with, mirroring the stamp inside
-    /// it ([I15](../../../docs/invariants.md#i15)).
+    /// it ([I15](../../../website/content/invariants.md#i15)).
     ///
     /// Duplicated on purpose: the stamp is authoritative and requires opening fjall,
     /// and enumeration must not. A disagreement between the two means the sidecar is
@@ -116,7 +116,7 @@ pub struct Meta {
     pub format_storage: u16,
 
     /// The schema this database was created against, and cannot change
-    /// ([I13](../../../docs/invariants.md#i13) once Phase 8 lands).
+    /// ([I13](../../../website/content/invariants.md#i13)).
     pub schema_fingerprint: u64,
 
     /// `hash(canonical schema, base facts)` — recorded at `finish`, absent before it.
@@ -285,12 +285,9 @@ impl Scratch {
 }
 
 impl Drop for Scratch {
-    /// **Always removed**, and there is no longer a way to disarm it.
-    ///
-    /// There used to be: `create` renamed the scratch directory itself into place and
-    /// had to stop the drop deleting it. Now the finished *instance* directory is
-    /// renamed out from under the scratch, so what is left is always an empty directory
-    /// this owns — on the failure paths and on the happy one alike.
+    /// **Always removed, with no way to disarm it.** The finished *instance*
+    /// directory is renamed out from under the scratch, so what is left is always an
+    /// empty directory this owns — on the failure paths and on the happy one alike.
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
@@ -411,11 +408,9 @@ mod tests {
         assert_eq!(Meta::read(dir.path()).expect("it reads"), short);
     }
 
-    /// **A scratch directory is always removed**, and what it holds goes with it.
-    ///
-    /// There used to be a way to keep one, because `create` renamed the scratch itself
-    /// into place. Now the finished instance directory is renamed out from under it, so
-    /// every path — failure and success alike — leaves this to clean up.
+    /// **A scratch directory is always removed**, and what it holds goes with it —
+    /// the finished instance directory is renamed out from under it, so every path,
+    /// failure and success alike, leaves this to clean up.
     #[test]
     fn a_scratch_directory_is_always_removed() {
         let dir = tempfile::tempdir().expect("a scratch directory");

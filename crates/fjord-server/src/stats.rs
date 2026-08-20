@@ -4,7 +4,7 @@
 //! not an omission to be filled in later by whoever needs a number: exposing this is a
 //! *separate* decision with an operational cost, and the counters are worth having
 //! before it is made. A `/metrics` listener would be a second port on a server whose
-//! [`ops-I10`](../../../docs/fjord-cli-design.md) safety argument rests on binding
+//! [`ops-I10`](../../../website/content/operations.md) safety argument rests on binding
 //! being default-closed, and the durable home the design already names is a virtual
 //! predicate over the socket that exists. Either is an adapter over what is here.
 //!

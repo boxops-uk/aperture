@@ -1,5 +1,5 @@
 //! **One fact encoding, not two** — the claim
-//! [operations §8](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md) makes about the wire and the
+//! [operations §8](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md) makes about the wire and the
 //! fact file, checked rather than asserted.
 //!
 //! An integration test rather than a unit one for two reasons. It spans `value`,

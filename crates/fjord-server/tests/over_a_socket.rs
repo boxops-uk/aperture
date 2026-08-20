@@ -1,5 +1,5 @@
-//! **Phase 7a's criterion, as a test**: facts are writable over a socket and queried
-//! back on the same connection.
+//! **The wire-ingestion criterion, as a test**: facts are writable over a socket and
+//! queried back on the same connection.
 //!
 //! Over a real `UnixListener` and a real `FjallDb`, because the criterion says
 //! *socket* — an in-process call proves the frame handling and not the thing that was
@@ -668,7 +668,7 @@ fn a_long_query_does_not_delay_a_short_one() {
 ///
 /// A thousand rows is four chunks at [`CHUNK_ROWS`](fjord_server::session), so the
 /// executor is entered once and *resumed* three times — through the same bytes-only
-/// cursor [chapter 5](../../../docs/05-resume.md) is about. Until now that machinery
+/// cursor [chapter 5](../../../website/content/executor.md) is about. Until now that machinery
 /// was exercised only by its own batteries; this is the first thing that uses it for
 /// what it is for.
 ///
@@ -783,4 +783,91 @@ fn cancelling_a_stream_ends_it_and_leaves_the_connection() {
     let (header, _) = client.recv();
     assert_eq!(header.kind, FrameKind::ROW_DESCRIPTION);
     assert_eq!(header.stream, StreamId(2));
+}
+
+/// A frame that needs a database, on a session bound to none, is refused as
+/// [`ErrorCode::UnknownDatabase`] with a message saying what to do — the one kind of
+/// session `create` is sent on is also one a query must not silently default on.
+#[test]
+fn a_query_on_a_session_naming_no_database_is_refused() {
+    let serving = start();
+    let mut client = Client::connect(&serving);
+
+    let startup = protocol::encode_startup(&Startup {
+        version: protocol::VERSION,
+        database: String::new(),
+        mode: Mode::ReadOnly,
+        schema_fingerprint: 0,
+        predicates: vec![],
+    });
+    client.send(kinds::STARTUP, StreamId(0), &startup);
+    let (header, _) = client.recv();
+    assert_eq!(header.kind, kinds::READY, "a control session is legitimate");
+
+    client.send(kinds::QUERY, StreamId(1), b"F where src.File F");
+    let (header, payload) = client.recv();
+    assert_eq!(header.kind, FrameKind::ERROR);
+    let (code, message) = protocol::decode_error(&payload).expect("an error frame");
+    assert_eq!(code, ErrorCode::UnknownDatabase);
+    assert!(
+        message.contains("names no database"),
+        "the message says what to do: {message}"
+    );
+}
+
+/// A per-predicate claim the database does not hold draws the schema-mismatch code
+/// **with the predicate named in the message** — two whole-schema numbers that differ
+/// say nothing about which predicate they differ over, and a producer writing a
+/// subset needs exactly that.
+#[test]
+fn a_predicate_claim_the_database_does_not_hold_is_named() {
+    let serving = start();
+    let mut client = Client::connect(&serving);
+
+    let startup = protocol::encode_startup(&Startup {
+        version: protocol::VERSION,
+        database: "code".to_owned(),
+        mode: Mode::ReadOnly,
+        // A nonzero whole-schema number is what makes the per-predicate claims
+        // the fallback that gets checked; zero-and-empty means "no opinion".
+        schema_fingerprint: 1,
+        predicates: vec![("src.File".to_owned(), 0xDEAD_BEEF)],
+    });
+    client.send(kinds::STARTUP, StreamId(0), &startup);
+
+    let (header, payload) = client.recv();
+    assert_eq!(header.kind, FrameKind::ERROR);
+    let (code, message) = protocol::decode_error(&payload).expect("an error frame");
+    assert_eq!(code, ErrorCode::SchemaMismatch);
+    assert!(
+        message.contains("src.File"),
+        "the broken predicate is named: {message}"
+    );
+}
+
+/// A fault the *server* cannot attribute to the request — here, a resume token whose
+/// bytes are garbage — is [`ErrorCode::Internal`], and the stream fails without
+/// taking the connection.
+#[test]
+fn a_fault_of_the_servers_own_is_internal_and_survivable() {
+    let serving = start();
+    let mut client = Client::connect(&serving);
+    client.hello(0, Mode::ReadOnly);
+
+    let page = protocol::encode_page(&protocol::Page {
+        limit: 1,
+        cursor: vec![0xFF, 0x00, 0xFF],
+        query: "F where src.File F".to_owned(),
+    });
+    client.send(kinds::QUERY_PAGE, StreamId(1), &page);
+
+    let (header, payload) = client.recv();
+    assert_eq!(header.kind, FrameKind::ERROR);
+    let (code, _) = protocol::decode_error(&payload).expect("an error frame");
+    assert_eq!(code, ErrorCode::Internal);
+
+    // The connection is still usable afterwards.
+    client.send(kinds::QUERY, StreamId(2), b"F where src.File F");
+    let (header, _) = client.recv();
+    assert_eq!(header.kind, FrameKind::ROW_DESCRIPTION);
 }

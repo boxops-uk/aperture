@@ -4,8 +4,8 @@
 //! to see what "optimise for transmission, not storage" actually buys. The storage
 //! codec encodes an integer as a **marker byte carrying the width** followed by a
 //! big-endian minimal magnitude, with negatives ones'-complemented, because
-//! [I1](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i1) requires `memcmp` to *be* semantic order and
-//! [I2](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i2) requires a value to be skippable without a
+//! [I1](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i1) requires `memcmp` to *be* semantic order and
+//! [I2](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i2) requires a value to be skippable without a
 //! schema. Both cost bytes, and neither buys anything on a socket: nothing memcmps a
 //! frame, and the reader has the schema.
 //!
@@ -37,7 +37,7 @@
 //! That matters here for a different reason than it does in storage. In storage a
 //! second encoding would break order-preservation, which is stated over encodings.
 //! Here it would break *identity of a block*: a fact file's block carries a
-//! [CRC32](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md) and the same encoding is used on
+//! [CRC32](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md) and the same encoding is used on
 //! the wire and on disk, so "the same facts" has to mean "the same bytes" for a
 //! checksum to be worth computing or a block to be comparable at all.
 

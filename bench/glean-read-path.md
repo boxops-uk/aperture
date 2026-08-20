@@ -1,12 +1,12 @@
 # Phase 13 — Fjord against Glean, measured
 
-> [Fjord design book](../README.md) · the method: [`performance.md`](performance.md) ·
-> what has been measured so far: [`bench/FINDINGS.md`](../bench/FINDINGS.md) · what each
-> system can be *asked*: [`glean-capabilities.md`](glean-capabilities.md)
+> [Fjord design book](../README.md) · the method: [`performance.md`](../website/content/performance.md) ·
+> what has been measured so far: [`bench/FINDINGS.md`](FINDINGS.md) · what each
+> system can be *asked*: [`glean-capabilities.md`](../docs/glean.md)
 
 Two databases now hold **the same facts**: 18,258,385 of them, every predicate agreeing
 stored-for-stored, from one Roslyn walk over 26,924 files of `dotnet/runtime`
-([findings §16](../bench/FINDINGS.md)). The write paths have been measured. This is the
+([findings §16](FINDINGS.md)). The write paths have been measured. This is the
 plan for the read paths.
 
 **What this phase is not.** It is not a race to a headline number. Both engines answer the
@@ -22,7 +22,7 @@ decision one of them made on purpose.
 **Comparable, and now demonstrated:**
 
 - **One corpus.** Same producer, same walk, same 18.26M facts, same per-predicate counts,
-  both `Complete`/sealed ([§16](../bench/FINDINGS.md)).
+  both `Complete`/sealed ([§16](FINDINGS.md)).
 - **One schema, field order included.** `fjbench.angle` preserves every predicate, field and
   *field order* from `code.sigla`, because on both systems the record's field order is the
   key's byte order and therefore the index design.
@@ -37,7 +37,7 @@ decision one of them made on purpose.
 
 | | Glean | Fjord |
 |---|---|---|
-| recursion | yes | no ([comparison §3](glean-comparison.md)) |
+| recursion | yes | no ([comparison §3](../docs/glean.md)) |
 | stored derivation | `glean derive` | Phase 8b |
 | aggregation | yes | comparisons and arithmetic only |
 | expansion | server-side, on by default in the shell | client-side, `--expand` |
@@ -90,7 +90,7 @@ only milliseconds cannot tell those apart, and they have opposite fixes.
 4. **Work-done counters recorded beside every timing**, or the row is not reportable.
 5. **A/B/A interleaving** across three passes, to catch drift rather than average it away.
 6. **A baseline file per host** — `bench/baselines/<host>.json` — which closes the
-   "no baseline file" item [findings](../bench/FINDINGS.md) has carried since Phase 10.
+   "no baseline file" item [findings](FINDINGS.md) has carried since Phase 10.
 7. **Nothing else on the box.** §15 and §16 both turned on memory pressure: a 16 GB indexer
    starved the page cache the LSM needed. A query benchmark sharing the machine with
    anything measures the sharing.
@@ -113,15 +113,15 @@ rather than a table**: it is drawn from the design docs, so a run can falsify on
 | F2 | prefix range | every file under one directory | prefix seek on an order-preserving key — both spell it `"x"..` | parity, slope set by rows returned |
 | F3 | search index | `SearchByName {name = "Parse"}` | the query a person types | parity; if not, encoding of the result |
 | F4 | prefix search | `SearchByLowerName {name = "parse"..}` | range seek plus fan-out | parity |
-| F5 | scan curve | full scans of File → Module → Decl → Ref → Line (26.9k → 7.5M rows) | **raw scan throughput against database size** | Glean, on residency: 2.4 GB against 886 MB for comparable facts means more of it fits. If *we* win, lazy field decode ([I5](invariants.md#i5)) beats their residency, which is the more interesting result |
-| F6 | projection width | one field against three off a nested key | per-row decode cost | parity; ours should be flat in field count ([I5](invariants.md#i5)) |
-| F7 | **value read** | `Decl.name` (key) against `Decl.value` (kind) | **the sharpest prediction in the suite** | a large Fjord penalty: a value is a second point read per row ([I6](invariants.md#i6)), where Glean's value is inline. If the penalty is small, the page cache is absorbing it and the trade in [capabilities §2.2](glean-capabilities.md) is cheaper than it reads |
-| F8 | joins | leading-field join against trailing-field join | what a key's field order is worth | both degrade, and similarly: neither planner consults statistics ([capabilities §3.1](glean-capabilities.md)) |
+| F5 | scan curve | full scans of File → Module → Decl → Ref → Line (26.9k → 7.5M rows) | **raw scan throughput against database size** | Glean, on residency: 2.4 GB against 886 MB for comparable facts means more of it fits. If *we* win, lazy field decode ([I5](../website/content/invariants.md#i5)) beats their residency, which is the more interesting result |
+| F6 | projection width | one field against three off a nested key | per-row decode cost | parity; ours should be flat in field count ([I5](../website/content/invariants.md#i5)) |
+| F7 | **value read** | `Decl.name` (key) against `Decl.value` (kind) | **the sharpest prediction in the suite** | a large Fjord penalty: a value is a second point read per row ([I6](../website/content/invariants.md#i6)), where Glean's value is inline. If the penalty is small, the page cache is absorbing it and the trade in [capabilities §2.2](../docs/glean.md) is cheaper than it reads |
+| F8 | joins | leading-field join against trailing-field join | what a key's field order is worth | both degrade, and similarly: neither planner consults statistics ([capabilities §3.1](../docs/glean.md)) |
 | F9 | reference | *following* one (id compare) against *reading through* one (fetch) | the split our IR makes explicit | ours flat on the compare, one point read per row on the fetch; Glean's nested pattern match should behave like the compare |
-| F10 | expansion | shallow ids, then 1/2/3 hops | server-side against client-side ([capabilities §2.7](glean-capabilities.md)) | Glean wins with depth (one round trip), we win shallow (no expansion work at all); the crossover is the number |
+| F10 | expansion | shallow ids, then 1/2/3 hops | server-side against client-side ([capabilities §2.7](../docs/glean.md)) | Glean wins with depth (one round trip), we win shallow (no expansion work at all); the crossover is the number |
 | F11 | negation | declarations with no doc comment | anti-join shape | parity; ours is a `Step::Test` re-decided on restore |
 | F12 | counting | how many rows, no rows returned | `--count` against `--omit-results` | parity, and both far under returning the rows |
-| F13 | paging | first page of 40, then the whole result in pages | time-to-first-row against total | ours: a bytes-only cursor with no held snapshot ([I8](invariants.md#i8)); theirs: a continuation. Expect parity on first page and a difference on resume cost |
+| F13 | paging | first page of 40, then the whole result in pages | time-to-first-row against total | ours: a bytes-only cursor with no held snapshot ([I8](../website/content/invariants.md#i8)); theirs: a continuation. Expect parity on first page and a difference on resume cost |
 | F14 | fairness | p99 of cheap seeks while a 7.5M-row scan runs | scheduling under mixed load | ours, on chunked interleaving (§9, §11) — if Glean runs a query to completion per request, its p99 should be the scan's duration |
 | F15 | cold start | first answer from a cold process | what a CLI user pays | ours, heavily: 97 MB of Haskell binary against a 12 MB Rust one. Worth stating because it is real and because it is not the engine |
 | F16 | capability price | transitive closure: `DerivesFrom*` | one recursive Glean query against our client-side loop | Glean, decisively; the number is how much a missing feature costs, and it is the strongest argument in the file for building recursion |
@@ -133,7 +133,7 @@ costs nobody has priced:
   server-side from `Ref` against having the producer write both. This is what Phase 8b buys
   and what it would cost.
 - **F18 — open cost.** Time from process start to a database being answerable, on both, at
-  this size. Ours opens every database under the root at startup ([`ops-I7`](fjord-cli-design.md));
+  this size. Ours opens every database under the root at startup ([`ops-I7`](../website/content/operations.md));
   it has never been measured at 18M facts.
 
 ---
@@ -142,7 +142,7 @@ costs nobody has priced:
 
 One row per (family, rung, system), carrying: p50/p95/p99, rows out, **work done**
 (`facts_searched`/`examined`), bytes returned, and the pass it came from. Plus, for every
-row, the thing [`performance.md §4`](performance.md) requires: the host, and the statement
+row, the thing [`performance.md §4`](../website/content/performance.md) requires: the host, and the statement
 that absolutes do not travel.
 
 A family whose two sides disagree by less than the spread between passes is reported as

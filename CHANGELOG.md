@@ -3,6 +3,22 @@
 Fjord DB. Dates are the release date; `0.0.x` is a pre-release series and the on-disk format
 is not yet promised to be stable across it.
 
+## Unreleased
+
+**The documentation is one body now, and it is tested.** The design book is the website
+(`website/` — `python3 website/serve.py`), verified claim by claim against the tree; its
+invariants page is the canonical registry. `AGENTS.md` is the working contract for
+contributors, `PLAN.md` is a roadmap rather than a phase tree (with the auth design and the
+settled-decisions record inside it), and the two Glean documents merged into `docs/glean.md`.
+CI builds the site strictly and runs `scripts/check-docs.py`, which fails on a broken link, an
+invariant citation the registry does not declare, a reference to a retired document, or a
+build-plan phase number in code — each a way the documentation actually went stale once.
+
+**Every error state is demonstrated by a test** that provokes it and asserts it at its
+contract layer, fjall/OS bubbles excepted; the engine's corpus gate now covers every
+diagnostic code, not only the deferrals. Comments across the workspace state the risk they
+guard rather than the history of how the code got there.
+
 ## 0.0.1 — unreleased
 
 The first published artifact. Everything below is *what is there*, and the

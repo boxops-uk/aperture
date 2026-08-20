@@ -63,6 +63,13 @@ two sources are two key layouts: a path that names a field of one names differen
 none, in the other. `binds` stays on the level, because every alternative binds the same
 variables.
 
+Union types are a measure of how far this shape stretches: what they cost the machine is one
+residual arm (`DiscriminantEq`, a byte-prefix compare against the tag), one branch in the
+nested-field walk, and a projection arm — no new `Source`, `Step`, frame kind or cursor entry.
+A field path stepping *into* a union payload carries the expected discriminant, checked before
+any read through it, so a payload read against the wrong alternative is an error rather than
+another type's bytes.
+
 ### Access, seek, splice
 
 An `Access` is a `predicate_id` plus a `SeekKey`, and the seek key is built from two kinds of
@@ -297,6 +304,12 @@ numbers, and hashing those would fail a legitimate resume. The stated consequenc
 differing only in what their head fields are *called* fingerprint the same. Neither positions a
 scan.
 
+The other side of the same coin: **every residual operator carries its own fingerprint tag**.
+The denial pair is why the rule is worth stating — a plan that *requires* a value and one that
+*denies* it differ in a single tag and answer complementary rows, so a fingerprint that hashed
+the bytes without the tag would let a cursor from either resume into the other and hand back
+the wrong half of the predicate.
+
 ## How resume reconstructs the run
 
 `resume(store, plan, cursor)` does one forward walk over the plan's steps — **re-bind the fact
@@ -366,6 +379,15 @@ One capability gap recorded rather than hidden: a *deadline* unwinds terminally 
 handing back a resumable position, because a cursor of one row per level has no way to
 represent a mid-descent position. A resumable time slice needs that extra bit plus a fresh
 proof that resuming from it is exact.
+
+:::note Why resume owns a battery and not a review rule
+Resume bugs are the archetypal invisible bug: happy paths pass, and only one exact
+suspend-at-this-boundary schedule duplicates or skips a row. The reference implementation is
+the argument — Glean's per-query dedup set lives in the executor's stack and is **not** part of
+the continuation, so a paged run and an uninterrupted run can differ observably, in results, in
+production. A property checked at every generated cut point is what catches that class before
+it ships; nothing about it is visible to inspection.
+:::
 
 ## What a run examined
 

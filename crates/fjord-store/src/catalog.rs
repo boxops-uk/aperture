@@ -11,7 +11,7 @@
 //!
 //! # There is no manifest
 //!
-//! [`ops-I7`](../../../docs/fjord-cli-design.md): enumeration is a walk of the root
+//! [`ops-I7`](../../../website/content/operations.md): enumeration is a walk of the root
 //! and a read of each sidecar, and **never opens fjall**. That is what lets `list`
 //! work while a server holds every database under the root — the sidecars are
 //! ordinary files, and the server's exclusive hold is on the fjall directories.
@@ -23,7 +23,7 @@
 //!
 //! `<name>` holds one directory per **instance**, and `create` adds one rather than
 //! conflicting: a database-per-CI-run needs somewhere to go. This is the
-//! [Glean `Repo`](../../../docs/glean-capabilities.md) shape — a name plus a version of
+//! [Glean `Repo`](../../../docs/glean.md) shape — a name plus a version of
 //! it — with a generated [ULID](crate::ulid) where Glean takes a caller-supplied
 //! revision.
 //!
@@ -84,7 +84,7 @@ pub const INSTANCE_SEPARATOR: char = '@';
 
 /// Which database a caller means: a name, and optionally which instance of it.
 ///
-/// This is the [Glean `Repo`](../../../docs/glean-capabilities.md) shape — a name plus a
+/// This is the [Glean `Repo`](../../../docs/glean.md) shape — a name plus a
 /// version of it — with one deliberate difference. Glean's second component is a
 /// caller-supplied hash, usually the revision indexed; ours is a generated
 /// [ULID](crate::ulid), so it is opaque and orders by creation time. Both systems order
@@ -480,7 +480,7 @@ impl Catalog {
     /// Materialises **every** predicate's trees up front rather than on first write:
     /// a keyspace costs about 30 ms, and a database created from a schema knows all
     /// of them, so the bill is paid once here instead of at an unpredictable point
-    /// inside an ingest ([chapter 3](../../../docs/03-storage-model.md)).
+    /// inside an ingest ([chapter 3](../../../website/content/storage.md)).
     ///
     /// # Errors
     ///
@@ -558,7 +558,7 @@ impl Catalog {
             detail: format!("cannot create the name directory: {source}"),
         })?;
 
-        // Still one atomic rename, just one level deeper than it used to be: the
+        // One atomic rename: the
         // instance directory moves out of the scratch and into the name. A process
         // killed at any point leaves either no instance directory or a whole one, and
         // an empty name directory is invisible to [`list`](Catalog::list) because it
@@ -569,9 +569,8 @@ impl Catalog {
             detail: format!("cannot move into place: {source}"),
         })?;
 
-        // Deliberately not `scratch.keep()`: what used to be kept was the scratch
-        // directory itself, because it *became* the name directory. Now the instance is
-        // moved out from under it and the empty scratch is ours to remove, which is what
+        // Deliberately not `scratch.keep()`: the instance was moved out from under
+        // the scratch, so the empty scratch is ours to remove — which is what
         // dropping it does.
         drop(scratch);
 
@@ -645,12 +644,10 @@ impl Catalog {
     ///
     /// [`identity::compute`] looks a predicate up by its `PredicateId`, which is a
     /// *position*, so a schema that is not this database's does not fail — it decodes
-    /// every stored key against whatever type happens to sit at that position and hashes
-    /// the result. The caller used to supply it, and the offline `fjord finish` supplied
-    /// the tool's built-in schema regardless of what the database embedded, so sealing a
-    /// database built against any other schema recorded an `ops-I4` identity over
-    /// misread rows. Reading the embedded copy here is what makes that unstateable rather
-    /// than merely fixed.
+    /// every stored key against whatever type happens to sit at that position and
+    /// hashes the result, recording an `ops-I4` identity over misread rows,
+    /// silently. Reading the embedded copy here — never a caller-supplied one — is
+    /// what makes that unstateable rather than merely avoided.
     ///
     /// [`finish_held`](Catalog::finish_held) still takes one, because the server has
     /// already read and fingerprint-checked the copy and holds the composed form; the
@@ -840,8 +837,7 @@ fn seal(
 
     let identity = identity::compute(db, schema, entry.meta.schema_fingerprint)?;
 
-    // A silently-empty sealed artifact is the classic CI failure that looks like
-    // success, so it takes a flag to make one.
+    // Sealing an empty database takes a flag — `StoreError::EmptyDatabase` says why.
     if identity.facts == 0 && !allow_zero_facts {
         return Err(StoreError::EmptyDatabase(name.to_owned()));
     }

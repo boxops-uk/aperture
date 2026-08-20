@@ -1,6 +1,6 @@
 //! Where things live.
 //!
-//! [Operations §3](../../../docs/fjord-cli-design.md) specifies figment layering —
+//! [Operations §3](../../../website/content/operations.md) specifies figment layering —
 //! defaults → config file → `FJORD_` env → flags, every field `Option<T>` so an
 //! unset flag does not clobber a lower layer. **The file layer is not here yet**; this
 //! is defaults → env → flags, which is the same shape with one layer missing and the
@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-/// The socket's name inside the store root ([operations §9](../../../docs/fjord-cli-design.md)).
+/// The socket's name inside the store root ([operations §9](../../../website/content/operations.md)).
 pub const SOCKET_FILE: &str = "fjord.sock";
 
 /// The store root.
@@ -40,7 +40,7 @@ pub fn data_dir(flag: Option<PathBuf>) -> PathBuf {
 }
 
 /// Where a schema's imports are looked for
-/// ([operations §7](../../../docs/fjord-cli-design.md)).
+/// ([operations §7](../../../website/content/operations.md)).
 ///
 /// A list of roots, searched in order, first match wins — `lang.rust` is `lang/rust.sigla`
 /// under one of them. An entry file's *own* directory is always searched first and is
@@ -102,7 +102,7 @@ pub fn socket_path(data_dir: &std::path::Path, chosen: bool, flag: Option<PathBu
 /// would be harder to see.
 ///
 /// JSON, and read with the `serde_json` already in the build rather than by adding a
-/// configuration crate for two fields. [Operations §3](../../../docs/fjord-cli-design.md)
+/// configuration crate for two fields. [Operations §3](../../../website/content/operations.md)
 /// specifies the figment *pattern* — defaults → file → env → flags, every field
 /// `Option<T>` so an unset layer cannot clobber a lower one — and that is what this is;
 /// the crate was never the point.

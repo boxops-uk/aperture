@@ -1,6 +1,6 @@
 //! [`Schema`] → source — the form a database **embeds**.
 //!
-//! [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13) asks a database to carry its own schema,
+//! [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13) asks a database to carry its own schema,
 //! and this is the half that makes the copy worth carrying: text in the same language
 //! `fjord create --schema` takes, so a reader needs no second format and the parser
 //! that already exists is the one that reads it back.
@@ -19,7 +19,7 @@
 //! Predicates are printed **in id order**, because an id is a position and every
 //! [`FactId`](crate::id::FactId) a database holds carries one as its tag. Reading the
 //! copy back with [`lower`](super::lower::lower) would re-assign ids by sorted name
-//! ([D1](https://github.com/boxops-uk/fjord/blob/main/docs/phase-8-schemas.md)) — right for a schema being *declared*,
+//! ([D1](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md)) — right for a schema being *declared*,
 //! and wrong for one being *recovered*, where the numbering is already frozen on disk.
 //! For every schema written down as text the two agree, since lowering sorted them in
 //! the first place; for a hand-built one they need not, and the difference is a database

@@ -136,7 +136,8 @@ key-only scan. [I6](invariants.html#i6)
 
 **predicate** — a relation, and the unit of storage. Fixes a fact's type; its id is the key prefix.
 
-**PredicateTy** — a type: `Int`, `Str`, `Fact(p)` or `Record` of ordered fields. Unions later.
+**PredicateTy** — a type: `Int`, `Str`, `Fact(p)`, `Record` of ordered fields, or `Union` of
+tagged alternatives.
 
 **Project** — a projection node: a literal, a field of a register, a reference, a value, a computed
 value, or a record built out of those.

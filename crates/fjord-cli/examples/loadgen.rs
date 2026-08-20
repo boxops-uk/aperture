@@ -1,7 +1,7 @@
 //! **A load generator for the server**, driving it over a real socket through
 //! `fjord-client`.
 //!
-//! Not part of the command tree ([operations §4](../../../docs/fjord-cli-design.md) has no
+//! Not part of the command tree ([operations §4](../../../website/content/operations.md) has no
 //! `bench`), and deliberately so: this is a measuring instrument, not a thing anyone
 //! should find while looking for how to use the database. It lives here rather than in
 //! `fjord-client` because it needs the sample code index, and there is exactly one
@@ -20,8 +20,8 @@
 //! Every number here is **end to end over a socket**: compile, plan, execute, encode,
 //! frame, and decode on this side. That is the number that matters for "is the server
 //! fast enough", and it is *not* an executor microbenchmark — the engine's own guards
-//! ([I5](../../../docs/invariants.md#i5), [I6](../../../docs/invariants.md#i6),
-//! [I9](../../../docs/invariants.md#i9)) cover that ground, and cover it better, because they
+//! ([I5](../../../website/content/invariants.md#i5), [I6](../../../website/content/invariants.md#i6),
+//! [I9](../../../website/content/invariants.md#i9)) cover that ground, and cover it better, because they
 //! assert shapes rather than time.
 //!
 //! Rows are counted and dropped rather than rendered. Rendering is the client's cost,
@@ -389,11 +389,11 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
 
     let mut rows_out = vec![];
 
-    // **Pivots sampled from whatever is loaded, not computed from `--files`.** This
-    // file used to seek `files / 2`, which lands on a real key only in the corpus it
-    // seeded itself — point it at somebody's index and every seek workload measured a
-    // miss. Phase 10's S0: the questions and the sampling are `fjord_cli::workload`'s,
-    // so this bench and `engine` ask the same thing of the same data.
+    // **Pivots sampled from whatever is loaded, never computed from `--files`.** A
+    // computed pivot lands on a real key only in a corpus this file seeded itself —
+    // pointed at somebody's index, every seek workload silently measures a miss.
+    // The questions and the sampling are `fjord_cli::workload`'s, so this bench and
+    // `engine` ask the same thing of the same data.
     let pivots = {
         let mut connection = connect(options, schema, Mode::ReadOnly);
         workload::sample(&mut connection).unwrap_or_else(|error| {

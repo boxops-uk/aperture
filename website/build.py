@@ -344,7 +344,9 @@ def render_table(rows: list[str]) -> str:
             row = row[1:]
         if row.endswith("|"):
             row = row[:-1]
-        return [cell.strip() for cell in row.split("|")]
+        # `\|` is a literal pipe inside a cell (union types are written with one).
+        parts = re.split(r"(?<!\\)\|", row)
+        return [cell.strip().replace("\\|", "|") for cell in parts]
 
     if len(rows) < 2:
         return ""
@@ -494,11 +496,15 @@ def build() -> int:
         print(f"no content directory at {CONTENT}", file=sys.stderr)
         return 1
 
+    strict = "--strict" in sys.argv[1:]
+    warnings = 0
+
     pages: dict[str, Page] = {}
     for slug in ORDER:
         path = CONTENT / f"{slug}.md"
         if not path.exists():
             print(f"warning: {path.name} is in the nav and missing from content/", file=sys.stderr)
+            warnings += 1
             continue
         meta, source = parse_front_matter(path.read_text(encoding="utf-8"))
         page = Page(
@@ -512,6 +518,7 @@ def build() -> int:
     stray = sorted(p.stem for p in CONTENT.glob("*.md") if p.stem not in ORDER)
     for name in stray:
         print(f"warning: content/{name}.md is not in the nav — not built", file=sys.stderr)
+        warnings += 1
 
     titles = {slug: page.title for slug, page in pages.items()}
     group_of = {slug: label for label, entries in NAV for slug, _ in entries}
@@ -547,6 +554,9 @@ def build() -> int:
 
     (OUT / "search-index.json").write_text(json.dumps(index, separators=(",", ":")), encoding="utf-8")
     print(f"built {len(pages)} pages and {len(index)} search entries into {OUT.relative_to(ROOT)}/")
+    if strict and warnings:
+        print(f"--strict: {warnings} warning(s) are an error", file=sys.stderr)
+        return 1
     return 0
 
 

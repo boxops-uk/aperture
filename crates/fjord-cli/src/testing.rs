@@ -4,7 +4,7 @@
 //! the real binary against a real `fjord serve`, which is the right shape for the
 //! lifecycle — it proves the frames crossed a socket between two processes. It is the
 //! wrong shape for anything that needs *facts in a database*, because the tool has no
-//! command that writes any (that is Phase 7b), and the wrong shape for anything that
+//! command that writes any (file ingestion is unbuilt), and the wrong shape for anything that
 //! needs to look at a value the binary does not print.
 //!
 //! So this stands the same server up behind the same socket, writes facts through the

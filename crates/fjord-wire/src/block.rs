@@ -3,7 +3,7 @@
 //! One block is a run of facts of *one predicate*, so the predicate id is paid once
 //! rather than per fact. An indexer writing in visitation order emits small blocks in
 //! bursts; a writer that has grouped its output emits large ones
-//! ([operations §8](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)). The same bytes are a
+//! ([operations §8](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)). The same bytes are a
 //! `CopyData` frame's payload on the wire and a run of a fact file on disk, which is
 //! what makes "one fact encoding, not two" a thing that can be checked.
 //!
@@ -14,9 +14,9 @@
 //!
 //! # The predicate is named, not numbered
 //!
-//! The header carried a `predicate u32` — the *database's* id — until Phase 8. That made a
-//! fact file meaningful only against the database whose numbering produced it, and it made
-//! every client keep a table of ids in step with a server's. A name costs about six more
+//! A header carrying the *database's* predicate id would make a fact file meaningful only
+//! against the database whose numbering produced it, and would make every client keep a
+//! table of ids in step with a server's. A name costs about six more
 //! bytes **once per block**, against payloads of hundreds to thousands of facts, and buys
 //! both back: a client never learns a database's numbering, and a file is portable to any
 //! database whose schema declares those names.
@@ -36,7 +36,7 @@
 //! Glean's opaque sequential `Batch` cannot offer and the reason this format has a
 //! marker at all.
 //!
-//! [Operations §8](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md) specifies the marker as "a
+//! [Operations §8](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md) specifies the marker as "a
 //! reserved, structurally-illegal byte sequence (unused type-tag run the encoder
 //! never emits)", and describes every hit as *only a candidate* because "values
 //! carry arbitrary bytes (blobs/source text), so a marker can occur inside one".
@@ -73,7 +73,7 @@
 //! read `length` *before* it can trust anything else — a variable-width field would
 //! have to be parsed to be skipped, and the whole point is to skip. Little-endian
 //! because there is nothing to order: the storage codec's big-endian is an
-//! [I1](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i1) requirement, and this is the file where that
+//! [I1](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i1) requirement, and this is the file where that
 //! requirement is not inherited.
 
 use fjord_schema::schema::{PredicateId, Schema};
@@ -647,5 +647,83 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **Each kind of damage is reported by name**, not merely refused.
+    ///
+    /// The properties above prove no corruption survives; this pins *which* error each
+    /// fault draws, because a caller routes on it — a splitter treats [`NoSyncMarker`]
+    /// as "scan on", where a [`ChecksumMismatch`] is a block to report.
+    ///
+    /// [`NoSyncMarker`]: WireError::NoSyncMarker
+    /// [`ChecksumMismatch`]: WireError::ChecksumMismatch
+    #[test]
+    fn each_kind_of_damage_is_reported_by_name() {
+        use ::proptest::{strategy::ValueTree, test_runner::TestRunner};
+
+        let mut runner = TestRunner::deterministic();
+        let spec = arb_schema_and_fact()
+            .new_tree(&mut runner)
+            .expect("a spec")
+            .current();
+        let (schema, block, _) = blocked(&spec);
+
+        // A first byte that is not the marker's: the boundary is gone, not the block.
+        let mut torn = block.clone();
+        torn[0] = 0x00;
+        assert_eq!(decode_block(&torn, &schema), Err(WireError::NoSyncMarker));
+
+        // The marker intact and the magic wrong: a boundary that is not a block.
+        let mut stamped = block.clone();
+        stamped[SYNC.len()] ^= 0xFF;
+        assert_eq!(decode_block(&stamped, &schema), Err(WireError::BadMagic));
+
+        // A payload bit flipped past every header check: caught by the checksum,
+        // and the error carries both numbers so the fault is diagnosable.
+        let mut flipped = block.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0x01;
+        assert!(matches!(
+            decode_block(&flipped, &schema),
+            Err(WireError::ChecksumMismatch { declared, computed }) if declared != computed
+        ));
+
+        // A predicate name that is not UTF-8 — refused as a bad string before the
+        // checksum is even computed, so a name is never interned from garbage.
+        let mut named = block.clone();
+        named[OVERHEAD] = 0xFF;
+        assert_eq!(decode_block(&named, &schema), Err(WireError::BadString));
+    }
+
+    /// The name resolution fails by name on both sides of the wire: an encoder
+    /// asked for a predicate its schema does not hold, and a decoder handed a block
+    /// whose named predicate its *own* schema does not declare — two databases may
+    /// number a predicate differently, so the id in the error is the caller's.
+    #[test]
+    fn a_predicate_neither_schema_knows_is_refused_by_name() {
+        use ::proptest::{strategy::ValueTree, test_runner::TestRunner};
+
+        let mut runner = TestRunner::deterministic();
+        let spec = arb_schema_and_fact()
+            .new_tree(&mut runner)
+            .expect("a spec")
+            .current();
+        let (schema, block, facts) = blocked(&spec);
+
+        // Encoding: an id the schema has no predicate for.
+        let missing = PredicateId(9_999);
+        let mut out = vec![];
+        assert_eq!(
+            encode_block(&mut out, &schema, missing, &facts),
+            Err(WireError::UnknownPredicate(9_999))
+        );
+
+        // Decoding: a well-formed block against a reader whose schema declares
+        // nothing — the name travels, so the error carries it.
+        let empty = fjord_schema::schema::Schema::empty();
+        assert!(matches!(
+            decode_block(&block, &empty),
+            Err(WireError::UnknownPredicateName(_))
+        ));
     }
 }

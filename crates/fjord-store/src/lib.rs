@@ -4,20 +4,20 @@
 //! [`catalog`] is the store root — databases as artifacts, the sidecar
 //! ([`meta`]), the embedded schema copy ([`schema_doc`]) and the root lock, with the
 //! filesystem itself as the catalog
-//! ([`ops-I7`](../../../docs/fjord-cli-design.md)).
+//! ([`ops-I7`](../../../website/content/operations.md)).
 //!
 //! [`fact_store`] is the seam — deliberately its own module, so neither
 //! implementation can be mistaken for the definition. [`store`] is the fjall
 //! backend, [`mem_store`] the in-memory model the batteries hold it against as a
 //! differential oracle. [`fact`] is how a fact is written *by hand*, resolved
 //! against the schema by name, and [`format`] is the twelve-byte stamp that says
-//! which build wrote a database ([I15](../../../docs/invariants.md#i15)).
+//! which build wrote a database ([I15](../../../website/content/invariants.md#i15)).
 //!
 //! The executor consumes a `(handle, snapshot)` and assumes nothing about a
 //! connection — the cut that lets the same engine run embedded and served
-//! ([operations §10](../../../docs/fjord-cli-design.md)).
+//! ([operations §10](../../../website/content/operations.md)).
 //!
-//! Design of record: [chapter 3](../../../docs/03-storage-model.md).
+//! Design of record: [chapter 3](../../../website/content/storage.md).
 
 pub mod catalog;
 pub mod error;
@@ -25,7 +25,7 @@ pub mod fact;
 pub mod fact_store;
 pub mod format;
 pub mod identity;
-/// The ingest-time lookup cache (see `docs/glean-capabilities.md` §2.3).
+/// The ingest-time lookup cache (see `docs/glean.md` §2.3).
 mod lookup_cache;
 pub mod meta;
 pub mod schema_doc;
@@ -34,7 +34,7 @@ pub mod ulid;
 
 // Test-support surface: the in-memory store and the shared fixture database.
 // Gated so `--features proptest` exposes them to consumers outside `cfg(test)`
-// (see `docs/testing.md`) — which is every battery in the engine crate.
+// (see `website/content/testing.md`) — which is every battery in the engine crate.
 #[cfg(any(test, feature = "proptest"))]
 pub mod fixture;
 

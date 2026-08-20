@@ -283,6 +283,26 @@ fn a_reference_to_the_wrong_predicate_is_refused() {
     ));
 }
 
+/// A fact naming a predicate the schema does not declare is refused **with the id
+/// in the error** — a deriver builds a `WireFact` by hand, so the id is not
+/// guaranteed to have come through the decoder's own check.
+#[test]
+fn a_predicate_the_schema_does_not_declare_is_refused() {
+    let (_dir, db) = db();
+    let schema = schema();
+
+    let stray = WireFact {
+        predicate: fjord_schema::schema::PredicateId(9_999),
+        key: WireValue::Str("nobody".to_owned()),
+        value: None,
+    };
+
+    assert!(matches!(
+        intern_fact(&db, &schema, &stray),
+        Err(IngestError::UnknownPredicate(9_999))
+    ));
+}
+
 /// **A whole block ingests**, which is what a `CopyData` frame carries — the write
 /// stream's actual unit, end to end from encoded bytes to rows on disk.
 #[test]
@@ -325,7 +345,7 @@ fn an_ingest_fault_says_whose_fault_it_is() {
     assert!(err.is_peers_fault());
 }
 
-/// **[Phase 12c](../../../PLAN.md)'s guard: the point reads are counted, not argued.**
+/// **The lookup cache's guard: the point reads are counted, not argued.**
 ///
 /// The cache's claim is not "interning got faster" — a timing test would say that and
 /// would say it on a machine that happened to be idle. The claim is arithmetic: a

@@ -293,12 +293,16 @@ Both directions use the transport codec, and it differs from the storage codec i
 | int | Marker carrying the width, big-endian minimal magnitude, negatives ones'-complemented | LEB128 varint over zigzag |
 | string | Marker, escaped contents, terminator | Varint length, then the bytes |
 | record | Marker, fields, terminator | The fields, concatenated. Nothing else |
-| reference | Marker plus fixed 8 bytes | A varint union branch: an id, **or the target fact** |
+| union | Marker, discriminant, payload, terminator | Varint discriminant, then the payload against that alternative's declared type |
+| reference | Marker plus fixed 8 bytes | A varint branch: an id, **or the target fact** |
 | names, types, arities | — | **Not sent at all** |
 
 The last row is the design. Both peers have the schema — the handshake compares fingerprints
 before data flows, and a database's schema is frozen at create — so names, order, arity and type
-are things the reader already has. That is **Avro's** model, and Avro states the consequence
+are things the reader already has. A union's discriminant is the one exception, because which
+alternative a value took is a property of the *value*, not the schema; it is sent as a varint and
+resolved against the declaration exactly as a record's field order is, and a discriminant no
+alternative declares is an error on either side. That is **Avro's** model, and Avro states the consequence
 plainly: binary Avro carries no type information or field names, and a record is just the
 concatenation of its fields' encodings.
 

@@ -8,9 +8,9 @@
 //! Everything physical is below this crate — the schema, the id, the codec, the
 //! store — so what is left here is a description of a query and a machine that
 //! executes one. Design of record:
-//! [chapter 4](../../../docs/04-executor.md) for the machine,
-//! [chapter 5](../../../docs/05-resume.md) for resume, and
-//! [chapter 7](../../../docs/07-compilation.md) for the compiler.
+//! [chapter 4](../../../website/content/executor.md) for the machine,
+//! [chapter 5](../../../website/content/executor.md) for resume, and
+//! [chapter 7](../../../website/content/query-language.md) for the compiler.
 
 pub mod compile;
 pub mod cst;
@@ -35,11 +35,11 @@ pub mod parser;
 // Test-support surface: the plan runners the executor batteries import, plus a
 // re-export of the store-shaped half, which lives in `fjord-store`. Gated so
 // `--features proptest` exposes them to consumers outside `cfg(test)` too (see
-// `docs/testing.md`).
+// `website/content/testing.md`).
 #[cfg(any(test, feature = "proptest"))]
 pub mod fixtures;
 
-// The target-feature corpus — Phase 2's audit table as data, and the acceptance
-// gate for the grammar surface.
+// The target-feature corpus — the language surface as data, and the acceptance
+// gate over it.
 #[cfg(any(test, feature = "proptest"))]
 pub mod corpus;

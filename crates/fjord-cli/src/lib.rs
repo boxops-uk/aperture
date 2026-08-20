@@ -3,7 +3,7 @@
 //! The binary is a thin dispatcher over this; what lives here is what more than one
 //! target needs **one** statement of: the sample code index — `schemas/code.sigla`, parsed
 //! by [`sample_schema`] — and the workload catalogue every instrument in `examples/`
-//! measures, which is [Phase 10](../../../PLAN.md)'s S0.
+//! measures.
 //!
 //! **Neither is reached by any command.** They are fixtures for the tests, the two
 //! integration suites and the six instruments; the tool itself takes a schema from
@@ -14,7 +14,7 @@
 //! also parse the schema twice and hand out two `Schema`s that compare equal and are not
 //! the same `Arc`.
 //!
-//! This is `fjord-cli` in [operations §10](../../../docs/fjord-cli-design.md)'s
+//! This is `fjord-cli` in [operations §10](../../../website/content/operations.md)'s
 //! layout, and the package is named for that.
 
 pub mod sample_schema;

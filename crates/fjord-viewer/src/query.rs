@@ -1,10 +1,10 @@
 //! **Every question this viewer asks, in one place.**
 //!
 //! One module for the same reason `fjord_cli::workload` is one module: a query
-//! written where it is used is a query nobody can cost, and the whole argument of
-//! [phase 11](../../../docs/phase-11-code-search.md) is about which of these seek and
-//! which scan. Each one below says which, and a `:plan` against the built-in schema
-//! is what settles it.
+//! written where it is used is a query nobody can cost, and what matters about each of
+//! these is which seek and which scan ([the viewer's
+//! design](../../../website/content/clients.md)). Each one below says which, and a
+//! `:plan` against the sample schema is what settles it.
 //!
 //! # The one thing that is not a query
 //!
@@ -25,8 +25,8 @@ use fjord_wire::{Desc, WireRef, WireValue};
 
 /// A row, **read by field name**.
 ///
-/// Not by position, and that distinction cost an afternoon: a query's head record has
-/// its fields **sorted by name at lowering** (`docs/conventions.md`), so
+/// Not by position: a query's head record has its fields **sorted by name at
+/// lowering**, so
 /// `{line = …, col = …, length = …}` arrives as `col, length, line`. Reading
 /// positionally works until somebody renames a field, and then it silently reads the
 /// wrong column — which is exactly the failure a row that carries no names invites.

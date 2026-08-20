@@ -1,18 +1,18 @@
 //! **Content identity** — `hash(canonical schema, base facts)`, computed at `finish`.
 //!
-//! [`ops-I4`](../../../docs/fjord-cli-design.md) has asserted since before it was
+//! [`ops-I4`](../../../website/content/operations.md) has asserted since before it was
 //! computable that *"a DB built twice from identical inputs is identical"*, and that
 //! identity is **always** the content hash. This is that hash.
 //!
 //! # Why it is computable at all
 //!
-//! It was not, until references stopped being ids on the way in. The clause reads
-//! "hash the canonical schema and the base facts", and a base fact used to contain a
-//! **physical `FactId`** — a number two reproducible builds can legitimately disagree
-//! about, since it depends on the order writes happened to arrive in. Hashing it would
-//! have made identity depend on nothing semantic.
+//! The clause reads "hash the canonical schema and the base facts", and it is
+//! computable only because a stored reference is expanded to its target's **logical
+//! form** first: a physical `FactId` is a number two reproducible builds can
+//! legitimately disagree about, since it depends on the order writes happened to
+//! arrive in, so hashing one would make identity depend on nothing semantic.
 //!
-//! With [a reference sent as the target fact](../../../docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline),
+//! With [a reference sent as the target fact](../../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened),
 //! a database has a canonical **logical** form: expand every reference to the key of
 //! the fact it names, recursively, and no physical id appears anywhere. That is what
 //! is hashed.

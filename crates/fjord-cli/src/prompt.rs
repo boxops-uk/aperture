@@ -1,12 +1,8 @@
 //! **The prompt itself** — what both shells share, and nothing either of them means.
 //!
-//! There are two shells and there will go on being two
-//! ([operations §5](../../../docs/fjord-cli-design.md)): [`crate::commands::shell`] is the
-//! product one, always over the wire, and [`crate::shell`] is Phase 5's embedded demo
-//! over a scratch database it seeds itself. What they have in common is a *terminal* —
-//! the same highlighter over the same lexer, the same rule for where a line's sigla
-//! source begins, the same decision about colour, and the same table shape behind
-//! `:help`. That is this module. What differs is every command's meaning, which is why
+//! The shell's *terminal*: the highlighter over the compiler's own lexer, the rule for
+//! where a line's sigla source begins, the decision about colour, and the table shape
+//! behind `:help`. Command *meanings* live with [`crate::commands::shell`], which is why
 //! the table is passed in rather than defined here.
 //!
 //! # Colour is decided once, and off a pipe it is off
@@ -107,9 +103,8 @@ pub fn colour(token: Token) -> &'static str {
 /// The same palette, for the **schema** language.
 ///
 /// Two lexers, one set of colours: a predicate name is the same yellow in a schema as
-/// in a query, and a keyword the same magenta. Until Phase 8 the schema had no lexer
-/// and `:schema` was painted by a hand-written tokeniser that guessed; there is a real
-/// one now, so what is printed is schema source painted by the schema's own lexer.
+/// in a query, and a keyword the same magenta. `:schema` output is schema source
+/// painted by the schema language's own lexer — never by a tokeniser that guesses.
 #[must_use]
 pub fn schema_colour(token: fjord_schema::syntax::lexer::Token) -> &'static str {
     use fjord_schema::syntax::lexer::Token as S;

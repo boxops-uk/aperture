@@ -172,13 +172,11 @@ fn control(endpoint: &Endpoint) -> Result<Connection, CliError> {
 /// — is reported rather than assumed away, because that is a server we are being kept
 /// out of, not the absence of one.
 ///
-/// **The session asserts nothing about a schema, and carries none.** It used to claim
-/// this build's built-in one, and the argument for that was real — a tool whose schema is
-/// not the server's would create a database against a schema it does not have. What made
-/// it wrong is that a lifecycle request names a database that may not exist yet, so there
-/// is nothing there to agree *about*; what the claim actually compared was two copies of a
-/// default, and requiring them to match is what made a default load-bearing. The schema a
-/// database is created against now travels with the request ([`create`]), which is where a
+/// **The session asserts nothing about a schema, and carries none.** A lifecycle
+/// request names a database that may not exist yet, so there is nothing to agree
+/// *about* — a schema claimed here could only be compared against another copy of
+/// itself, which is how a default becomes load-bearing. The schema a database is
+/// created against travels with the request ([`create`]), which is where a
 /// disagreement can be a real one.
 fn connect(socket: &Path) -> Result<Option<Connection>, CliError> {
     use std::io::ErrorKind;

@@ -710,8 +710,8 @@ fn a_selector_round_trips_through_its_text_form() {
 }
 
 /// **A listing is in resolution order**, so the first row shown for a name is the one an
-/// unqualified read of that name binds. The two used to be sorted differently, which made
-/// the listing quietly misleading the moment a name held two instances.
+/// unqualified read of that name binds. Sorting the two differently makes the listing
+/// quietly misleading the moment a name holds two instances.
 #[test]
 fn a_listing_shows_a_names_instances_in_the_order_resolution_picks_them() {
     let (_dir, catalog) = catalog();
@@ -742,5 +742,34 @@ fn a_listing_shows_a_names_instances_in_the_order_resolution_picks_them() {
             .instance,
         listed.entries[0].meta.instance,
         "the head of the listing is what a bare name reads"
+    );
+}
+
+/// A schema whose text does not lower back to itself is refused at `create` —
+/// [`StoreError::UnwritableSchema`] — because the embedded copy is what a server later
+/// serves the database from, and embedding one that reads back as a different schema
+/// plants the disagreement where nothing would ever report it.
+#[test]
+fn a_schema_that_cannot_be_written_back_is_refused_at_create() {
+    let mut rodeo = Rodeo::new();
+    // A leaf name with a space in it: printable, but no lowering recovers it.
+    let name = rodeo.get_or_intern("src.bad name");
+
+    let schema = Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![Predicate {
+            name,
+            key: PredicateTy::Str,
+            value: None,
+        }]),
+    );
+
+    let (_dir, catalog) = catalog();
+    assert!(
+        matches!(
+            catalog.create("code", &schema),
+            Err(StoreError::UnwritableSchema { .. })
+        ),
+        "a schema that does not round-trip must be refused before anything exists on disk"
     );
 }

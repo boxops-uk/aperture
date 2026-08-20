@@ -1,23 +1,19 @@
 //! `fjord shell <db>` — the REPL, always over the wire.
 //!
 //! **Remote-first, and that is the point rather than a limitation**
-//! ([operations §5](../../../../docs/fjord-cli-design.md)). The shell is the permanent
+//! ([operations §5](../../../../website/content/operations.md)). The shell is the permanent
 //! exerciser of the wire format: every query a person types here is a real handshake, a
 //! real stream and a real page of `DATA_ROW` frames, so a format change that the tests
-//! happen not to cover still cannot survive somebody using the tool. `fjord shell`
-//! with no database is the *other* shell — [`crate::shell`], Phase 5's embedded demo
-//! over a scratch database it seeds itself.
+//! happen not to cover still cannot survive somebody using the tool.
 //!
-//! # It compiles what you type, and that is why the errors look like the demo's
+//! # It compiles what you type
 //!
-//! This shell used to hand every line to the server and print whatever came back:
-//! plain text, no colour, no caret, and a round trip to be told about a typo. It
-//! compiles the line **here** now, against the schema the server said it serves
+//! The line is compiled **here**, against the schema the server said it serves
 //! ([`Connection::served_schema`]) — so a mistake is a caret under the word, in colour,
 //! before anything crosses the socket, and `:plan` and `:type` are answerable at all.
 //!
 //! Fetching the schema is what makes that honest rather than hopeful. A database
-//! carries the schema it was created against ([I13](../../../../docs/invariants.md#i13)), so
+//! carries the schema it was created against ([I13](../../../../website/content/invariants.md#i13)), so
 //! compiling against this tool's *built-in* one would be checking a query against a
 //! schema nobody is using. The one assumption left is that the server's compiler is
 //! this compiler: against a server of a different build the local answer can differ,
@@ -30,13 +26,12 @@
 //! stops; nothing is held at either end, because the place is kept by the *stream*
 //! staying open — server-side, parked on a full outbound queue with a bytes-only cursor
 //! whose snapshot was released at the chunk boundary
-//! ([I8](../../../../docs/invariants.md#i8)). A pause of a millisecond and a pause of an hour
+//! ([I8](../../../../website/content/invariants.md#i8)). A pause of a millisecond and a pause of an hour
 //! cost the server the same thing.
 //!
-//! Until this existed, [I4](../../../../docs/invariants.md#i4) — resume equals an
-//! uninterrupted run, the most heavily tested machinery in this project — had **no
-//! interactive exerciser at all**: Phase 5's REPL discards the resume token at both of
-//! its call sites. `:more` is a person holding a cursor across a round trip, and
+//! [I4](../../../../website/content/invariants.md#i4) — resume equals an uninterrupted
+//! run, the most heavily tested machinery in this project — has exactly one interactive
+//! exerciser: `:more` is a person holding a cursor across a round trip, and
 //! [`pages_concatenate_to_an_uninterrupted_run`](tests) is that claim as a test.
 //!
 //! # `:expand` is the other thing a wire client could not do
@@ -440,7 +435,7 @@ impl Repl {
             // written out rather than hidden behind a control message precisely so that
             // it can be edited: the text is a starting point a person can paste, narrow
             // with a `status =`, or page with `:more`, which is what
-            // [operations §5](../../../../docs/fjord-cli-design.md) means by putting
+            // [operations §5](../../../../website/content/operations.md) means by putting
             // enumeration through the normal machinery.
             ":list" => self.run_or_report(LISTING, out)?,
             ":interning" => self.run_or_report(INTERNING, out)?,
@@ -660,8 +655,8 @@ impl Repl {
         }
 
         // **Never silent.** A reference that names no fact cannot happen — both column
-        // families are written together ([I12](../../../../docs/invariants.md#i12)) and ids are
-        // never reused ([I11](../../../../docs/invariants.md#i11)) — so one that did is
+        // families are written together ([I12](../../../../website/content/invariants.md#i12)) and ids are
+        // never reused ([I11](../../../../website/content/invariants.md#i11)) — so one that did is
         // corruption, and a row rendering the id instead would look like an ordinary
         // unexpanded field.
         if dangling > 0 {
@@ -1230,12 +1225,12 @@ mod tests {
             .collect()
     }
 
-    /// **The acceptance criterion of Phase 9f, and of this whole shell.**
+    /// **The acceptance criterion of this whole shell.**
     ///
     /// `:more` holds a bytes-only cursor across a round trip and resumes it, which is
-    /// [I4](../../../../docs/invariants.md#i4) — resume equals an uninterrupted run —
-    /// exercised interactively for the first time. The battery has proved this over
-    /// generated plans since Phase 0; what it has never had is a person's hand on it.
+    /// [I4](../../../../website/content/invariants.md#i4) — resume equals an uninterrupted run —
+    /// exercised interactively. The battery proves this over generated plans; what it
+    /// never has is a person's hand on it.
     ///
     /// The check is the *concatenation*: pages that each look plausible can still drop
     /// a row at a boundary or repeat one, and only the whole sequence against the whole
@@ -1602,8 +1597,8 @@ mod tests {
     /// **`:connect` means the database next to this one**, which for a session opened
     /// over TCP is on that server rather than on this machine.
     ///
-    /// It used to be string surgery on the address — find the last `/`, keep the prefix
-    /// — and is now the only thing it ever meant: keep the endpoint, swap the database.
+    /// Keep the endpoint, swap the database — never string surgery on the address,
+    /// which breaks the moment the endpoint is not a path.
     /// The endpoint here is a socket because a unit test can start one, but nothing in
     /// the path being tested knows which transport it is holding.
     #[test]
@@ -1621,10 +1616,10 @@ mod tests {
 
     /// **`:clear` asks the loop, and the loop asks rustyline.**
     ///
-    /// It used to write an escape into the sink, which failed twice over: the sequence
-    /// has no newline, so a line-buffered stdout held it until something else printed,
-    /// and rustyline went on believing the screen still held what it had drawn. The
-    /// value that comes back is the whole fix, and it is checkable without a terminal.
+    /// Writing an escape into the sink fails twice over: the sequence has no newline,
+    /// so a line-buffered stdout holds it until something else prints, and rustyline
+    /// goes on believing the screen still holds what it drew. The value that comes
+    /// back is the whole fix, and it is checkable without a terminal.
     #[test]
     fn clear_is_asked_of_the_editor_rather_than_written_at_the_screen() {
         let serving = serving(1);

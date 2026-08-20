@@ -3,7 +3,7 @@
 //! The last front-end phase and the one the two halves of the system meet at
 //! ([chapter 7]). It takes the typed tree and produces an ordered `[Level]`
 //! plus a `head: Project`, which is the fixed contract
-//! ([chapter 4](../../../docs/04-executor.md)); everything after this point is the
+//! ([chapter 4](../../../website/content/executor.md)); everything after this point is the
 //! executor's.
 //!
 //! Four things happen here, in this order, and the order is the design:
@@ -62,9 +62,9 @@
 //! Each of those is a corpus entry, so the promise is checked rather than
 //! described ([`corpus`](crate::corpus)).
 //!
-//! [chapter 7]: ../../../docs/07-compilation.md
-//! [chapter 3]: ../../../docs/03-storage-model.md
-//! [I6]: ../../../docs/invariants.md#i6
+//! [chapter 7]: ../../../website/content/query-language.md
+//! [chapter 3]: ../../../website/content/storage.md
+//! [I6]: ../../../website/content/invariants.md#i6
 
 use crate::{
     diag::{Code, Diagnostics},
@@ -105,7 +105,7 @@ enum Slot {
     /// register.
     ///
     /// It needs no plan support, because [a stored key is
-    /// flat](../../../docs/03-storage-model.md#a-stored-key-is-flat): its top-level
+    /// flat](../../../website/content/storage.md#a-stored-key-is-flat): its top-level
     /// fields sit back to back, so splicing every field in declared order
     /// reconstructs exactly the bytes of the whole key, and projecting is a record
     /// over those fields. Under a wrapped layout neither would be true — the
@@ -128,7 +128,7 @@ enum Slot {
     },
     /// A row's value side. Projectable; never matched ([I6]).
     ///
-    /// [I6]: ../../../docs/invariants.md#i6
+    /// [I6]: ../../../website/content/invariants.md#i6
     Value { address: Address, ty: PredicateTy },
     /// A **constant**, from `X = 42` — held as the literal's own node rather than
     /// as bytes or a decoded value, so every use resolves by *substitution*: a key
@@ -315,7 +315,7 @@ enum Stmt {
     Compare(Comparison),
     /// `Y = X + 1` — a **derived bind**, which becomes a [`Step::Derive`].
     ///
-    /// The first thing in sigla to lower one. Until Phase 11 a bind could only be a
+    /// The first thing in sigla to lower one — before it, a bind could only be a
     /// row, a fold, an alias or a constraint, and the derive machinery was exercised
     /// by hand-built plans alone.
     Derive(Derived),
@@ -437,10 +437,9 @@ struct Body {
     levels: usize,
     /// How many registers are allocated: one per level, plus one per derived bind.
     ///
-    /// Separate from `levels` since Phase 11, because a derived bind takes an
-    /// address without being a level. Before that the two were the same number and
-    /// `next_address` could be `Address::new(levels)`; now conflating them would
-    /// hand a derive and the level after it the same register.
+    /// Deliberately separate from `levels`: a derived bind takes an address without
+    /// being a level, so conflating the two counts would hand a derive and the
+    /// level after it the same register.
     registers: usize,
 }
 
@@ -472,7 +471,7 @@ impl Body {
     ///
     /// Not a level: it produces one value, `enumerate` does not iterate it, and the
     /// cursor stores nothing for it — it is recomputed on resume, which is what
-    /// [I14](../../../docs/invariants.md#i14) is about.
+    /// [I14](../../../website/content/invariants.md#i14) is about.
     fn push_derive(&mut self, value: Computed) -> Address {
         let bind = self.next_address();
         self.steps.push(Step::Derive(DerivedBind { bind, value }));
@@ -565,8 +564,8 @@ impl SeekBuilder {
 /// against). Every type flatten puts in a plan therefore comes from the schema,
 /// walked along the same path the plan will read at run time — the annotations are
 /// what the *diagnostics* were built from, and re-deriving from the schema means a
-/// projection cannot disagree with the bytes it decodes. Phase 6's derived binds
-/// are the first thing that will need the table itself, since a computed value has
+/// projection cannot disagree with the bytes it decodes. Derived binds
+/// are the first thing to need the table itself, since a computed value has
 /// no declared type to look up.
 ///
 /// [`Compilation::plan`]: crate::compile::Compilation::plan
@@ -604,8 +603,8 @@ pub fn flatten_in_order(
 /// [`reorder`](crate::reorder::reorder) is handed.
 ///
 /// Test-only today. It is the natural shape for a `:plan`-style introspection
-/// command to show, and Phase 6 needs it for the topological ordering derived binds
-/// impose, but exporting it before either exists would be speculative.
+/// command to show, and the topological ordering derived binds impose rests on it,
+/// but exporting it before something needs it would be speculative.
 #[cfg(any(test, feature = "proptest"))]
 pub fn dependencies(
     ast: &Ast,
@@ -1038,7 +1037,7 @@ impl Flattener<'_> {
                 // statement before, so the placement rule *is* the graph — no
                 // immovability tag, no second mechanism, and completeness survives
                 // because `reads` is still structural and `bound` still only grows
-                // ([the query-surface note](../../../docs/query-surface.md)).
+                // ([the query-surface note](../../../website/content/query-language.md)).
                 Stmt::Negate(generator) => {
                     for alt in generator.alternatives.clone().iter() {
                         self.scan_key(alt.key, alt.predicate, &claims, &mut occurrences);
@@ -1312,7 +1311,7 @@ impl Flattener<'_> {
     /// actually resolves depends on the order, and `emit` reports what does not.
     /// What this excludes is the derived bind — a record mentioning a captured
     /// variable, a string prefix — which is in no register and would have to be
-    /// built ([chapter 7](../../../docs/07-compilation.md#derived-facts)).
+    /// built ([chapter 7](../../../website/content/query-language.md#derived-facts)).
     fn names_a_location(&self, node: NodeId) -> bool {
         match self.ast.store().kind(node) {
             ExprKind::Var(_) | ExprKind::Fact(..) => true,
@@ -1425,7 +1424,7 @@ impl Flattener<'_> {
     /// **Lookup-chasing**: mark the row binds that may be lowered as a fetch.
     ///
     /// Glean's `Opt` pass calls this lookup-chasing, and
-    /// [the comparison](../../../docs/glean-comparison.md) listed it as the one part of
+    /// [the comparison](../../../docs/glean.md) listed it as the one part of
     /// that pass genuinely absent here. This is it.
     ///
     /// # What it is for
@@ -1438,7 +1437,7 @@ impl Flattener<'_> {
     /// binding it had to run first: `src.Decl` scanned whole, and the seek reduced to a
     /// residual on identity because `name`'s prefix had already closed the seek. On a
     /// 25M-fact index that is 30,222 ms, against 2.1 ms for the same answer written as a
-    /// read through the reference ([phase 11](../../../docs/phase-11-code-search.md) §6d).
+    /// read through the reference ([phase 11](../../../website/content/clients.md) §6d).
     ///
     /// Marking it chasable stops the bind claiming its row, so the statement holding the
     /// reference is free to capture it — and where the order then puts that statement
@@ -1850,7 +1849,7 @@ impl Flattener<'_> {
 
     /// **A row bind lowered as a fetch** — Glean's *lookup-chasing*.
     ///
-    /// Every piece is machinery Phase 5 built: `fetch_level` is reading through a
+    /// Every piece is existing machinery: `fetch_level` is reading through a
     /// reference, and `key` is the walk a level's own key gets. What is new is that a
     /// *row bind* can be lowered this way, which is [`chasable`](Self::chasable)'s
     /// decision and the order's — not this function's.
@@ -1991,7 +1990,7 @@ impl Flattener<'_> {
     /// statement here binds what it names, and the two readings of `!test.Bar {id =
     /// Y}` are indistinguishable at a glance, which is the argument for refusing it
     /// rather than picking one ([the query-surface
-    /// note](../../../docs/query-surface.md)). The wildcard reading is spellable —
+    /// note](../../../website/content/query-language.md)). The wildcard reading is spellable —
     /// `_` — so this asks for that spelling.
     ///
     /// **A rejection, not a deferral**, and it carries the code the safety check
@@ -2247,7 +2246,7 @@ impl Flattener<'_> {
     /// Every leaf has to be somewhere the machine can read at run time: an integer
     /// literal, an integer field of a bound row, or another derived bind. A string,
     /// a whole row and a fact's value are each refused by name — the last because
-    /// values live in `entities` and [I6](../../../docs/invariants.md#i6) keeps
+    /// values live in `entities` and [I6](../../../website/content/invariants.md#i6) keeps
     /// those out of the row loop.
     fn computed(&mut self, node: NodeId) -> Option<Computed> {
         if let ExprKind::Arith(operands, ops) = self.ast.store().kind(node) {
@@ -3211,8 +3210,8 @@ impl Flattener<'_> {
             } => {
                 // The same register is *this* row: an intra-row equality, which
                 // needs a same-row residual the executor does not have. Rejected
-                // for Phase 4 rather than adding an operator nothing else uses
-                // ([open decisions](../../../docs/open-decisions.md)).
+                // by name rather than adding an operator nothing else uses
+                // ([the settled record](../../../PLAN.md)).
                 if *from == address {
                     self.report(
                         node,
@@ -3583,7 +3582,7 @@ impl Flattener<'_> {
                 // `entities`, and [I6] keeps `entities` out of the scan loop. Same
                 // deferral a prefix written at a key field draws.
                 //
-                // [I6]: ../../../docs/invariants.md#i6
+                // [I6]: ../../../website/content/invariants.md#i6
                 Some(Slot::Value { .. }) => self.report(
                     pattern,
                     Code::NyiValueMatch,
@@ -3802,7 +3801,7 @@ impl Flattener<'_> {
 
             // **A derived bind on one side.** The other side's field is decoded and
             // compared as a number, rather than the computed value being encoded per
-            // row — which would allocate ([I9](../../../docs/invariants.md#i9)).
+            // row — which would allocate ([I9](../../../website/content/invariants.md#i9)).
             //
             // The residual goes on the *field's* level, which is the level that runs
             // later by construction: a derive reads what its operands bind, so it is
@@ -3867,7 +3866,7 @@ impl Flattener<'_> {
             // `entities` out of the scan loop. The same deferral matching on a value
             // draws, for the same reason.
             //
-            // [I6]: ../../../docs/invariants.md#i6
+            // [I6]: ../../../website/content/invariants.md#i6
             (Slot::Value { .. }, _) | (_, Slot::Value { .. }) => {
                 self.report(
                     *left,
@@ -4041,7 +4040,7 @@ impl Flattener<'_> {
                 // form draws, for the same reason — polarity is not what makes it
                 // unreachable.
                 //
-                // [I6]: ../../../docs/invariants.md#i6
+                // [I6]: ../../../website/content/invariants.md#i6
                 Some(Slot::Value { .. }) => self.report(
                     pattern,
                     Code::NyiValueMatch,
@@ -4226,7 +4225,7 @@ impl Flattener<'_> {
     /// head, an alias's right side, and a record's pieces when it destructures. That
     /// is what keeps a construct from meaning one thing in one position and
     /// something else in another — the failure mode of answering the question six
-    /// times ([chapter 7](../../../docs/07-compilation.md)).
+    /// times ([chapter 7](../../../website/content/query-language.md)).
     ///
     /// `None` is "this denotes no place". Some of those are reported here (a read
     /// through a reference); the rest were reported by the phase that owns them.
@@ -4446,12 +4445,12 @@ impl Flattener<'_> {
             // value's type and accepts it, and there is no projection that can name
             // it — [`Project::Value`](crate::plan::Project) carries an address and no
             // path, because a value is fetched whole by a point read
-            // ([I6](../../../docs/invariants.md#i6)) rather than lying in a register
+            // ([I6](../../../website/content/invariants.md#i6)) rather than lying in a register
             // to be walked.
             //
-            // Declining *quietly* here is what it used to do, which tripped
-            // `flatten_ordered`'s "no plan without a reason" assertion — a panic on a
-            // schema somebody wrote, which is input.
+            // Declining *quietly* here trips `flatten_ordered`'s "no plan without
+            // a reason" assertion — a panic on a schema somebody wrote, which is
+            // input — so the refusal must be reported by name.
             Slot::Value { .. } => {
                 self.report(
                     node,
@@ -4530,9 +4529,8 @@ impl Flattener<'_> {
                         Some(Project::RegisterField { address, path, ty })
                     }
                     Slot::Value { address, ty } => Some(Project::Value { address, ty }),
-                    // A derived bind projects the register it wrote — which is what
-                    // `Project::Computed` has been for since Phase 6, waiting for
-                    // something in the language to produce one.
+                    // A derived bind projects the register it wrote — which is
+                    // what `Project::Computed` is for.
                     Slot::Derived(address) => Some(Project::Computed(address)),
                     // Substitution: project the literal the variable was bound to,
                     // which is the same `Project::Lit` the head would have got had
@@ -4566,7 +4564,7 @@ impl Flattener<'_> {
 }
 
 /// The pattern a record gives for `name`, if it gives one. An omitted field is a
-/// wildcard ([chapter 7](../../../docs/07-compilation.md)).
+/// wildcard ([chapter 7](../../../website/content/query-language.md)).
 fn field_pattern(fields: &[(Symbol, NodeId)], name: Symbol) -> Option<NodeId> {
     fields
         .iter()
@@ -4973,7 +4971,7 @@ mod tests {
     /// narrows with are the field's encoding — which is what makes the narrowing a
     /// prefix scan at all ([I1]).
     ///
-    /// [I1]: ../../../docs/invariants.md#i1
+    /// [I1]: ../../../website/content/invariants.md#i1
     #[test]
     fn a_leading_constant_becomes_a_seek_prefix() {
         let flattened = compile("X where X = test.Foo {id = 1}");
@@ -5307,7 +5305,7 @@ mod tests {
         );
     }
 
-    // ---- negation (Phase 6b) ------------------------------------------------
+    // ---- negation -------------------------------------------------------------
 
     /// **A negation is a test, not a level**: no register, no row, and its key is
     /// built exactly as a scan's is.
@@ -5623,7 +5621,7 @@ mod tests {
     /// **A join through a reference.** The bound row's *identity* is what a
     /// fact-typed field holds, so the splice is its fact id — not its key bytes,
     /// which is the trap — and it narrows the scan like any other leading constant.
-    /// No store read is involved, so [I6](../../../docs/invariants.md#i6) stays
+    /// No store read is involved, so [I6](../../../website/content/invariants.md#i6) stays
     /// structural.
     #[test]
     fn a_bound_row_splices_its_fact_id_into_the_seek() {
@@ -5696,7 +5694,7 @@ mod tests {
     /// predicate whole. Both conditions hold, so the bind is a fetch.
     ///
     /// This is the shape that cost the viewer 30,222 ms against 2.1 ms at 25M facts
-    /// ([phase 11](../../../docs/phase-11-code-search.md) §6d), in miniature.
+    /// ([phase 11](../../../website/content/clients.md) §6d), in miniature.
     #[test]
     fn a_row_bind_that_would_scan_is_chased_through_the_reference() {
         assert_eq!(
@@ -5730,9 +5728,8 @@ mod tests {
     /// The same query, the same rows, whichever way round it is written.
     ///
     /// Chasing follows the *order*, and the order follows the source among statements
-    /// that are all runnable — so the two spellings compile differently, which is a
-    /// change from what a row bind used to guarantee. What must not change is the
-    /// answer, and this is the smallest statement of that.
+    /// that are all runnable — so the two spellings may compile differently. What must
+    /// not differ is the answer, and this is the smallest statement of that.
     #[test]
     fn a_chased_bind_answers_what_the_scan_would_have() {
         let chased = shape("Y where test.Link {of = F}; F = test.Foo {name = Y}");
@@ -5927,12 +5924,11 @@ mod tests {
     /// out of source order, which is only an ordering question and which
     /// [`reorder`](crate::reorder::reorder) now answers.
     ///
-    /// Typecheck used to catch this incidentally, by refusing *any* bind whose left
-    /// side was already bound. That refusal is now narrowed to the shapes that
-    /// really need unification, so the check lives here — where every statement's
-    /// row is in hand at once, which is also the only place it can be decided
-    /// independently of the order. The proptest generator at
-    /// [`proptest`](self::proptest) relies on this holding.
+    /// The check lives here — where every statement's row is in hand at once, the
+    /// only place it can be decided independently of the order — rather than as a
+    /// typecheck refusal of *any* bind whose left side is already bound, which
+    /// would refuse far more than the shapes that need unification. The proptest
+    /// generator at [`proptest`](self::proptest) relies on this holding.
     #[test]
     fn a_row_variable_bound_twice_is_deferred() {
         let schema = corpus::schema();
@@ -6131,14 +6127,14 @@ mod tests {
         }
     }
 
-    /// **The Phase 4 decision on intra-row repeats: rejected.**
+    /// **The settled decision on intra-row repeats: rejected.**
     ///
     /// `Edge {from = X, to = X}` constrains two fields of the *same* row to be
     /// equal, which needs a same-row `ResidualOp::EqField` — distinct from the
     /// cross-level `EqRegisterField`, because there is no outer register to compare
     /// against. Rather than add an operator the executor has no other use for yet,
     /// the pattern is rejected, with the diagnostic saying what to write instead
-    /// ([open decisions](../../../docs/open-decisions.md)).
+    /// ([open decisions](../../../PLAN.md)).
     #[test]
     fn an_intra_row_repeat_is_rejected() {
         for source in [
@@ -6203,7 +6199,7 @@ mod tests {
     /// read: at a key field it splices the register it names rather than comparing
     /// a value, which is the whole point of substituting a location.
     ///
-    /// This is the query that used to draw `nyi/value-bind`.
+    /// The pair pins that an alias is never mistaken for a value bind.
     #[test]
     fn an_alias_seeks_where_the_read_would() {
         assert_eq!(
@@ -6261,11 +6257,10 @@ mod tests {
     /// written first says nothing about which one the value comes from.
     ///
     /// [`Flattener::orient`] settles that from the body: the side some fact pattern
-    /// can bind is where the value is, and the other is a name for it. Written the
-    /// other way round the alias used to claim the *bound* side, demoting the key
-    /// that offered to capture it to a read — so nothing bound it, the free variable
-    /// was unbound as well, and a query with a perfectly good plan drew two
-    /// diagnostics.
+    /// can bind is where the value is, and the other is a name for it. An alias
+    /// that claims the *bound* side demotes the key that offered to capture it to a
+    /// read — so nothing binds it, the free variable is unbound as well, and a
+    /// query with a perfectly good plan draws two diagnostics.
     #[test]
     fn which_side_of_a_bind_is_written_first_does_not_matter() {
         // One side capturable: the other is the name, whichever way round.
@@ -6288,9 +6283,9 @@ mod tests {
             shape("X where test.Foo {id = X}; test.Bar {id = Y}; Y = X"),
         );
 
-        // ...including written *above* the statement that binds one of its sides.
-        // That order used to be refused outright, because typecheck asked whether a
-        // variable had been mentioned yet rather than whether the body binds it.
+        // ...including written *above* the statement that binds one of its sides —
+        // the order a mentioned-yet gate in typecheck would refuse outright, since
+        // whether the *body* binds a variable is not a property of source order.
         assert_eq!(
             shape("X where test.Foo {id = X}; X = Y; test.Bar {id = Y}"),
             shape("X where test.Foo {id = X}; test.Bar {id = Y}; X = Y"),
@@ -6303,7 +6298,7 @@ mod tests {
     }
 
     /// A `.value` alias projects, and still cannot be matched: a value is fetched
-    /// per row and never enters the scan ([I6](../../../docs/invariants.md#i6)).
+    /// per row and never enters the scan ([I6](../../../website/content/invariants.md#i6)).
     /// The deferral is the value one, reported where the match is attempted.
     #[test]
     fn a_value_alias_projects_but_does_not_match() {
@@ -6343,9 +6338,8 @@ mod tests {
     /// same value* — and flatten's claim check ([`Flattener::claims`]) is where it
     /// is seen, because only there is every statement in hand at once.
     ///
-    /// It is the only backstop now. Typecheck used to catch it incidentally, by
-    /// refusing any bind whose left side was already mentioned; that gate is gone,
-    /// because it decided in source order.
+    /// It is the only backstop: typecheck deliberately does not refuse a bind whose
+    /// left side is already mentioned, because that gate decides in source order.
     #[test]
     fn a_variable_may_be_claimed_once() {
         // Two names for two different places. The types agree — both are `str` —
@@ -6435,9 +6429,9 @@ mod tests {
 
     /// What is left of `nyi/value-bind`: a right side that denotes **no location**.
     ///
-    /// The code used to cover two different things. A field read names a place in a
-    /// register and now substitutes; these do not, and are the derived bind the
-    /// machine has a step for and the language still has no producer for.
+    /// A field read names a place in a register and substitutes; these name no
+    /// place, and are the derived bind the machine has a step for and the language
+    /// still has no producer for.
     #[test]
     fn a_value_no_location_names_is_still_deferred() {
         // A record mentioning a captured variable: its value differs per row, and
@@ -6625,9 +6619,8 @@ mod tests {
     ///
     /// Two constant binds of one variable is unification — the same fault as a row
     /// claimed twice, and worse to get wrong, because `lookup` walks the bindings in
-    /// reverse and would silently keep the *last*. Typecheck used to catch this
-    /// incidentally by refusing any bind whose left side was already bound; that
-    /// refusal is now narrowed, so the check has an owner.
+    /// reverse and would silently keep the *last*. The check is owned here rather
+    /// than caught incidentally by a typecheck gate that decides in source order.
     #[test]
     fn a_constant_bound_to_one_variable_twice_is_deferred() {
         let schema = corpus::schema();
@@ -6815,7 +6808,7 @@ mod tests {
     }
 
     /// A value may be projected but not matched: it lives in `entities`, which
-    /// [I6](../../../docs/invariants.md#i6) keeps out of the scan loop.
+    /// [I6](../../../website/content/invariants.md#i6) keeps out of the scan loop.
     #[test]
     fn matching_on_a_value_is_not_implemented_yet() {
         assert_eq!(
@@ -7074,8 +7067,8 @@ mod tests {
         );
     }
 
-    /// What is left of `nyi/whole-key`, and it is a different thing from what the
-    /// code used to mean: a whole key matched **into a record field**. The two are
+    /// What `nyi/whole-key` means, precisely: a whole key matched **into a record
+    /// field**. The two are
     /// the same record and not the same bytes — flat against wrapped — so building
     /// the match out of the fields would compare the wrong things and match
     /// nothing.
@@ -7124,9 +7117,8 @@ mod tests {
     /// A fetch reads its id out of a register's *key* bytes, and a value is in the
     /// other column family — so following one would mean a fetch whose reference is
     /// itself a fetch, which nothing holds. Needs a bespoke schema: no fixture
-    /// predicate has a fact-typed value, which is also why this arm used to decline
-    /// **quietly** and why the `flatten_ordered` promise-guard is what would have
-    /// caught it.
+    /// predicate has a fact-typed value, which is exactly how this arm could decline
+    /// **quietly** — the `flatten_ordered` promise-guard is what catches that.
     #[test]
     fn reading_through_a_reference_in_a_value_is_not_implemented_yet() {
         use ::lasso::Rodeo;
@@ -7370,19 +7362,12 @@ mod tests {
         );
     }
 
-    // ---- Phase 6: derived binds (red, pending the `Slot` promotion) ---------
+    // ---- derived binds ----------------------------------------------------------
     //
-    // Phase 6's acceptance criteria, as tests, written before the machine that
-    // satisfies them ([`PLAN.md`](../../../PLAN.md) Phase 6). They are deliberately
-    // written **through the driver** — sigla text in, rows out — and name no plan
-    // type that does not exist yet, so they compile today, fail today for the
-    // right reason (`nyi/value-bind`, reported by `collect`), and go green when
-    // the feature lands rather than when a test is rewritten. That also means the
-    // still-open question of *how* a derived bind sits in the `Plan` IR cannot be
-    // pre-judged by its own acceptance test.
-    //
-    // Un-ignore each as its leaf lands; the ledger
-    // (`cargo test -- --ignored --list`) is what says the phase is unfinished.
+    // Written as acceptance criteria before the machine that satisfies them, and
+    // deliberately **through the driver** — sigla text in, rows out — naming no
+    // plan type, so a rewrite of the machinery cannot silently rewrite what it is
+    // being held to.
 
     /// The smallest derived bind there is: a variable bound to a value no
     /// generator produced.
@@ -7523,7 +7508,7 @@ mod tests {
 /// draws a **query, in sigla text**, together with a store it runs against and an
 /// **independent model** of what it means — so the property is "compiling and
 /// running this query gives the rows the query denotes", with the model as the
-/// oracle ([testing](../../../docs/testing.md), tier 3).
+/// oracle ([testing](../../../website/content/testing.md), tier 3).
 ///
 /// Valid by construction, in the same style: draw a schema (predicates × key field
 /// types) → draw conforming facts → draw statements over that schema whose every
@@ -7709,7 +7694,7 @@ pub mod proptest {
     impl GenVal {
         /// The field's stored bytes. A **record keeps its wrapper** — it is one
         /// value among others inside the key, and has to be skippable as one
-        /// ([chapter 3](../../../docs/03-storage-model.md#a-stored-key-is-flat)).
+        /// ([chapter 3](../../../website/content/storage.md#a-stored-key-is-flat)).
         fn encode(&self) -> Vec<u8> {
             match self {
                 GenVal::Scalar(val) => val.encode(),
@@ -7968,7 +7953,7 @@ pub mod proptest {
         ///
         /// Field names are ascending so that sorted-by-name is also declaration
         /// order — a record's field order is part of its encoding
-        /// ([chapter 6](../../../docs/06-types-and-schema.md)).
+        /// ([chapter 6](../../../website/content/schema-language.md)).
         pub fn schema(&self) -> Schema {
             let mut rodeo = Rodeo::new();
             let fields: Vec<_> = (0..MAX_ARITY)
@@ -8235,7 +8220,7 @@ pub mod proptest {
         /// One deterministic order, walked by every store this spec seeds — which is
         /// what makes a `MemStore` and a fjall DB built from it agree fact for fact,
         /// ids included, since the numbering matches what the real per-predicate
-        /// allocator hands out ([I11](../../../docs/invariants.md#i11)). A projected
+        /// allocator hands out ([I11](../../../website/content/invariants.md#i11)). A projected
         /// `FactRef` is comparable against the model only because of that.
         pub fn facts(&self) -> impl Iterator<Item = (PredicateId, Vec<u8>, Vec<u8>, u64)> + '_ {
             self.facts
@@ -8744,7 +8729,7 @@ pub mod proptest {
 
             // A variable, if one of this type is free in this statement. Variables
             // are typed, so a mismatched one would not typecheck; a repeat *within*
-            // one statement is an intra-row equality, which Phase 4 rejects.
+            // one statement is an intra-row equality, which is rejected by name.
             _ => {
                 let candidates: Vec<usize> = (0..VARS)
                     .filter(|v| var_tys[*v] == ty && !used.contains(v))
@@ -9731,7 +9716,7 @@ mod battery {
 
     // ---- resume, over plans the compiler produced --------------------------
     //
-    // [I4](../../../docs/invariants.md#i4) is guarded over *hand-built* plan shapes
+    // [I4](../../../website/content/invariants.md#i4) is guarded over *hand-built* plan shapes
     // (`plan::proptest`), which is where it belongs — the executor is what it is
     // about. But flatten emits shapes that generator never draws: constant seek
     // prefixes, composite seeks of several parts, `ResidualOp::Prefix`, nested
@@ -9819,7 +9804,7 @@ mod battery {
         }
 
         fn observe(&mut self, plan: &Plan) {
-            // A test with a level after it — the placement Phase 6's I14 guard
+            // A test with a level after it — the placement the I14 guard
             // showed to be the only one that observes a restore fault, since a step
             // below every scan is re-entered from beneath on the way back up
             // whether or not resume did anything for it.
@@ -10006,7 +9991,7 @@ mod battery {
     /// permutation of the body rather than only the safe ones, which says something
     /// only if the generator draws queries where some permutation *is* unsafe — a
     /// reference field reading a row that a later statement binds. Those are exactly
-    /// the orders that used to be skipped and that `reorder` now has to fix, so if
+    /// the orders `reorder` exists to fix, so if
     /// this count were zero the strengthening would be decoration.
     ///
     /// Counted rather than asserted per-case, for the same reason the census is: it
@@ -10061,8 +10046,8 @@ mod battery {
         /// below is for.
         ///
         /// **The order is drawn, not the identity**, and that is what puts a step
-        /// that binds nothing *above* a scan. Phase 6 learned this the expensive
-        /// way: the first [I14](../../../docs/invariants.md#i14) guard passed with
+        /// that binds nothing *above* a scan. Learned the expensive
+        /// way: the first [I14](../../../website/content/invariants.md#i14) guard passed with
         /// resume's recompute deleted, because the derive sat below the scan and
         /// `enumerate` re-entered it from beneath on the way back up. A negation is
         /// the same shape of step and would hide the same fault — written last in
@@ -10104,8 +10089,8 @@ mod battery {
     /// against the model **in that order**.
     ///
     /// The order is drawn rather than the identity because that is what places a
-    /// step which binds nothing — a derive, a test — *above* a scan, and Phase 6
-    /// established that no other placement observes a restore fault.
+    /// step which binds nothing — a derive, a test — *above* a scan, and no other
+    /// placement observes a restore fault.
     fn resume_matches_the_model(
         spec: &QueryAndStore,
         schedule: &[bool],
@@ -10169,8 +10154,9 @@ mod battery {
         /// The same claim against **fjall**, because a compiled plan seeks
         /// differently than a hand-built one.
         ///
-        /// Phase 1 licensed every executor battery to run on `MemStore` by showing
-        /// the two stores agree on generated `(plan, store)` pairs — but those plans
+        /// The store differential licensed every executor battery to run on
+        /// `MemStore` by showing the two stores agree on generated `(plan, store)`
+        /// pairs — but those plans
         /// only ever seek by a whole spliced field from an empty prefix. Flatten
         /// emits constant prefixes, several-part composites and nested paths, so the
         /// range bounds a scan is opened with (and re-opened with, on resume) are

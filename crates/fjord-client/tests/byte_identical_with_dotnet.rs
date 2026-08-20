@@ -1,5 +1,5 @@
-//! **Phase 9e's acceptance criterion**: the Rust and C# clients produce byte-identical
-//! blocks for the same facts.
+//! **The two-client criterion**: the Rust and C# clients produce byte-identical blocks
+//! for the same facts.
 //!
 //! Interoperating today does not prove that, and the difference matters. Two encoders
 //! can disagree about something the server happens to tolerate, or about a case neither

@@ -15,7 +15,7 @@
 //! still returns a tree, so lowering routinely sees one with holes in it; a missing
 //! child becomes an [`ExprKind::Error`] node, never an `expect`.
 //!
-//! [chapter 7]: ../../../docs/07-compilation.md
+//! [chapter 7]: ../../../website/content/query-language.md
 
 use crate::{
     cst::{CstKind, CstNode},
@@ -460,7 +460,7 @@ impl Lowering<'_> {
     /// codec-level requirement ([chapter 6]) and must mean the same thing every
     /// run.
     ///
-    /// [chapter 6]: ../../../docs/06-types-and-schema.md
+    /// [chapter 6]: ../../../website/content/schema-language.md
     fn record(&mut self, mut fields: Vec<Field>, span: &Span) -> NodeId {
         fields.sort_by(|a, b| self.name_of(a.name).cmp(self.name_of(b.name)));
 
@@ -877,10 +877,10 @@ mod tests {
     }
 
     /// A record field the parser could not name is dropped rather than interned
-    /// as the empty string. It used to become a real field called `""`, which
-    /// sorts ahead of every other one — so `{a = 1, = 2}` lowered to `{=2, a=1}`
-    /// and typecheck then reported the nameless field as unknown, on top of the
-    /// parse error that had already explained it.
+    /// as the empty string. A real field called `""` sorts ahead of every other
+    /// one — `{a = 1, = 2}` would lower to `{=2, a=1}` — and typecheck would then
+    /// report the nameless field as unknown, on top of the parse error that
+    /// already explained it.
     #[test]
     fn a_nameless_field_is_dropped_not_named_empty() {
         assert_eq!(

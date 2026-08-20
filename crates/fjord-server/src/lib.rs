@@ -1,7 +1,7 @@
 //! **The server** — the wire protocol, over a socket, in front of a real store.
 //!
-//! Phase 7a's last piece: a client connects, handshakes, opens a write stream, sends
-//! blocks of facts, and queries them back on the same connection. What it is made of
+//! A client connects, handshakes, opens a write stream, sends blocks of facts, and
+//! queries them back on the same connection. What it is made of
 //! is almost entirely other crates —
 //! [`fjord-wire`](fjord_wire) frames and encodes,
 //! [`fjord-ingest`](fjord_ingest) interns and writes,
@@ -11,7 +11,7 @@
 //! The **message vocabulary** is not here: it is
 //! [`fjord_wire::protocol`], shared with `fjord-client`, because nothing should
 //! have to depend on a server to speak to one
-//! ([operations §10](../../../docs/fjord-cli-design.md)).
+//! ([operations §10](../../../website/content/operations.md)).
 //!
 //! - [`session`] — one connection, from handshake to close.
 //! - [`registry`] — the store root and the databases open under it, which is what
@@ -24,7 +24,7 @@
 //! # What is deliberately not built
 //!
 //! Named here rather than discovered, and each is named as deferred in
-//! [operations §5](../../../docs/fjord-cli-design.md) too:
+//! [operations §5](../../../website/content/operations.md) too:
 //!
 //! - **Per-stream flow-control windows**, explicitly past P0: bounded per-stream
 //!   queues plus connection backpressure are what §5 says to start with, and are what
@@ -32,7 +32,7 @@
 //! - **Remote `list` and `describe`.** Locally they need nothing from the server —
 //!   `ops-I7` reads sidecars and never opens fjall, so they already work while it
 //!   holds every database. The remote branch is the virtual predicate
-//!   `fjord.db.List` through the normal query machinery, in Phase 9f.
+//!   `fjord.db.List` through the normal query machinery.
 //! - **TCP.** `ops-I10` is default-closed: a Unix socket only, with TCP an explicit
 //!   opt-in behind an authenticated gateway. The opt-in flag is not wired yet, and
 //!   binding a network interface is not something to do by accident.

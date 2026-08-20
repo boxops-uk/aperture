@@ -1,7 +1,7 @@
-//! The **target-feature corpus** — the Phase 2 audit table, executable.
+//! The **target-feature corpus** — the language surface as an executable audit table.
 //!
-//! Phase 2's job is a grammar that already parses the *full* intended feature
-//! surface, so that later phases add meaning to constructs that already parse
+//! The grammar parses the *full* intended feature surface, so that
+//! new work adds meaning to constructs that already parse
 //! rather than reshaping the grammar ([chapter 7]). That claim needs a written
 //! target, and a written target in prose drifts — so the table lives here, as
 //! data, next to the tests that check it.
@@ -18,9 +18,9 @@
 //! `Diagnosed` entry is a parse error** — an unimplemented feature must be
 //! reported by name, not by a syntax error.
 //!
-//! # The audit: `sigla` as it stood at the start of Phase 2
+//! # The audit: what parses, and what each construct means
 //!
-//! | Construct | Before | Phase 2 |
+//! | Construct | Before | Now |
 //! |---|---|---|
 //! | `pattern where stmt; stmt`, `_`, vars, `Nat`, `-Nat`, `"s"`, `"s"..`, records, nesting | parses | unchanged |
 //! | `QId pattern` fact pattern | parses; key **mandatory** | unchanged — a whole-predicate scan is `test.Foo _` |
@@ -37,10 +37,10 @@
 //! # What the grammar has grown since
 //!
 //! One token: **`!=`**, a *denial*
-//! ([chapter 7](../../../docs/07-compilation.md#denying-a-value)). The audit above was written
-//! to make later phases add *meaning* to constructs that already parse, and this is the one
+//! ([chapter 7](../../../website/content/query-language.md#denying-a-value)). The audit above was written
+//! to make later work add *meaning* to constructs that already parse, and this is the one
 //! thing since that did not already parse — worth recording rather than folding into the table,
-//! because the table is what Phase 2 found and this is a later addition to it.
+//! because the table is what the original audit found and this is a later addition to it.
 //!
 //! It is not a case the audit missed so much as one it could not have placed: `!` was listed as
 //! negation and `!=` reads like its infix relative, but they are different questions — "no such
@@ -54,7 +54,7 @@
 //! the prompt. Every `Supported` entry records what it returns, and the gate below
 //! runs it against a **real** `FjallDb` to check.
 //!
-//! [chapter 7]: ../../../docs/07-compilation.md
+//! [chapter 7]: ../../../website/content/query-language.md
 
 use crate::diag::Code;
 use Expectation::{Diagnosed, ParseError, Supported};
@@ -107,7 +107,7 @@ const fn entry(source: &'static str, expect: Expectation, note: &'static str) ->
 }
 
 pub const CORPUS: &[Entry] = &[
-    // ---- the implemented subset: parses, typechecks, and Phase 4 flattens ----
+    // ---- the implemented subset: parses, typechecks, flattens, runs ----------
     entry(
         "X where X = test.Foo _",
         Supported("test.Foo#1; test.Foo#2; test.Foo#3"),
@@ -233,9 +233,9 @@ pub const CORPUS: &[Entry] = &[
     ),
     // ---- arithmetic --------------------------------------------------------
     //
-    // The first thing in sigla to lower a `Step::Derive` at all. The machinery has
-    // been there since Phase 6 and was exercised only by hand-built plans, which is
-    // why these entries are also its first coverage from the language.
+    // The first thing in sigla to lower a `Step::Derive` at all — previously the
+    // machinery was exercised only by hand-built plans, so these entries are also
+    // its first coverage from the language.
     entry(
         "Y where test.Count X; Y = X + 1",
         Supported("-9223372036854775807; -41; 8; 1001"),
@@ -485,8 +485,8 @@ pub const CORPUS: &[Entry] = &[
     entry(
         "X.alt? where X = test.Foo _",
         Diagnosed(Code::RejectNotAUnion),
-        "a select on something that is not a union at all — the shape of the \
-         mistake that used to be the whole feature's diagnostic",
+        "a select on something that is not a union at all — the same class of \
+         mistake as an unknown field",
     ),
     // ---- unions (8.6) --------------------------------------------------------
     entry(
@@ -739,6 +739,12 @@ pub const CORPUS: &[Entry] = &[
          accepts one because it *destructures*, and a denial names nothing",
     ),
     entry(
+        "X where X = {a = X}",
+        Diagnosed(Code::RejectInfiniteType),
+        "both occurrences of `X` are the same type variable, so a self-referential \
+         pattern is an infinite type — caught, rather than silently made two variables",
+    ),
+    entry(
         "X where X = test.Foo _; X.name != \"a\"..",
         Diagnosed(Code::NyiBindUnification),
         "an access chain on the left is **pattern-pushing**, deferred exactly as it \
@@ -836,7 +842,7 @@ pub const CORPUS: &[Entry] = &[
         "X where test.Foo X.name",
         Diagnosed(Code::RejectUnresolvedAccess),
         "nothing binds `X`, so there is no type to read `name` from. Resolving it \
-         would need row polymorphism; Phase 4's range-restriction check would reject \
+         would need row polymorphism; the range-restriction check would reject \
          the query anyway",
     ),
     entry(
@@ -948,8 +954,8 @@ pub const CORPUS: &[Entry] = &[
         "X.value where test.Ref {of = X}",
         Supported("one; two"),
         "the same through the value side: one register, and the value one point read \
-         further off it — the arm that used to decline *quietly*, which is what makes \
-         the `flatten_ordered` promise-guard load-bearing here",
+         further off it — the arm that would decline *quietly* without the \
+         `flatten_ordered` promise-guard, which is what makes that guard load-bearing",
     ),
     entry(
         "N where test.Deep {via = R}; N = R.of.name",
@@ -991,9 +997,9 @@ pub const CORPUS: &[Entry] = &[
     entry(
         "X where test.Edge {from = X, to = X}",
         Diagnosed(Code::NyiRepeatedVariable),
-        "an intra-row repeat needs a same-row `EqField` residual; the Phase 4 \
+        "an intra-row repeat needs a same-row `EqField` residual; the settled \
          decision is to reject it for now rather than add an operator nothing else \
-         uses (docs/open-decisions.md)",
+         uses (PLAN.md)",
     ),
     entry(
         "X where X = test.Foo _; 42",
@@ -1241,7 +1247,7 @@ mod tests {
 
     /// **Every supported entry answers the same when it is interrupted.**
     ///
-    /// [I4](../../../docs/invariants.md#i4) says a resumed run equals an uninterrupted
+    /// [I4](../../../website/content/invariants.md#i4) says a resumed run equals an uninterrupted
     /// one, and the property battery in `flatten` says it over generated queries —
     /// but a generator only draws the shapes it was taught, so every construct
     /// added to the language starts outside its reach. The corpus is the place that
@@ -1397,15 +1403,16 @@ mod tests {
 }
 
 #[cfg(test)]
-mod every_nyi_code_is_accounted_for {
+mod every_code_is_accounted_for {
     use super::*;
     use crate::diag::Code;
 
-    /// **Every `nyi/` code either has a corpus entry or is named below with a reason.**
+    /// **Every diagnostic code either has a corpus entry or is named below with a reason.**
     ///
-    /// `PLAN.md` claimed each surviving `nyi/` code "keeps a corpus entry", and it was not
-    /// true of five of them — nothing checked, so nothing said. This is the check. A new
-    /// code added without an entry fails here, and the only way past is to write the entry
+    /// Over `Code::ALL` — `reject/` and `lit/` included, not only `nyi/` — because a code
+    /// only a unit test reaches is one a refactor can silently orphan: the unit test moves
+    /// or dies with its module, and nothing says the taxonomy lost a member. A new code
+    /// added without an entry fails here, and the only way past is to write the entry
     /// or to say out loud why there cannot be one.
     ///
     /// **The five below are not merely un-exercised; they may be dead.** Two dozen candidate
@@ -1436,14 +1443,17 @@ mod every_nyi_code_is_accounted_for {
         ),
         (
             Code::NyiFactField,
-            "a reference held in a fact's *value*; reading one through `.value` at one and \
-             two hops compiles",
+            "reachable, but not from this fixture: it needs a predicate holding a \
+             reference in its *value*, which no fixture predicate does. \
+             `flatten::reading_through_a_reference_in_a_value_is_not_implemented_yet` \
+             builds the bespoke schema and asserts the code",
         ),
         (
             Code::NyiWholeKey,
-            "a whole key matched into a record field. Unreachable with this fixture for a \
-             stated reason rather than an unknown one: it needs a predicate whose whole key \
-             has the same record type as another predicate's field, and no pair here does",
+            "reachable, but not from this fixture: it needs a predicate whose whole key \
+             has the same record type as another predicate's field, and no pair here \
+             does. `flatten::matching_a_whole_key_against_a_record_field_is_not_implemented_yet` \
+             builds the bespoke schema and asserts the code",
         ),
     ];
 
@@ -1454,19 +1464,18 @@ mod every_nyi_code_is_accounted_for {
     }
 
     #[test]
-    fn each_nyi_code_has_an_entry_or_a_reason() {
+    fn each_code_has_an_entry_or_a_reason() {
         let excused: Vec<Code> = UNEXERCISED.iter().map(|(code, _)| *code).collect();
 
         let unaccounted: Vec<&str> = Code::ALL
             .iter()
-            .filter(|code| code.as_str().starts_with("nyi/"))
             .filter(|code| !diagnosed_by_the_corpus(**code) && !excused.contains(code))
             .map(|code| code.as_str())
             .collect();
 
         assert!(
             unaccounted.is_empty(),
-            "these `nyi/` codes have no corpus entry and no stated reason: {unaccounted:?}. \
+            "these codes have no corpus entry and no stated reason: {unaccounted:?}. \
              Add an entry to CORPUS, or add the code to UNEXERCISED saying why there cannot \
              be one."
         );

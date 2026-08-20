@@ -12,7 +12,7 @@
 //! produces encoded bytes.
 //!
 //! Gated behind `proptest` so the engine's batteries can import them
-//! ([testing](../../../docs/testing.md)).
+//! ([testing](../../../website/content/testing.md)).
 
 use std::sync::{
     Arc,
@@ -54,8 +54,8 @@ pub fn str_field(s: &str) -> Vec<u8> {
 /// [`FactId`] rather than a sequence, because a reference names a fact of a
 /// *particular* predicate and the id carries which ([I11]).
 ///
-/// [chapter 2]: ../../../docs/02-tuple-codec.md
-/// [I11]: ../../../docs/invariants.md#i11
+/// [chapter 2]: ../../../website/content/storage.md
+/// [I11]: ../../../website/content/invariants.md#i11
 pub fn fact_ref_field(id: FactId) -> Vec<u8> {
     let mut b = Vec::new();
     TupleEncoder::new(&mut b).put_fact_id(id);
@@ -65,7 +65,7 @@ pub fn fact_ref_field(id: FactId) -> Vec<u8> {
 /// Concatenate encoded fields into one composite key. The tuple codec is
 /// self-delimiting ([I2]), so a multi-field key is just its fields back-to-back.
 ///
-/// [I2]: ../../../docs/invariants.md
+/// [I2]: ../../../website/content/invariants.md
 pub fn compose(fields: &[&[u8]]) -> Vec<u8> {
     fields.concat()
 }
@@ -95,7 +95,7 @@ pub fn interner_with(names: &[&str]) -> LocalInterner {
 /// map and has to clamp explicitly; it did not, and an unbounded scan walked on
 /// into the next predicate's rows. That bug is why this assertion exists.
 ///
-/// [I1]: ../../../docs/invariants.md
+/// [I1]: ../../../website/content/invariants.md
 pub fn assert_scan_stays_in_predicate<S: FactStore>(
     store: &S,
     lo: &[u8],
@@ -298,7 +298,7 @@ impl FrozenStore {
     /// one did, sequence 0, which [I11] reserves precisely so that no valid id is
     /// `FactId(0)`.
     ///
-    /// [I11]: ../../../docs/invariants.md
+    /// [I11]: ../../../website/content/invariants.md
     /// [`MemStore::insert_valued`]: fjord_store::mem_store::MemStore::insert_valued
     pub fn from_facts(facts: impl IntoIterator<Item = (PredicateId, Vec<u8>, u64)>) -> Self {
         let mut rows: Vec<FrozenFact> = facts

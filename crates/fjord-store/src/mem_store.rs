@@ -37,7 +37,7 @@ impl MemStore {
     ///
     /// `sequence` is the fact's number *within its predicate*, not a raw
     /// [`FactId`]: the real store composes a snowflake id from the two
-    /// ([I11](../../../docs/invariants.md#i11)), so a model that took whole ids could
+    /// ([I11](../../../website/content/invariants.md#i11)), so a model that took whole ids could
     /// hold a fact whose id is tagged for a different predicate — a state fjall
     /// rejects, and one that would make this store a dishonest oracle.
     pub fn insert_valued(
@@ -77,11 +77,11 @@ impl FactStore for MemStore {
     fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<MemScan, StoreError> {
         // A bound too short to name a predicate is rejected here exactly as the
         // real store rejects it. Reading it as "no predicate end, so scan on"
-        // is how this store used to walk straight across the boundary while
-        // fjall returned an error for the same call.
+        // walks straight across the predicate boundary while fjall returns an
+        // error for the same call — the trait contract asserts both stores.
         let predicate = predicate_of(lo)?;
 
-        // A scan is a *predicate* query ([chapter 3](../../../docs/03-storage-model.md)):
+        // A scan is a *predicate* query ([chapter 3](../../../website/content/storage.md)):
         // it never crosses out of the predicate named by `lo`'s prefix. One
         // `BTreeMap` holds every predicate here, so that bound has to be applied
         // explicitly — the real store gets it structurally, from one keyspace per

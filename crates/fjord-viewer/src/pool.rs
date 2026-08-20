@@ -5,19 +5,12 @@
 //! connection checked out of here, which is the ordinary shape for a blocking client
 //! behind an async front end.
 //!
-//! # Why a pool needs a policy, not just a queue
-//!
-//! `bench/FINDINGS.md` §7 measured ~3.5 kB retained per query for the life of a
-//! connection and named this exact shape: *"a connection pool is exactly the shape
-//! that hits the bottom row, and it is the one to size RAM for."* Phase 11 fixed the
-//! mechanism — a stream's task now ends when its work does, and the client recycles
-//! stream ids — so the ceiling is gone rather than merely deferred.
-//!
-//! [`RETIRE_AFTER`] stays anyway, and the reason is worth writing down rather than
-//! leaving as a habit: a long-lived connection accumulates *whatever* the server
-//! attaches to a session, and this tier has no way to know when that changes. The
-//! number is a guardrail against a future regression, not a workaround for a present
-//! one — which is why it is generous.
+//! [`RETIRE_AFTER`] is a guardrail, not a workaround: a long-lived connection
+//! accumulates *whatever* the server attaches to a session, and this tier has no way
+//! to know when that changes (`bench/FINDINGS.md` §7 is the incident that proved the
+//! shape — a pool is exactly what hits a per-query retention ceiling). The mechanism
+//! it guarded against is fixed; the number stays generous because it now guards a
+//! regression.
 
 use std::sync::{Arc, Mutex};
 

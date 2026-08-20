@@ -1,6 +1,6 @@
 //! **A database does not depend on how many threads wrote it, or in what order.**
 //!
-//! [Phase 12d](../../../PLAN.md)'s second acceptance criterion, and the one that decides whether
+//! The acceptance criterion that decides whether
 //! the [striped merge frontier](../../../crates/fjord-store/src/store.rs) is *correct* rather
 //! than merely uncontended. `concurrent_interning_of_one_key_creates_one_fact` proves the
 //! narrow case — every thread reaching for one key gets one fact. This proves the wide
@@ -8,11 +8,11 @@
 //!
 //! # Why identity is the assertion and not fact ids
 //!
-//! [`ops-I4`](../../../docs/fjord-cli-design.md) says a database built twice from identical
+//! [`ops-I4`](../../../website/content/operations.md) says a database built twice from identical
 //! inputs is identical, and it means identical *by content hash* — a multiset over each
 //! fact's logical form, no physical `FactId` anywhere in it. That distinction was
 //! load-bearing enough to reverse a design decision four documents had recorded as forced
-//! (["parallel writes", open decisions](../../../docs/open-decisions.md)), and until this file it
+//! (["parallel writes", open decisions](../../../PLAN.md)), and until this file it
 //! had never been exercised against anything but a single-threaded, in-order ingest. An
 //! invariant nothing has tried to break is a hope.
 //!
@@ -71,7 +71,7 @@ fn facts(schema: &Schema) -> Vec<WireFact> {
 /// row count: both writers use the same key, so the second `keys` row overwrites the first
 /// and the tree still holds one row — while the loser's `entities` row sits there with
 /// nothing pointing at it. What gives it away is the **allocator**. Ids are handed out per
-/// predicate from 1 with no reuse ([I11](../../../docs/invariants.md#i11)), so if every id issued
+/// predicate from 1 with no reuse ([I11](../../../website/content/invariants.md#i11)), so if every id issued
 /// still has a `keys` row naming it, the highest sequence in a predicate equals its number
 /// of rows. A stranded entity leaves that gap.
 ///

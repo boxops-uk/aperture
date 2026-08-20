@@ -67,6 +67,11 @@ corpus and the schema are stated **independently on each side on purpose** — a
 would make the two agree by construction, which is the agreement being tested. The Rust test
 needs no `dotnet`; regenerating the golden does.
 
+There are two goldens: the code-index corpus, and `unions.txt` over a schema of its own — the
+union tag stated independently from outside, including a nested reference *inside* a payload and
+an empty-record payload. `schemas/code.sigla` is deliberately untouched by it, so no fingerprint
+moved when unions landed.
+
 ## The real indexer
 
 ```bash
@@ -141,9 +146,9 @@ Three things about it are the point rather than the implementation:
 - **The pool exists because the client is blocking and a web server is not.** A recycled pool with
   a floor rather than a ceiling: a burst opens more connections and closes them on return.
 
-The viewer is also what Phase 11 was built from, and building it is what found the two predicates
-that had to be added — a file's cross-references keyed by file, and a case-folded search index —
-because the questions a UI asks turned out not to be the questions the schema answered.
+Building the viewer is what found the two predicates that had to be added — a file's
+cross-references keyed by file, and a case-folded search index — because the questions a UI asks
+turned out not to be the questions the schema answered.
 
 ## Writing a client
 

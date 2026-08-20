@@ -23,12 +23,11 @@ cargo fmt --all
 narrowing to one package as crates are extracted would be a ledger that had stopped
 counting.
 
-:::note The ignored tests are not skipped work
-`cargo test -- --ignored --list` prints the guards that are written but not yet live —
-each one pinned to an invariant whose subsystem does not exist yet. A phase is finished
-only when the invariants it touches are un-ignored and green. Exactly one guard is
-`#[ignore]`d today: `schema::discriminants_append_only`, which waits on union types. See
-[Testing method](testing.html).
+:::note The coverage ledger
+`cargo test -- --ignored --list` prints any guard that is written but not yet live —
+each one pinned to an invariant whose subsystem does not exist yet. Work that touches an
+invariant is finished only when its guard is un-ignored and green. The ledger currently
+lists **nothing**: every invariant's guard is live. See [Testing method](testing.html).
 :::
 
 ### Generated code
@@ -132,11 +131,13 @@ fjord/
 │                       the `fjord` binary; its examples/ are the instruments
 ├── schemas/             code.sigla, the sample schema every client here builds against
 ├── clients/dotnet/      the C# client, demo producer and real indexer
-├── docs/                the design book — chapters 1–7 plus operations and references
+├── docs/glean.md        where every idea stands against Glean
 ├── bench/FINDINGS.md    what has actually been measured
-├── PLAN.md              the phase tree and current state
-└── website/             this documentation site
+├── AGENTS.md            the working contract for contributors
+├── PLAN.md              the roadmap, and the record of settled decisions
+└── website/             this site — which is the design book
 ```
 
-The design book in `docs/` is the source of record. This site is written from it and links
-back into it by chapter where a subject has more depth than a docs site should carry.
+**This site is the design book and the source of record.** The pages are ordinary Markdown
+under `website/content/`, built by `website/build.py`; CI builds it with `--strict`, so a
+page falling out of the nav is a failed check rather than a silent loss.

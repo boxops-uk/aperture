@@ -8,13 +8,13 @@
 //!
 //! [`Compilation`] owns that plumbing instead: the source, the schema, the
 //! per-query interner, the diagnostics sink, and the trees and side tables the
-//! phases produce ([chapter 7]). Phase 4's flatten becomes another pass over the
+//! phases produce ([chapter 7]). Flatten is another pass over the
 //! same state rather than a fourth function with a fourth `Vec`.
 //!
 //! **Deliberately not a query engine.** No memoization, no dependency graph, no
 //! incremental recomputation — a compilation is one query, compiled once, and
 //! designing for incrementality before anything needs it would buy a rewrite
-//! later ([`PLAN.md`] Phase 3).
+//! later.
 //!
 //! # What it does not store
 //!
@@ -23,7 +23,7 @@
 //! nothing reads again. `Ast` and `Typed` are owned outright, so the context is a
 //! plain struct parameterised by the source's lifetime.
 //!
-//! [chapter 7]: ../../../docs/07-compilation.md
+//! [chapter 7]: ../../../website/content/query-language.md
 //! [`PLAN.md`]: ../../../PLAN.md
 
 use codespan_reporting::{diagnostic::LabelStyle, files, files::SimpleFile, term};

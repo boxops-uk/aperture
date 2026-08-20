@@ -1,6 +1,6 @@
 //! **Schema identity** — the canonical form, and the fingerprints taken over it.
 //!
-//! [Chapter 6](https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md) asks for two things: a form that is
+//! [Chapter 6](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md) asks for two things: a form that is
 //! independent of how a schema was written down, and a hash over it — one per predicate
 //! and one for the whole schema. What a database embeds and a handshake compares is the
 //! result.
@@ -165,7 +165,7 @@ pub enum Compatibility {
 ///
 /// The number a handshake compares and a sidecar records. It is the same one
 /// `fjord schema fingerprint` prints, which is what lets a client
-/// [carry it rather than derive it](https://github.com/boxops-uk/fjord/blob/main/docs/open-decisions.md).
+/// [carry it rather than derive it](https://github.com/boxops-uk/fjord/blob/main/PLAN.md).
 #[must_use]
 pub fn of(schema: &Schema) -> u64 {
     identity(schema).schema()
@@ -337,7 +337,7 @@ fn type_form(
         // alternatives are addressed by their explicit tags, so permuting the
         // declaration changes no stored byte and must not move the number —
         // sorting here is what makes that true. What *does* move it is a renumber,
-        // which is exactly the edit [I10](../../docs/invariants.md#i10) forbids and
+        // which is exactly the edit [I10](../../website/content/invariants.md#i10) forbids and
         // the reason the tag is in the form at all.
         //
         // `<…>` rather than `{…}` because a canonical form is parsed by nothing and
@@ -415,7 +415,7 @@ fn references(schema: &Schema, id: PredicateId) -> BTreeSet<PredicateId> {
 ///
 /// Tarjan's, written iteratively: a schema is a data path, and a recursive walk over one
 /// deep enough would be a stack overflow where
-/// [conventions](https://github.com/boxops-uk/fjord/blob/main/docs/conventions.md) requires an error. Tarjan emits each
+/// [conventions](https://github.com/boxops-uk/fjord/blob/main/AGENTS.md) requires an error. Tarjan emits each
 /// component only after everything it reaches, which is exactly the order the
 /// fingerprints need.
 fn components(schema: &Schema, names: &BTreeMap<PredicateId, String>) -> Vec<Vec<PredicateId>> {
@@ -685,7 +685,7 @@ mod tests {
     /// every edit to a union is Breaking, including appending an alternative. That is
     /// the honest answer rather than a limitation to route around: a database is
     /// served from its own embedded schema
-    /// ([I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)) and a
+    /// ([I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)) and a
     /// client's fingerprint has to match it, so a predicate whose union grew is a
     /// predicate the old artifact cannot answer for. What I10 adds is that the *tags*
     /// of the alternatives already there did not move, which is what makes rebuilding

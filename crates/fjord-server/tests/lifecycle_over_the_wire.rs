@@ -580,7 +580,7 @@ fn a_declined_request_says_why() {
 /// built-in one to hand over. That made the artifact a property of whichever binary
 /// happened to be listening: the same command against two builds produced two databases
 /// with two different embedded schemas, and nothing said so. `create` now requires the
-/// text, which is what [operations §5](../../../docs/fjord-cli-design.md) always
+/// text, which is what [operations §5](../../../website/content/operations.md) always
 /// specified.
 ///
 /// Sent as a raw control frame because no client should make this easy to do by accident

@@ -1,4 +1,4 @@
-//! [I8](../../../docs/invariants.md#i8) — an immutable snapshot per query,
+//! [I8](../../../website/content/invariants.md#i8) — an immutable snapshot per query,
 //! released at every stop.
 //!
 //! An **integration** test rather than a unit test, and for a structural reason:
@@ -24,7 +24,7 @@ use fjord_store::store::FjallDb;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-/// [I8](../../../docs/invariants.md#i8) — an immutable snapshot per query,
+/// [I8](../../../website/content/invariants.md#i8) — an immutable snapshot per query,
 /// released at **every** stop.
 ///
 /// A fjall scan pins a read snapshot, and a pinned snapshot keeps LSM blocks
@@ -36,8 +36,8 @@ use tokio_util::sync::CancellationToken;
 /// fjall's own open-snapshot count (whether the engine still considers the
 /// snapshot open).
 ///
-/// Untestable on `MemStore`, whose scan copies rows out and pins nothing —
-/// which is why fjall is pulled forward to Phase 1.
+/// Untestable on `MemStore`, whose scan copies rows out and pins nothing — the
+/// real store is the only place this invariant is observable.
 #[test]
 fn snapshot_released_at_suspend() {
     let (db, _dir, _) = snapshot_probe_db();

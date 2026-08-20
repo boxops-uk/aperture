@@ -12,7 +12,7 @@ namespace Boxops.Fjord.Indexer;
 /// <para>
 /// <b>Why this exists.</b> The comparison this repository keeps making against Glean is
 /// made out of documents — what each system can be asked, what it spends, what it
-/// charges (<c>docs/glean-capabilities.md</c>). A number needs the same corpus in both
+/// charges (<c>docs/glean.md</c>). A number needs the same corpus in both
 /// systems, and the same corpus needs the same producer: one Roslyn walk, one set of
 /// facts, two sinks. This is the second sink.
 /// </para>

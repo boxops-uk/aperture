@@ -30,7 +30,7 @@
 //! names a `db`, a `schema` and a `file` that no example builds. An `ignore` block is
 //! still a test, so it would appear in `cargo test -- --ignored --list`, which is this
 //! project's coverage ledger for guards written before their subject exists
-//! ([`docs/testing.md`](../../../docs/testing.md)). An illustration counted there is an
+//! ([`website/content/testing.md`](../../../website/content/testing.md)). An illustration counted there is an
 //! illustration that reads as an unbuilt invariant.
 //!
 //! ```text
@@ -55,7 +55,7 @@
 //!
 //! **Bulk ingestion.** Building a [`Value`] per fact costs an allocation per fact,
 //! which is right for a deriver writing thousands and wrong for a loader writing
-//! millions. Phase 7's fact-file path wants a streaming form that never materialises
+//! millions. The fact-file path wants a streaming form that never materialises
 //! the value; this one exists because the alternative for a person is to hand-encode
 //! bytes in sorted-field order, and that is the mistake described above.
 //!
@@ -65,8 +65,8 @@
 //! have to reorder against a schema it cannot see. The checks below are what a derive
 //! would need to be layered on top of, not replaced by.
 //!
-//! [chapter 6]: ../../../docs/06-types-and-schema.md
-//! [I11]: ../../../docs/invariants.md#i11
+//! [chapter 6]: ../../../website/content/schema-language.md
+//! [I11]: ../../../website/content/invariants.md#i11
 
 use crate::error::FactError;
 use fjord_encoding::tuple::{Value, encode_key, encode_typed};
@@ -79,7 +79,7 @@ use fjord_schema::{
 ///
 /// The predicate is a *name*, resolved against the schema at write time rather than
 /// an id baked into the type: a predicate id is a position in a schema
-/// ([chapter 6](../../../docs/06-types-and-schema.md)), so a type carrying one would
+/// ([chapter 6](../../../website/content/schema-language.md)), so a type carrying one would
 /// silently mean a different predicate under a schema that declared them in another
 /// order.
 pub trait Fact {
@@ -522,6 +522,68 @@ mod tests {
         assert!(matches!(
             encoded(&SpareValue),
             Err(FactError::UnexpectedValue(_))
+        ));
+    }
+
+    /// A field the predicate does not declare is reported **by name** — a
+    /// misspelling that got past the missing-field check (every declared field
+    /// present, plus one) would otherwise be silently dropped.
+    #[test]
+    fn an_extra_field_the_predicate_does_not_declare_is_unknown() {
+        struct Extra;
+        impl Fact for Extra {
+            const PREDICATE: &'static str = "test.Bar";
+            fn key(&self) -> Value {
+                record([("id", 1.to_value()), ("spare", 2.to_value())])
+            }
+        }
+
+        assert!(matches!(
+            encoded(&Extra),
+            Err(FactError::UnknownField { field, .. }) if field == "spare"
+        ));
+    }
+
+    /// A well-typed fact the *codec* cannot encode is [`FactError::Codec`], never a
+    /// panic — the checks here validate shape against the schema, and the codec has
+    /// limits of its own (bounded nesting) that a schema can legitimately exceed.
+    #[test]
+    fn a_fact_nested_past_the_codec_depth_bound_is_a_codec_error() {
+        use fjord_schema::schema::{Predicate, Schema};
+        use lasso::Rodeo;
+        use std::sync::Arc;
+
+        let mut rodeo = Rodeo::new();
+        let name = rodeo.get_or_intern("deep.P");
+        let f = rodeo.get_or_intern("f");
+
+        let mut ty = PredicateTy::Int;
+        let mut value = Value::Int(1);
+        for _ in 0..300 {
+            ty = PredicateTy::Record(Arc::from([(f, ty)]));
+            value = Value::Record(Box::new([("f".to_owned(), value)]));
+        }
+
+        let schema = Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name,
+                key: ty,
+                value: None,
+            }]),
+        );
+
+        struct Deep(Value);
+        impl Fact for Deep {
+            const PREDICATE: &'static str = "deep.P";
+            fn key(&self) -> Value {
+                self.0.clone()
+            }
+        }
+
+        assert!(matches!(
+            encode(&schema, &Deep(value)),
+            Err(FactError::Codec(_))
         ));
     }
 

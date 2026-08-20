@@ -33,16 +33,15 @@
 //!
 //! `create`, `finish` and `remove` are [control](Control) frames on an ordinary
 //! stream, which is what makes them work **against a running server** instead of
-//! requiring one to be stopped ([operations §5](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)).
+//! requiring one to be stopped ([operations §5](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)).
 //! Putting them on a stream rather than on stream 0 buys the whole of the existing
 //! machinery: they queue fairly behind other work, a failure answers on the stream that
 //! caused it, and a slow `create` does not stall the connection's reader.
 //!
 //! `list` and `describe` are **not** here, and their absence is `ops-I7` rather than a
 //! gap: enumeration reads sidecars and never opens fjall, so it already works while a
-//! server holds every database under the root. §5's remote branch answers them through
-//! the virtual predicate `fjord.db.List` — the normal query machinery, no bespoke
-//! message — which is Phase 9f's.
+//! server holds every database under the root; remotely they are answered through the
+//! virtual predicate `fjord.db.List` — the normal query machinery, no bespoke message.
 //!
 //! All of it is **additive**, so [`VERSION`] does not move: a client that predates
 //! control frames never sends one and is never sent one. The .NET client under
@@ -88,9 +87,8 @@ use crate::{
 /// separate axis: one says "we disagree about the protocol", the other "we agree
 /// about the protocol and disagree about the data".
 ///
-/// **2 is Phase 8's.** A startup frame's `schema_fingerprint` used to carry a
-/// provisional hash this crate computed; it now carries
-/// [chapter 6](https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md)'s schema identity, computed in
+/// **2 marks the fingerprint change.** A startup frame's `schema_fingerprint` carries
+/// [the schema identity](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md), computed in
 /// `fjord-schema` over the canonical form. Every number changed, so a client pinned
 /// to the old one is told it speaks a different protocol rather than left to fail a
 /// comparison it cannot interpret.
@@ -169,8 +167,8 @@ pub mod kinds {
     /// Client → server: **what can I ask you?** No payload.
     ///
     /// The answer is the schema this session's database is served with, as source —
-    /// [`SCHEMA_REPLY`]. Since Phase 8.4 that is a real question rather than a
-    /// formality: a database carries the schema it was created against, so a store root
+    /// [`SCHEMA_REPLY`]. A real question rather than a formality: a database carries
+    /// the schema it was created against, so a store root
     /// holds artifacts of different shapes and a client's built-in idea of one is
     /// nobody's answer but its own.
     ///
@@ -203,7 +201,7 @@ pub mod kinds {
     /// combination. Asking about the ids in a row *after* the row arrived composes with
     /// every way of asking for rows, and costs a client that never asks nothing at all.
     ///
-    /// [settled]: ../../../docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
+    /// [settled]: ../../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened
     pub const FETCH: FrameKind = FrameKind(b'F');
     /// Server → client: the facts those ids name, **in the order they were asked
     /// about**.
@@ -260,7 +258,7 @@ pub struct Startup {
     pub schema_fingerprint: u64,
 
     /// The predicates this client claims, each with its own fingerprint — **subset
-    /// containment**, which is [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)'s actual rule.
+    /// containment**, which is [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)'s actual rule.
     ///
     /// The field above is an equality check, and equality is the wrong question for a
     /// producer that writes six of a database's twenty-seven predicates: its whole
@@ -269,7 +267,7 @@ pub struct Startup {
     /// shapes it *uses*, and containment is what chapter 6 says compatibility is.
     ///
     /// Empty means "no per-predicate claim", which is what a client carrying a single
-    /// constant sends — see [the decision](https://github.com/boxops-uk/fjord/blob/main/docs/open-decisions.md) that a
+    /// constant sends — see [the decision](https://github.com/boxops-uk/fjord/blob/main/PLAN.md) that a
     /// client never computes a fingerprint. A Rust client links the algorithm and can
     /// compute this from the schema it holds; a hand-written one carries a number and
     /// leaves this empty.
@@ -871,7 +869,7 @@ pub const MAX_FETCH: usize = 4096;
 /// # The **key**, and not the value side
 ///
 /// A reference names a fact's *identity*, and the identity is the key
-/// ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)). Expanding one to its target's key,
+/// ([I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11)). Expanding one to its target's key,
 /// recursively, is already the definition of a database's canonical logical form — it
 /// is what `ops-I4`'s content hash is computed over, and what a producer sends when it
 /// nests a reference instead of holding an id. Answering with the same thing means the
@@ -879,7 +877,7 @@ pub const MAX_FETCH: usize = 4096;
 /// rather than two that have to be kept in step.
 ///
 /// The value side is left out because it is a *different read* with a different cost
-/// ([I6](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i6)), and one a query can already ask for by name:
+/// ([I6](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i6)), and one a query can already ask for by name:
 /// `X.value` projects it. Folding it in here would make every expansion pay for a
 /// column family nobody asked about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -895,8 +893,8 @@ pub struct Fetched {
 /// **Three answers rather than two, and the third is the interesting one.** An absence
 /// means opposite things depending on what kind of predicate was asked about, and only
 /// the server knows which: a *stored* fact cannot dangle — both column families are
-/// written together ([I12](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i12)) and ids are never reused
-/// ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)) — so a missing one is corruption and should
+/// written together ([I12](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i12)) and ids are never reused
+/// ([I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11)) — so a missing one is corruption and should
 /// be said out loud. A **virtual** predicate's rows are a view of the server, materialised
 /// per query, so one going missing between a query and an expansion of it is a database
 /// having been created or removed in between, which is ordinary. Collapsing the two would
@@ -1019,7 +1017,7 @@ pub fn encode_fetched(schema: &Schema, found: &[Fetched]) -> Result<Vec<u8>, Wir
 ///
 /// The ids are a parameter rather than something on the wire because they are what
 /// says how to read the bytes: each key is encoded against its own predicate's key
-/// type, and the predicate comes from the id ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)
+/// type, and the predicate comes from the id ([I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11)
 /// tags one). A reply is therefore only readable by the peer that asked, which is the
 /// same property a row has against its descriptor.
 ///

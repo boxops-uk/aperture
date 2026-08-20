@@ -64,8 +64,8 @@ pub const MAX_FACT_SEQUENCE: u64 = (1 << FACT_ID_SEQUENCE_BITS) - 1;
 /// Uniqueness is structural rather than enforced: the tag partitions the id space,
 /// so two predicates cannot collide however their sequences are allocated.
 ///
-/// [I11]: ../../../docs/invariants.md#i11
-/// [chapter 3]: ../../../docs/03-storage-model.md
+/// [I11]: ../../../website/content/invariants.md#i11
+/// [chapter 3]: ../../../website/content/storage.md
 /// `Hash` because an id is a thing callers key a map by — a client caching the fact
 /// each one names, say. It agrees with `Eq` by construction, both being the `u64`'s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -85,7 +85,7 @@ impl FactId {
     /// The field is private so that [`FactId::new`]'s checks are the only way to
     /// *mint* an id: the tag has to fit and sequence 0 is reserved, which is what
     /// makes a zeroed eight bytes detectably not a fact
-    /// ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)). Named rather than a tuple
+    /// ([I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11)). Named rather than a tuple
     /// constructor so the places that bypass those checks are greppable.
     #[must_use]
     pub fn from_raw(raw: u64) -> Self {

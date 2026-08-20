@@ -267,7 +267,7 @@ fn facts_written_by_this_client_are_queried_back_by_it() {
 /// framing itself — the field is a reference nested two levels deep, so interning has
 /// to reach the file through the declaration before the doc's key has any bytes, and
 /// the fact has a value side that the query reads without matching on
-/// ([I6](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i6)).
+/// ([I6](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i6)).
 ///
 /// It is written here rather than only in the encoder's golden because encoding a shape
 /// correctly and *storing* one are different claims.
@@ -431,8 +431,8 @@ fn a_reference_expands_into_the_fact_it_names() {
 /// **An id naming no fact is an absence, and one naming no predicate is a refusal.**
 ///
 /// The first cannot happen for an id out of a row — both column families are written
-/// together ([I12](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i12)) and ids are never reused
-/// ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)) — so the server answers "nothing" and lets
+/// together ([I12](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i12)) and ids are never reused
+/// ([I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11)) — so the server answers "nothing" and lets
 /// the client decide what that means about where the id came from. The second is a
 /// question about a schema both ends share, so it is refused on the stream that asked,
 /// and the session goes on.
@@ -524,9 +524,9 @@ fn field(value: &WireValue, index: usize) -> &WireValue {
 /// The property `\more` is built on, checked here before there is a shell to check it
 /// in. The result is long enough to cross the server's chunk boundary several times —
 /// so between pages the server is parked mid-result holding a bytes-only cursor, with
-/// its snapshot already released ([I8](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i8)) — and the
+/// its snapshot already released ([I8](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i8)) — and the
 /// concatenation of the pages must equal an uninterrupted run of the same query, which
-/// is [I4](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i4) seen from a client.
+/// is [I4](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i4) seen from a client.
 #[test]
 fn a_paged_read_equals_an_uninterrupted_one() {
     let serving = start();
@@ -744,7 +744,7 @@ fn the_lifecycle_runs_through_the_client() {
 /// asked for as a question.
 ///
 /// *Disagrees*, not *differs*: a client declaring fewer predicates than the server has
-/// is checked by containment and let in ([I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13), and
+/// is checked by containment and let in ([I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13), and
 /// `i13_embedded_schema.rs` for the whole rule). What is refused here is a client whose
 /// `src.File` is a different `src.File`.
 #[test]
@@ -901,10 +901,10 @@ fn an_unprofiled_query_gets_no_profile_frame() {
 /// **A connection that has answered a thousand queries holds no more than one that has
 /// answered one.**
 ///
-/// The regression guard for `bench/FINDINGS.md` §7. A stream's task used to wait forever
-/// on a channel whose only `Sender` lived in a map with no removal path, so every query
-/// left a parked task behind: ~3.5 kB retained per query, for the life of the connection.
-/// A pooled connection is exactly the shape that reaches it, and a web tier is a pool by
+/// The regression guard for `bench/FINDINGS.md` §7: a stream's task waiting forever on
+/// a channel whose only `Sender` lives in a map with no removal path leaves a parked
+/// task per query — ~3.5 kB retained, for the life of the connection. A pooled
+/// connection is exactly the shape that reaches it, and a web tier is a pool by
 /// construction.
 ///
 /// Two claims, and they are different halves of the same fix. The server's is that the
@@ -1014,7 +1014,7 @@ fn within(limit: std::time::Duration, mut f: impl FnMut() -> bool) -> bool {
 /// So this asks for every page on a **new connection**, closing the last one first,
 /// which is the shape a stateless web tier has and the shape nothing here could take
 /// before. The concatenated pages must equal the uninterrupted result exactly: same
-/// rows, same order, no gap and no repeat — [I4](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i4)
+/// rows, same order, no gap and no repeat — [I4](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i4)
 /// carried through a token rather than through a session.
 #[test]
 fn pages_taken_on_separate_connections_equal_one_result() {
@@ -1314,13 +1314,12 @@ fn a_cancel_inside_a_chunk_completes_rather_than_fails() {
     );
 }
 
-/// **[Phase 12e](https://github.com/boxops-uk/fjord/blob/main/PLAN.md): two connections write one database at the same time.**
+/// **Two connections write one database at the same time.**
 ///
-/// The server used to hold a per-database mutex across every block, so however many
-/// clients were writing, one was writing. That mutex was doing two jobs and only ever had
-/// the right to one of them — keeping a block out of a database that has been sealed. The
-/// other, keeping writers out of *each other's* way, is now the store's, and is done per
-/// **key** by the striped merge frontier rather than per database.
+/// A per-database mutex across every block would mean that however many clients are
+/// writing, one is writing — a mutex there has the right to exactly one job, keeping a
+/// block out of a database that has been sealed. Keeping writers out of *each other's*
+/// way is the store's job, done per **key** by the striped merge frontier.
 ///
 /// **The peak gauge rather than a stopwatch.** "They ran at the same time" is exactly the
 /// kind of claim a timing test argues for and never settles — a slow CI box makes two
@@ -1380,7 +1379,7 @@ fn two_connections_write_one_database_at_the_same_time() {
 /// exactly one of them.
 ///
 /// `ops-I5`'s reject is the rule that survives parallelism, and it is the rule
-/// [`ops-I4`](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md) actually needs: *which* producer is
+/// [`ops-I4`](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md) actually needs: *which* producer is
 /// told no may vary with the interleaving, but that one of them is told no may not. A
 /// pick-one rule would make the database depend on a race; a reject makes the failure
 /// depend on it, which is a different and acceptable thing.
@@ -1500,4 +1499,73 @@ fn a_union_is_written_and_read_back_over_the_wire() {
         connection.drain(&mut rows).expect("the rows arrive"),
         [alt(TEXT, WireValue::Str("a".to_owned()))]
     );
+}
+
+/// **The positive half of the old-server translation**: a fetch answered with
+/// `ErrorCode::Protocol` — which on that stream can only mean the `F` frame itself
+/// was not understood — comes back as [`ClientError::Unsupported`], with the remedy
+/// in the message. The fake server here *is* the old server: it completes the
+/// handshake and then refuses the frame kind by code.
+#[test]
+fn a_server_that_predates_expansion_is_reported_as_unsupported() {
+    use fjord_wire::{
+        frame::{self, FrameKind},
+        protocol::{self, ErrorCode, Ready},
+    };
+    use std::io::{Read, Write};
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("old.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+        let mut buf = vec![0u8; 4096];
+
+        // The handshake: swallow STARTUP, answer READY.
+        let n = stream.read(&mut buf).expect("a startup frame");
+        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
+        assert_eq!(header.kind, protocol::kinds::STARTUP);
+
+        let ready = protocol::encode_ready(&Ready {
+            version: protocol::VERSION,
+            schema_fingerprint: 0,
+            predicates: 0,
+        });
+        let mut out = vec![];
+        frame::encode_frame(&mut out, protocol::kinds::READY, header.stream, &ready)
+            .expect("a ready frame");
+        stream.write_all(&out).expect("ready sent");
+
+        // The next frame is the fetch this server has never heard of.
+        let n = stream.read(&mut buf).expect("a fetch frame");
+        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
+
+        let refusal = protocol::encode_error(
+            ErrorCode::Protocol,
+            &format!("no handler for frame kind {:?}", header.kind),
+        );
+        let mut out = vec![];
+        frame::encode_frame(&mut out, FrameKind::ERROR, header.stream, &refusal)
+            .expect("an error frame");
+        stream.write_all(&out).expect("error sent");
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection =
+        Connection::connect(&socket, "code", Arc::clone(&schema), Mode::ReadOnly, false)
+            .expect("the handshake completes");
+
+    let id = FactId::new(FILE, 1).expect("a well-formed id");
+    let refused = connection
+        .fetch(&schema, &[id])
+        .expect_err("the fake server refuses the frame kind");
+
+    assert!(
+        matches!(&refused, ClientError::Unsupported(message)
+            if message.contains("before expansion existed")),
+        "an old server is reported as unsupported, with the remedy: {refused:?}"
+    );
+
+    server.join().expect("the fake server exits cleanly");
 }

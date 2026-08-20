@@ -299,10 +299,10 @@ impl Connection {
         // whole of it means; the map says "these predicates are yours", which is the
         // only thing a client holding *part* of one can honestly say — an indexer that
         // writes six of twenty-seven predicates has a different whole-schema
-        // fingerprint and is not wrong about anything ([I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)).
+        // fingerprint and is not wrong about anything ([I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)).
         //
         // A Rust client computes both because it links the algorithm. That is not the
-        // thing [D2](https://github.com/boxops-uk/fjord/blob/main/docs/open-decisions.md) rules out: what a *foreign*
+        // thing [D2](https://github.com/boxops-uk/fjord/blob/main/PLAN.md) rules out: what a *foreign*
         // client must not do is reimplement the canonical form, and one that carries a
         // constant simply sends no map.
         let (fingerprint, predicates) = if assert_schema {
@@ -556,7 +556,7 @@ impl Connection {
     ///
     /// Not the one this connection was built with, and the difference is the point: a
     /// database carries the schema it was created against
-    /// ([I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)), so a client's built-in copy is its own
+    /// ([I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)), so a client's built-in copy is its own
     /// opinion and this is the answer. It includes the predicates the *server* answers
     /// (`fjord.db.List`), because the question is what can be asked here.
     ///
@@ -617,7 +617,7 @@ impl Connection {
     /// [`served_schema`](Connection::served_schema)'s answer, not this connection's own
     /// copy: a reader makes no claim about the schema, so `self.schema` here may be this
     /// build's built-in one while the database was created against something else
-    /// ([I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)). Passing the wrong one does not fail
+    /// ([I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)). Passing the wrong one does not fail
     /// loudly — it decodes the bytes as a different shape — so the caller names it
     /// rather than this having an opinion.
     ///
@@ -770,11 +770,11 @@ impl Connection {
     /// drained but the server genuinely parked: its outbound queue for this stream
     /// fills, its query loop suspends holding a bytes-only
     /// [`Cursor`](https://github.com/boxops-uk/fjord/blob/main/crates/fjord-engine/src/iter.rs), and the snapshot is already
-    /// released at the chunk boundary ([I8](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i8)). A pause
+    /// released at the chunk boundary ([I8](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i8)). A pause
     /// of a millisecond and a pause of an hour cost the server the same thing.
     ///
     /// That is what `\more` is, and what makes it the first interactive exerciser of
-    /// [I4](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i4).
+    /// [I4](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i4).
     ///
     /// # Errors
     ///

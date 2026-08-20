@@ -105,11 +105,22 @@ jobs:
       # `default-members` is the whole workspace, so this means everything.
       - name: Tests
         run: cargo test --locked
-      # The coverage ledger (`docs/testing.md`): guards written up front and not
+      # The coverage ledger (AGENTS.md, testing): guards written up front and not
       # yet live. Printed rather than asserted — a number here would have to be
       # edited by whoever un-ignores one, and the list is what a reviewer reads.
       - name: Invariant coverage ledger
         run: cargo test --locked -- --ignored --list
+      # The website is the design book. `--strict` turns the generator's own
+      # warnings — a page missing from the nav, a nav entry with no page — into a
+      # failure, so the book cannot silently lose a page.
+      - name: Website builds clean
+        run: python3 website/build.py --strict
+      # The drift gate: site links and anchors resolve, invariant citations in the
+      # crates resolve to the registry, nothing references a retired doc, and no
+      # build-plan phase number survives in code or the book. Each check is a way
+      # the documentation actually went stale once.
+      - name: Documentation is consistent
+        run: python3 scripts/check-docs.py
 
   package:
     name: package
@@ -237,7 +248,7 @@ jobs:
   #
   # It runs after `test`, `package` and `attest` — a tag that does not pass them produces
   # no release rather than a released failure. What it does *not* do is publish to
-  # crates.io or nuget.org: `docs/repository-rules.md` records that publishing is not
+  # crates.io or nuget.org: AGENTS.md's repository-rules section records that publishing is not
   # gated, and the reason it stays manual is that a registry upload is irreversible while
   # a GitHub Release can be deleted. `package` has already proven both would be accepted.
   release:

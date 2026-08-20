@@ -23,7 +23,7 @@ const MAX_SOURCE_LEN: usize = u32::MAX as usize;
 ///
 /// The generated parser is recursive descent and `ty` recurses through records, arrays,
 /// `maybe` and `set`, so deep input would overflow the stack — a panic on a data path,
-/// which [conventions](https://github.com/boxops-uk/fjord/blob/main/docs/conventions.md) does not allow. A schema is
+/// which [conventions](https://github.com/boxops-uk/fjord/blob/main/AGENTS.md) does not allow. A schema is
 /// written by a person; 64 is far past anything anyone means and far below what would
 /// exhaust a stack.
 const MAX_NEST_DEPTH: usize = 64;

@@ -7,7 +7,7 @@
 //!
 //! # Ids come from the sorted name, and that is D1
 //!
-//! [`phase-8-schemas.md`](https://github.com/boxops-uk/fjord/blob/main/docs/phase-8-schemas.md) settles this: an id is a
+//! [`phase-8-schemas.md`](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md) settles this: an id is a
 //! property of the *database*, assigned by sorted qualified name and then persisted and
 //! append-only, never a function of where a declaration sits in a file. This module does
 //! the assigning half — sort, then enumerate — which is what makes two orderings of one
@@ -66,7 +66,7 @@ struct Declared<'s> {
 
 /// Where a predicate's id comes from.
 ///
-/// Two callers, and the difference between them is [D1](https://github.com/boxops-uk/fjord/blob/main/docs/phase-8-schemas.md)
+/// Two callers, and the difference between them is [D1](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md)
 /// stated as code: a schema being **declared** is numbered by sorted name, so that two
 /// orderings of one schema build the same database; a schema being **recovered** from
 /// the copy a database embedded already has its numbering, frozen in the tag of every
@@ -300,7 +300,7 @@ fn collect<'s>(
         Some(Rule::DeriveItem) => diags.push(Code::NyiDerivation.at(
             cst.span(item),
             "a derived predicate needs the query language, which is not available to a \
-             schema yet — see PLAN Phase 8b",
+             schema yet — see PLAN.md, stored derivation",
         )),
 
         Some(Rule::TypeItem) => {
@@ -327,7 +327,7 @@ fn collect<'s>(
                 diags.push(Code::NyiDerivation.at(
                     cst.span(item),
                     "`stored` marks a derived predicate, which needs the query language \
-                     a schema cannot reach yet — see PLAN Phase 8b",
+                     a schema cannot reach yet — see PLAN.md, stored derivation",
                 ));
                 return;
             }
@@ -410,18 +410,20 @@ impl Resolver<'_, '_> {
                 node,
                 Code::NyiArray,
                 "an array type is not available: a one-to-many is written as one fact \
-                 per element (see open-decisions.md)",
+                 per element (a settled decision — see PLAN.md)",
             ),
             Rule::SetTy => self.refuse(node, Code::NyiSet, "a set type is not available"),
             Rule::MaybeTy => self.refuse(
                 node,
                 Code::NyiMaybe,
-                "`maybe` is sugar over a union, and waits on one",
+                "`maybe` is sugar over a union, and waits on a naming decision: the \
+                 alternative names it desugars to enter the fingerprint",
             ),
             Rule::EnumTy => self.refuse(
                 node,
                 Code::NyiEnum,
-                "an enumeration is sugar over a union, and waits on one",
+                "an enumeration is sugar over a union, and waits on a naming decision: \
+                 the payload type it desugars to enters the fingerprint",
             ),
 
             Rule::BuiltinTy => {
@@ -531,7 +533,7 @@ impl Resolver<'_, '_> {
     /// `{ a : int = 0 | b : string = 1 }` — **a union**.
     ///
     /// Three things are checked here and nowhere else, all of them
-    /// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10)'s
+    /// [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10)'s
     /// *within one schema* half — which is the only half a schema can be checked for
     /// on its own, since under [I13] there is no second schema at load to compare it
     /// against: every alternative carries a discriminant, no two carry the same one,
@@ -544,7 +546,7 @@ impl Resolver<'_, '_> {
     /// The canonical form sorts by tag, so permuting a declaration moves no
     /// fingerprint and renumbering one does.
     ///
-    /// [I13]: https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13
+    /// [I13]: https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13
     fn union(&mut self, list: NodeRef, depth: usize) -> Option<PredicateTy> {
         let mut alts: Vec<Alternative> = Vec::new();
 
@@ -751,7 +753,7 @@ mod tests {
     }
 
     /// **Two orderings of one schema are the same schema** — the precursor to
-    /// [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)'s fingerprint guard, at the level this
+    /// [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)'s fingerprint guard, at the level this
     /// step can already answer.
     ///
     /// Both the ids and the types have to match: ids alone would hold for a lowering

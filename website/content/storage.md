@@ -24,6 +24,23 @@ A query over a predicate is a **prefix scan** of `keys`, because the predicate i
 prefix of every one of its keys. Narrowing on leading key fields extends that prefix. This
 only works because the encoding is order-preserving.
 
+### A stored key is flat
+
+`encoded_key` is the key type's top-level fields **back to back, with no record wrapper of
+its own** — even when the key type is a record. A record *inside* a field keeps its wrapper,
+because there it is one value among others and has to be skippable as one. Three things rest
+on that asymmetry:
+
+- **A seek extends a prefix by whole fields.** With a wrapper, every seek would carry a
+  constant leading byte and none could stop before the terminator.
+- **Field *k* costs *k* skips**, which is what the executor's field-offset cache holds.
+- **A key is therefore not *a* field.** A plan addresses key fields by path, and no path
+  names a whole record key — binding a variable to one is `nyi/whole-key`.
+
+The executor never learns which convention wrote a row, so both encodings "work" until a plan
+reads a field — and then one of them reads the wrong bytes **silently**. Pinned by
+`codec::a_stored_key_is_its_fields_with_no_wrapper_of_its_own`.
+
 ### Why two, and not one
 
 Because a value must never enter the scan loop ([I6](invariants.html#i6)). A single map
@@ -77,11 +94,31 @@ That is what buys a **range** scan (not a filter) and rows in semantic order wit
 is why `"ann" < "anna"` falls out of the bytes, and why a negative integer sorts below a
 positive one.
 
+Integers are the hard case — two's complement puts negatives above positives, and fixed width
+wastes space. The scheme: variable width with the width carried **in the marker byte**, so the
+marker sorts first and orders values across widths; negatives as the ones'-complement of the
+magnitude, with *wider* negatives taking *smaller* markers so "more negative" sorts lower; and
+one positive band shared by every integer type. The **decoder is a canonicalising validator** —
+it recomputes the width and rejects any non-minimal encoding — because order preservation is
+stated over encodings, and it holds only if one value has exactly one legal byte string.
+
+A string prefix becomes a **range** by encoding the prefix and dropping its terminator, which
+is what makes `"al"..` a byte range rather than a filter.
+
 ### 2. Self-delimiting ([I2](invariants.html#i2))
 
 The **marker byte** alone says how to advance past a value. `skip` needs no schema: a scan
 can walk to the *n*th field of a key it has never seen the type of. Record nesting is
 bounded, so malformed bytes are an error rather than a stack overflow.
+
+One sharp edge is worth knowing before touching the codec. A record's terminator is `0x00`,
+and a bare **null** is also `0x00` — so a null *element* inside a group is escaped as
+`0x00 0xFF`, and in nested mode `skip` reads a `0x00` not followed by `0xFF` as the
+terminator. An embedded NUL inside a string escapes the same way, and the ordering argument
+for `"a" < "a\0"` then compares one row's terminator against the other's escape byte — which
+holds **only because every marker a value can begin with is below `0xFF`**. That is a
+requirement on the marker table, not a property of strings, and it is why the table's
+reserved bands stop at `0xFE`.
 
 ### 3. Frozen on disk ([I3](invariants.html#i3))
 
@@ -103,12 +140,24 @@ test pins every marker so a renumber breaks loudly.
 | `0x48` | `MARK_INT_ZERO` | zero | fixed, 0 bytes |
 | `0x49–0x50` | `MARK_INT_POS` | positive integers, width 1 … 8 | width in marker |
 | `0x51` | `MARK_FACT_REF` | a reference to a fact | fixed, 8 bytes |
-| `0x52–0xFE` | *reserved* | | |
+| `0x52` | `MARK_UNION` | a tagged alternative — discriminant, one payload, terminator | nested |
+| `0x53–0xFE` | *reserved* | | |
 | `0xFF` | `MARK_ESCAPE` | escapes a null element | — |
 
 Reading the integer band: zero is the centre at `0x48`; positives climb as width grows, so
 larger positives sort higher; negatives fall as width grows, so more-negative sorts lower.
-The type ordering `null < string < record < integers < fact-ref` falls out of the table.
+The type ordering `null < string < record < integers < fact-ref < union` falls out of the
+table.
+
+A union was **appended** at `0x52` — which is what I3 permits, and the only thing it permits:
+the table below it does not move. Highest in the table, so a union sorts after every other
+type, and within a union by discriminant then payload — a key's alternatives **cluster**, and
+matching one is a prefix of the key order rather than a filter over all of it. It is encoded
+as a *group*, like a record: it carries a terminator and escapes a null payload even though
+its arity of one would make the terminator redundant, so "is a group" stays a single concept
+— terminated, null-escaping, depth-counted — and `skip` needs no notion of a value still
+owed. A stored tag that no alternative declares is refused at decode
+(`UnknownDiscriminant`), never read as whichever alternative sat nearby.
 
 A fact reference has its **own** fixed-width marker rather than sharing the integer encoding,
 so a value's bytes are self-describing without the schema and the `Int`/`Fact` distinction is
@@ -119,6 +168,12 @@ That is why the reserved band stops at `0xFE`. A new type numbered `0xFF` would 
 invert string ordering across a record boundary — so the ceiling is part of what I3 freezes,
 not a spare byte.
 :::
+
+For a future **container** type, the reserved band is not the whole decision: length-prefixed
+or terminator-delimited is a choice *inside* the encoding, and a length-prefixed array cannot
+be prefix-matched at all, because the length sorts ahead of the elements. That choice freezes
+with the first stored value, exactly as a marker does — which is part of why arrays are an
+open question rather than a reserved byte away.
 
 ## Fact ids are snowflakes ([I11](invariants.html#i11))
 
@@ -240,6 +295,19 @@ A scan yields rows in **lexicographic key order**, and that is a commitment rath
 implementation detail: resume re-seeks against it. It is also what makes rows come back in a
 useful order for free — a file's references arrive in the order a renderer wants to splice
 them, because position leads the rest of that predicate's key.
+
+The commitment is stronger than the design this was taken from now offers — Glean returns
+facts "in no specified order", which is what lets it *truncate* an over-long `keys` row and
+re-check from `entities`. Committing to the order forecloses that: a backend that cannot hold
+a whole key cannot hold this `keys` family, and there is no stated key-size budget or
+degradation path above one. Both are recorded as open edges rather than answered.
+
+`scan` itself is a **contract on the trait**, asserted directly against every implementation
+rather than inferred from two stores agreeing — two stores that leak identically would satisfy
+a differential and both still be wrong. A scan never leaves the predicate its lower bound
+names (`assert_scan_stays_in_predicate` — fjall gets this structurally from one tree per
+predicate; the in-memory model store once didn't), and a bound too short to name a predicate
+is an **error in the call**, not a row (`assert_short_bound_is_rejected`).
 
 ## Snapshots
 

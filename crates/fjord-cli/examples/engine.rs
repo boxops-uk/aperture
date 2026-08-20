@@ -1,4 +1,4 @@
-//! **The bottom of the [capacity ladder](../../../docs/phase-10-capacity.md): the executor,
+//! **The bottom of the [capacity ladder](../../../bench/FINDINGS.md): the executor,
 //! the compiler and the store, each measured alone.**
 //!
 //! ```text
@@ -31,7 +31,7 @@
 //! is worse than no figure. So each workload is run once **unmeasured** to establish
 //! its row count and its per-step examined counts, and every timed run afterwards must
 //! reproduce both exactly — a mismatch aborts with the discrepancy rather than printing
-//! a rate. That is [`docs/testing.md`][testing]'s rule about vacuous passes, applied to
+//! a rate. That is [`website/content/testing.md`][testing]'s rule about vacuous passes, applied to
 //! a measurement instead of an assertion, and it is why the catalogue leads with a
 //! query that examines exactly zero rows: an instrument that reports no work for a real
 //! query is broken, not fast.
@@ -47,7 +47,7 @@
 //! What travels is ns/row against predicate size, the ratio between examined and
 //! produced, and what paging costs as a fraction of the run it interrupts.
 //!
-//! [testing]: ../docs/testing.md
+//! [testing]: ../website/content/testing.md
 
 use std::{
     fmt::Write as _,
@@ -227,7 +227,7 @@ fn parse() -> Result<Options, String> {
 /// everything — a plausible-looking run measuring nothing, which is exactly the failure
 /// this ladder is supposed to make impossible.
 ///
-/// [ops]: ../docs/fjord-cli-design.md
+/// [ops]: ../website/content/operations.md
 fn resolve_instance(path: &Path) -> Result<PathBuf, String> {
     if path.join("keyspaces").is_dir() {
         return Ok(path.to_path_buf());
@@ -504,7 +504,7 @@ fn run(db: &FjallDb, plan: &Plan, limit: u64) -> Run {
 /// is [`I8`][i8] — the snapshot is released at suspend, so a paged run pays for a new one
 /// per page and that cost belongs in this number.
 ///
-/// [i8]: ../docs/invariants.md#i8
+/// [i8]: ../website/content/invariants.md#i8
 fn run_paged(db: &FjallDb, plan: &Plan, limit: u64) -> (Run, Paging) {
     let cancel = CancellationToken::new();
     let mut profile = Profile::for_plan(plan);
@@ -641,7 +641,7 @@ fn page_comparison(
 
 /// **The per-row cost the executor does not pay** — projection, wire conversion, encoding.
 ///
-/// S1 counts rows and touches no field ([I5](../../../docs/invariants.md#i5) is why that is
+/// S1 counts rows and touches no field ([I5](../../../website/content/invariants.md#i5) is why that is
 /// cheap: a register holds the whole row and decodes lazily). The server cannot: for every
 /// row it calls `to_value`, then [`rows::to_wire`], then `encode_value` into **a fresh
 /// `Vec` per row** (`session.rs:863`). That is what F4 predicts dominates above ~100k

@@ -1,6 +1,6 @@
 //! **The queries the instruments measure, stated once.**
 //!
-//! Phase 10's S0. Every rung of the ladder — the in-process executor bench, the load
+//! Every rung of the measurement ladder — the in-process executor bench, the load
 //! generator, the soak, the code-search mix — needs the same questions asked of the same
 //! data, or a number from one rung cannot be compared with a number from another. They
 //! each stated their own, which is how `loadgen` came to seek `files / 2` — a key that
@@ -182,11 +182,10 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
         // whole predicate per outer row. The ratio between these is the price of the
         // declaration.
         //
-        // This pair is why `src.Decl` is declared `{module, name, line}`. It used to be
-        // `{line, module, name}` — alphabetical, by a convention `sample_schema` imposed on
-        // itself — so the ordinary "declarations in this module" join was the *slow* arm
-        // here, at 56,274 rows examined per row produced. It is the fast arm now, and
-        // the slow one is a real query that still cannot narrow: `src.SearchByName` is
+        // This pair is why `src.Decl` is declared `{module, name, line}`: declared
+        // alphabetically, the ordinary "declarations in this module" join was the
+        // *slow* arm here, at 56,274 rows examined per row produced. The slow arm
+        // now is a real query that genuinely cannot narrow: `src.SearchByName` is
         // keyed for lookup *by name*, so reaching it by `to` is the same trap on a
         // predicate whose own order is right ([findings §2](../../../bench/FINDINGS.md)).
         Workload::new(

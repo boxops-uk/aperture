@@ -59,8 +59,8 @@ leans on.
 :::note Status
 The engine spine, the storage layer, the language front end, the wire protocol, the
 server, the client, the CLI, the shell and a code-search viewer are **built and
-guarded**. Ingestion from **files**, **union types** and **stored derivation** are not.
-See [Status & roadmap](status.html) for the honest, per-phase list.
+guarded** — union types included. Ingestion from **files** and **stored derivation** are
+not. See [Status & roadmap](status.html) for the honest list.
 :::
 
 <p>
@@ -69,13 +69,13 @@ See [Status & roadmap](status.html) for the honest, per-phase list.
 <span class="pill ok">fjall store</span>
 <span class="pill ok">sigla front end</span>
 <span class="pill ok">schema DSL</span>
+<span class="pill ok">union types</span>
 <span class="pill ok">wire protocol</span>
 <span class="pill ok">server + client</span>
 <span class="pill ok">CLI + shell</span>
 <span class="pill ok">parallel ingest</span>
 <span class="pill ok">code-search viewer</span>
 <span class="pill todo">file ingestion</span>
-<span class="pill todo">union types</span>
 <span class="pill todo">stored derivation</span>
 </p>
 
@@ -126,8 +126,9 @@ a producer writes:
 - **Operating it?** [CLI reference](cli.html) and [Operations](operations.html).
 
 :::note About these docs
-This site is generated from the design record in the Fjord repository — the design
-book in `docs/`, the invariant registry, the phase plan and the measured findings. Where
-this site says something is built, the repository has a test that says so; where
-something is not built, it is listed as not built rather than described as if it were.
+This site **is** the Fjord design book — the design of record, including the invariant
+registry. Where it says something is built, the repository has a test that says so; where
+something is not built, it is listed as not built rather than described as if it were. The
+roadmap and the record of settled decisions live in the repository's `PLAN.md`; the
+measured findings in `bench/FINDINGS.md`.
 :::

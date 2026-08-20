@@ -2,7 +2,7 @@
 //!
 //! # What this is
 //!
-//! The frame loop [operations §5 `serve`](../../../docs/fjord-cli-design.md)
+//! The frame loop [operations §5 `serve`](../../../website/content/operations.md)
 //! describes: a PG-shaped handshake, then framed messages tagged by stream, with a
 //! write stream, a query stream and a lifecycle request living on one connection at
 //! once — each on its own task, so none of them waits on another.
@@ -94,7 +94,7 @@ pub struct Database {
     pub schema: Arc<Schema>,
     /// This database's schema identity — the whole-schema number a handshake compares
     /// against, and the per-predicate map a **subset** claim is checked against
-    /// ([chapter 6](../../../docs/06-types-and-schema.md), [I13](../../../docs/invariants.md#i13)).
+    /// ([chapter 6](../../../website/content/schema-language.md), [I13](../../../website/content/invariants.md#i13)).
     ///
     /// Computed once at open rather than per connection: it walks the schema and hashes
     /// it, which is nothing next to opening a store and everything next to doing it on
@@ -106,7 +106,7 @@ pub struct Database {
     /// do. The job it has lost: excluding writers from *each other*, because interning
     /// is a read-modify-write and fjall's non-transactional path loses updates on a
     /// concurrent one. That is now excluded **per key** by the store's striped merge
-    /// frontier ([I12](../../../docs/invariants.md#i12)), which is as wide as the thing
+    /// frontier ([I12](../../../website/content/invariants.md#i12)), which is as wide as the thing
     /// actually being decided — so writers no longer need to exclude each other at all,
     /// and a database takes as many as there are streams.
     ///
@@ -300,7 +300,7 @@ where
     // holding the whole of one means and what every client meant before 8.4. It is
     // checked first because it is the common case and answers in one comparison.
     //
-    // Containment is the fallback, and it is [I13](../../../docs/invariants.md#i13)'s
+    // Containment is the fallback, and it is [I13](../../../website/content/invariants.md#i13)'s
     // actual rule: a producer that writes six of twenty-seven predicates has a
     // different whole-schema fingerprint and is not wrong about anything. What it
     // claims is the shapes it uses; what is checked is that this database holds each
@@ -669,7 +669,7 @@ impl StreamTask {
     ///
     /// The one thing that differs is worth stating, because it is what "populated
     /// dynamically" costs. A stored fact's id is stable forever
-    /// ([I11](../../../docs/invariants.md#i11)); a catalogue row's is its position in the
+    /// ([I11](../../../website/content/invariants.md#i11)); a catalogue row's is its position in the
     /// listing that produced it, so a database created or removed between a query and a
     /// fetch can move it. Inside one query that cannot happen — every chunk sees the same
     /// materialisation — and across the round trip an expansion may resolve to a
@@ -854,7 +854,7 @@ impl StreamTask {
     ///
     /// It is also the first thing in this project to *use* resume for what it is for
     /// rather than to test it: the cursor here is the same bytes-only token
-    /// [chapter 5](../../../docs/05-resume.md) is about.
+    /// [chapter 5](../../../website/content/executor.md) is about.
     async fn query(
         &mut self,
         payload: &[u8],
@@ -878,7 +878,7 @@ impl StreamTask {
     /// the accumulator, because `enumerate` is a fold and counting is a fold that
     /// keeps a number. Chunked exactly as the row path is, and for the same two
     /// reasons rather than for streaming: the snapshot is released at each suspend
-    /// ([I8](../../../docs/invariants.md#i8)), and a cancel lands between chunks.
+    /// ([I8](../../../website/content/invariants.md#i8)), and a cancel lands between chunks.
     ///
     /// **This is not aggregation in the language.** A query still answers rows; this
     /// asks a question about the answer. What it saves is the part that costs —
@@ -1140,7 +1140,7 @@ impl StreamTask {
         }
 
         // **A cancelled query reports no profile, and that is the design's rule rather
-        // than an oversight** ([operations §5](../../../docs/fjord-cli-design.md)):
+        // than an oversight** ([operations §5](../../../website/content/operations.md)):
         // the tally is not final until the last chunk has run, so one taken here counts
         // what a *different* query examined — the prefix the client was willing to wait
         // for. Sent anyway, it lands beside a truncated row count and invites exactly
