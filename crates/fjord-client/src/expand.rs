@@ -51,7 +51,7 @@
 //! [`unresolved`](Expander::unresolved) counts it rather than hiding it behind a
 //! plausible-looking row.
 //!
-//! [settled]: ../../../PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
+//! [settled]: ../../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

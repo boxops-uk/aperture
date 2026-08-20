@@ -201,7 +201,7 @@ pub mod kinds {
     /// combination. Asking about the ids in a row *after* the row arrived composes with
     /// every way of asking for rows, and costs a client that never asks nothing at all.
     ///
-    /// [settled]: ../../../PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
+    /// [settled]: ../../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened
     pub const FETCH: FrameKind = FrameKind(b'F');
     /// Server → client: the facts those ids name, **in the order they were asked
     /// about**.

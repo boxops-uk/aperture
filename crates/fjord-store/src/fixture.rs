@@ -7,10 +7,6 @@
 //! answer asserted in the other are about one database rather than two that have
 //! drifted.
 //!
-//! The **shell** has its own (`src/main.rs`): a demo wants a schema someone recognises,
-//! and this one is built out of the compiler's awkward cases rather than out of
-//! anything.
-//!
 //! # The schema
 //!
 //! ```text

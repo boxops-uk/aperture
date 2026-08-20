@@ -19,12 +19,9 @@
 //! create — which means field names, field order, arities and types need not be sent
 //! at all.
 //!
-//! That is Avro's model, arrived at from Avro's premise. Avro: *"Binary encoded Avro
-//! data does not include type information or field names"*, and so *"a schema must
-//! always be used in order to read Avro data correctly"*. The alternative — Protocol
-//! Buffers' and Thrift's per-field tags — buys readers that do **not** have the
-//! writer's schema, which is a property this connection has already established by
-//! other means and would be paying for twice.
+//! (The design book's [wire protocol
+//! page](https://github.com/boxops-uk/fjord/blob/main/website/content/wire-protocol.md)
+//! holds the argument against per-field tags.)
 //!
 //! ```text
 //!   src.Decl { module = <src.Module …>, name = "key_of", line = 12 }
@@ -75,20 +72,16 @@
 //! it opens no socket, holds no state and decides nothing about retries, timeouts or
 //! concurrency. That is `fjord-client`'s on one side and `fjord-server`'s on the
 //! other, and it is why both can share this crate without sharing each other —
-//! [operations §10](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)'s "shared by server and client,
-//! no I/O policy", and its rule that nothing depends on the server.
-//!
-//! The vocabulary lived in `fjord-server` until 9e, which was fine while the server
-//! was its only speaker and wrong the moment a Rust client existed: a client would have
-//! had to depend on the server — dragging in fjall, the engine and a runtime to send a
-//! handshake — or write a second copy of the message formats, which is exactly the
-//! drift the .NET client exists to detect rather than to cause.
+//! "shared by server and client, no I/O policy" — a client depending on the server
+//! would drag in fjall, the engine and a runtime to send a handshake, and a second
+//! copy of the message formats is exactly the drift the .NET client exists to detect
+//! rather than to cause.
 //!
 //! [I1]: ../../website/content/invariants.md#i1
 //! [I2]: ../../website/content/invariants.md#i2
 //! [I3]: ../../website/content/invariants.md#i3
 //! [I13]: ../../website/content/invariants.md#i13
-//! [settled]: ../../PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
+//! [settled]: ../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened
 //! [operations §6 and §8]: ../../website/content/operations.md#6-wire-protocol--the-write-stream
 
 pub mod block;

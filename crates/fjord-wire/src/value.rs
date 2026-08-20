@@ -39,7 +39,7 @@
 //!
 //! A `Fact`-typed field holds either a [`FactId`] the producer already has or the
 //! target fact written inline
-//! ([settled](https://github.com/boxops-uk/fjord/blob/main/PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)).
+//! ([settled](https://github.com/boxops-uk/fjord/blob/main/PLAN.md#settled-decisions--recorded-so-they-are-not-reopened)).
 //! That choice is genuinely per-occurrence, so it is the one thing the schema cannot
 //! predict and the one place a discriminator is written — a varint branch index,
 //! which is exactly how Avro encodes a union. It appears only at `Fact`-typed

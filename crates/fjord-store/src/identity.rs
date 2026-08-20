@@ -12,7 +12,7 @@
 //! legitimately disagree about, since it depends on the order writes happened to
 //! arrive in, so hashing one would make identity depend on nothing semantic.
 //!
-//! With [a reference sent as the target fact](../../../PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline),
+//! With [a reference sent as the target fact](../../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened),
 //! a database has a canonical **logical** form: expand every reference to the key of
 //! the fact it names, recursively, and no physical id appears anywhere. That is what
 //! is hashed.
