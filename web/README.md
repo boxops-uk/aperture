@@ -6,15 +6,14 @@ does is *asking the lexer*, not paraphrasing it.
 
 It lives beside [`website/`](../website/README.md) rather than replacing it: the
 book is published on every push to main and nothing here is finished enough to
-stand in for it yet. Three views exist — **tokens**, the **parse tree**, and the
-**lowered tree with its types** — which is the whole front end, compiled against
-a schema the reader can edit. The lexer came first because it is the one that
+stand in for it yet. Four views exist — **tokens**, the **parse tree**, the **lowered tree with its
+types**, and the **plan** — which is the whole compiler, run against a schema the
+reader can edit. The lexer came first because it is the one that
 retires something: `website/assets/app.js` carries a hand-written sigla
 highlighter, which is a second implementation of the lexer and a second thing to
 keep true.
 
-What is left is the *plan*: the compilation already produces one and the view
-throws it away.
+What is left is *running* the plan: rows need a store in the browser.
 
 ```bash
 ../scripts/build-wasm.sh   # or: npm run wasm
@@ -36,6 +35,7 @@ written in JavaScript, because that is the thing being replaced.
 | `src/App.tsx` | the shell: the source editor, the sample queries, and the tabbed view beside them |
 | `src/SchemaPane.tsx` | the schema, as text — the only form a browser can hold one in, since `import` resolution reads files — painted by the schema language's own lexer |
 | `src/LoweredView.tsx` | the lowered tree as the query's own shape: a head, then one section per statement |
+| `src/PlanPane.tsx` | the plan: each step's text is the engine's own (`print::steps`), with the structure a reader counts around it |
 | `src/Editor.tsx` | a textarea with the real tokens painted underneath it — used for the query and the schema, since the only difference is which lexer produced the tokens |
 | `src/TokenTable.tsx`, `src/TreeView.tsx` | the two views — the second walks the arena from its root, which is already in reading order |
 | `src/span.ts` | what the cursor is on, and the rule every view highlights by: a node lights up **its subtree** and the bytes it covers, never the path above it — that is what the indentation already shows |

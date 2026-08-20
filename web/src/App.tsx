@@ -5,6 +5,7 @@ import { Editor } from './Editor'
 import { TokenTable } from './TokenTable'
 import { TreeView } from './TreeView'
 import { LoweredView } from './LoweredView'
+import { PlanPane } from './PlanPane'
 import { SchemaPane } from './SchemaPane'
 import { Diagnostics } from './Diagnostics'
 import './app.css'
@@ -51,7 +52,7 @@ export default function App() {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [highlight, setHighlight] = useState<Highlight | null>(null)
-  const [tab, setTab] = useState<'tokens' | 'tree' | 'lowered'>('lowered')
+  const [tab, setTab] = useState<'tokens' | 'tree' | 'lowered' | 'plan'>('plan')
 
   // Schema, query and analysis move together, updated by whatever changed
   // either text — a keystroke, a sample, or the engine finishing loading. The
@@ -170,6 +171,13 @@ export default function App() {
             >
               lowered<span className="count">{view?.lowered.nodes.length ?? 0}</span>
             </button>
+            <button
+              type="button"
+              className={tab === 'plan' ? 'tab on' : 'tab'}
+              onClick={() => setTab('plan')}
+            >
+              plan<span className="count">{view?.lowered.plan?.levels ?? 0}</span>
+            </button>
           </div>
 
           {tab === 'tokens' && (
@@ -188,6 +196,12 @@ export default function App() {
           )}
           {tab === 'lowered' && view && (
             <LoweredView lowered={view.lowered} highlight={highlight} onHighlight={setHighlight} />
+          )}
+          {tab === 'plan' && (
+            <PlanPane
+              plan={view?.lowered.plan ?? null}
+              refused={(view?.lowered.diagnostics.length ?? 0) > 0}
+            />
           )}
         </section>
       </main>

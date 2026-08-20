@@ -233,12 +233,12 @@ API (rotate in place at half TTL) → connection lifetime. Guards to write up fr
 
 ## The engine in a browser — WebAssembly
 
-**Built, through the whole front end.** The store split is done,
-`fjord-inspect` holds the token, parse-tree and lowered views, `wasm/` builds a
-258 KB module (108 KB over the wire), and `web/` is a React site that lexes,
-parses, lowers and typechecks on every keystroke against a schema the reader
-can edit. What is left is showing the *plan* and the rows — the phases that
-have output beyond diagnostics.
+**Built, end to end through compilation.** The store split is done,
+`fjord-inspect` holds the token, parse-tree, lowered and plan views, `wasm/`
+builds a 280 KB module (117 KB over the wire), and `web/` is a React site that
+lexes, parses, lowers, typechecks, flattens and reorders on every keystroke
+against a schema the reader can edit — ending in the plan the executor would
+run. What is left is *running* it.
 
 **The goal, unchanged.** The design book's interactive segments run the real
 lexer, parser, typechecker, planner, executor and transport codec, compiled to
@@ -302,7 +302,7 @@ The crate exists, with `Tokens` built and the rest to come.
 | `Tokens`, for the **schema** language | `fjord_schema::syntax::lexer` — a second lexer, not a second reading of the first | ✅ |
 | `Types` — per node, and the head | `Typed::ty`, `Compilation::head_ty` | ✅ folded into `Lowered` — a type is an annotation *on* a node, and a second panel would make a reader align two lists by hand |
 | `Diagnostics` — code, message, labels | the sink, through `Diagnostics::in_source_order` | ✅ for every phase that reports without a schema |
-| `PlanView` — steps, levels, seek keys, residuals, projections, fingerprint | mirrors the walk in `print::plan` | to build |
+| `PlanView` — steps, levels, seek keys, residuals, projections, fingerprint | `print::steps` and `print::head`, with structure around the engine's own text | ✅ |
 | `Rows` and `ProfileView` | `fixtures::collect_rows` and `iter::enumerate_profiled` over a `MemStore` from `fixture::facts()` | to build |
 | `WireView` — frames, blocks, and a hex dump annotated by offset | `fjord_wire::{frame, block, value, protocol}` | to build |
 | `SchemaView` — predicates, canonical form, identity, compatibility | `fjord_schema::{syntax, print, fingerprint}` | to build |
@@ -324,8 +324,24 @@ the head a query requires.
 **The lowered view runs the whole front end, not just typecheck.** Several
 refusals a reader meets first are flatten's (`nyi/value-field`,
 `reject/not-a-generator`), and a page that showed "no errors" for a query
-`flatten` would refuse would be lying. The plan it produces is simply not shown
-yet.
+`flatten` would refuse would be lying. The plan it produces is now shown beside
+it, and **a plan exists exactly when the sink is clean** — the same rule the
+server runs under, asserted rather than assumed.
+
+**The plan view does not render the plan.** `print::plan` was split into
+`print::steps` (one string per step) and `print::head`, with `plan` becoming the
+join of them — so the text a page shows is byte for byte what
+`fjord query --plan` shows, and `the_view_is_the_printer_rendered_apart`
+reassembles one from the other to prove it. What the view adds is *structure*
+around that text: the step's kind, the register it fills, whether each source
+scans or seeks, how many residuals filter it. A second renderer would decode
+stored bytes a second way, and the places it would differ — a constant's type, a
+union alternative's name, which field a path names — are exactly the ones worth
+reading.
+
+**Levels are not steps, and the view says both.** A resume cursor holds one row
+per *level*; a derive and a test bind nothing and take no cursor entry. Carrying
+one number would make the other wrong somewhere a reader could not see.
 
 **The split between the two trees is the thing to keep straight.** The parse
 view is the *concrete* tree — the "lossless, untyped, grammar-shaped tree with
@@ -376,10 +392,6 @@ matters.
 
 ### What is left
 
-- **`PlanView`**, which is the argument for the whole exercise: steps, levels,
-  seek keys, residuals, projections and the fingerprint. `Compilation::plan`
-  already runs — the view throws the `Plan` away. `print::plan` is the map of
-  what to expose.
 - **Rows and `ProfileView`**, which would make the site a playground rather than
   a viewer: a `MemStore` seeded from `fixture::facts()` answers a query in the
   browser. The fixture is in the seam crate and wasm-clean, so this is reachable;

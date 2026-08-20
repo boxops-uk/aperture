@@ -26,6 +26,7 @@ use fjord_schema::schema::{LocalInterner, Schema, Symbol};
 use serde::Serialize;
 
 use crate::{
+    plan::{PlanView, view as plan_view},
     schema::compile as compile_schema,
     view::{DiagnosticView, Span, views_of},
 };
@@ -71,6 +72,10 @@ pub struct Lowered {
     pub head_ty: Option<String>,
     pub statements: Vec<StatementView>,
     pub nodes: Vec<LoweredNode>,
+    /// What the query compiles to, when it compiles. Absent whenever anything
+    /// was reported: `plan` is gated on the sink being clean, which is the same
+    /// rule the server runs under.
+    pub plan: Option<PlanView>,
     pub diagnostics: Vec<DiagnosticView>,
 }
 
@@ -89,21 +94,25 @@ pub fn lowered(schema_source: &str, query: &str) -> Lowered {
             head_ty: None,
             statements: Vec::new(),
             nodes: Vec::new(),
+            plan: None,
             diagnostics: schema_diagnostics,
         };
     };
 
     let mut compilation = Compilation::new(query, &schema);
-    // The **whole** front end, not just typecheck: a page that showed "no
-    // errors" for a query flatten would refuse would be lying, and several
-    // refusals a reader meets first (`nyi/value-field`, `reject/not-a-generator`)
-    // are flatten's. The plan itself is not shown yet; the diagnostics are.
-    compilation.plan();
+    // The **whole** front end. Several refusals a reader meets first are
+    // flatten's (`nyi/value-field`, `reject/not-a-generator`), so a view that
+    // stopped at typecheck would report "no errors" for a query the server
+    // would refuse.
+    let compiled = compilation.plan();
 
     let interner = compilation.interner();
     let head_ty = compilation
         .head_ty()
         .map(|ty| render(ty, &schema, interner));
+    let plan = compiled
+        .as_ref()
+        .map(|plan| plan_view(plan, &schema, interner));
 
     let (head, statements, nodes) = match compilation.ast() {
         Some(ast) => (
@@ -120,6 +129,7 @@ pub fn lowered(schema_source: &str, query: &str) -> Lowered {
         head_ty,
         statements,
         nodes,
+        plan,
         diagnostics: views_of(compilation.diagnostics()),
     }
 }

@@ -24,6 +24,8 @@
 
 /// The lowered tree, and the types typecheck gave it.
 pub mod lowered;
+/// The plan: what the query does, and in what order.
+pub mod plan;
 /// What the site opens with — a schema, and queries over it.
 pub mod samples;
 /// What a schema declares — what everything after parsing resolves against.
@@ -36,6 +38,7 @@ pub mod tree;
 pub mod view;
 
 pub use lowered::{Lowered, LoweredNode, StatementView, lowered, lowered_json};
+pub use plan::{PlanView, StepView};
 pub use samples::{SAMPLES, SCHEMA, Sample, samples_json};
 pub use schema::{PredicateView, SchemaView, schema, schema_json};
 pub use tokens::{

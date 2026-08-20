@@ -34,10 +34,25 @@ await build({ logLevel: 'warn' })
 const server = await preview({ preview: { port: 4173, strictPort: true } })
 const url = server.resolvedUrls.local[0]
 
-const browser = await puppeteer.launch({
-  executablePath,
-  args: ['--no-sandbox', '--disable-dev-shm-usage'],
-})
+// Launching flakes in a container often enough to matter — crashpad probing
+// `/sys/devices/system/cpu/.../cpufreq` that is not there — and a flaky check is
+// one people learn to re-run rather than read. Three tries, then it is real.
+async function launch(attempts = 3) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await puppeteer.launch({
+        executablePath,
+        args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+      })
+    } catch (error) {
+      if (attempt >= attempts) throw error
+      console.log(`  ..   the browser did not start (attempt ${attempt}); trying again`)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  }
+}
+
+const browser = await launch()
 const page = await browser.newPage()
 
 const problems = []
@@ -70,12 +85,16 @@ const nodeRow = async (kind) =>
   ).asElement()
 
 await page.goto(url, { waitUntil: 'networkidle0' })
-await page.waitForSelector('.lowered li', { timeout: 15_000 })
+// The page opens on the plan, which is the last thing the front end produces —
+// so its presence says every phase before it ran.
+await page.waitForSelector('.plan .steps li', { timeout: 15_000 })
 
 check('the engine reports a version', /\d+\.\d+\.\d+/.test(await page.$eval('.status', (el) => el.textContent)))
 
 // ---- the lowered view: the phase that needs a schema ----
 
+await page.click('.tab:nth-child(3)')
+await page.waitForSelector('.lowered li')
 check(
   'the query is typed against the schema',
   (await texts('.lowered .ty')).some((ty) => ty === 'string'),
@@ -151,10 +170,43 @@ check(
   }),
 )
 
-// ---- a clean query, and then the schema it is clean against ----
+// ---- a clean query, and then the plan it compiles to ----
 
 await type('.input', 'P where src.File P')
 check('a supported query compiles clean', (await page.$$('.diagnostics li')).length === 0)
+
+await page.click('.tab:nth-child(4)')
+await page.waitForSelector('.plan .steps li')
+check(
+  'the plan is what the engine printed',
+  (await texts('.plan pre')).some((text) => text.includes('src.File scan')),
+)
+
+// **The reorderer is the thing worth seeing.** Written in this order the join
+// reads File second; the constraint on it makes it the cheaper place to start,
+// and the plan says so by putting it first.
+await type('.input', 'N where src.Module {file = F, name = N}; F = src.File P; P = "src/"..')
+await page.waitForSelector('.plan .steps li')
+const steps = await texts('.plan .steps pre')
+check(
+  'the reorderer moved the constrained predicate first',
+  steps[0].includes('src.File') && steps[1].includes('src.Module'),
+)
+check(
+  'a seek is told apart from a scan',
+  (await texts('.plan .badge.seek')).length > 0,
+)
+check(
+  'the plan carries the fingerprint a cursor would',
+  /^[0-9a-f]{16}$/.test(await page.$eval('.plan .fingerprint', (el) => el.textContent)),
+)
+
+// A refused query has no plan at all, which is the rule the server runs under.
+await type('.input', 'X where src.Nonesuch X')
+check(
+  'a refused query shows no plan',
+  (await page.$$('.plan .steps li')).length === 0 && (await page.$$('.empty')).length === 1,
+)
 
 await page.click('.disclosure')
 await page.waitForSelector('.editor.tall .input')

@@ -87,12 +87,41 @@ export type LoweredNode = {
 
 export type StatementView = { kind: string; op: string | null; nodes: number[] }
 
+export type StepView = {
+  index: number
+  /** `Level`, `Derive` or `Test` — what the machine does with it. */
+  kind: string
+  /** The register it fills; absent for a test, which binds nothing. */
+  register: string | null
+  /** Its number among *loop levels*, which is what a resume cursor pairs against. */
+  level: number | null
+  /** `scan`, `seek`, `fetch`, `absent`, `derive`, `compare` — one per source. */
+  access: string[]
+  predicates: string[]
+  /** Rows this step read and then dropped. */
+  residuals: number
+  /** The step as the engine prints it — the same text `fjord query --plan` shows. */
+  text: string
+}
+
+export type PlanView = {
+  /** The identity a resume cursor carries, in hex. */
+  fingerprint: string
+  levels: number
+  steps_count: number
+  registers: number
+  steps: StepView[]
+  head: string
+}
+
 export type Lowered = {
   schema_ok: boolean
   head: number | null
   head_ty: string | null
   statements: StatementView[]
   nodes: LoweredNode[]
+  /** What the query compiles to — absent whenever anything was reported. */
+  plan: PlanView | null
   diagnostics: DiagnosticView[]
 }
 
