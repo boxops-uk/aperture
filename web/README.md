@@ -34,9 +34,9 @@ written in JavaScript, because that is the thing being replaced.
 |---|---|
 | `src/wasm.ts` | loading the module once, and the TypeScript shape of the JSON it answers |
 | `src/App.tsx` | the shell: the source editor, the sample queries, and the tabbed view beside them |
-| `src/SchemaPane.tsx` | the schema, as text — the only form a browser can hold one in, since `import` resolution reads files |
+| `src/SchemaPane.tsx` | the schema, as text — the only form a browser can hold one in, since `import` resolution reads files — painted by the schema language's own lexer |
 | `src/LoweredView.tsx` | the lowered tree as the query's own shape: a head, then one section per statement |
-| `src/Editor.tsx` | a textarea with the real tokens painted underneath it |
+| `src/Editor.tsx` | a textarea with the real tokens painted underneath it — used for the query and the schema, since the only difference is which lexer produced the tokens |
 | `src/TokenTable.tsx`, `src/TreeView.tsx` | the two views — the second walks the arena from its root, which is already in reading order |
 | `src/span.ts` | what the cursor is on, and the rule every view highlights by: a node lights up **its subtree** and the bytes it covers, never the path above it — that is what the indentation already shows |
 | `src/app.css` | the design book's palette, so the two sites read as one |

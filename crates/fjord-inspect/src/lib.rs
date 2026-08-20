@@ -38,6 +38,8 @@ pub mod view;
 pub use lowered::{Lowered, LoweredNode, StatementView, lowered, lowered_json};
 pub use samples::{SAMPLES, SCHEMA, Sample, samples_json};
 pub use schema::{PredicateView, SchemaView, schema, schema_json};
-pub use tokens::{TokenClass, TokenView, Tokens, tokens, tokens_json};
+pub use tokens::{
+    TokenClass, TokenView, Tokens, schema_tokens, schema_tokens_json, tokens, tokens_json,
+};
 pub use tree::{Tree, TreeNode, tree, tree_json};
 pub use view::{DiagnosticView, Label, Span};

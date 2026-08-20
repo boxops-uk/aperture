@@ -156,7 +156,11 @@ h1 {
   inset: 0;
   width: 100%;
   height: 100%;
-  resize: vertical;
+  /* No resize handle: the textarea is absolutely positioned over the paint
+     layer, so dragging it would move the box the caret is in away from the
+     tokens behind it. The editor grows with its content instead, because the
+     paint layer is the one in flow. */
+  resize: none;
   background: transparent;
   color: transparent;
   caret-color: var(--accent);
@@ -166,6 +170,12 @@ h1 {
 
 .input::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
 
+/* The schema is 150 lines of declarations and comments, so its editor starts
+   tall and scrolls; a query is one or two lines. */
+.editor.tall { margin-top: .6rem; }
+.editor.tall .paint,
+.editor.tall .input { min-height: 20rem; max-height: 26rem; font-size: .82rem; }
+
 /* One class per `TokenClass` the view emits — the page styles what the
    language says a token *is*, and never re-decides it. */
 .tok-keyword { color: var(--kw); font-weight: 600; }
@@ -174,6 +184,8 @@ h1 {
 .tok-field { color: var(--code-ink); }
 .tok-number { color: var(--num); }
 .tok-string { color: var(--str); }
+.tok-namespace { color: var(--fn); opacity: .85; }
+.tok-comment { color: var(--com); font-style: italic; }
 .tok-wildcard { color: var(--com); }
 .tok-punctuation { color: var(--pun); }
 .tok-whitespace { color: inherit; }
@@ -304,26 +316,6 @@ h1 {
 .disclosure .what { font-weight: 600; color: var(--ink); }
 .disclosure .summary { margin-left: auto; font-family: var(--mono); font-size: .78rem; color: var(--ink-faint); }
 .disclosure .summary.bad { color: var(--bad); }
-
-.schema-input {
-  display: block;
-  width: 100%;
-  height: 16rem;
-  margin-top: .6rem;
-  padding: .8rem;
-  border: 1px solid var(--rule);
-  border-radius: .5rem;
-  background: var(--code-bg);
-  color: var(--code-ink);
-  font-family: var(--mono);
-  font-size: .82rem;
-  line-height: 1.6;
-  resize: vertical;
-  outline: none;
-  tab-size: 2;
-}
-
-.schema-input:focus { border-color: var(--accent); }
 
 .predicates {
   list-style: none;

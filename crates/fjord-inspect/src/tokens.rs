@@ -13,6 +13,7 @@
 //! view and compares.
 
 use fjord_engine::lexer::{Token, tokenize};
+use fjord_schema::syntax::lexer::{Token as SchemaToken, tokenize as tokenize_schema};
 use serde::Serialize;
 
 use crate::view::{DiagnosticView, Span, view_of};
@@ -30,6 +31,8 @@ pub enum TokenClass {
     Keyword,
     /// A qualified predicate name: `src.File`.
     Predicate,
+    /// A namespace, in a schema's `import`: `src.detail`.
+    Namespace,
     /// A query variable: `X`, `Name`.
     Variable,
     /// A field or alternative name: `id`, `name`.
@@ -42,6 +45,9 @@ pub enum TokenClass {
     Wildcard,
     /// Everything that separates or relates: braces, `=`, `!`, `|`, `..`.
     Punctuation,
+    /// A `#` comment. Only the schema language has them — sigla does not, which
+    /// is a fact about the language rather than an omission here.
+    Comment,
     /// Spaces, tabs, newlines — carried, never dropped.
     Whitespace,
     /// Bytes the lexer could not read. A diagnostic points at the same span.
@@ -91,6 +97,41 @@ pub fn tokens(source: &str) -> Tokens {
             .collect(),
         diagnostics: diagnostics.iter().map(view_of).collect(),
     }
+}
+
+/// Lex `source` as a **schema** and describe what came back.
+///
+/// The schema language is a second language with a second lexer, and this is
+/// that lexer — not a second reading of the first. The two agree where they
+/// overlap and differ where the languages do: a schema has comments and
+/// namespaces, sigla has neither.
+#[must_use]
+pub fn schema_tokens(source: &str) -> Tokens {
+    let mut diagnostics = Vec::new();
+    let (tokens, spans) = tokenize_schema(source, &mut diagnostics);
+
+    Tokens {
+        tokens: tokens
+            .iter()
+            .zip(spans.iter())
+            .map(|(token, span)| TokenView {
+                kind: schema_kind(*token),
+                class: schema_class(*token),
+                span: Span {
+                    start: span.start,
+                    end: span.end,
+                },
+                text: source[span.clone()].to_owned(),
+            })
+            .collect(),
+        diagnostics: diagnostics.iter().map(view_of).collect(),
+    }
+}
+
+/// The schema token view, already JSON.
+#[must_use]
+pub fn schema_tokens_json(source: &str) -> String {
+    serde_json::to_string(&schema_tokens(source)).expect("a token view serialises")
 }
 
 /// The same view, already JSON.
@@ -182,5 +223,87 @@ const fn class(token: Token) -> TokenClass {
         | Token::Pipe
         | Token::Question
         | Token::Bang => TokenClass::Punctuation,
+    }
+}
+
+/// The schema token's name. Exhaustive for the reason [`kind`] is: the schema
+/// language has its own lexer, and a token added to it does not compile until
+/// somebody says what it is called here.
+const fn schema_kind(token: SchemaToken) -> &'static str {
+    match token {
+        SchemaToken::EOF => "EOF",
+        SchemaToken::Whitespace => "Whitespace",
+        SchemaToken::Comment => "Comment",
+        SchemaToken::Schema => "Schema",
+        SchemaToken::Import => "Import",
+        SchemaToken::Predicate => "Predicate",
+        SchemaToken::Type => "Type",
+        SchemaToken::Derive => "Derive",
+        SchemaToken::Stored => "Stored",
+        SchemaToken::Evolves => "Evolves",
+        SchemaToken::Enum => "Enum",
+        SchemaToken::Maybe => "Maybe",
+        SchemaToken::Set => "Set",
+        SchemaToken::QId => "QId",
+        SchemaToken::NsId => "NsId",
+        SchemaToken::UId => "UId",
+        SchemaToken::LId => "LId",
+        SchemaToken::Nat => "Nat",
+        SchemaToken::Arrow => "Arrow",
+        SchemaToken::Colon => "Colon",
+        SchemaToken::Comma => "Comma",
+        SchemaToken::Eq => "Eq",
+        SchemaToken::Pipe => "Pipe",
+        SchemaToken::LBrace => "LBrace",
+        SchemaToken::RBrace => "RBrace",
+        SchemaToken::LBrack => "LBrack",
+        SchemaToken::RBrack => "RBrack",
+        SchemaToken::LPar => "LPar",
+        SchemaToken::RPar => "RPar",
+        SchemaToken::Error => "Error",
+    }
+}
+
+/// Which category a schema token falls in.
+///
+/// The **same** categories the query language uses, so one stylesheet paints
+/// both and a reader meets one vocabulary rather than two. Where the two
+/// languages spell the same idea differently the class is what agrees: a
+/// predicate name is `Predicate` in both, whether it is being declared or
+/// queried.
+const fn schema_class(token: SchemaToken) -> TokenClass {
+    match token {
+        SchemaToken::Schema
+        | SchemaToken::Import
+        | SchemaToken::Predicate
+        | SchemaToken::Type
+        | SchemaToken::Derive
+        | SchemaToken::Stored
+        | SchemaToken::Evolves
+        | SchemaToken::Enum
+        | SchemaToken::Maybe
+        | SchemaToken::Set => TokenClass::Keyword,
+        SchemaToken::Comment => TokenClass::Comment,
+        SchemaToken::QId => TokenClass::Predicate,
+        SchemaToken::NsId => TokenClass::Namespace,
+        // A schema declares types where a query names variables, and both are
+        // the capitalised word: `string` in `name : string` is the type, and a
+        // bare `File` is the predicate being declared.
+        SchemaToken::UId => TokenClass::Variable,
+        SchemaToken::LId => TokenClass::Field,
+        SchemaToken::Nat => TokenClass::Number,
+        SchemaToken::Whitespace => TokenClass::Whitespace,
+        SchemaToken::Error | SchemaToken::EOF => TokenClass::Error,
+        SchemaToken::Arrow
+        | SchemaToken::Colon
+        | SchemaToken::Comma
+        | SchemaToken::Eq
+        | SchemaToken::Pipe
+        | SchemaToken::LBrace
+        | SchemaToken::RBrace
+        | SchemaToken::LBrack
+        | SchemaToken::RBrack
+        | SchemaToken::LPar
+        | SchemaToken::RPar => TokenClass::Punctuation,
     }
 }

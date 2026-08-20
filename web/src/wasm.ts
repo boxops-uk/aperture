@@ -10,6 +10,7 @@ import init, {
   sample_schema,
   samples,
   schema,
+  schema_tokens,
   tokens,
   tree,
   version,
@@ -21,11 +22,13 @@ export type Span = { start: number; end: number }
 export type TokenClass =
   | 'keyword'
   | 'predicate'
+  | 'namespace'
   | 'variable'
   | 'field'
   | 'number'
   | 'string'
   | 'wildcard'
+  | 'comment'
   | 'punctuation'
   | 'whitespace'
   | 'error'
@@ -103,6 +106,8 @@ export type Engine = {
   parse: (source: string) => Tree
   /** Read a schema, which everything after parsing resolves names against. */
   schema: (source: string) => SchemaView
+  /** Lex a schema — a second language, with its own lexer. */
+  lexSchema: (source: string) => Tokens
   /** The whole front end: lex, parse, lower, typecheck, flatten, reorder. */
   compile: (schema: string, query: string) => Lowered
   /** What the site opens with — both tested in the Rust suite, not invented here. */
@@ -124,6 +129,7 @@ export function load(): Promise<Engine> {
       lex: (source: string) => JSON.parse(tokens(source)) as Tokens,
       parse: (source: string) => JSON.parse(tree(source)) as Tree,
       schema: (source: string) => JSON.parse(schema(source)) as SchemaView,
+      lexSchema: (source: string) => JSON.parse(schema_tokens(source)) as Tokens,
       compile: (schemaSource: string, query: string) =>
         JSON.parse(compile(schemaSource, query)) as Lowered,
       sampleSchema: sample_schema(),

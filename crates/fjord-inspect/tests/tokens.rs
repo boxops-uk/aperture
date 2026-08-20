@@ -5,7 +5,7 @@
 //! lives behind the engine's `proptest` feature, and a view crate that enabled
 //! that feature for itself would ship the strategies to a browser.
 
-use fjord_inspect::{TokenClass, tokens};
+use fjord_inspect::{TokenClass, schema_tokens, tokens};
 use proptest::prelude::*;
 
 /// **The claim the old hand-written highlighter made and could not prove.**
@@ -15,8 +15,16 @@ use proptest::prelude::*;
 /// chased in the stylesheet. Reassembling the source from the view is the
 /// cheapest complete statement that nothing was lost.
 fn assert_lossless(source: &str) {
-    let view = tokens(source);
+    assert_covered(source, &tokens(source));
+}
 
+/// The same claim for the schema language, which is a second lexer rather than
+/// a second reading of the first.
+fn assert_schema_lossless(source: &str) {
+    assert_covered(source, &schema_tokens(source));
+}
+
+fn assert_covered(source: &str, view: &fjord_inspect::Tokens) {
     let rebuilt: String = view.tokens.iter().map(|t| t.text.as_str()).collect();
     assert_eq!(
         rebuilt, source,
@@ -176,4 +184,72 @@ fn the_json_is_the_shape_the_page_reads() {
     assert_eq!(token["span"]["end"], 1);
     assert_eq!(token["text"], "X");
     assert_eq!(json["diagnostics"].as_array().map(Vec::len), Some(0));
+}
+
+/// **The schema language gets the same guarantee**, over its own corpus. The
+/// pane that shows a schema paints it from these spans, so a byte dropped here
+/// mis-highlights everything after it exactly as it would in a query.
+#[test]
+fn schema_token_spans_reproduce_the_source_exactly() {
+    for entry in fjord_schema::syntax::corpus::CORPUS {
+        assert_schema_lossless(entry.source);
+    }
+    assert_schema_lossless(fjord_inspect::SCHEMA);
+}
+
+proptest! {
+    #[test]
+    fn any_text_is_covered_exactly_as_a_schema(source in ".*") {
+        assert_schema_lossless(&source);
+    }
+}
+
+/// A comment is a token here and not in sigla, which is a fact about the two
+/// languages rather than an omission — and the pane leans on it, because
+/// `schemas/code.sigla` is more comment than declaration.
+#[test]
+fn a_schema_comment_is_a_token_of_its_own() {
+    let view = schema_tokens("# what this predicate is for\npredicate src.File : string");
+    let comment = view
+        .tokens
+        .iter()
+        .find(|token| token.class == TokenClass::Comment)
+        .expect("a schema has comments");
+
+    assert_eq!(comment.text, "# what this predicate is for");
+    assert!(
+        tokens("# not a comment in sigla")
+            .tokens
+            .iter()
+            .all(|token| token.class != TokenClass::Comment),
+        "sigla grew comments and this view did not notice"
+    );
+}
+
+/// The census, for the schema language: the shipped schema is what the site
+/// opens with, so every class the pane paints has to occur in it.
+#[test]
+fn the_shipped_schema_reaches_every_class_the_pane_paints() {
+    let mut seen = std::collections::BTreeSet::new();
+    for token in schema_tokens(fjord_inspect::SCHEMA).tokens {
+        seen.insert(token.class);
+    }
+
+    for wanted in [
+        TokenClass::Keyword,
+        TokenClass::Comment,
+        TokenClass::Variable,
+        TokenClass::Field,
+        TokenClass::Punctuation,
+        TokenClass::Whitespace,
+    ] {
+        assert!(
+            seen.contains(&wanted),
+            "`schemas/code.sigla` never produces {wanted:?}, so nothing tests how it is painted"
+        );
+    }
+    assert!(
+        !seen.contains(&TokenClass::Error),
+        "the schema the site opens with does not lex cleanly"
+    );
 }

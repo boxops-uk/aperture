@@ -9,13 +9,11 @@ import { SchemaPane } from './SchemaPane'
 import { Diagnostics } from './Diagnostics'
 import './app.css'
 
-type Analysis = {
-  tokens: Tokens
-  tree: Tree
-  lowered: Lowered
-  schema: SchemaView
-  micros: number
-}
+/** What the front end says about the query, and what saying it cost. */
+type Analysis = { tokens: Tokens; tree: Tree; lowered: Lowered; micros: number }
+
+/** What the schema says about itself — recomputed only when the schema changes. */
+type SchemaAnalysis = { view: SchemaView; tokens: Tokens }
 
 /**
  * Everything the front end says about a query, and what the whole round trip
@@ -23,9 +21,10 @@ type Analysis = {
  * keystroke actually costs a page. The engine's own share is far smaller, and
  * printing that number would be measuring something the reader cannot see.
  *
- * The schema is recompiled with the query rather than cached, and it is cheap
- * enough not to matter: the module holds no state, which is what keeps the
- * boundary a pair of strings instead of a handle nobody can free.
+ * `compile` re-reads the schema every time, because the module holds no state:
+ * two strings in, JSON out, and no handle a page would have to free. That is
+ * the floor, and it is a schema parse per keystroke — worth knowing, and worth
+ * a handle if a bigger schema ever makes it hurt.
  *
  * Outside the component because it reads a clock: a measurement taken during
  * render is one that changes when React re-renders for reasons of its own.
@@ -34,9 +33,18 @@ function analyse(engine: Engine, schemaSource: string, source: string): Analysis
   const started = performance.now()
   const tokens = engine.lex(source)
   const tree = engine.parse(source)
-  const schema = engine.schema(schemaSource)
   const lowered = engine.compile(schemaSource, source)
-  return { tokens, tree, schema, lowered, micros: (performance.now() - started) * 1000 }
+  return { tokens, tree, lowered, micros: (performance.now() - started) * 1000 }
+}
+
+/**
+ * The schema's own views, which depend on the schema alone.
+ *
+ * Kept apart from the query's for the obvious reason: lexing 150 lines of
+ * schema on every keystroke of a *query* is work whose input did not change.
+ */
+function analyseSchema(engine: Engine, schemaSource: string): SchemaAnalysis {
+  return { view: engine.schema(schemaSource), tokens: engine.lexSchema(schemaSource) }
 }
 
 export default function App() {
@@ -46,15 +54,25 @@ export default function App() {
   const [tab, setTab] = useState<'tokens' | 'tree' | 'lowered'>('lowered')
 
   // Schema, query and analysis move together, updated by whatever changed
-  // either text — a keystroke, a sample, or the engine finishing loading.
-  const [state, setState] = useState<{ schema: string; source: string; view: Analysis | null }>({
-    schema: '',
-    source: '',
-    view: null,
-  })
+  // either text — a keystroke, a sample, or the engine finishing loading. The
+  // schema's own views ride along, recomputed only when the schema itself did.
+  const [state, setState] = useState<{
+    schema: string
+    source: string
+    view: Analysis | null
+    schemaView: SchemaAnalysis | null
+  }>({ schema: '', source: '', view: null, schemaView: null })
 
   const show = (schema: string, source: string, engine: Engine | null) =>
-    setState({ schema, source, view: engine ? analyse(engine, schema, source) : null })
+    setState((current) => ({
+      schema,
+      source,
+      view: engine ? analyse(engine, schema, source) : null,
+      schemaView:
+        engine && schema !== current.schema
+          ? analyseSchema(engine, schema)
+          : current.schemaView,
+    }))
 
   useEffect(() => {
     load().then(
@@ -62,13 +80,18 @@ export default function App() {
         setEngine(loaded)
         const schema = loaded.sampleSchema
         const source = loaded.samples[0]?.source ?? ''
-        setState({ schema, source, view: analyse(loaded, schema, source) })
+        setState({
+          schema,
+          source,
+          view: analyse(loaded, schema, source),
+          schemaView: analyseSchema(loaded, schema),
+        })
       },
       (error: unknown) => setFailure(String(error)),
     )
   }, [])
 
-  const { schema, source, view } = state
+  const { schema, source, view, schemaView } = state
   // One list, from the compilation: it carries the lexer's and the parser's
   // faults as well as its own, in the order `Diagnostics::in_source_order` puts
   // them — so showing the parse's separately would print every one twice.
@@ -118,7 +141,8 @@ export default function App() {
           <Diagnostics diagnostics={diagnostics} source={source} />
           <SchemaPane
             source={schema}
-            view={view?.schema ?? null}
+            view={schemaView?.view ?? null}
+            tokens={schemaView?.tokens ?? null}
             onChange={(next) => show(next, source, engine)}
           />
         </section>

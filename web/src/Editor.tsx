@@ -9,7 +9,11 @@ import { type Highlight, within } from './span'
  * it: the caret, the selection and the wrapping all belong to the textarea, and
  * every coloured span behind it is one token's `span` sliced out of the source.
  * The two only stay aligned because the token stream covers the source
- * exactly — which is what `token_spans_reproduce_the_source_exactly` asserts.
+ * exactly — which is what `token_spans_reproduce_the_source_exactly` asserts,
+ * for both languages.
+ *
+ * Used for the query and for the schema, because the difference between them is
+ * *which lexer produced the tokens* and nothing else a page can see.
  */
 export function Editor({
   source,
@@ -17,17 +21,20 @@ export function Editor({
   highlight,
   onChange,
   onHighlight,
+  rows,
 }: {
   source: string
   tokens: TokenView[]
   highlight: Highlight | null
   onChange: (next: string) => void
-  onHighlight: (highlight: Highlight | null) => void
+  onHighlight?: (highlight: Highlight | null) => void
+  /** How tall to start. The schema is long; a query is not. */
+  rows?: 'query' | 'schema'
 }) {
   const painted = useRef<HTMLPreElement>(null)
 
   return (
-    <div className="editor">
+    <div className={rows === 'schema' ? 'editor tall' : 'editor'}>
       <pre className="paint" ref={painted} aria-hidden="true">
         {tokens.map((token, index) => (
           <span
@@ -35,8 +42,8 @@ export function Editor({
             className={
               within(token.span, highlight) ? `tok tok-${token.class} on` : `tok tok-${token.class}`
             }
-            onMouseEnter={() => onHighlight({ span: token.span, node: null, view: null })}
-            onMouseLeave={() => onHighlight(null)}
+            onMouseEnter={() => onHighlight?.({ span: token.span, node: null, view: null })}
+            onMouseLeave={() => onHighlight?.(null)}
           >
             {token.text}
           </span>

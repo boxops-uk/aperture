@@ -299,6 +299,7 @@ The crate exists, with `Tokens` built and the rest to come.
 | `Tree` — a dense `{id, kind, token, label, span, children}` | the **CST**, through `cst::CstNode` | ✅ |
 | `Lowered` — `{id, kind, label, ty, span, children}` plus the statement list | `Ast`, walked from the head and the body, with `Typed::ty` beside it | ✅ |
 | `SchemaView` — predicates and their declared types | `syntax::{parse, lower}`, typed by `print::signature` | ✅ enough for the page; canonical form and compatibility are not shown |
+| `Tokens`, for the **schema** language | `fjord_schema::syntax::lexer` — a second lexer, not a second reading of the first | ✅ |
 | `Types` — per node, and the head | `Typed::ty`, `Compilation::head_ty` | ✅ folded into `Lowered` — a type is an annotation *on* a node, and a second panel would make a reader align two lists by hand |
 | `Diagnostics` — code, message, labels | the sink, through `Diagnostics::in_source_order` | ✅ for every phase that reports without a schema |
 | `PlanView` — steps, levels, seek keys, residuals, projections, fingerprint | mirrors the walk in `print::plan` | to build |
@@ -342,7 +343,11 @@ out of the tree, so the same view drives both panes.
 
 **One decision made while building the first view, worth keeping.** A token
 carries a `class` (keyword, predicate, variable, field, …) as well as its
-`kind`, and the class is decided in Rust. A page styles what the language says a
+`kind`, and the class is decided in Rust. It paid off when the schema pane
+needed highlighting: the schema language is a *second* lexer with tokens sigla
+does not have (comments, namespaces), and what the page needed was two more
+arms on one shared vocabulary — one stylesheet, one set of classes, and a
+reader meeting one idea rather than two. A page styles what the language says a
 token *is* and never re-decides it — which is what stops the highlighter growing
 back in TypeScript. Both mappings are exhaustive `match`es with no wildcard, so
 a token added to sigla does not compile until somebody says what it is called
@@ -380,6 +385,11 @@ matters.
   browser. The fixture is in the seam crate and wasm-clean, so this is reachable;
   what it needs is a schema and facts that agree, which today means the fixture's
   rather than the sample schema's.
+- **A schema handle, if a bigger schema ever makes it hurt.** `compile` re-reads
+  the schema on every keystroke, because the module holds no state — two strings
+  in, JSON out, and no handle a page has to free. Measured on
+  `schemas/code.sigla`: 700–800 µs warm for the whole round trip, which is a
+  tenth of a frame, so the statelessness is worth keeping until it is not.
 - **Size.** 258 KB is the whole front end plus the schema language; `wasm-opt
   -Oz` takes 34 KB off it and `web/`'s dev-dependencies now carry binaryen so
   the build script finds one. If it matters more later, the lever is splitting

@@ -43,6 +43,16 @@ pub fn tree(source: &str) -> String {
     fjord_inspect::tree_json(source)
 }
 
+/// Lex `source` as a **schema** and answer the token view as JSON.
+///
+/// A second lexer, not a second reading of the first: the schema language has
+/// comments and namespaces where sigla has neither.
+#[wasm_bindgen]
+#[must_use]
+pub fn schema_tokens(source: &str) -> String {
+    fjord_inspect::schema_tokens_json(source)
+}
+
 /// Read `source` as a schema and answer the
 /// [schema view](fjord_inspect::SchemaView) as JSON.
 #[wasm_bindgen]

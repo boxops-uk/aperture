@@ -157,12 +157,26 @@ await type('.input', 'P where src.File P')
 check('a supported query compiles clean', (await page.$$('.diagnostics li')).length === 0)
 
 await page.click('.disclosure')
-await page.waitForSelector('.schema-input')
+await page.waitForSelector('.editor.tall .input')
 check('the schema lists what it declares', (await page.$$('.predicates li')).length >= 20)
+
+// The schema pane is painted by the *schema* lexer, which has comments where
+// sigla has none — and `schemas/code.sigla` is more comment than declaration.
+check(
+  'the schema is painted by its own lexer',
+  await page.$$eval('.editor.tall .paint .tok', (ts) => {
+    const classes = new Set(ts.map((t) => t.className))
+    return (
+      classes.has('tok tok-comment') &&
+      classes.has('tok tok-keyword') &&
+      ts.map((t) => t.textContent).join('').includes('predicate File : string')
+    )
+  }),
+)
 
 // Editing the schema recompiles the query, which is the whole point of the page
 // holding one: the same schema the engine resolves names against.
-await type('.schema-input', 'schema src { predicate Nothing : string }')
+await type('.editor.tall .input', 'schema src { predicate Nothing : string }')
 check(
   'a query stops typechecking when its schema stops declaring it',
   (await texts('.diagnostics li')).some((text) => text.includes('reject/unknown-predicate')),

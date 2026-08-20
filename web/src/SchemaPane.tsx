@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import type { SchemaView } from './wasm'
+import type { SchemaView, Tokens } from './wasm'
 import { Diagnostics } from './Diagnostics'
+import { Editor } from './Editor'
 
 /**
  * The schema, as text, because that is the only form a browser can hold one in.
@@ -13,10 +14,13 @@ import { Diagnostics } from './Diagnostics'
 export function SchemaPane({
   source,
   view,
+  tokens,
   onChange,
 }: {
   source: string
   view: SchemaView | null
+  /** The schema language's own tokens — a second lexer, not a second reading. */
+  tokens: Tokens | null
   onChange: (next: string) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -39,11 +43,12 @@ export function SchemaPane({
 
       {open && (
         <>
-          <textarea
-            className="schema-input"
-            spellCheck={false}
-            value={source}
-            onChange={(event) => onChange(event.target.value)}
+          <Editor
+            source={source}
+            tokens={tokens?.tokens ?? []}
+            highlight={null}
+            onChange={onChange}
+            rows="schema"
           />
           {view && <Diagnostics diagnostics={view.diagnostics} source={source} />}
           {view?.ok && (
