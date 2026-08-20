@@ -30,6 +30,18 @@ pub fn tokens(source: &str) -> String {
     fjord_inspect::tokens_json(source)
 }
 
+/// Parse `source` as sigla and answer the [tree view](fjord_inspect::Tree) as
+/// JSON.
+///
+/// Never fails either: a refusal is a tree with no root and the diagnostics
+/// that say why, and a recovered parse carries both a tree and the faults it
+/// recovered from — which is what a half-typed query looks like.
+#[wasm_bindgen]
+#[must_use]
+pub fn tree(source: &str) -> String {
+    fjord_inspect::tree_json(source)
+}
+
 /// The version of Fjord this module was built from, for a page that wants to
 /// say what it is running.
 #[wasm_bindgen]

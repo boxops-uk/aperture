@@ -12,23 +12,10 @@
 //! `token_spans_reproduce_the_source_exactly` reassembles the source from the
 //! view and compares.
 
-use codespan_reporting::diagnostic::LabelStyle;
-use fjord_engine::{
-    diag::Diagnostic,
-    lexer::{Token, tokenize},
-};
+use fjord_engine::lexer::{Token, tokenize};
 use serde::Serialize;
 
-/// A byte range into the source, as the lexer reports it.
-///
-/// Byte offsets rather than character positions, because that is what a `Span`
-/// *is* — the page slices the same string the lexer read. A UTF-16 view would
-/// be a conversion this crate cannot check and the page can.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-}
+use crate::view::{DiagnosticView, Span, view_of};
 
 /// What a token *is* to the language — not what it should look like.
 ///
@@ -69,27 +56,6 @@ pub struct TokenView {
     pub class: TokenClass,
     pub span: Span,
     pub text: String,
-}
-
-/// One span a diagnostic points at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Label {
-    pub span: Span,
-    /// Whether this is the span being reported, as against one shown for
-    /// context. A page that renders one label renders this one.
-    pub primary: bool,
-}
-
-/// A diagnostic, flattened to what a page can render.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DiagnosticView {
-    /// The taxonomy entry, where the phase reported one (`nyi/negation`).
-    ///
-    /// Absent for the lexer, which has one fault and no code for it: a byte it
-    /// cannot read is not a construct anybody deferred.
-    pub code: Option<String>,
-    pub message: String,
-    pub labels: Vec<Label>,
 }
 
 /// The whole of what lexing a source says.
@@ -142,31 +108,13 @@ pub fn tokens_json(source: &str) -> String {
     serde_json::to_string(&tokens(source)).expect("a token view serialises")
 }
 
-fn view_of(diagnostic: &Diagnostic) -> DiagnosticView {
-    DiagnosticView {
-        code: diagnostic.code.clone(),
-        message: diagnostic.message.clone(),
-        labels: diagnostic
-            .labels
-            .iter()
-            .map(|label| Label {
-                span: Span {
-                    start: label.range.start,
-                    end: label.range.end,
-                },
-                primary: label.style == LabelStyle::Primary,
-            })
-            .collect(),
-    }
-}
-
 /// The token's name, as a string a page can key on.
 ///
 /// Written out rather than derived from `Debug`: a `{:?}` would make the
 /// formatter's output a JSON contract, and this match is exhaustive on purpose —
 /// a token added to sigla does not compile until somebody says what it is
 /// called here.
-const fn kind(token: Token) -> &'static str {
+pub(crate) const fn kind(token: Token) -> &'static str {
     match token {
         Token::EOF => "EOF",
         Token::Whitespace => "Whitespace",

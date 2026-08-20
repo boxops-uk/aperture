@@ -93,11 +93,34 @@ h1 {
   font-weight: 600;
 }
 
+/* ---- pane tabs ---- */
+
+.tabs { display: flex; gap: .35rem; margin-bottom: .6rem; }
+
+.tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  padding: .1rem .1rem .35rem;
+  margin-right: .9rem;
+  font: inherit;
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-weight: 600;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.tab:hover { color: var(--ink-soft); }
+.tab.on { color: var(--ink); border-bottom-color: var(--accent); }
+
 .count {
   margin-left: .5rem;
   font-family: var(--mono);
   letter-spacing: 0;
-  color: var(--ink-soft);
+  font-weight: 400;
+  color: var(--ink-faint);
 }
 
 /* ---- the editor: a textarea over its own tokens ---- */
@@ -177,9 +200,9 @@ h1 {
 .diagnostics .code { font-family: var(--mono); color: var(--bad); font-size: .8rem; }
 .diagnostics .at { color: var(--ink-soft); font-size: .8rem; }
 
-/* ---- the token table ---- */
+/* ---- the panes that scroll: the token table and the tree ---- */
 
-.tokens {
+.scroller {
   border: 1px solid var(--rule);
   border-radius: .6rem;
   background: var(--bg-raised);
@@ -188,9 +211,9 @@ h1 {
   overflow: auto;
 }
 
-.tokens table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.scroller table { width: 100%; border-collapse: collapse; font-size: .85rem; }
 
-.tokens th {
+.scroller th {
   position: sticky;
   top: 0;
   background: var(--bg-sunken);
@@ -204,12 +227,45 @@ h1 {
   border-bottom: 1px solid var(--rule);
 }
 
-.tokens td { padding: .3rem .75rem; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
-.tokens tr:last-child td { border-bottom: 0; }
-.tokens tr.on td { background: var(--accent-soft); }
-.tokens .num { font-family: var(--mono); color: var(--ink-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.tokens .kind { font-family: var(--mono); color: var(--ink); }
-.tokens .text { font-family: var(--mono); color: var(--code-ink); word-break: break-all; }
+.scroller td { padding: .3rem .75rem; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+.scroller tr:last-child td { border-bottom: 0; }
+.scroller tr.on td { background: var(--accent-soft); }
+.scroller .num { font-family: var(--mono); color: var(--ink-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.scroller .kind { font-family: var(--mono); color: var(--ink); }
+.scroller .text { font-family: var(--mono); color: var(--code-ink); word-break: break-all; }
+
+/* ---- the tree ---- */
+
+.tree .trivia {
+  position: sticky;
+  top: 0;
+  display: flex;
+  gap: .4rem;
+  align-items: center;
+  padding: .45rem .75rem;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--rule);
+  font-size: .75rem;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.tree ol { list-style: none; margin: 0; padding: .35rem 0; font-size: .85rem; }
+
+.tree li {
+  display: flex;
+  gap: .6rem;
+  align-items: baseline;
+  padding: .1rem .75rem .1rem 0;
+  cursor: default;
+  border-left: 2px solid transparent;
+}
+
+.tree li.on { background: var(--accent-soft); border-left-color: var(--accent); }
+.tree .kind { font-family: var(--mono); color: var(--fn); }
+.tree .kind.leaf { color: var(--ink-soft); font-weight: 400; }
+.tree .text { font-family: var(--mono); color: var(--code-ink); }
+.tree .num { margin-left: auto; font-size: .75rem; }
 
 .pill {
   display: inline-block;

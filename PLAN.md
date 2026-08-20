@@ -233,11 +233,12 @@ API (rotate in place at half TTL) → connection lifetime. Guards to write up fr
 
 ## The engine in a browser — WebAssembly
 
-**Built, as far as one segment.** The store split is done, `fjord-inspect` exists
-with its first view, `wasm/` builds a 49 KB module (21 KB over the wire), and
-`web/` is a React site whose lexer segment runs `fjord_engine::lexer` on every
-keystroke. What is left is more views, and the decisions that only a second
-segment can settle.
+**Built, as far as the front end's first two phases.** The store split is done,
+`fjord-inspect` holds the token and parse-tree views, `wasm/` builds a 72 KB
+module (29 KB over the wire), and `web/` is a React site that lexes *and*
+parses on every keystroke, with one span highlighting across every view. What
+is left is the phases that need a schema, and the decisions only they can
+settle.
 
 **The goal, unchanged.** The design book's interactive segments run the real
 lexer, parser, typechecker, planner, executor and transport codec, compiled to
@@ -295,13 +296,28 @@ The crate exists, with `Tokens` built and the rest to come.
 | View | Built from | State |
 |---|---|---|
 | `Tokens` — `{kind, class, span, text}` + diagnostics | `lexer::tokenize` | ✅ |
-| `Tree` — a dense `{id, kind, children, span, label}` | `Ast` with spans from `print::spanned` | to build |
+| `Tree` — a dense `{id, kind, token, label, span, children}` | the **CST**, through `cst::CstNode` | ✅ |
+| `Lowered` — the same shape, one tree in | `Ast` with spans from `print::spanned` | to build; **needs a schema**, which is the next decision below |
 | `Types` — per node, and the head | `Typed::ty`, `Compilation::head_ty` | to build |
-| `Diagnostics` — code, severity, message, labels, notes | the `Compilation`'s sink, `in_source_order` | ◐ the lexer's half is built; the compiler's needs `in_source_order` made `pub` |
+| `Diagnostics` — code, message, labels | the sink, through `Diagnostics::in_source_order` | ✅ for every phase that reports without a schema |
 | `PlanView` — steps, levels, seek keys, residuals, projections, fingerprint | mirrors the walk in `print::plan` | to build |
 | `Rows` and `ProfileView` | `fixtures::collect_rows` and `iter::enumerate_profiled` over a `MemStore` from `fixture::facts()` | to build |
 | `WireView` — frames, blocks, and a hex dump annotated by offset | `fjord_wire::{frame, block, value, protocol}` | to build |
 | `SchemaView` — predicates, canonical form, identity, compatibility | `fjord_schema::{syntax, print, fingerprint}` | to build |
+
+**The split between the two trees is the thing to keep straight.** The parse
+view is the *concrete* tree — the "lossless, untyped, grammar-shaped tree with
+spans and text" the book's phase table promises — and it needs **no schema**,
+which is why it could ship now: lowering resolves names against one, parsing
+does not. So a browser can show it for any text at all, including the
+half-typed text an interactive view spends most of its time on. The lowered
+tree, the types and the plan all wait on the same thing: a schema in the page.
+
+**Two properties, and the second was a surprise.** A node's span contains every
+child's — a view that widened one by a byte would still look plausible and
+would highlight the wrong text. And the leaves *do* reassemble the source: the
+grammar's `skip Whitespace` keeps trivia out of what the parser matches on, not
+out of the tree, so the same view drives both panes.
 
 **One decision made while building the first view, worth keeping.** A token
 carries a `class` (keyword, predicate, variable, field, …) as well as its
@@ -334,12 +350,13 @@ matters.
 
 ### What is left
 
-- **The remaining views**, in the order a reader meets them: `Tree` and `Types`
-  next, because two-way source-to-tree highlighting is what the token view
-  cannot do; then `PlanView`, which is the argument for the whole exercise.
-- **`Compilation::in_source_order` becomes `pub`** — the one engine edit
-  Movement 2 needs, still unmade because the lexer's diagnostics do not go
-  through `Compilation`.
+- **A schema in the page**, which is what everything left waits on. `Compilation`
+  takes `(&str, &Schema)` and `fjord_schema::syntax::read` builds one from text
+  with no filesystem in reach, so the shape is a second editor holding a schema
+  — the sample schema by default. That unblocks the lowered tree, the types,
+  the diagnostics with codes, and the plan.
+- **The remaining views**, in the order a reader meets them: `Lowered` and
+  `Types`, then `PlanView`, which is the argument for the whole exercise.
 - **Retire the hand-written highlighter** in `website/assets/app.js` once the
   new site carries the book's code samples. Until then two highlighters exist,
   which is the state this work is meant to end.

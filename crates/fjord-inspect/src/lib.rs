@@ -22,6 +22,13 @@
 //! `fjord-schema`, and **never** `fjord-store-fjall` — checked by
 //! `dependency_closure` in `fjord-store`.
 
+/// The lexer's answer: what each token is, and where.
 pub mod tokens;
+/// The parser's answer: the grammar-shaped tree, with every node's span.
+pub mod tree;
+/// What every view says the same way — a span, and a diagnostic.
+pub mod view;
 
-pub use tokens::{DiagnosticView, Label, Span, TokenClass, TokenView, Tokens, tokens, tokens_json};
+pub use tokens::{TokenClass, TokenView, Tokens, tokens, tokens_json};
+pub use tree::{Tree, TreeNode, tree, tree_json};
+pub use view::{DiagnosticView, Label, Span};

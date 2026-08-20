@@ -1,61 +1,76 @@
-import { useEffect, useRef, useState } from 'react'
-import { load, type Engine, type TokenView, type Tokens } from './wasm'
-
-/** A lexed source, with what the round trip cost. */
-type Lexed = Tokens & { micros: number }
+import { useEffect, useState } from 'react'
+import { load, type Engine, type Span, type Tokens, type Tree } from './wasm'
+import { Editor } from './Editor'
+import { TokenTable } from './TokenTable'
+import { TreeView } from './TreeView'
+import { Diagnostics } from './Diagnostics'
+import './app.css'
 
 /**
- * Lex, and time the whole round trip — the lex, the JSON, and parsing it back —
- * because that is what a keystroke actually costs a page. The lexer's own share
- * is far smaller, and printing that number would be measuring something the
- * reader cannot see.
+ * Sigla worth typing at, taken from the engine's own corpus — where each one is
+ * already classified and its answer already asserted. A demo carrying examples
+ * of its own would be a second statement of the language that nothing checks,
+ * and the first version of this page proved the point: every sample it shipped
+ * was missing its head, which the lexer was perfectly happy to tokenise.
+ */
+const SAMPLES: { label: string; source: string }[] = [
+  { label: 'a join', source: 'X where test.Edge {from = X, to = Y}; test.Node {id = Y}' },
+  { label: 'a record head', source: '{a = X, b = Y} where test.Foo {name = X, id = Y}' },
+  { label: 'a constraint', source: 'X where test.Name X; X = "a"..' },
+  { label: 'a denial', source: 'X where test.Name X; X != "abc"' },
+  { label: 'a negation', source: 'X where test.Foo {id = X}; !test.Bar {id = X}' },
+  { label: 'a subquery', source: 'X where X = (Y where test.Foo {id = Y})' },
+  { label: 'junk', source: 'X where X = }' },
+]
+
+type Analysis = { tokens: Tokens; tree: Tree; micros: number }
+
+/**
+ * Lex, parse, and time the whole round trip — both calls, the JSON, and parsing
+ * it back — because that is what a keystroke actually costs a page. The engine's
+ * own share is far smaller, and printing that number would be measuring
+ * something the reader cannot see.
  *
  * Outside the component because it reads a clock: a measurement taken during
  * render is one that changes when React re-renders for reasons of its own.
  */
-function measure(engine: Engine, source: string): Lexed {
+function analyse(engine: Engine, source: string): Analysis {
   const started = performance.now()
-  const view = engine.lex(source)
-  return { ...view, micros: (performance.now() - started) * 1000 }
+  const tokens = engine.lex(source)
+  const tree = engine.parse(source)
+  return { tokens, tree, micros: (performance.now() - started) * 1000 }
 }
-import './app.css'
-
-/** Sigla worth typing at, taken from the design book's own examples. */
-const SAMPLES: { label: string; source: string }[] = [
-  { label: 'a join', source: 'where {\n  src.File { name = Path },\n  src.Decl { file = F, name = Name }\n}' },
-  { label: 'a constraint', source: 'where src.File { name = Path = "src/" .. }' },
-  { label: 'a denial', source: 'where {\n  src.Decl { name = Name },\n  Name != "main"\n}' },
-  { label: 'literals', source: 'where {\n  test.Count = 42,\n  test.Name = "a string with \\"escapes\\""\n}' },
-  { label: 'a bad byte', source: 'where src.File { name = X } @' },
-]
 
 export default function App() {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
-  const [hovered, setHovered] = useState<number | null>(null)
+  const [highlight, setHighlight] = useState<Span | null>(null)
+  const [tab, setTab] = useState<'tokens' | 'tree'>('tokens')
 
-  // Source and tokens move together, updated by whatever changed the source —
-  // a keystroke, or the engine finishing loading. Not derived during render,
-  // because lexing is what is being *measured*.
-  const [state, setState] = useState<{ source: string; view: Lexed | null }>({
+  // Source and analysis move together, updated by whatever changed the source —
+  // a keystroke, a sample, or the engine finishing loading.
+  const [state, setState] = useState<{ source: string; view: Analysis | null }>({
     source: SAMPLES[0].source,
     view: null,
   })
 
   const show = (source: string, engine: Engine | null) =>
-    setState({ source, view: engine ? measure(engine, source) : null })
+    setState({ source, view: engine ? analyse(engine, source) : null })
 
   useEffect(() => {
     load().then(
       (loaded) => {
         setEngine(loaded)
-        setState((current) => ({ ...current, view: measure(loaded, current.source) }))
+        setState((current) => ({ ...current, view: analyse(loaded, current.source) }))
       },
       (error: unknown) => setFailure(String(error)),
     )
   }, [])
 
-  const { source, view: lexed } = state
+  const { source, view } = state
+  // The parse reports what the lexer already said about a bad byte, so showing
+  // both would print every fault twice.
+  const diagnostics = view ? view.tree.diagnostics : []
 
   return (
     <div className="page">
@@ -63,15 +78,15 @@ export default function App() {
         <div className="brand">
           <span className="mark" aria-hidden="true" />
           <div>
-            <h1>sigla, lexed in your browser</h1>
+            <h1>sigla, in your browser</h1>
             <p>
-              The tokens below come from <code>fjord_engine::lexer</code> compiled to
-              WebAssembly — the same code the server and the shell run, not a
-              re-implementation of it.
+              The tokens and the tree below come from <code>fjord_engine</code> compiled
+              to WebAssembly — the same lexer and the same generated parser the server
+              and the shell run, not a re-implementation of either.
             </p>
           </div>
         </div>
-        <Status engine={engine} failure={failure} micros={lexed?.micros} />
+        <Status engine={engine} failure={failure} micros={view?.micros} />
       </header>
 
       <div className="samples">
@@ -92,23 +107,45 @@ export default function App() {
           <h2>source</h2>
           <Editor
             source={source}
-            tokens={lexed?.tokens ?? []}
-            hovered={hovered}
+            tokens={view?.tokens.tokens ?? []}
+            highlight={highlight}
             onChange={(next) => show(next, engine)}
-            onHover={setHovered}
+            onHighlight={setHighlight}
           />
-          <Diagnostics diagnostics={lexed?.diagnostics ?? []} source={source} />
+          <Diagnostics diagnostics={diagnostics} source={source} />
         </section>
 
         <section className="pane">
-          <h2>
-            tokens<span className="count">{lexed ? lexed.tokens.length : 0}</span>
-          </h2>
-          <TokenTable
-            tokens={lexed?.tokens ?? []}
-            hovered={hovered}
-            onHover={setHovered}
-          />
+          <div className="tabs">
+            <button
+              type="button"
+              className={tab === 'tokens' ? 'tab on' : 'tab'}
+              onClick={() => setTab('tokens')}
+            >
+              tokens<span className="count">{view?.tokens.tokens.length ?? 0}</span>
+            </button>
+            <button
+              type="button"
+              className={tab === 'tree' ? 'tab on' : 'tab'}
+              onClick={() => setTab('tree')}
+            >
+              parse tree<span className="count">{view?.tree.nodes.length ?? 0}</span>
+            </button>
+          </div>
+
+          {tab === 'tokens' ? (
+            <TokenTable
+              tokens={view?.tokens.tokens ?? []}
+              highlight={highlight}
+              onHighlight={setHighlight}
+            />
+          ) : (
+            <TreeView
+              tree={view?.tree ?? { root: null, nodes: [], diagnostics: [] }}
+              highlight={highlight}
+              onHighlight={setHighlight}
+            />
+          )}
         </section>
       </main>
     </div>
@@ -145,144 +182,9 @@ function Status({
         <dd>{(engine.bytes / 1024).toFixed(1)} KiB</dd>
       </div>
       <div>
-        <dt>lex + json</dt>
+        <dt>round trip</dt>
         <dd>{micros === undefined ? '—' : `${micros.toFixed(0)} µs`}</dd>
       </div>
     </dl>
   )
-}
-
-/**
- * A textarea with the real tokens painted underneath it.
- *
- * The overlay is what makes this the lexer's output rather than a picture of
- * it: the caret, the selection and the wrapping all belong to the textarea, and
- * every coloured span behind it is one token's `span` sliced out of the source.
- * The two only stay aligned because the token stream covers the source
- * exactly — which is what `token_spans_reproduce_the_source_exactly` asserts.
- */
-function Editor({
-  source,
-  tokens,
-  hovered,
-  onChange,
-  onHover,
-}: {
-  source: string
-  tokens: TokenView[]
-  hovered: number | null
-  onChange: (next: string) => void
-  onHover: (index: number | null) => void
-}) {
-  const painted = useRef<HTMLPreElement>(null)
-
-  return (
-    <div className="editor">
-      <pre className="paint" ref={painted} aria-hidden="true">
-        {tokens.map((token, index) => (
-          <span
-            key={index}
-            className={
-              index === hovered ? `tok tok-${token.class} on` : `tok tok-${token.class}`
-            }
-            onMouseEnter={() => onHover(index)}
-            onMouseLeave={() => onHover(null)}
-          >
-            {token.text}
-          </span>
-        ))}
-        {'\n'}
-      </pre>
-      <textarea
-        className="input"
-        spellCheck={false}
-        value={source}
-        onChange={(event) => onChange(event.target.value)}
-        onScroll={(event) => {
-          if (painted.current) {
-            painted.current.scrollTop = event.currentTarget.scrollTop
-            painted.current.scrollLeft = event.currentTarget.scrollLeft
-          }
-        }}
-      />
-    </div>
-  )
-}
-
-function TokenTable({
-  tokens,
-  hovered,
-  onHover,
-}: {
-  tokens: TokenView[]
-  hovered: number | null
-  onHover: (index: number | null) => void
-}) {
-  return (
-    <div className="tokens">
-      <table>
-        <thead>
-          <tr>
-            <th className="num">span</th>
-            <th>kind</th>
-            <th>class</th>
-            <th>text</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tokens.map((token, index) => (
-            <tr
-              key={index}
-              className={index === hovered ? 'on' : undefined}
-              onMouseEnter={() => onHover(index)}
-              onMouseLeave={() => onHover(null)}
-            >
-              <td className="num">
-                {token.span.start}–{token.span.end}
-              </td>
-              <td className="kind">{token.kind}</td>
-              <td>
-                <span className={`pill tok-${token.class}`}>{token.class}</span>
-              </td>
-              <td className="text">{display(token.text)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {tokens.length === 0 && <p className="empty">nothing to lex yet</p>}
-    </div>
-  )
-}
-
-function Diagnostics({
-  diagnostics,
-  source,
-}: {
-  diagnostics: { code: string | null; message: string; labels: { span: { start: number; end: number }; primary: boolean }[] }[]
-  source: string
-}) {
-  if (diagnostics.length === 0) return null
-  return (
-    <ul className="diagnostics">
-      {diagnostics.map((diagnostic, index) => {
-        const at = diagnostic.labels.find((label) => label.primary)?.span
-        return (
-          <li key={index}>
-            {diagnostic.code && <code className="code">{diagnostic.code}</code>}
-            <span>{diagnostic.message}</span>
-            {at && (
-              <span className="at">
-                at {at.start}–{at.end}: <code>{display(source.slice(at.start, at.end))}</code>
-              </span>
-            )}
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
-
-/** Whitespace has to be visible in a table, or a row reads as empty. */
-function display(text: string): string {
-  return text.replace(/\n/g, '⏎').replace(/\t/g, '⇥').replace(/ /g, '·')
 }
