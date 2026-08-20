@@ -6,11 +6,11 @@
 //!
 //! # Why it is computable at all
 //!
-//! It was not, until references stopped being ids on the way in. The clause reads
-//! "hash the canonical schema and the base facts", and a base fact used to contain a
-//! **physical `FactId`** — a number two reproducible builds can legitimately disagree
-//! about, since it depends on the order writes happened to arrive in. Hashing it would
-//! have made identity depend on nothing semantic.
+//! The clause reads "hash the canonical schema and the base facts", and it is
+//! computable only because a stored reference is expanded to its target's **logical
+//! form** first: a physical `FactId` is a number two reproducible builds can
+//! legitimately disagree about, since it depends on the order writes happened to
+//! arrive in, so hashing one would make identity depend on nothing semantic.
 //!
 //! With [a reference sent as the target fact](../../../PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline),
 //! a database has a canonical **logical** form: expand every reference to the key of

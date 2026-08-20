@@ -92,9 +92,9 @@ pub enum Command {
         ///
         /// **Required.** The schema is frozen for the database's lifetime (I13) and
         /// embedded in it, so this is the one moment it can be chosen — and a database
-        /// whose schema nobody chose is one nobody can describe. There used to be a
-        /// built-in code index standing in for a caller who did not say, which made a
-        /// *default* decide what every stored row meant.
+        /// whose schema nobody chose is one nobody can describe — a *default*
+        /// standing in for a caller who did not say would decide what every stored
+        /// row meant.
         #[arg(long, value_name = "FILE")]
         schema: PathBuf,
     },
@@ -199,12 +199,9 @@ pub enum Command {
     /// schema the server says it serves, so `:plan` and `:type` answer without running
     /// anything and a refusal is a caret under the word.
     ///
-    /// There used to be a second shell for an argument-less invocation — Phase 5's
-    /// embedded demo, which seeded a scratch database from a Python corpus and a schema
-    /// both compiled into the binary. It was the zero-setup way in, and it went with the
-    /// built-in schema: a database is created against a schema file now, so a demo that
-    /// could not be was the last thing holding a default. `:plan` and `:type` were never
-    /// only its, whatever this comment used to say.
+    /// A database is required: an argument-less invocation would need a built-in
+    /// schema to open something against, and there is none — a database is created
+    /// against a schema file.
     Shell {
         /// The database to connect to.
         database: String,

@@ -307,8 +307,7 @@ fn finishing_twice_is_a_no_op() {
     );
 }
 
-/// **A silently-empty sealed artifact is the classic CI failure that looks like
-/// success**, so making one takes saying so.
+/// Sealing an empty database takes saying so — `StoreError::EmptyDatabase` says why.
 #[test]
 fn an_empty_database_will_not_seal_without_being_told_to() {
     let (_dir, catalog) = catalog();
@@ -722,11 +721,10 @@ fn crashing_finisher_child_process() {
 ///
 /// [`identity::compute`] looks a predicate up by its `PredicateId`, which is a *position*.
 /// So a schema that is not this database's does not fail — it decodes every stored key
-/// against whatever type happens to sit at that position and hashes the result. `finish`
-/// used to take the schema from its caller, and the offline `fjord finish` handed it the
-/// tool's built-in one regardless of what the database embedded: sealing a database built
-/// against any other schema recorded an `ops-I4` identity over misread rows, and the
-/// `finish` that only checks that references resolve had no way to notice.
+/// against whatever type happens to sit at that position and hashes the result: an
+/// `ops-I4` identity over misread rows, which a `finish` that only checks that
+/// references resolve has no way to notice. That is why `finish` reads the embedded
+/// copy and takes no schema from its caller.
 ///
 /// The sharp case is two schemas whose position 0 holds a **different type**, since a
 /// string key read as a record is the silent misread rather than a loud one. So this seals

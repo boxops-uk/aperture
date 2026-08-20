@@ -113,10 +113,9 @@ impl<'a> PredicateRef<'a> {
     /// This predicate's name, or `None` if the schema's own interner cannot
     /// resolve it.
     ///
-    /// `None` is a broken schema, not a predicate without a name — it used to
-    /// come back as `""`, which reads as a valid empty name and travels on into
-    /// diagnostics. Both callers already have a "no such predicate" path to fold
-    /// it into.
+    /// `None` is a broken schema, not a predicate without a name — an empty-string
+    /// answer would read as a valid name and travel on into diagnostics. Both
+    /// callers already have a "no such predicate" path to fold it into.
     pub fn name(&self) -> Option<&'a str> {
         self.interner.resolve(self.inner.name)
     }
@@ -238,8 +237,8 @@ impl Schema {
 
         for (idx, predicate) in predicates.iter().enumerate() {
             // First wins, as the linear scan this replaces did. Two predicates
-            // sharing a name is a schema error for Phase 8 to reject; until then,
-            // indexing them must not silently start preferring the other one.
+            // sharing a name is a schema error lowering rejects; indexing them here
+            // must not silently start preferring the other one.
             by_name
                 .entry(predicate.name)
                 .or_insert(PredicateId(idx as u32));
@@ -393,8 +392,8 @@ mod tests {
     }
 
     /// Two predicates sharing a name resolve to the **first**, as the linear scan
-    /// this index replaced did. A duplicate is a schema error for Phase 8 to
-    /// reject; indexing them must not quietly change which one a query gets.
+    /// this index replaced did. A duplicate is a schema error lowering rejects;
+    /// indexing them must not quietly change which one a query gets.
     #[test]
     fn find_position_prefers_the_first_of_a_duplicated_name() {
         let schema = schema_of(&["a.One", "dup.Pred", "b.Two", "dup.Pred"]);

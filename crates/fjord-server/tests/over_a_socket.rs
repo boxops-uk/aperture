@@ -1,5 +1,5 @@
-//! **Phase 7a's criterion, as a test**: facts are writable over a socket and queried
-//! back on the same connection.
+//! **The wire-ingestion criterion, as a test**: facts are writable over a socket and
+//! queried back on the same connection.
 //!
 //! Over a real `UnixListener` and a real `FjallDb`, because the criterion says
 //! *socket* — an in-process call proves the frame handling and not the thing that was

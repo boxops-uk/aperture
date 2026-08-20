@@ -1,7 +1,7 @@
 //! The **embedded schema copy** — `schema/` beside the sidecar.
 //!
 //! [I13](../../../website/content/invariants.md#i13): a database carries its own schema, embedded
-//! at create and frozen for its lifetime. This is that copy, and since Phase 8.4 it is
+//! at create and frozen for its lifetime. This is that copy, and it is
 //! **load-bearing** rather than belt-and-braces: it is what a server reads to learn what
 //! a database holds, so a store root can hold databases built from different schemas
 //! without anything having to be told which.

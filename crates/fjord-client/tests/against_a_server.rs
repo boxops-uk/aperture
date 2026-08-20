@@ -901,10 +901,10 @@ fn an_unprofiled_query_gets_no_profile_frame() {
 /// **A connection that has answered a thousand queries holds no more than one that has
 /// answered one.**
 ///
-/// The regression guard for `bench/FINDINGS.md` §7. A stream's task used to wait forever
-/// on a channel whose only `Sender` lived in a map with no removal path, so every query
-/// left a parked task behind: ~3.5 kB retained per query, for the life of the connection.
-/// A pooled connection is exactly the shape that reaches it, and a web tier is a pool by
+/// The regression guard for `bench/FINDINGS.md` §7: a stream's task waiting forever on
+/// a channel whose only `Sender` lives in a map with no removal path leaves a parked
+/// task per query — ~3.5 kB retained, for the life of the connection. A pooled
+/// connection is exactly the shape that reaches it, and a web tier is a pool by
 /// construction.
 ///
 /// Two claims, and they are different halves of the same fix. The server's is that the
@@ -1314,13 +1314,12 @@ fn a_cancel_inside_a_chunk_completes_rather_than_fails() {
     );
 }
 
-/// **[Phase 12e](https://github.com/boxops-uk/fjord/blob/main/PLAN.md): two connections write one database at the same time.**
+/// **Two connections write one database at the same time.**
 ///
-/// The server used to hold a per-database mutex across every block, so however many
-/// clients were writing, one was writing. That mutex was doing two jobs and only ever had
-/// the right to one of them — keeping a block out of a database that has been sealed. The
-/// other, keeping writers out of *each other's* way, is now the store's, and is done per
-/// **key** by the striped merge frontier rather than per database.
+/// A per-database mutex across every block would mean that however many clients are
+/// writing, one is writing — a mutex there has the right to exactly one job, keeping a
+/// block out of a database that has been sealed. Keeping writers out of *each other's*
+/// way is the store's job, done per **key** by the striped merge frontier.
 ///
 /// **The peak gauge rather than a stopwatch.** "They ran at the same time" is exactly the
 /// kind of claim a timing test argues for and never settles — a slow CI box makes two

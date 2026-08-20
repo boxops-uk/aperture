@@ -1,7 +1,7 @@
 //! **The server** — the wire protocol, over a socket, in front of a real store.
 //!
-//! Phase 7a's last piece: a client connects, handshakes, opens a write stream, sends
-//! blocks of facts, and queries them back on the same connection. What it is made of
+//! A client connects, handshakes, opens a write stream, sends blocks of facts, and
+//! queries them back on the same connection. What it is made of
 //! is almost entirely other crates —
 //! [`fjord-wire`](fjord_wire) frames and encodes,
 //! [`fjord-ingest`](fjord_ingest) interns and writes,
@@ -32,7 +32,7 @@
 //! - **Remote `list` and `describe`.** Locally they need nothing from the server —
 //!   `ops-I7` reads sidecars and never opens fjall, so they already work while it
 //!   holds every database. The remote branch is the virtual predicate
-//!   `fjord.db.List` through the normal query machinery, in Phase 9f.
+//!   `fjord.db.List` through the normal query machinery.
 //! - **TCP.** `ops-I10` is default-closed: a Unix socket only, with TCP an explicit
 //!   opt-in behind an authenticated gateway. The opt-in flag is not wired yet, and
 //!   binding a network interface is not something to do by accident.

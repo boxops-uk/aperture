@@ -39,7 +39,7 @@ pub mod parser;
 #[cfg(any(test, feature = "proptest"))]
 pub mod fixtures;
 
-// The target-feature corpus — Phase 2's audit table as data, and the acceptance
-// gate for the grammar surface.
+// The target-feature corpus — the language surface as data, and the acceptance
+// gate over it.
 #[cfg(any(test, feature = "proptest"))]
 pub mod corpus;

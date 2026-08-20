@@ -558,7 +558,7 @@ impl Catalog {
             detail: format!("cannot create the name directory: {source}"),
         })?;
 
-        // Still one atomic rename, just one level deeper than it used to be: the
+        // One atomic rename: the
         // instance directory moves out of the scratch and into the name. A process
         // killed at any point leaves either no instance directory or a whole one, and
         // an empty name directory is invisible to [`list`](Catalog::list) because it
@@ -569,9 +569,8 @@ impl Catalog {
             detail: format!("cannot move into place: {source}"),
         })?;
 
-        // Deliberately not `scratch.keep()`: what used to be kept was the scratch
-        // directory itself, because it *became* the name directory. Now the instance is
-        // moved out from under it and the empty scratch is ours to remove, which is what
+        // Deliberately not `scratch.keep()`: the instance was moved out from under
+        // the scratch, so the empty scratch is ours to remove — which is what
         // dropping it does.
         drop(scratch);
 
@@ -645,12 +644,10 @@ impl Catalog {
     ///
     /// [`identity::compute`] looks a predicate up by its `PredicateId`, which is a
     /// *position*, so a schema that is not this database's does not fail — it decodes
-    /// every stored key against whatever type happens to sit at that position and hashes
-    /// the result. The caller used to supply it, and the offline `fjord finish` supplied
-    /// the tool's built-in schema regardless of what the database embedded, so sealing a
-    /// database built against any other schema recorded an `ops-I4` identity over
-    /// misread rows. Reading the embedded copy here is what makes that unstateable rather
-    /// than merely fixed.
+    /// every stored key against whatever type happens to sit at that position and
+    /// hashes the result, recording an `ops-I4` identity over misread rows,
+    /// silently. Reading the embedded copy here — never a caller-supplied one — is
+    /// what makes that unstateable rather than merely avoided.
     ///
     /// [`finish_held`](Catalog::finish_held) still takes one, because the server has
     /// already read and fingerprint-checked the copy and holds the composed form; the
@@ -840,8 +837,7 @@ fn seal(
 
     let identity = identity::compute(db, schema, entry.meta.schema_fingerprint)?;
 
-    // A silently-empty sealed artifact is the classic CI failure that looks like
-    // success, so it takes a flag to make one.
+    // Sealing an empty database takes a flag — `StoreError::EmptyDatabase` says why.
     if identity.facts == 0 && !allow_zero_facts {
         return Err(StoreError::EmptyDatabase(name.to_owned()));
     }

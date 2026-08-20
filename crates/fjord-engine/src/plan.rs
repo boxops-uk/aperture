@@ -535,10 +535,8 @@ pub enum Project {
 /// save only generator positions and recompute the rest
 /// ([chapter 7](../../../website/content/query-language.md#derived-facts)).
 ///
-/// This was one arm wide until Phase 11 — a constant, because nothing in the
-/// language could produce anything else. Arithmetic is the first thing that does,
-/// and it arrived as three more arms rather than as a reshape, which is what the
-/// seam was for.
+/// Arithmetic is the first producer of a computed value in the language, and it
+/// arrived as new arms rather than as a reshape — which is what this seam is for.
 ///
 /// [`Cursor`]: crate::iter::Cursor
 #[derive(Debug, Clone)]
@@ -698,9 +696,8 @@ impl Plan {
     ///
     /// Distinct from `body.len()`, which counts steps, and the distinction is
     /// load-bearing: a [`Cursor`](crate::iter::Cursor) holds one row per
-    /// *level*, and resume replays it against the levels in order. `body.len()`
-    /// used to mean both, so every site that wants one or the other now has to
-    /// name which.
+    /// *level*, and resume replays it against the levels in order — so every site
+    /// that wants one count or the other has to name which.
     #[must_use]
     pub fn levels(&self) -> usize {
         self.body.iter().filter(|step| step.is_level()).count()

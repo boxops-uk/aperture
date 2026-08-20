@@ -67,7 +67,7 @@
 //!
 //! **The file envelope.** A fact file's header (magic, format version, producing
 //! schema fingerprint) and its optional footer of block offsets are
-//! [operations §8](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)'s and belong to Phase 7b with
+//! [file ingestion](https://github.com/boxops-uk/fjord/blob/main/PLAN.md)'s and arrive with
 //! the rest of the file pipeline. Blocks are here because they are shared with the
 //! wire; the envelope is not shared with anything.
 //!

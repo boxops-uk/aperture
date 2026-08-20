@@ -325,7 +325,7 @@ fn an_ingest_fault_says_whose_fault_it_is() {
     assert!(err.is_peers_fault());
 }
 
-/// **[Phase 12c](../../../PLAN.md)'s guard: the point reads are counted, not argued.**
+/// **The lookup cache's guard: the point reads are counted, not argued.**
 ///
 /// The cache's claim is not "interning got faster" — a timing test would say that and
 /// would say it on a machine that happened to be idle. The claim is arithmetic: a

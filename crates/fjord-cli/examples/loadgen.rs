@@ -389,11 +389,11 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
 
     let mut rows_out = vec![];
 
-    // **Pivots sampled from whatever is loaded, not computed from `--files`.** This
-    // file used to seek `files / 2`, which lands on a real key only in the corpus it
-    // seeded itself — point it at somebody's index and every seek workload measured a
-    // miss. Phase 10's S0: the questions and the sampling are `fjord_cli::workload`'s,
-    // so this bench and `engine` ask the same thing of the same data.
+    // **Pivots sampled from whatever is loaded, never computed from `--files`.** A
+    // computed pivot lands on a real key only in a corpus this file seeded itself —
+    // pointed at somebody's index, every seek workload silently measures a miss.
+    // The questions and the sampling are `fjord_cli::workload`'s, so this bench and
+    // `engine` ask the same thing of the same data.
     let pivots = {
         let mut connection = connect(options, schema, Mode::ReadOnly);
         workload::sample(&mut connection).unwrap_or_else(|error| {

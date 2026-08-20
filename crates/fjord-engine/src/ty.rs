@@ -269,12 +269,11 @@ impl Checker<'_> {
             // with both bound is a residual on whichever level binds later; `X =
             // "a"..` narrows the level that captures `X`.
             //
-            // This arm used to ask whether the variable was **already mentioned**,
-            // which decided all four in *source* order — the one order the query
-            // might not have used, and the thing this phase gave up deciding when
-            // `reorder` took the question over. `F = G` compiled or did not
-            // depending on whether the statement that mentions `G` was written
-            // above or below it, and the plans were identical either way.
+            // This arm must not ask whether the variable is **already mentioned**:
+            // that decides all four in *source* order — the one order the query
+            // might not have used, and the question `reorder` owns. `F = G` would
+            // compile or not depending on whether the statement mentioning `G` was
+            // written above or below it, with identical plans either way.
             //
             // Claiming the same variable *twice* — two rows, or two constants — is
             // unification too, and flatten refuses it: only flatten knows whether a
@@ -488,8 +487,8 @@ impl Checker<'_> {
             // **`never` is polymorphic**, which is what "the identity of `|`" means
             // in a system with no subtyping: a fresh variable takes whatever type
             // the position demands, so `A | never` is `A`'s type and `never` alone
-            // is whatever it is asked to be. Phase 2 declined a `Ty::Never`
-            // constructor as speculative; this is the same answer without one, and
+            // is whatever it is asked to be. A `Ty::Never` constructor was
+            // declined as speculative; this is the same answer without one, and
             // the empty relation needs nothing else — it matches no rows, so no
             // value of any type ever comes out of it.
             ExprKind::Never => self.fresh_var(),
@@ -767,7 +766,7 @@ impl Checker<'_> {
     ///
     /// Resolving it would need row polymorphism — "some record with a `name` field"
     /// — which the type model does not have. In practice the variable is unbound
-    /// because nothing binds it, which Phase 4's range-restriction check rejects
+    /// because nothing binds it, which flatten's range-restriction check rejects
     /// anyway; this is the earlier, clearer diagnostic.
     fn unresolved(&mut self, ast: &Ast, id: NodeId) -> Ty {
         self.reject_ty(
@@ -822,8 +821,8 @@ impl Checker<'_> {
                     });
                 }
                 // Looked up by name rather than zipped: both sides are sorted, but
-                // the schema's order is Phase 8's to guarantee, not this pass's to
-                // assume.
+                // the schema's order is the schema loader's to guarantee, not this
+                // pass's to assume.
                 for (name, x) in xs.iter() {
                     let Some((_, y)) = ys.iter().find(|(n, _)| n == name) else {
                         return Err(TyError::UnknownField(*name));
@@ -1360,8 +1359,8 @@ mod tests {
         }
     }
 
-    /// A select on something that is not a union at all — the shape that used to be
-    /// the whole feature's diagnostic, and is now an ordinary rejection.
+    /// A select on something that is not a union at all — an ordinary rejection,
+    /// the same class of mistake as an unknown field.
     #[test]
     fn selecting_an_alternative_of_a_non_union_is_rejected() {
         let checked = compile("X.alt? where X = test.Foo _");
@@ -1594,10 +1593,10 @@ mod tests {
 
     /// **Source order no longer decides what a bind means.**
     ///
-    /// Whether a variable has been *mentioned above* used to gate this arm, so
-    /// `X = Y` typechecked when the statement binding `Y` was written first and drew
-    /// `nyi/bind-unification` when it was written second — for the same query, with
-    /// the same plan. That is the decision `reorder` took over, and typecheck kept a
+    /// Gating this arm on whether a variable is *mentioned above* makes `X = Y`
+    /// typecheck when the statement binding `Y` is written first and draw
+    /// `nyi/bind-unification` when it is written second — for the same query, with
+    /// the same plan. That decision is `reorder`'s, and typecheck must not keep a
     /// copy of it.
     ///
     /// Which of the four things a bind can be is flatten's answer now, so all this
@@ -1803,8 +1802,8 @@ mod tests {
     /// A variable bound to a variable resolves through the chain — including when
     /// the far end is a compound type that has to be carried back.
     ///
-    /// Resolving used to compress the chain as a side effect of walking it. It no
-    /// longer does, so the walk itself has to be right. Two links is as deep as
+    /// Resolving does not compress the chain as a side effect of walking it, so
+    /// the walk itself has to be right. Two links is as deep as
     /// the implemented subset reaches: a third would need `Y = Z` with `Y`
     /// already bound, which is `nyi/bind-unification`.
     #[test]

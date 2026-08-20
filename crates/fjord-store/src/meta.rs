@@ -116,7 +116,7 @@ pub struct Meta {
     pub format_storage: u16,
 
     /// The schema this database was created against, and cannot change
-    /// ([I13](../../../website/content/invariants.md#i13) once Phase 8 lands).
+    /// ([I13](../../../website/content/invariants.md#i13)).
     pub schema_fingerprint: u64,
 
     /// `hash(canonical schema, base facts)` — recorded at `finish`, absent before it.
@@ -285,12 +285,9 @@ impl Scratch {
 }
 
 impl Drop for Scratch {
-    /// **Always removed**, and there is no longer a way to disarm it.
-    ///
-    /// There used to be: `create` renamed the scratch directory itself into place and
-    /// had to stop the drop deleting it. Now the finished *instance* directory is
-    /// renamed out from under the scratch, so what is left is always an empty directory
-    /// this owns — on the failure paths and on the happy one alike.
+    /// **Always removed, with no way to disarm it.** The finished *instance*
+    /// directory is renamed out from under the scratch, so what is left is always an
+    /// empty directory this owns — on the failure paths and on the happy one alike.
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
@@ -411,11 +408,9 @@ mod tests {
         assert_eq!(Meta::read(dir.path()).expect("it reads"), short);
     }
 
-    /// **A scratch directory is always removed**, and what it holds goes with it.
-    ///
-    /// There used to be a way to keep one, because `create` renamed the scratch itself
-    /// into place. Now the finished instance directory is renamed out from under it, so
-    /// every path — failure and success alike — leaves this to clean up.
+    /// **A scratch directory is always removed**, and what it holds goes with it —
+    /// the finished instance directory is renamed out from under it, so every path,
+    /// failure and success alike, leaves this to clean up.
     #[test]
     fn a_scratch_directory_is_always_removed() {
         let dir = tempfile::tempdir().expect("a scratch directory");

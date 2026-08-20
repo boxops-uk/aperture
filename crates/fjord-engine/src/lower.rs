@@ -877,10 +877,10 @@ mod tests {
     }
 
     /// A record field the parser could not name is dropped rather than interned
-    /// as the empty string. It used to become a real field called `""`, which
-    /// sorts ahead of every other one — so `{a = 1, = 2}` lowered to `{=2, a=1}`
-    /// and typecheck then reported the nameless field as unknown, on top of the
-    /// parse error that had already explained it.
+    /// as the empty string. A real field called `""` sorts ahead of every other
+    /// one — `{a = 1, = 2}` would lower to `{=2, a=1}` — and typecheck would then
+    /// report the nameless field as unknown, on top of the parse error that
+    /// already explained it.
     #[test]
     fn a_nameless_field_is_dropped_not_named_empty() {
         assert_eq!(

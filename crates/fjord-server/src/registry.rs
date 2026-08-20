@@ -57,12 +57,11 @@ use crate::{
 /// `fjord.db.List` and `fjord.db.Interning`, which the server answers out of the root it
 /// owns and no artifact holds.
 ///
-/// **There is no fallback, and that is the whole of the change here.** A server used to
-/// carry a built-in data schema and serve a database that embedded no copy with it. That
-/// is a guess, and a silent one: if the built-in schema had moved since the database was
-/// written, its rows decode as something else — the loud version of which is a decode
-/// error and the quiet version a query answering zero rows. So a database with no
-/// embedded copy is now **listed and not served**, which is already how a copy this
+/// **There is no fallback, deliberately.** Serving a database that embeds no copy with
+/// any schema the server holds is a guess, and a silent one: if that schema has moved
+/// since the database was written, its rows decode as something else — the loud version
+/// a decode error, the quiet version a query answering zero rows. So a database with no
+/// embedded copy is **listed and not served**, which is already how a copy this
 /// server cannot *read* is treated, and is the same refusal
 /// [I15](../../../website/content/invariants.md#i15) makes of a database carrying no format stamp.
 ///
@@ -445,11 +444,11 @@ impl Registry {
     /// arrived over a socket, and a database created from a schema nothing read is a
     /// database nothing can serve.
     ///
-    /// An empty `source` used to mean "this server's own", which is the write half of the
-    /// guess [`Schemas`] no longer makes: it created a database whose embedded schema was
-    /// whatever binary happened to be listening, so the same command against two builds
-    /// produced two different artifacts. `create` requires a schema — which is what
-    /// [operations §5](../../../website/content/operations.md) always specified.
+    /// An empty `source` must not mean "this server's own" — that is the write half
+    /// of the guess [`Schemas`] refuses to read: a database whose embedded schema is
+    /// whatever binary happened to be listening, so the same command against two
+    /// builds produces two different artifacts. `create` requires a schema
+    /// ([operations](../../../website/content/operations.md)).
     ///
     /// # Errors
     ///

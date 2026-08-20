@@ -12,7 +12,7 @@
 //! are all bound, lowest-numbered first. Greedy, one pass, no backtracking —
 //! because the constraint is monotone (see below). A query whose written order
 //! already works is returned unchanged, so this is not a second way to compile
-//! anything; it is the same plan, plus the ones that used to be rejected.
+//! anything; it is the same plan, plus the orders that would otherwise be refused.
 //!
 //! # Why greedy is complete
 //!
@@ -24,8 +24,9 @@
 //!
 //! Glean's `Reorder` does need a give-up branch, and the difference is *nested*
 //! statement groups (from negation and disjunction), whose own reads depend on how
-//! their branches are ordered — which is where monotonicity fails. sigla has none
-//! until [Phase 6b], so this argument is worth re-proving then and not before.
+//! their branches are ordered — which is where monotonicity fails. sigla has none —
+//! a negated *group* is still refused by name (`nyi/negation`) — so this argument
+//! must be re-proved when one lands, and not before.
 //!
 //! [`Deps::antichains`] is kept, but off this path: it answers *whether* an order
 //! exists (the exact feasibility question, and the property test's independent
@@ -55,7 +56,6 @@
 //!
 //! [chapter 7]: ../../../website/content/query-language.md
 //! [derived binds]: ../../../website/content/query-language.md#derived-facts
-//! [Phase 6b]: ../../../PLAN.md
 
 use fjord_schema::schema::Symbol;
 
@@ -72,7 +72,7 @@ use fjord_schema::schema::Symbol;
 /// the same plan.
 ///
 /// **The consumer it was kept for did not materialise, and that is the interesting
-/// part.** It was held for [Phase 6b](../../../PLAN.md)'s placement rule — a
+/// part.** It was held for negation's placement rule — a
 /// negation may not run before the statements binding its non-locals — which reads
 /// like a constraint on *written* order. It is not: give a negation `reads` = the
 /// variables it names and `captures` = nothing, and the frontier already refuses to
@@ -256,10 +256,9 @@ impl Deps {
 // TODO: selectivity — extend `StmtDeps` with the key-prefix shape, then
 // `min_by_key` over the frontier.
 //
-// This used to ask for a second thing as well — moving negations and conditionals after
-// whatever binds their non-locals — and Phase 6b did it: a negation is a `Step::Test`
-// whose variables are `reads`, which is the whole of that rule, so `reorder` needed no
-// new kind of constraint and got none.
+// Negation's placement rule needs nothing extra here: a negation is a `Step::Test`
+// whose variables are `reads`, which is the whole of the rule that it runs after
+// whatever binds them — so `reorder` has no special constraint kind for it.
 #[must_use]
 pub fn reorder(deps: &Deps) -> Box<[usize]> {
     let mut order: Vec<usize> = Vec::with_capacity(deps.len());
@@ -298,7 +297,7 @@ pub fn reorder(deps: &Deps) -> Box<[usize]> {
 /// The stability [`reorder`] gets from taking the *lowest-numbered* runnable
 /// statement, stated so that it is checked rather than assumed. It is what makes
 /// "the order you wrote is the order you get, unless it could not run" true, and it
-/// is the property [`Placement`]'s Phase 6b consumer will rest on: a rule that
+/// is the property any future [`Placement`] consumer rests on: a rule that
 /// keeps a negation after the statements binding its non-locals is only meaningful
 /// if written order is otherwise preserved.
 #[must_use]
@@ -382,12 +381,11 @@ mod tests {
     /// **A source order that already works is kept exactly**, for every size —
     /// including none.
     ///
-    /// This is the identity claim the module used to make unconditionally, now
-    /// stated as the property that survives the frontier: picking the
-    /// lowest-numbered runnable statement can only ever be the collection order
-    /// when the collection order binds before it reads. So every query that
-    /// compiled before this module chose anything compiles to the *same plan*, and
-    /// reordering is observable only where the old code refused outright.
+    /// The identity claim, stated as the property that survives the frontier:
+    /// picking the lowest-numbered runnable statement can only ever be the
+    /// collection order when the collection order binds before it reads. So a
+    /// query whose written order works compiles to the *same plan*, and
+    /// reordering is observable only where a refusal would otherwise be.
     #[test]
     fn reorder_keeps_an_order_the_source_already_got_right() {
         let (_i, v) = vars(&["X", "Y"]);
@@ -535,8 +533,7 @@ mod tests {
 
         // A cycle of reads: each needs what the other binds. Unreachable from
         // flatten today — typecheck rejects a read before its binding — and the
-        // case Phase 6's derived binds make possible, so the interface answers it
-        // now.
+        // case derived binds make possible, so the interface answers it now.
         let cycle = deps(&[(vec![v[0]], vec![v[1]]), (vec![v[1]], vec![v[0]])]);
         assert_eq!(cycle.antichains(), None);
 
@@ -580,8 +577,8 @@ mod tests {
         ///
         /// Glean's `reorderStmts` cannot claim this: it queues and retries, and
         /// gives up if it gets all the way round. The difference is nested
-        /// statement groups, which break monotonicity and which sigla does not have
-        /// until disjunction and negation land (Phase 6b) — so re-prove this then.
+        /// statement groups, which break monotonicity and which sigla does not
+        /// have — a negated group is `nyi/negation` — so re-prove this when one lands.
         #[test]
         fn reorder_finds_an_order_whenever_one_exists(
             stmts in prop::collection::vec(

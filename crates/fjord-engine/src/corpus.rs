@@ -1,7 +1,7 @@
-//! The **target-feature corpus** — the Phase 2 audit table, executable.
+//! The **target-feature corpus** — the language surface as an executable audit table.
 //!
-//! Phase 2's job is a grammar that already parses the *full* intended feature
-//! surface, so that later phases add meaning to constructs that already parse
+//! The grammar parses the *full* intended feature surface, so that
+//! new work adds meaning to constructs that already parse
 //! rather than reshaping the grammar ([chapter 7]). That claim needs a written
 //! target, and a written target in prose drifts — so the table lives here, as
 //! data, next to the tests that check it.
@@ -18,9 +18,9 @@
 //! `Diagnosed` entry is a parse error** — an unimplemented feature must be
 //! reported by name, not by a syntax error.
 //!
-//! # The audit: `sigla` as it stood at the start of Phase 2
+//! # The audit: what parses, and what each construct means
 //!
-//! | Construct | Before | Phase 2 |
+//! | Construct | Before | Now |
 //! |---|---|---|
 //! | `pattern where stmt; stmt`, `_`, vars, `Nat`, `-Nat`, `"s"`, `"s"..`, records, nesting | parses | unchanged |
 //! | `QId pattern` fact pattern | parses; key **mandatory** | unchanged — a whole-predicate scan is `test.Foo _` |
@@ -38,9 +38,9 @@
 //!
 //! One token: **`!=`**, a *denial*
 //! ([chapter 7](../../../website/content/query-language.md#denying-a-value)). The audit above was written
-//! to make later phases add *meaning* to constructs that already parse, and this is the one
+//! to make later work add *meaning* to constructs that already parse, and this is the one
 //! thing since that did not already parse — worth recording rather than folding into the table,
-//! because the table is what Phase 2 found and this is a later addition to it.
+//! because the table is what the original audit found and this is a later addition to it.
 //!
 //! It is not a case the audit missed so much as one it could not have placed: `!` was listed as
 //! negation and `!=` reads like its infix relative, but they are different questions — "no such
@@ -107,7 +107,7 @@ const fn entry(source: &'static str, expect: Expectation, note: &'static str) ->
 }
 
 pub const CORPUS: &[Entry] = &[
-    // ---- the implemented subset: parses, typechecks, and Phase 4 flattens ----
+    // ---- the implemented subset: parses, typechecks, flattens, runs ----------
     entry(
         "X where X = test.Foo _",
         Supported("test.Foo#1; test.Foo#2; test.Foo#3"),
@@ -233,9 +233,9 @@ pub const CORPUS: &[Entry] = &[
     ),
     // ---- arithmetic --------------------------------------------------------
     //
-    // The first thing in sigla to lower a `Step::Derive` at all. The machinery has
-    // been there since Phase 6 and was exercised only by hand-built plans, which is
-    // why these entries are also its first coverage from the language.
+    // The first thing in sigla to lower a `Step::Derive` at all — previously the
+    // machinery was exercised only by hand-built plans, so these entries are also
+    // its first coverage from the language.
     entry(
         "Y where test.Count X; Y = X + 1",
         Supported("-9223372036854775807; -41; 8; 1001"),
@@ -485,8 +485,8 @@ pub const CORPUS: &[Entry] = &[
     entry(
         "X.alt? where X = test.Foo _",
         Diagnosed(Code::RejectNotAUnion),
-        "a select on something that is not a union at all — the shape of the \
-         mistake that used to be the whole feature's diagnostic",
+        "a select on something that is not a union at all — the same class of \
+         mistake as an unknown field",
     ),
     // ---- unions (8.6) --------------------------------------------------------
     entry(
@@ -836,7 +836,7 @@ pub const CORPUS: &[Entry] = &[
         "X where test.Foo X.name",
         Diagnosed(Code::RejectUnresolvedAccess),
         "nothing binds `X`, so there is no type to read `name` from. Resolving it \
-         would need row polymorphism; Phase 4's range-restriction check would reject \
+         would need row polymorphism; the range-restriction check would reject \
          the query anyway",
     ),
     entry(
@@ -948,8 +948,8 @@ pub const CORPUS: &[Entry] = &[
         "X.value where test.Ref {of = X}",
         Supported("one; two"),
         "the same through the value side: one register, and the value one point read \
-         further off it — the arm that used to decline *quietly*, which is what makes \
-         the `flatten_ordered` promise-guard load-bearing here",
+         further off it — the arm that would decline *quietly* without the \
+         `flatten_ordered` promise-guard, which is what makes that guard load-bearing",
     ),
     entry(
         "N where test.Deep {via = R}; N = R.of.name",
@@ -991,7 +991,7 @@ pub const CORPUS: &[Entry] = &[
     entry(
         "X where test.Edge {from = X, to = X}",
         Diagnosed(Code::NyiRepeatedVariable),
-        "an intra-row repeat needs a same-row `EqField` residual; the Phase 4 \
+        "an intra-row repeat needs a same-row `EqField` residual; the settled \
          decision is to reject it for now rather than add an operator nothing else \
          uses (PLAN.md)",
     ),

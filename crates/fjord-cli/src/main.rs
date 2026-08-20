@@ -383,9 +383,7 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
         }
 
         // **Always over the wire**, and it never silently opens a store root a server
-        // might hold: it connects, or says nothing is listening. There used to be a
-        // second, embedded shell here for an argument-less invocation, which seeded a
-        // scratch database from a corpus compiled into the binary — see `cli.rs`.
+        // might hold: it connects, or says nothing is listening.
         Command::Shell { database } => commands::shell::run(&context.target(database)?),
 
         // **Files, not databases.** Nothing here opens a store root except `diff`, and

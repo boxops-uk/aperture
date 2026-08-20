@@ -1,6 +1,6 @@
 //! **A database does not depend on how many threads wrote it, or in what order.**
 //!
-//! [Phase 12d](../../../PLAN.md)'s second acceptance criterion, and the one that decides whether
+//! The acceptance criterion that decides whether
 //! the [striped merge frontier](../../../crates/fjord-store/src/store.rs) is *correct* rather
 //! than merely uncontended. `concurrent_interning_of_one_key_creates_one_fact` proves the
 //! narrow case — every thread reaching for one key gets one fact. This proves the wide

@@ -14,9 +14,9 @@
 //!
 //! # The predicate is named, not numbered
 //!
-//! The header carried a `predicate u32` — the *database's* id — until Phase 8. That made a
-//! fact file meaningful only against the database whose numbering produced it, and it made
-//! every client keep a table of ids in step with a server's. A name costs about six more
+//! A header carrying the *database's* predicate id would make a fact file meaningful only
+//! against the database whose numbering produced it, and would make every client keep a
+//! table of ids in step with a server's. A name costs about six more
 //! bytes **once per block**, against payloads of hundreds to thousands of facts, and buys
 //! both back: a client never learns a database's numbering, and a file is portable to any
 //! database whose schema declares those names.

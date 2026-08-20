@@ -263,7 +263,7 @@ fn machine_busy_seconds() -> f64 {
 /// cheaper, query than the one the mix is supposed to be weighted around.
 /// One connection, three queries, before any load starts.
 ///
-/// The sampling and the queries it feeds are `fjord_cli::workload`'s — Phase 10's S0 —
+/// The sampling and the queries it feeds are `fjord_cli::workload`'s,
 /// so this soak, `loadgen` and `engine` seek for the same keys in the same corpus. What
 /// stays here is the *mix*: weights and think time are what a soak is, and no other
 /// instrument has an opinion about them.

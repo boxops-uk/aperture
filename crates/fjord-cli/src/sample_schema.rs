@@ -14,11 +14,9 @@
 //! instrument cannot declare its own and end up measuring a database it could not have
 //! written.
 //!
-//! **Nothing here states a schema.** Until Phase 8.4 this file *was* one: twenty-two
-//! predicates of hand-written Rust, with six id constants beside them written down a
-//! second time. Both are gone. `schemas/code.sigla` is the single statement, in the
+//! **Nothing here states a schema.** `schemas/code.sigla` is the single statement, in the
 //! language `fjord create --schema` takes, and this module is the two lines that parse it
-//! plus the lookups that used to be constants. What is left to guard is therefore not
+//! plus the name lookups. What is left to guard is therefore not
 //! "does the vector still say what it said" but "does the *file* still declare what the
 //! rest of the tree names" — which is what `tests` below asks.
 //!
@@ -37,8 +35,8 @@
 //! because a predicate leads with one field and two questions want different ones:
 //! `src.SearchByName` against `src.Decl`, `src.FileXRef` against `src.Ref`,
 //! `src.AttributeOf` and `src.DerivesFrom` against their originals. Each is what a
-//! *stored derivation* would materialise ([Phase 8b](../../../PLAN.md)); until one can be
-//! declared, the producer writes both orders.
+//! *stored derivation* would materialise ([the roadmap](../../../PLAN.md)); until one can
+//! be declared, the producer writes both orders.
 
 use std::sync::LazyLock;
 
@@ -93,13 +91,11 @@ const SOURCE: &str = include_str!("../../../schemas/code.sigla");
 /// `{attribute, target}` are the same choice made three more times. Lowering preserves
 /// declaration order for exactly this reason — it does not sort a record's fields.
 ///
-/// The schema used to keep every field list in **alphabetical** order and to say that
-/// the order followed from the names — that renaming `base` to `super` would silently
-/// change what `src.Extends` answers. Nothing sorts these slices: `flatten` walks the
+/// Nothing sorts these slices: `flatten` walks the
 /// schema's own slice by index and looks each query field up by name, and
-/// `fjord_store::fact`'s `the_encoding_order_is_the_declared_order` has always pinned
-/// that. What the alphabetical habit did was make the physical key order a *consequence*
-/// of naming, which is how `src.Decl` came to lead with a line number and `src.Ref` with
+/// `fjord_store::fact`'s `the_encoding_order_is_the_declared_order` pins
+/// that. An **alphabetical** habit makes the physical key order a *consequence*
+/// of naming — which is how a `src.Decl` comes to lead with a line number and a `src.Ref` with
 /// a column — the two most expensive keys in the index, both by accident.
 ///
 /// The order is now chosen per predicate and stated in `tests::KEY_ORDER`, which is the

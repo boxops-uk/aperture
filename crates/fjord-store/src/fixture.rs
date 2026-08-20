@@ -11,8 +11,6 @@
 //! and this one is built out of the compiler's awkward cases rather than out of
 //! anything.
 //!
-//! Phase 8 parses schemas; until then this is hand-built.
-//!
 //! # The schema
 //!
 //! ```text

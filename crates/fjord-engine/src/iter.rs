@@ -990,9 +990,8 @@ impl Cursor {
 
     /// **The cursor as bytes a client can hold**, and hand back on any connection.
     ///
-    /// Chapter 5 has called a cursor "bytes-only" since it was written, and until
-    /// Phase 11 that was a statement about what it *contains* rather than something
-    /// anybody could do: the token lived in the server's session, keyed by stream
+    /// "Bytes-only" has to mean more than what the cursor *contains*: while
+    /// the token lived in the server's session, keyed by stream
     /// id, and a client held a bookmark naming that stream. So paging meant holding
     /// a connection, and a stateless caller — a web tier serving `?page=7` — had no
     /// implementation at all, since "everything after key K" is not expressible
@@ -1442,11 +1441,10 @@ impl<S: FactStore> Executor<S> {
 
                         // No steps at all — a query whose every binding folded at
                         // compile time, `X where X = 42`. It has produced its one
-                        // row and there is no level to back into; `depth -= 1` here
-                        // is what used to underflow, and is why an empty body was an
-                        // error. It is safe now for the same reason the suspend arm
-                        // below is: a plan with no levels is *exactly one row*, so
-                        // "done" is the truth rather than a guess.
+                        // row and there is no level to back into: `depth -= 1` here
+                        // would underflow. Answering `Done` is safe for the same
+                        // reason the suspend arm below is: a plan with no levels is
+                        // *exactly one row*, so "done" is the truth, not a guess.
                         if self.plan.body.is_empty() {
                             return Ok(Iteratee::Done(acc));
                         }
@@ -1891,8 +1889,7 @@ mod tests {
     /// inside a record, a seek splices one, and the head projects one.
     ///
     /// The unit tests above pin the walk; this pins that every place a plan can
-    /// name a field passes the path through rather than only the flat index it
-    /// used to carry.
+    /// name a field passes the whole path through, never only a flat index.
     #[test]
     fn a_plan_seeks_filters_and_projects_through_a_nested_path() {
         let (nested, ints) = (PredicateId(0), PredicateId(1));
@@ -1969,8 +1966,8 @@ mod tests {
         assert_eq!(FieldPath::field(1).then(2), FieldPath::nested(1, [2]));
     }
 
-    /// A register renders as an index, not a machine address. `Address(0)` used to
-    /// reach a diagnostic as `0x0000000000000000`.
+    /// A register renders as an index, not a machine address — `Address(0)`
+    /// reaching a diagnostic as `0x0000000000000000` helps nobody.
     #[test]
     fn an_address_reads_as_a_register() {
         assert_eq!(Address::new(0).to_string(), "r0");
@@ -2262,13 +2259,11 @@ mod tests {
 
     /// **A plan with no steps is the unit relation: exactly one row.**
     ///
-    /// It used to be `EmptyPlan`, and the reason was sound at the time — the first
-    /// row backed into `depth -= 1` and underflowed, and emitting a row anyway would
-    /// have been worse than a panic, because an empty `Cursor` restarts a run and so
-    /// the row would come back twice across a suspend. Both halves are now answered:
-    /// the head backs out to `Done` instead of decrementing, and a plan with no
-    /// levels reports `Done` when asked to suspend rather than handing back a cursor
-    /// that cannot express "already emitted".
+    /// Two halves have to hold for that to be safe rather than an `EmptyPlan`
+    /// error: the head backs out to `Done` instead of decrementing (the underflow),
+    /// and a plan with no levels reports `Done` when asked to suspend — an empty
+    /// `Cursor` restarts a run, so handing one back would emit the row twice across
+    /// a suspend, a cursor that cannot express "already emitted".
     ///
     /// What produces this shape is a query whose every binding **folded** —
     /// `X where X = 42` compiles to no steps and a literal head.
@@ -2857,7 +2852,7 @@ mod tests {
     /// *One per level:* `build_cursor` collects whichever frames hold a row and
     /// `debug_assert`s that this is `depth + 1` of them; a suspend only ever
     /// happens at a full row, so the count is the level count — which is what
-    /// makes `resume`'s replay-by-position sound. Phase 6 must keep this exact
+    /// makes `resume`'s replay-by-position sound. Keep this exact
     /// number: a derived bind is not a loop level and adds no cursor entry.
     /// *Owns its bytes:* the store is dropped here before the cursor is read, so
     /// a view still pointing into it would be reading freed memory — the whole
@@ -4571,7 +4566,7 @@ mod tests {
         assert_eq!(run(store, plan), Vec::<Value>::new());
     }
 
-    // ---- tests, as in the step (Phase 6b) ----------------------------------
+    // ---- tests, as in the step ----------------------------------------------
     //
     // A [`Step::Test`] is a one-row generator too, and the row it produces is the
     // one already standing. What is worth driving directly is the *shape* of that:
@@ -4707,7 +4702,7 @@ mod tests {
         assert_eq!(run(store, plan(9)), vec![Value::Int(7)]);
     }
 
-    // ---- derive steps (Phase 6) -------------------------------------------
+    // ---- derive steps -------------------------------------------------------
     //
     // A [`Step::Derive`] is a one-row generator: it computes its value on the way
     // down and reports exhausted on the way back up. These drive it from
@@ -5234,9 +5229,8 @@ mod tests {
     /// one is precisely the bug the source index on a cursor entry prevents, and
     /// a battery that only ever suspends inside source 0 cannot see it.
     ///
-    /// Counted over the generator rather than asserted per case, for the reason
-    /// Phase 4's census records: it is a claim about what is *drawn*, and one
-    /// case proves nothing either way.
+    /// Counted over the generator rather than asserted per case: it is a claim
+    /// about what is *drawn*, and one case proves nothing either way.
     #[test]
     fn the_battery_reaches_a_cut_inside_a_later_source() {
         use ::proptest::{

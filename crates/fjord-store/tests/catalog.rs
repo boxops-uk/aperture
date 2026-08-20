@@ -710,8 +710,8 @@ fn a_selector_round_trips_through_its_text_form() {
 }
 
 /// **A listing is in resolution order**, so the first row shown for a name is the one an
-/// unqualified read of that name binds. The two used to be sorted differently, which made
-/// the listing quietly misleading the moment a name held two instances.
+/// unqualified read of that name binds. Sorting the two differently makes the listing
+/// quietly misleading the moment a name holds two instances.
 #[test]
 fn a_listing_shows_a_names_instances_in_the_order_resolution_picks_them() {
     let (_dir, catalog) = catalog();

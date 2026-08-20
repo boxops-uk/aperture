@@ -77,8 +77,8 @@ impl FactStore for MemStore {
     fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<MemScan, StoreError> {
         // A bound too short to name a predicate is rejected here exactly as the
         // real store rejects it. Reading it as "no predicate end, so scan on"
-        // is how this store used to walk straight across the boundary while
-        // fjall returned an error for the same call.
+        // walks straight across the predicate boundary while fjall returns an
+        // error for the same call — the trait contract asserts both stores.
         let predicate = predicate_of(lo)?;
 
         // A scan is a *predicate* query ([chapter 3](../../../website/content/storage.md)):

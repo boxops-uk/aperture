@@ -61,10 +61,10 @@ pub enum Token {
     /// so `<=` is never `<` followed by `=`, and `X <= 3` cannot be read as a
     /// comparison against a bind.
     ///
-    /// Until Phase 11 there was no token here at all, and `X < 3` was a *lex* error
-    /// — the one place this grammar broke its own "permissive early, narrow later"
-    /// rule, and the one thing the corpus could not describe because it could not
-    /// tokenise it.
+    /// A token, so that `X < 3` can never be a *lex* error — a construct the lexer
+    /// cannot tokenise is one the corpus cannot describe and the diagnostics cannot
+    /// name, which would break "permissive early, narrow later" at the one layer
+    /// below the grammar.
     #[token("<")]
     Lt,
     #[token("<=")]

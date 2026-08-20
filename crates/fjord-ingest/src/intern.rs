@@ -259,9 +259,9 @@ fn resolve<S: FactSink>(
 
 /// The predicate a block declares, without decoding its facts.
 ///
-/// A **name**, since Phase 8: a block names its predicate rather than numbering it, so a
-/// splitter can group blocks without a schema and a caller resolves the name against
-/// whichever database it is writing into.
+/// A **name**, not a number: a block names its predicate, so a splitter can group blocks
+/// without a schema and a caller resolves the name against whichever database it is
+/// writing into — the database's numbering never leaves it.
 ///
 /// # Errors
 ///
@@ -590,7 +590,7 @@ mod tests {
     proptest! {
         /// **A well-typed fact ingests, or contradicts itself — and nothing else.**
         ///
-        /// [Phase 7a's acceptance criterion](../../../PLAN.md) — "interning is bottom-up
+        /// The acceptance criterion — "interning is bottom-up
         /// and total on any well-typed nested value: no order in which a parent is
         /// written before the child its key holds". Stated as *no other failure mode*,
         /// because the criterion is about the walk and a conflict is about the

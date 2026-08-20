@@ -1,4 +1,4 @@
-//! **The write rung** — Phase 12a, and the first instrument in this project that
+//! **The write rung** — the one instrument in this project that
 //! measures a database being *written* rather than read.
 //!
 //! Every rung S1–S7 measures reading, against a sealed corpus. That left the one number

@@ -1,10 +1,9 @@
 //! **[I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)** — the DB's schema is embedded and frozen
 //! at create, and every ingest is validated against it by **subset containment**.
 //!
-//! The guard was written in Phase 0 and has been `#[ignore]`d ever since, in
-//! `fjord-schema`, where it could never have run: validating an ingest needs a
-//! database to validate it against, a schema that was parsed rather than built, and a
-//! write path. All three exist now, and none of them is in that crate — so the guard
+//! The guard lives here rather than in `fjord-schema` because it could never have run
+//! there: validating an ingest needs a database to validate against, a schema that was
+//! parsed rather than built, and a write path — so the guard
 //! lives here, over the real client and the real server, and
 //! [`website/content/invariants.md`](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md) points at it by this name.
 //!

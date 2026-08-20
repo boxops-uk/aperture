@@ -73,9 +73,10 @@ pub fn print(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> String {
 /// rendering — how much of the key the scan pinned before it started reading rows —
 /// and the two halves of the answer are both here: a pin decoded back to the literal
 /// it came from (`..` for a string prefix, which is a range rather than an equality),
-/// and `_` for each key field the seek never reached. Constants used to render as
-/// `<const>`, which said where a constant went and nothing about what it was, so
-/// `seek[<const>]` and a seek on the wrong field were the same six characters.
+/// and `_` for each key field the seek never reached. A constant renders as the
+/// literal, never as a placeholder like `<const>` — which would say where a constant
+/// went and nothing about what it was, so a seek on the wrong field would print the
+/// same six characters as a right one.
 ///
 /// Decoding is against the field's **declared** type, walked from the schema exactly
 /// as the executor will walk it, so bytes that do not decode are shown as bytes

@@ -2,8 +2,8 @@
 //!
 //! [`FjallDb::intern`](crate::store::FjallDb::intern) resolves every fact it is
 //! handed, and a nested code index hands it the same parents over and over — one
-//! `src.File` is nested inside thousands of references, and each one used to be two
-//! live LSM point reads. On the 25M-fact `dotnet/runtime` index the server interned
+//! `src.File` is nested inside thousands of references, each of which is otherwise
+//! two live LSM point reads. On the 25M-fact `dotnet/runtime` index the server interned
 //! 94.9M facts to create 25.0M, so **73.6% of that work was re-reading something
 //! already present** (`bench/FINDINGS.md` §12).
 //!
@@ -37,8 +37,8 @@
 //! plus [`ENTRY_OVERHEAD`], so a stated ceiling is a real one. At most twice the
 //! budget is resident, since `old` is a whole generation.
 //!
-//! **Sharding, when it comes.** [Phase 12d](../../../PLAN.md) stripes interning by
-//! `hash(predicate ++ key)` and gives each stripe its own cache. This type is what
+//! **Sharding.** Interning is striped by `hash(predicate ++ key)` and each stripe has
+//! its own cache. This type is what
 //! goes behind one stripe: `young`/`old` are already per-instance, and a stripe's
 //! lock is what supplies the `&mut` a promote needs. The budget is then **divided**
 //! across stripes, never multiplied by them.

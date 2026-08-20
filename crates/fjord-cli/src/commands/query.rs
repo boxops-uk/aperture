@@ -1080,8 +1080,8 @@ mod surface {
     /// The whole claim `fjord.db.List` makes is that a virtual predicate is ordinary:
     /// `Catalogued` answers both halves of the store seam for it, so a `point` read finds
     /// a catalogue row exactly as it finds a stored one, and nothing above the seam knows
-    /// the difference. Refusing here — which is what this test used to assert — made the
-    /// seam's own promise false one layer up, and broke an ordinary query.
+    /// the difference. Refusing here would make the
+    /// seam's own promise false one layer up, and break an ordinary query.
     ///
     /// The second half is the distinction that replaced the refusal. A stored fact that is
     /// not there is corruption ([I11](../../../../website/content/invariants.md#i11),

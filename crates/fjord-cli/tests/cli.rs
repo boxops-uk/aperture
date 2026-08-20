@@ -324,10 +324,8 @@ fn a_database_is_created_against_a_schema_file_and_carries_it() {
     );
 
     // A second database against a *different* file, so the two under one root hold
-    // different schemas — which is the whole point of the copy being per database. It
-    // used to be created with no `--schema` at all, against a built-in default; the
-    // premise of this test was then "the default exists and differs from `tiny`", which
-    // made a default the thing being compared against.
+    // different schemas — which is the whole point of the copy being per database,
+    // and what keeps this test from comparing anything against a default.
     ok(root, &["create", "sample", "--schema", SAMPLE]);
 
     let described = ok(root, &["describe", "tiny"]);
@@ -382,11 +380,10 @@ fn a_database_is_created_against_a_schema_file_and_carries_it() {
 
 /// **`create` names a schema or it creates nothing.**
 ///
-/// There used to be a built-in code index standing in for a caller who did not say, and
-/// the reason it had to go is not tidiness: a database embeds its schema and is frozen
-/// against it (I13), so a *default* was deciding what every row of somebody's database
-/// meant — and the same command against two builds of the tool made two different
-/// artifacts. Refused by clap, which is why the message names the flag.
+/// A default standing in for a caller who did not say would decide what every row of
+/// somebody's database meant — the schema is embedded and frozen (I13) — and the same
+/// command against two builds of the tool would make two different artifacts. Refused
+/// by clap, which is why the message names the flag.
 #[test]
 fn create_with_no_schema_is_refused_and_makes_nothing() {
     let dir = tempfile::tempdir().expect("a scratch directory");

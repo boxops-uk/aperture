@@ -36,13 +36,12 @@ pub fn run(root: &Path, target: &Target, allow_zero_facts: bool) -> Result<Finis
         }
 
         Route::Local(catalog, _lock) => {
-            // **No schema passed, because this is where the wrong one used to be.** This
-            // arm handed `catalog.finish` the tool's built-in schema regardless of what
-            // the database embedded, and `identity::compute` looks a predicate up by
-            // position — so sealing a database built against any other schema decoded
-            // every stored key against whatever type sat at that position and recorded
-            // an `ops-I4` identity over the result. `Catalog::finish` reads the embedded
-            // copy itself, which is the only statement of it either door can reach.
+            // **No schema passed, deliberately.** `identity::compute` looks a
+            // predicate up by position, so handing `finish` any schema but the
+            // embedded one decodes every stored key against whatever type sits at
+            // that position and records an `ops-I4` identity over the result —
+            // silently. `Catalog::finish` reads the embedded copy itself, the only
+            // statement of it either door can reach.
             let selector = fjord_store::catalog::Selector::parse(&target.database)?;
             Ok(catalog.finish(&selector, allow_zero_facts)?)
         }

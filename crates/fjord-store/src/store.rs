@@ -123,8 +123,8 @@ pub struct FjallDb {
     /// extended on first write to a predicate.
     ///
     /// Behind an `Arc` as well as the lock, so [`FjallDb::reader`] shares the map
-    /// instead of copying it: opening a query used to clone every predicate's
-    /// handles, on the one path that happens per query. Writes are
+    /// instead of cloning every predicate's handles on the one path that happens
+    /// per query. Writes are
     /// copy-on-write ([`Arc::make_mut`]), which costs a copy only when a predicate
     /// is created — already the expensive operation, at ~30 ms a keyspace pair.
     /// Readers keep whichever map they were handed, which is the snapshot
@@ -147,7 +147,7 @@ pub struct FjallDb {
 
 /// Live LSM point reads the interning path has done, per tree.
 ///
-/// **The number [Phase 12c](../../../PLAN.md) is judged by, so it is counted rather
+/// **The number the lookup cache is judged by, so it is counted rather
 /// than argued.** A cache that is not hitting is indistinguishable from one that is
 /// absent unless something says how many reads survived it, and the two trees are
 /// counted apart because they are two separate claims: the cache removes `keys`
@@ -179,15 +179,15 @@ struct InternReads {
 /// under the *"almost exactly as much as the facts themselves"* that Glean's own
 /// post-mortem reports for its equivalent maps.
 ///
-/// [Phase 12d](../../../PLAN.md) stripes interning, and this budget is then **divided**
-/// across the stripes rather than paid per stripe.
+/// Interning is striped, and this budget is **divided** across the stripes rather
+/// than paid per stripe.
 const LOOKUP_CACHE_BYTES: usize = 128 << 20;
 
 /// How many threads are inside interning, and the most there have ever been at once.
 ///
-/// **A gauge rather than a timing test.** [Phase 12e](../../../PLAN.md) retires the server's
-/// per-database writer, and the claim that makes is "two write streams now proceed
-/// together" — which a stopwatch can only argue for and a high-water mark can settle. Two
+/// **A gauge rather than a timing test.** The claim that retiring the per-database
+/// writer makes is "two write streams now proceed together" — which a stopwatch can
+/// only argue for and a high-water mark can settle. Two
 /// relaxed atomics and a `fetch_max` per intern, against an intern that measures over a
 /// microsecond.
 #[derive(Default)]
@@ -989,9 +989,9 @@ impl FjallDb {
     /// that then fails is not handed out again — [I11](../../../website/content/invariants.md#i11) asks
     /// for unique and never-reused, not dense.
     ///
-    /// **What the claim adds is survival across a crash.** The allocator used to resume
-    /// from the last `entities` key, which is exact as long as every id handed out is
-    /// already stored. A staged write breaks that: it returns an id whose bytes sit in an
+    /// **What the claim adds is survival across a crash.** Recovering the mark from
+    /// the last `entities` key is exact only while every id handed out is already
+    /// stored. A staged write breaks that: it returns an id whose bytes sit in an
     /// uncommitted batch, another writer can reference it and commit *first*, and a crash
     /// that loses the batch would leave the reference behind while the allocator resumed
     /// below it — reissuing that id to a different fact, which turns the reference into
@@ -1141,8 +1141,8 @@ impl FjallDb {
     /// families in a single batch ([I11](../../../website/content/invariants.md#i11),
     /// [I12](../../../website/content/invariants.md#i12)).
     ///
-    /// The primitive under [`put`](Self::put), and the one Phase 7's bulk path will
-    /// build on — it allocates blocks of sequences and writes through the same layout.
+    /// The primitive under [`put`](Self::put), and the one bulk ingestion builds
+    /// on — it allocates blocks of sequences and writes through the same layout.
     /// A caller holding a fact rather than bytes wants `put`, which cannot get a
     /// record's field order wrong.
     ///
@@ -1156,7 +1156,7 @@ impl FjallDb {
     /// break.
     ///
     /// It is not enforced on the write path: the check is a point lookup per
-    /// fact, and this is the primitive Phase 7's bulk ingest is built on. So it
+    /// fact, and this is the primitive bulk ingest is built on. So it
     /// is asserted in debug builds — where the whole suite, including the
     /// generated store batteries, exercises it — and costs nothing in release.
     pub fn put_fact(
@@ -2256,7 +2256,7 @@ mod tests {
     /// written with it** — [12f-1](../../../PLAN.md), and the thing that makes it safe to
     /// return an id before its fact is durable.
     ///
-    /// The allocator used to resume from the last `entities` key, which is exact for as
+    /// Resuming the allocator from the last `entities` key is exact only for as
     /// long as every id handed out is already stored. Staged writes break that premise on
     /// purpose, and the failure it opens is not the obvious one: a crash loses a batch,
     /// the allocator resumes *below* an id another writer already referenced and
@@ -2320,10 +2320,9 @@ mod tests {
     /// **[I12](../../../website/content/invariants.md#i12)'s other half, mechanically: one key names
     /// one fact, however many threads reach for it at once.**
     ///
-    /// The guard this invariant could not have. Until [Phase 12d](../../../PLAN.md) the
-    /// write-once rule was held by *there being one thread* — a property no test can
-    /// observe, and the tell that a rule is resting on circumstance rather than a
-    /// mechanism. `resolve_or_create` is a read-modify-write: two workers reaching for the
+    /// The guard this invariant could not have while the write-once rule was held by
+    /// *there being one thread* — a property no test can observe, and the tell that a
+    /// rule is resting on circumstance rather than a mechanism. `resolve_or_create` is a read-modify-write: two workers reaching for the
     /// same nested target both find the key absent, both allocate, both write, and one
     /// entity is stranded under a `keys` row the other overwrote. Silent corruption — a
     /// fact no query can reach, and nothing anywhere says so.
@@ -2462,10 +2461,9 @@ mod tests {
 
     /// [`FjallDb::reader`] costs the same whatever the schema's size.
     ///
-    /// Opening a reader happens once per query, and it used to copy the whole
-    /// predicate map — a heap allocation plus every predicate's handles. The map is
-    /// shared behind an `Arc` now, so a DB with four times the predicates must cost
-    /// a reader exactly the same: one allocation, for the snapshot.
+    /// Opening a reader happens once per query, so it must share the predicate map
+    /// behind its `Arc` rather than copying it — a DB with four times the predicates
+    /// must cost a reader exactly the same: one allocation, for the snapshot.
     ///
     /// Measured rather than asserted, as every non-functional claim here is.
     #[test]

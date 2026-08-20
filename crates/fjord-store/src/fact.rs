@@ -55,7 +55,7 @@
 //!
 //! **Bulk ingestion.** Building a [`Value`] per fact costs an allocation per fact,
 //! which is right for a deriver writing thousands and wrong for a loader writing
-//! millions. Phase 7's fact-file path wants a streaming form that never materialises
+//! millions. The fact-file path wants a streaming form that never materialises
 //! the value; this one exists because the alternative for a person is to hand-encode
 //! bytes in sorted-field order, and that is the mistake described above.
 //!

@@ -4,15 +4,11 @@
 //! ([operations §5](../../../../website/content/operations.md)). The shell is the permanent
 //! exerciser of the wire format: every query a person types here is a real handshake, a
 //! real stream and a real page of `DATA_ROW` frames, so a format change that the tests
-//! happen not to cover still cannot survive somebody using the tool. `fjord shell`
-//! with no database is the *other* shell — [`crate::shell`], Phase 5's embedded demo
-//! over a scratch database it seeds itself.
+//! happen not to cover still cannot survive somebody using the tool.
 //!
-//! # It compiles what you type, and that is why the errors look like the demo's
+//! # It compiles what you type
 //!
-//! This shell used to hand every line to the server and print whatever came back:
-//! plain text, no colour, no caret, and a round trip to be told about a typo. It
-//! compiles the line **here** now, against the schema the server said it serves
+//! The line is compiled **here**, against the schema the server said it serves
 //! ([`Connection::served_schema`]) — so a mistake is a caret under the word, in colour,
 //! before anything crosses the socket, and `:plan` and `:type` are answerable at all.
 //!
@@ -33,10 +29,9 @@
 //! ([I8](../../../../website/content/invariants.md#i8)). A pause of a millisecond and a pause of an hour
 //! cost the server the same thing.
 //!
-//! Until this existed, [I4](../../../../website/content/invariants.md#i4) — resume equals an
-//! uninterrupted run, the most heavily tested machinery in this project — had **no
-//! interactive exerciser at all**: Phase 5's REPL discards the resume token at both of
-//! its call sites. `:more` is a person holding a cursor across a round trip, and
+//! [I4](../../../../website/content/invariants.md#i4) — resume equals an uninterrupted
+//! run, the most heavily tested machinery in this project — has exactly one interactive
+//! exerciser: `:more` is a person holding a cursor across a round trip, and
 //! [`pages_concatenate_to_an_uninterrupted_run`](tests) is that claim as a test.
 //!
 //! # `:expand` is the other thing a wire client could not do
@@ -1230,12 +1225,12 @@ mod tests {
             .collect()
     }
 
-    /// **The acceptance criterion of Phase 9f, and of this whole shell.**
+    /// **The acceptance criterion of this whole shell.**
     ///
     /// `:more` holds a bytes-only cursor across a round trip and resumes it, which is
     /// [I4](../../../../website/content/invariants.md#i4) — resume equals an uninterrupted run —
-    /// exercised interactively for the first time. The battery has proved this over
-    /// generated plans since Phase 0; what it has never had is a person's hand on it.
+    /// exercised interactively. The battery proves this over generated plans; what it
+    /// never has is a person's hand on it.
     ///
     /// The check is the *concatenation*: pages that each look plausible can still drop
     /// a row at a boundary or repeat one, and only the whole sequence against the whole
@@ -1602,8 +1597,8 @@ mod tests {
     /// **`:connect` means the database next to this one**, which for a session opened
     /// over TCP is on that server rather than on this machine.
     ///
-    /// It used to be string surgery on the address — find the last `/`, keep the prefix
-    /// — and is now the only thing it ever meant: keep the endpoint, swap the database.
+    /// Keep the endpoint, swap the database — never string surgery on the address,
+    /// which breaks the moment the endpoint is not a path.
     /// The endpoint here is a socket because a unit test can start one, but nothing in
     /// the path being tested knows which transport it is holding.
     #[test]
@@ -1621,10 +1616,10 @@ mod tests {
 
     /// **`:clear` asks the loop, and the loop asks rustyline.**
     ///
-    /// It used to write an escape into the sink, which failed twice over: the sequence
-    /// has no newline, so a line-buffered stdout held it until something else printed,
-    /// and rustyline went on believing the screen still held what it had drawn. The
-    /// value that comes back is the whole fix, and it is checkable without a terminal.
+    /// Writing an escape into the sink fails twice over: the sequence has no newline,
+    /// so a line-buffered stdout holds it until something else prints, and rustyline
+    /// goes on believing the screen still holds what it drew. The value that comes
+    /// back is the whole fix, and it is checkable without a terminal.
     #[test]
     fn clear_is_asked_of_the_editor_rather_than_written_at_the_screen() {
         let serving = serving(1);

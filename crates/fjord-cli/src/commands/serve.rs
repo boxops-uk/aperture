@@ -58,9 +58,8 @@ pub fn run(
     // **`Schemas::default()` is a server that carries no data schema of its own** — only
     // the catalogue, the virtual predicates it answers out of the root it owns. Every
     // database is served from the copy it embedded at create ([I13]), and one that
-    // embedded none is listed rather than served: there used to be a built-in schema here
-    // to fall back on, and falling back on it was a guess about how somebody else's rows
-    // decode.
+    // embedded none is listed rather than served: a fallback schema would be a guess
+    // about how somebody else's rows decode.
     let (registry, listing) = Registry::open(catalog, Schemas::default())?;
     let registry = Arc::new(registry.with_block_commits(commit_per_block));
 
