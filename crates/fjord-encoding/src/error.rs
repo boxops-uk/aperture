@@ -60,6 +60,24 @@ pub enum StoreCodecError {
     #[error("fact-id sequence 0 is reserved, so these bytes are not a fact reference")]
     ReservedFactId,
 
+    /// A stored union value tagged with a discriminant **no alternative declares**.
+    ///
+    /// The case [I10](../../docs/invariants.md#i10) left open: append-only tags do
+    /// not make this impossible, because a fact file outlives the schema that wrote
+    /// it and a retired alternative's tag is still on disk. Glean answers it with a
+    /// synthetic `unknown` alternative, which it can because it projects between
+    /// schemas at query time; [I13](../../docs/invariants.md#i13) leaves nowhere for
+    /// such a projection to live, so the honest answer here is a refusal — and per
+    /// errors-not-panics it is this variant rather than a mis-decode of whatever
+    /// alternative happened to sit at that tag.
+    #[error("no alternative of this union is declared with discriminant {tag}")]
+    UnknownDiscriminant { tag: u64 },
+
+    /// A union value whose payload does not match the alternative its discriminant
+    /// names — the union's answer to [`BadRecord`](StoreCodecError::BadRecord).
+    #[error("a union payload does not match the alternative discriminant {tag} names")]
+    BadUnion { tag: u64 },
+
     #[error("integer overflow")]
     Overflow,
 

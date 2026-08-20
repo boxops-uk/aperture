@@ -329,6 +329,37 @@ fn type_form(
             }
             out.push('}');
         }
+
+        // **Sorted by discriminant, and delimited unlike a record.**
+        //
+        // A record's field order *is* its encoding order, so permuting one is a
+        // semantic change and the canonical form keeps declaration order. A union's
+        // alternatives are addressed by their explicit tags, so permuting the
+        // declaration changes no stored byte and must not move the number —
+        // sorting here is what makes that true. What *does* move it is a renumber,
+        // which is exactly the edit [I10](../../docs/invariants.md#i10) forbids and
+        // the reason the tag is in the form at all.
+        //
+        // `<…>` rather than `{…}` because a canonical form is parsed by nothing and
+        // read by people: a union and a record of the same field names should not
+        // read alike.
+        PredicateTy::Union(alts) => {
+            let mut sorted = alts.iter().collect::<Vec<_>>();
+            sorted.sort_by_key(|alt| alt.disc);
+
+            out.push('<');
+            for (index, alt) in sorted.iter().enumerate() {
+                if index > 0 {
+                    out.push('|');
+                }
+                out.push_str(schema.interner().resolve(alt.name).unwrap_or("?"));
+                out.push(':');
+                type_form(out, &alt.ty, schema, names, fingerprints, elide);
+                out.push('=');
+                let _ = std::fmt::Write::write_fmt(out, format_args!("{}", alt.disc));
+            }
+            out.push('>');
+        }
     }
 }
 
@@ -359,6 +390,11 @@ fn references(schema: &Schema, id: PredicateId) -> BTreeSet<PredicateId> {
             PredicateTy::Record(fields) => {
                 for (_, field) in fields.iter() {
                     walk(field, into);
+                }
+            }
+            PredicateTy::Union(alts) => {
+                for alt in alts.iter() {
+                    walk(&alt.ty, into);
                 }
             }
             PredicateTy::Int | PredicateTy::Str => {}
@@ -641,6 +677,45 @@ mod tests {
                 broken: vec!["src.A".to_owned()]
             }
         );
+    }
+
+    /// **An alternative is never a compatible change** — I10's check 3.
+    ///
+    /// Under subset containment the only compatible edit is an *added predicate*, so
+    /// every edit to a union is Breaking, including appending an alternative. That is
+    /// the honest answer rather than a limitation to route around: a database is
+    /// served from its own embedded schema
+    /// ([I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)) and a
+    /// client's fingerprint has to match it, so a predicate whose union grew is a
+    /// predicate the old artifact cannot answer for. What I10 adds is that the *tags*
+    /// of the alternatives already there did not move, which is what makes rebuilding
+    /// against the new schema a rebuild rather than a reinterpretation.
+    #[test]
+    fn changing_a_union_is_breaking_appending_an_alternative_included() {
+        let old = identity_of("schema src { predicate A : { a : int = 0 | b : string = 1 } }");
+
+        let appended =
+            identity_of("schema src { predicate A : { a : int = 0 | b : string = 1 | c = 2 } }");
+        let renumbered =
+            identity_of("schema src { predicate A : { a : int = 0 | b : string = 7 } }");
+        let permuted = identity_of("schema src { predicate A : { b : string = 1 | a : int = 0 } }");
+
+        for (what, other) in [
+            ("an appended alternative", &appended),
+            ("a renumbered alternative", &renumbered),
+        ] {
+            assert_eq!(
+                old.compatibility(other),
+                Compatibility::Breaking {
+                    broken: vec!["src.A".to_owned()]
+                },
+                "{what} should be Breaking"
+            );
+        }
+
+        // ...and reordering the declaration is no change at all, which is the
+        // distinction the tag exists to make.
+        assert_eq!(old.compatibility(&permuted), Compatibility::Identical);
     }
 
     /// **Two schemas that number their predicates differently are still one schema.**

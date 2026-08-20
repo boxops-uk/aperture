@@ -75,7 +75,7 @@ use crate::{
     reorder::{Deps, Placement, StmtDeps, reorder},
     syntax::{ArithOp, Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, NodeSpan, QueryStmt},
 };
-use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, Value, put_i64, put_str};
+use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, UnionTag, Value, put_i64, put_str};
 use fjord_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
 
 /// Where a pattern's value lives when the plan runs.
@@ -626,6 +626,7 @@ pub fn dependencies(
         constrained: vec![],
         denials: vec![],
         comparisons: vec![],
+        selects: vec![],
     };
 
     Some(flattener.collect()?.deps)
@@ -676,6 +677,7 @@ fn flatten_reporting(
         constrained: vec![],
         denials: vec![],
         comparisons: vec![],
+        selects: vec![],
     };
 
     let collected = flattener.collect()?;
@@ -758,6 +760,19 @@ struct Flattener<'a> {
     /// [`denials`](Flattener::denials) are, because a comparison has two sides and
     /// neither is privileged: what it needs at application time is both, resolved.
     comparisons: Vec<Comparison>,
+    /// A **select's tag check**: the register, the union field's path, and the
+    /// alternative that must be there.
+    ///
+    /// A select is a read, so it is written where the value is wanted — in the head,
+    /// or on the right of a bind — and neither is a place that can filter. The check
+    /// belongs to the level that *binds* the register instead, which is
+    /// [`apply_selects`](Self::apply_selects)'s job, and which is the same shape
+    /// [`compares`](Self::compares) has for the same reason.
+    ///
+    /// In discovery order, which is outermost first: `resolve` walks a select's base
+    /// before the select, so a union inside a union's payload records the outer tag
+    /// first — and that is the order the checks have to run in.
+    selects: Vec<(Address, FieldPath, u32)>,
 }
 
 impl Flattener<'_> {
@@ -2142,6 +2157,24 @@ impl Flattener<'_> {
             }
 
             ExprKind::Record(fields) => {
+                // **An injection**, where the field is a union: the pattern is one
+                // alternative, and the occurrences inside it are the payload's. A
+                // capture in there is a capture like any other — missing this arm
+                // does not mis-plan, it reports "nothing binds `X`" for a query that
+                // plainly does.
+                if let PredicateTy::Union(alts) = ty {
+                    let Some((name, payload)) = fields.first().filter(|_| fields.len() == 1) else {
+                        return;
+                    };
+
+                    if let Some(alt) = alts.iter().find(|alt| Symbol::Schema(alt.name) == *name) {
+                        let (alt_ty, payload) = (alt.ty.clone(), *payload);
+                        self.scan_field(payload, &alt_ty, claims, occurrences);
+                    }
+
+                    return;
+                }
+
                 let PredicateTy::Record(field_tys) = ty else {
                     return;
                 };
@@ -2624,6 +2657,15 @@ impl Flattener<'_> {
 
         let head = self.project(*self.ast.query().head());
 
+        // **Last, and prepended.** A select in the head is not resolved until
+        // `project` above has run, so this cannot come earlier; and because a tag
+        // check has to precede every read through the payload it guards, the checks
+        // go to the *front* of each source's residuals rather than the back. Front
+        // rather than "before whatever else this pass added" makes the ordering a
+        // property of the residual list instead of a property of which pass ran when
+        // — which is the difference between an invariant and a coincidence.
+        self.apply_selects(&mut body);
+
         if self.diagnostics.len() != mark {
             return None;
         }
@@ -2633,6 +2675,50 @@ impl Flattener<'_> {
             body: body.steps.into(),
             head: head?,
         })
+    }
+
+    /// Turn each recorded select into a **tag check on the level that binds the
+    /// register it reads**.
+    ///
+    /// `X.what.num?` says two things — this row's `what` is the `num` alternative,
+    /// and its payload is the value — and only the first is a filter. It cannot be
+    /// applied where it is written, because a head and a bind's right side are both
+    /// reads; the level holding the row is the only place a filter over that row
+    /// belongs.
+    ///
+    /// Prepended, in discovery order, and to **every** source: a level's branches all
+    /// bind a variable at the same path (`reconcile` is what makes that true), so one
+    /// path is right for all of them.
+    ///
+    /// Deduplicated, because two reads of one alternative — `X.what.num?` twice, or
+    /// once in a bind and once in the head — are one check, and a repeat would filter
+    /// identically while moving the plan's fingerprint.
+    fn apply_selects(&mut self, body: &mut Body) {
+        let mut applied: Vec<(Address, FieldPath, u32)> = vec![];
+
+        for (address, path, disc) in std::mem::take(&mut self.selects) {
+            if applied.contains(&(address, path.clone(), disc)) {
+                continue;
+            }
+            applied.push((address, path.clone(), disc));
+
+            let Some(level) = body.level_mut(address) else {
+                // A select on a register no level binds — a derived bind's output,
+                // say. `resolve` only ever hands back a `Slot::Field`, and every one
+                // of those names a level's register, so this is unreachable; declined
+                // rather than asserted because a plan is also a wire input.
+                continue;
+            };
+
+            for source in level.sources.iter_mut() {
+                let mut residuals = vec![Residual {
+                    path: path.clone(),
+                    op: ResidualOp::DiscriminantEq(disc),
+                }];
+                residuals.extend(source.residuals().iter().cloned());
+                *source.residuals_mut() = residuals.into();
+            }
+        }
     }
 
     /// Turn each recorded [`Compare`] into a residual on the level that binds
@@ -3015,6 +3101,15 @@ impl Flattener<'_> {
                 );
             }
 
+            // **An injection** — `{alt = p}` where the field is a union. Handled
+            // before the general read below, because a one-field record *is* a union
+            // value here and resolving it as a place would either fold it whole (only
+            // when it is constant) or fall through to `partial`, which knows about
+            // records and would decline in silence.
+            ExprKind::Record(_) if matches!(ty, PredicateTy::Union(_)) => {
+                self.inject(node, ty, address, path, level);
+            }
+
             _ => {
                 let mark = self.diagnostics.len();
 
@@ -3227,6 +3322,100 @@ impl Flattener<'_> {
             if let Some(pattern) = field_pattern(&fields, Symbol::Schema(*name)) {
                 self.field(pattern, field_ty, address, &path.then(idx), level);
             }
+        }
+    }
+
+    /// A union-typed field given as `{alt = p}` — **the injection**.
+    ///
+    /// Three shapes, and the seek is the reason they are distinct:
+    ///
+    /// - `{num = 2}` — constant. The whole field's bytes are known, so this is one
+    ///   comparison and the prefix may keep growing past it;
+    ///   [`constant`](Self::constant) answers it and nothing here runs.
+    /// - `{num = _}` — the tag alone, which is a **proper prefix** of the field, so
+    ///   it narrows and then closes.
+    /// - `{num = X}` — the tag, then whatever `X` is: a splice while the prefix is
+    ///   open, a residual once it has closed, or a capture that closes it. The
+    ///   payload is walked one path step deeper, at the discriminant.
+    ///
+    /// The terminator at the end is the subtle part. A union field is
+    /// `tag payload TERM`, so a seek that spliced a *complete* payload and stopped
+    /// there would leave the next field's bytes landing where the terminator belongs
+    /// — a prefix that matches nothing. `building` is what says the payload came out
+    /// complete, and the terminator is pushed only then.
+    fn inject(
+        &mut self,
+        node: NodeId,
+        ty: &PredicateTy,
+        address: Address,
+        path: &FieldPath,
+        level: &mut SeekBuilder,
+    ) {
+        if let Some(constant) = self.constant(node, ty) {
+            Self::narrow_by(constant, path, level);
+            return;
+        }
+
+        let (PredicateTy::Union(alts), ExprKind::Record(fields)) =
+            (ty, self.ast.store().kind(node))
+        else {
+            return;
+        };
+
+        // Typecheck has already refused a union pattern that is not one known
+        // alternative, so both of these are a plan built from an untypechecked tree.
+        let [(name, payload)] = &fields[..] else {
+            level.building = false;
+            self.report(
+                node,
+                Code::RejectUnionArity,
+                "a union value is one alternative, and this names several",
+            );
+            return;
+        };
+
+        let Some(alt) = alts
+            .iter()
+            .find(|alt| Symbol::Schema(alt.name) == *name)
+            .cloned()
+        else {
+            level.building = false;
+            self.report(
+                node,
+                Code::RejectUnknownAlternative,
+                "this union declares no such alternative",
+            );
+            return;
+        };
+
+        let payload = *payload;
+        let open = level.building;
+
+        Self::narrow_by_tag(alt.disc, path, level);
+        self.field(payload, &alt.ty, address, &path.payload(alt.disc), level);
+
+        if open && level.building {
+            level.parts.push(SeekKeyPart::Bytes(Box::from([MARK_TERM])));
+        }
+    }
+
+    /// Narrow this level by an **alternative**: the tag as a seek component while the
+    /// prefix is still building, a [`ResidualOp::DiscriminantEq`] once it has closed.
+    ///
+    /// The tag is complete self-delimiting bytes rather than a range, so unlike a
+    /// string prefix it does not have to end the seek — what follows it in the key is
+    /// the payload, and the payload's own walk decides whether the prefix can carry
+    /// on.
+    fn narrow_by_tag(disc: u32, path: &FieldPath, level: &mut SeekBuilder) {
+        if level.building {
+            level
+                .parts
+                .push(SeekKeyPart::Bytes(UnionTag::new(disc).as_bytes().into()));
+        } else {
+            level.residuals.push(Residual {
+                path: path.clone(),
+                op: ResidualOp::DiscriminantEq(disc),
+            });
         }
     }
 
@@ -3987,6 +4176,31 @@ impl Flattener<'_> {
                 Some(Const::Bytes(out))
             }
 
+            // **A fully constant injection**, which is one comparison over the whole
+            // field rather than a tag and a payload: the bytes are complete, so they
+            // can still *extend* a seek prefix where a tag alone could only end one.
+            (ExprKind::Record(fields), PredicateTy::Union(alts)) => {
+                let [(name, payload)] = &fields[..] else {
+                    return None;
+                };
+
+                let alt = alts.iter().find(|alt| Symbol::Schema(alt.name) == *name)?;
+
+                let mut out = UnionTag::new(alt.disc).as_bytes().to_vec();
+
+                match self.constant(*payload, &alt.ty)? {
+                    Const::Bytes(bytes) => out.extend_from_slice(&bytes),
+                    // A prefix cannot be the whole field for the reason it cannot be
+                    // a record's: the terminator follows it, so the bytes would not
+                    // be a prefix of anything. `inject` narrows by the tag and then
+                    // by the range, which is the same seek one part longer.
+                    Const::Prefix(_) => return None,
+                }
+
+                out.push(MARK_TERM);
+                Some(Const::Bytes(out))
+            }
+
             _ => None,
         }
     }
@@ -4053,6 +4267,52 @@ impl Flattener<'_> {
                 let slot = self.resolve(base)?;
                 let slot = self.dereference(node, slot)?;
                 self.field_slot(node, &slot, name)
+            }
+
+            // **The select** — `X.alt?`. The payload is a place, reached by extending
+            // the path with the discriminant, exactly as a field is reached by
+            // extending it with an index. What makes it more than an access is the
+            // *match*: only one alternative is there to be read, so the select also
+            // records a tag check against the register it reads, applied by the level
+            // that binds it ([`apply_selects`](Self::apply_selects)).
+            ExprKind::Select(name, base) => {
+                let (name, base) = (*name, *base);
+                let slot = self.resolve(base)?;
+                let slot = self.dereference(node, slot)?;
+
+                let (address, path, alts) = match &slot {
+                    Slot::Field {
+                        address,
+                        path,
+                        ty: PredicateTy::Union(alts),
+                    } => (*address, path.clone(), alts.clone()),
+
+                    // A union reached anywhere else: a whole scalar key that is one
+                    // (`nyi/whole-key`'s shape), or a fact's value side. Both are
+                    // real, neither is a key field, and a payload path only means
+                    // anything inside one.
+                    _ => {
+                        self.report(
+                            node,
+                            Code::NyiFactField,
+                            "selecting an alternative of a union in this position is not                              implemented yet; a select reads a union held in a key field",
+                        );
+                        return None;
+                    }
+                };
+
+                let alt = alts
+                    .iter()
+                    .find(|alt| Symbol::Schema(alt.name) == name)?
+                    .clone();
+
+                self.selects.push((address, path.clone(), alt.disc));
+
+                Some(Slot::Field {
+                    address,
+                    path: path.payload(alt.disc),
+                    ty: alt.ty.clone(),
+                })
             }
 
             _ => None,
@@ -4233,7 +4493,10 @@ impl Flattener<'_> {
                 Some(Project::Record(out.into()))
             }
 
-            ExprKind::Var(_) | ExprKind::Access(..) | ExprKind::Fact(..) => {
+            // A **select** projects the payload it names, which is a place like any
+            // other — the filtering half of it is `apply_selects`'s and not the
+            // head's, and that split is why a select can appear here at all.
+            ExprKind::Var(_) | ExprKind::Access(..) | ExprKind::Select(..) | ExprKind::Fact(..) => {
                 match self.resolve(node)? {
                     // A variable bound to a whole row projects its identity: the row
                     // itself is not bytes in the register, the fact id is.
@@ -4524,6 +4787,7 @@ mod tests {
                             ResidualOp::EqRegisterField { address, path: at } => {
                                 format!("{path} == {address}.{at}")
                             }
+                            ResidualOp::DiscriminantEq(disc) => format!("{path} is #{disc}"),
                             ResidualOp::CmpConst { op, .. } => {
                                 format!("{path} {} k", op.symbol())
                             }
@@ -4601,6 +4865,7 @@ mod tests {
             PredicateTy::Str => "str".to_owned(),
             PredicateTy::Fact(p) => format!("fact({})", p.0),
             PredicateTy::Record(fields) => format!("{{{} fields}}", fields.len()),
+            PredicateTy::Union(alts) => format!("{{{} alternatives}}", alts.len()),
         }
     }
 
@@ -8170,8 +8435,11 @@ pub mod proptest {
                     .expect("a constrained variable is captured")
                 {
                     FieldVal::Str(text) => matcher.holds(text),
-                    // Only `Str` positions are drawn a constraint.
-                    FieldVal::Int(_) => unreachable!("a string pattern constrains a string"),
+                    // Only `Str` positions are drawn a constraint — and this generator
+                    // draws no unions at all (`FieldTy::of`).
+                    FieldVal::Int(_) | FieldVal::Union(..) => {
+                        unreachable!("a string pattern constrains a string")
+                    }
                 }
             })
         }
@@ -8471,7 +8739,7 @@ pub mod proptest {
             // otherwise become a second constant draw.
             3 => match ty {
                 FieldTy::Str => Leaf::Prefix(PREFIXES[draw.prefix as usize % PREFIXES.len()]),
-                FieldTy::Int => Leaf::Wildcard,
+                FieldTy::Int | FieldTy::Union => Leaf::Wildcard,
             },
 
             // A variable, if one of this type is free in this statement. Variables
@@ -9643,6 +9911,11 @@ mod battery {
                                 self.nested_path |= !path.is_flat();
                             }
                             ResidualOp::EqRegisterFactId(_) => self.fact_id_residual = true,
+                            // Counted once the generator declares a union — the
+                            // census asserts a shape is *reached*, and asserting one
+                            // the generator cannot produce would fail for the wrong
+                            // reason.
+                            ResidualOp::DiscriminantEq(_) => {}
                             ResidualOp::CmpRegisterField { path, .. }
                             | ResidualOp::CmpSelfField { path, .. } => {
                                 self.nested_path |= !path.is_flat();
@@ -10047,6 +10320,434 @@ mod battery {
         assert!(
             with_disjunction * 3 > RUNS,
             "only {with_disjunction}/{RUNS} queries draw a disjunction"
+        );
+    }
+}
+
+/// **The union laws** — what matching an alternative means, stated as equalities
+/// between queries rather than as expected rows.
+///
+/// Rows pin *an* answer; a law pins the relationship between two answers, and that is
+/// what catches a tag read as a position, a payload read at the wrong offset, or a
+/// negation that treats "not this alternative" as "no such row". Each of these runs
+/// two or three spellings of one question over the shared fixture and asserts they
+/// agree — so a fault has to break every spelling the same way to survive.
+///
+/// The fixture is what makes them non-vacuous: `test.Tagged` and `test.Label` hold the
+/// same union in the leading key field and behind an `int`, so each law is checked
+/// once where matching an alternative is a **seek** and once where it is a
+/// **residual** — two different pieces of machinery for one meaning.
+#[cfg(test)]
+mod union_laws {
+    use crate::{compile::Compilation, iter::Profile, plan::Plan};
+    use fjord_schema::{id::FactId, schema::Schema};
+    use fjord_store::{fixture, store::FjallDb};
+
+    /// The fixture, in a real store — one per test, since a keyspace costs tens of
+    /// milliseconds and these are small.
+    fn seeded() -> (tempfile::TempDir, FjallDb, Schema) {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let db = FjallDb::open(dir.path()).expect("open");
+
+        for fixture::Fact {
+            predicate,
+            key,
+            value,
+            sequence,
+        } in fixture::facts()
+        {
+            let id = db.put_fact(predicate, &key, &value).expect("put");
+            assert_eq!(
+                id,
+                FactId::new(predicate, sequence).expect("a fixture fact id"),
+                "the store's allocator diverged from the fixture's numbering",
+            );
+        }
+
+        (dir, db, fixture::schema())
+    }
+
+    /// The rows `source` answers, rendered — and the profile of what it examined to
+    /// get there.
+    fn answer(db: &FjallDb, schema: &Schema, source: &str) -> (Vec<String>, Profile) {
+        use crate::iter::{Executor, Iteratee, Stream};
+        use tokio_util::sync::CancellationToken;
+
+        let mut compilation = Compilation::new(source, schema);
+        let plan = compilation
+            .plan()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{source:?} did not compile: {:?}",
+                    compilation.diagnostics().codes().collect::<Vec<_>>()
+                )
+            })
+            .clone();
+
+        let interner = compilation.interner();
+        let mut profile = Profile::for_plan(&plan);
+        let executor = Executor::new(db.reader(), plan);
+
+        let rows = executor
+            .enumerate_profiled(
+                Vec::new(),
+                |mut rows: Vec<String>, mut row| {
+                    rows.push(format!("{:?}", row.to_value(interner)?));
+                    Ok(Stream::Continue(rows))
+                },
+                &CancellationToken::new(),
+                &mut profile,
+            )
+            .unwrap_or_else(|error| panic!("{source:?} failed to run: {error}"));
+
+        let rows = match rows {
+            Iteratee::Done(rows) | Iteratee::Suspended(rows, _) => rows,
+        };
+
+        (rows, profile)
+    }
+
+    fn rows(db: &FjallDb, schema: &Schema, source: &str) -> Vec<String> {
+        answer(db, schema, source).0
+    }
+
+    /// A **multiset** of rows: the laws below are about which rows an answer holds,
+    /// not the order two different plans happen to produce them in.
+    fn bag(db: &FjallDb, schema: &Schema, source: &str) -> Vec<String> {
+        let mut out = rows(db, schema, source);
+        out.sort();
+        out
+    }
+
+    fn plan_of(schema: &Schema, source: &str) -> Plan {
+        let mut compilation = Compilation::new(source, schema);
+        let plan = compilation.plan().clone();
+        plan.unwrap_or_else(|| {
+            panic!(
+                "{source:?} did not compile: {:?}",
+                compilation
+                    .diagnostics()
+                    .iter()
+                    .map(|d| format!("{:?} {}", d.code, d.message))
+                    .collect::<Vec<_>>()
+            )
+        })
+    }
+
+    // ---- what an alternative means -----------------------------------------
+
+    /// **The alternatives partition the predicate.** Every row is in exactly one:
+    /// their answers are disjoint, and together they are the whole predicate.
+    ///
+    /// The law a discriminant read as a position fails in the most obvious way, and
+    /// the one an off-by-one in the payload span fails in the least: the counts still
+    /// add up, so this is checked as *rows* and not as a total.
+    #[test]
+    fn the_alternatives_partition_the_predicate() {
+        let (_dir, db, schema) = seeded();
+
+        for (predicate, whole, num, text) in [
+            (
+                "test.Tagged",
+                "X where test.Tagged {what = _, id = X}",
+                "X where test.Tagged {what = {num = _}, id = X}",
+                "X where test.Tagged {what = {text = _}, id = X}",
+            ),
+            (
+                "test.Label",
+                "X where test.Label {id = X, what = _}",
+                "X where test.Label {id = X, what = {num = _}}",
+                "X where test.Label {id = X, what = {text = _}}",
+            ),
+        ] {
+            let (whole, num, text) = (
+                bag(&db, &schema, whole),
+                bag(&db, &schema, num),
+                bag(&db, &schema, text),
+            );
+
+            assert!(!num.is_empty() && !text.is_empty(), "{predicate}: vacuous");
+
+            for row in &num {
+                assert!(
+                    !text.contains(row),
+                    "{predicate}: {row} is in two alternatives at once"
+                );
+            }
+
+            let mut together = num;
+            together.extend(text);
+            together.sort();
+
+            assert_eq!(
+                together, whole,
+                "{predicate}: the alternatives do not cover the predicate"
+            );
+        }
+    }
+
+    /// **A select and an injection are the same question.** `X.what.num?` and
+    /// `{what = {num = X}}` differ in where the tag is checked — a residual on a
+    /// bound register against a seek or a residual built while the key is walked —
+    /// and must not differ in what they answer.
+    ///
+    /// Run on both predicates, so the pair covers seek-against-select as well as
+    /// residual-against-select.
+    #[test]
+    fn a_select_answers_what_an_injection_does() {
+        let (_dir, db, schema) = seeded();
+
+        for (injection, select) in [
+            (
+                "X where test.Tagged {what = {num = X}, id = _}",
+                "Y where test.Tagged Z; Y = Z.what.num?",
+            ),
+            (
+                "X where test.Tagged {what = {text = X}, id = _}",
+                "Y where test.Tagged Z; Y = Z.what.text?",
+            ),
+            (
+                "X where test.Label {id = _, what = {num = X}}",
+                "Y where test.Label Z; Y = Z.what.num?",
+            ),
+            (
+                "X where test.Label {id = _, what = {text = X}}",
+                "X.what.text? where test.Label X",
+            ),
+        ] {
+            assert_eq!(
+                bag(&db, &schema, injection),
+                bag(&db, &schema, select),
+                "{injection:?} and {select:?} disagree"
+            );
+        }
+    }
+
+    /// **An unmentioned field is a wildcard, alternatives included.** `{id = X}` and
+    /// `{id = X, what = _}` are the same pattern, so a union field that is simply not
+    /// spoken about must not narrow anything.
+    #[test]
+    fn an_unmentioned_union_field_is_a_wildcard() {
+        let (_dir, db, schema) = seeded();
+
+        assert_eq!(
+            bag(&db, &schema, "X where test.Label {id = X, what = _}"),
+            bag(&db, &schema, "X where test.Label {id = X}"),
+        );
+        assert_eq!(
+            bag(&db, &schema, "X where test.Tagged {what = _, id = X}"),
+            bag(&db, &schema, "X where test.Tagged {id = X}"),
+        );
+    }
+
+    // ---- and what it means under negation ----------------------------------
+
+    /// **De Morgan, over alternatives.** `!(A | B)` and `!A; !B` are one statement
+    /// written two ways, and a union is where the two branches differ only in a tag —
+    /// which is exactly the case a negated disjunction could get wrong by sharing a
+    /// probe between branches.
+    #[test]
+    fn negating_a_disjunction_of_alternatives_is_negating_each() {
+        let (_dir, db, schema) = seeded();
+
+        let negated_disjunction = bag(
+            &db,
+            &schema,
+            "X where test.Tagged {what = _, id = X}; \
+             !(test.Label {id = X, what = {num = _}} | test.Label {id = X, what = {text = _}})",
+        );
+        let conjoined_negations = bag(
+            &db,
+            &schema,
+            "X where test.Tagged {what = _, id = X}; \
+             !test.Label {id = X, what = {num = _}}; \
+             !test.Label {id = X, what = {text = _}}",
+        );
+
+        assert_eq!(negated_disjunction, conjoined_negations);
+    }
+
+    /// **Denying every alternative denies the row.** Because the union is exhaustive —
+    /// a value is one of its alternatives and nothing else — "no `test.Label` with
+    /// this id is `num`, and none is `text`" has to answer exactly what "no
+    /// `test.Label` with this id" answers.
+    ///
+    /// This is the law that fails if a tag ever matches nothing: a residual that
+    /// silently rejects every row makes both negations vacuously true, and the two
+    /// sides come apart at once.
+    #[test]
+    fn denying_every_alternative_denies_the_row() {
+        let (_dir, db, schema) = seeded();
+
+        let alternative_by_alternative = bag(
+            &db,
+            &schema,
+            "X where test.Tagged {what = _, id = X}; \
+             !test.Label {id = X, what = {num = _}}; \
+             !test.Label {id = X, what = {text = _}}",
+        );
+        let outright = bag(
+            &db,
+            &schema,
+            "X where test.Tagged {what = _, id = X}; !test.Label {id = X, what = _}",
+        );
+
+        assert_eq!(alternative_by_alternative, outright);
+
+        // And it is not vacuous the other way either: the fixture gives every
+        // `test.Tagged` id a `test.Label` of the same id, so both sides are empty and
+        // the *positive* half is what says the ids line up at all.
+        assert!(alternative_by_alternative.is_empty());
+        assert!(
+            !bag(
+                &db,
+                &schema,
+                "X where test.Tagged {what = _, id = X}; test.Label {id = X, what = _}"
+            )
+            .is_empty(),
+            "the two predicates share no id, so the negations above prove nothing"
+        );
+    }
+
+    /// **Denying one alternative asserts the other** — under the two conditions that
+    /// make it true, both of which the fixture arranges: the union is exhaustive with
+    /// two alternatives, and the `id` names at most one `test.Label`.
+    ///
+    /// Stated because it is the sharpest thing a union and a negation say together,
+    /// and because it is the shape somebody will reach for: a `maybe` is this law with
+    /// one of the two alternatives empty.
+    #[test]
+    fn denying_one_alternative_asserts_the_other() {
+        let (_dir, db, schema) = seeded();
+
+        for (denied, asserted) in [
+            (
+                "X where test.Tagged {what = _, id = X}; !test.Label {id = X, what = {num = _}}",
+                "X where test.Tagged {what = _, id = X}; test.Label {id = X, what = {text = _}}",
+            ),
+            (
+                "X where test.Tagged {what = _, id = X}; !test.Label {id = X, what = {text = _}}",
+                "X where test.Tagged {what = _, id = X}; test.Label {id = X, what = {num = _}}",
+            ),
+        ] {
+            let (denied_rows, asserted_rows) =
+                (bag(&db, &schema, denied), bag(&db, &schema, asserted));
+
+            assert!(!denied_rows.is_empty(), "{denied:?} answered nothing");
+            assert_eq!(
+                denied_rows, asserted_rows,
+                "{denied:?} against {asserted:?}"
+            );
+        }
+    }
+
+    // ---- and how much of the index it reads --------------------------------
+
+    /// **A leading union field makes matching an alternative a seek.** The tag is a
+    /// prefix of the key order, so the scan reads that alternative's rows and no
+    /// others — where the same question behind an `int` reads the predicate and drops
+    /// what does not match.
+    ///
+    /// Asserted as rows *examined*, which is the only way to say it: both spellings
+    /// answer the same rows, and what differs is what they read to find them.
+    #[test]
+    fn a_leading_alternative_is_a_seek_and_a_trailing_one_is_a_filter() {
+        let (_dir, db, schema) = seeded();
+
+        let (seeking, seek_profile) = answer(
+            &db,
+            &schema,
+            "X where test.Tagged {what = {num = _}, id = X}",
+        );
+        let (filtering, filter_profile) = answer(
+            &db,
+            &schema,
+            "X where test.Label {id = X, what = {num = _}}",
+        );
+
+        assert_eq!(seeking.len(), 2, "two of the four rows are `num`");
+        assert_eq!(filtering.len(), 2);
+
+        assert_eq!(
+            seek_profile.total(),
+            2,
+            "a leading tag should have narrowed the scan to its own alternative, and \
+             the profile says it read {:?}",
+            seek_profile
+        );
+        assert_eq!(
+            filter_profile.total(),
+            4,
+            "a tag behind an int can only filter, so all four rows are examined: {:?}",
+            filter_profile
+        );
+    }
+
+    /// **The tag check comes first.** A payload path is only meaningful once the
+    /// alternative is known, so flatten owes the executor a residual list whose tag
+    /// check precedes every residual reading through that payload — an obligation the
+    /// machine cannot check for itself, since by then the order is all there is.
+    ///
+    /// Checked over the plans, not the rows: a violation would answer correctly
+    /// whenever the alternatives happen to line up and fail as a decode error when
+    /// they do not.
+    #[test]
+    fn a_tag_is_checked_before_its_payload_is_read() {
+        use crate::plan::{ResidualOp, Step};
+
+        let schema = fixture::schema();
+
+        // Whether any of these plans actually put a payload read behind a tag check —
+        // the law is about an order, so it says nothing until one exists.
+        let mut ordered_pair = false;
+
+        for source in [
+            // The payload compared against a bound register, behind the tag.
+            "X where test.Foo {id = X, name = _}; test.Label {id = _, what = {num = X}}",
+            // The same where the union leads, so the tag is in the seek and the
+            // payload compare is the level's only residual.
+            "X where test.Foo {id = X, name = _}; test.Tagged {what = {num = X}, id = _}",
+            // And a select, whose check is applied by a pass of its own.
+            "X.what.num? where test.Label X",
+        ] {
+            let plan = plan_of(&schema, source);
+
+            for step in plan.body.iter() {
+                let Step::Level(level) = step else { continue };
+
+                for source_of in level.sources.iter() {
+                    let mut tagged: Vec<u32> = vec![];
+
+                    for residual in source_of.residuals().iter() {
+                        if let ResidualOp::DiscriminantEq(disc) = residual.op {
+                            tagged.push(disc);
+                            continue;
+                        }
+
+                        // Any other residual whose path steps *into* a union payload
+                        // must come after the check for that alternative.
+                        if let Some(&step) = residual.path.steps().last() {
+                            if tagged.contains(&(step as u32)) {
+                                ordered_pair = true;
+                                continue;
+                            }
+
+                            assert!(
+                                tagged.is_empty(),
+                                "{source:?}: a residual reads a payload at {} before its \
+                                 tag was checked (checked: {tagged:?})",
+                                residual.path,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            ordered_pair,
+            "no plan here put a payload read behind a tag check, so the order was \
+             never actually tested"
         );
     }
 }

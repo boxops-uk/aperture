@@ -32,8 +32,6 @@ pub enum Code {
     NyiMaybe,
     /// `enum { a | b }` — likewise.
     NyiEnum,
-    /// `{ a : t = 0 | b : t = 1 }` — a union, which lands with `PredicateTy::Union`.
-    NyiUnion,
     /// `schema a evolves b`.
     NyiEvolves,
     /// `stored`, and `derive` — a derived predicate, which needs the query language
@@ -41,6 +39,21 @@ pub enum Code {
     NyiDerivation,
     /// A discriminant written on a record field, where it means nothing.
     RejectDiscriminantOnRecordField,
+    /// An alternative with **no** discriminant.
+    ///
+    /// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10) is
+    /// the whole reason: a tag that is not written down would have to be derived from
+    /// the position, and inserting an alternative would then renumber every one after
+    /// it — silently re-reading every stored value of them as the wrong alternative.
+    /// Angle derives them; this refuses to.
+    RejectMissingDiscriminant,
+    /// Two alternatives of one union sharing a discriminant — the *within a schema*
+    /// half of [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10),
+    /// and the only half a single schema can be checked for.
+    RejectDuplicateDiscriminant,
+    /// Two alternatives of one union sharing a name. Distinct from a shared tag: this
+    /// one is a typo, and the other is a schema whose history went wrong.
+    RejectDuplicateAlternative,
     /// Two definitions of one fully-qualified name — operations §7's *genuine*
     /// redeclaration, as against the same file reached twice.
     RejectRedeclaration,
@@ -61,10 +74,12 @@ impl Code {
         Code::NyiSet,
         Code::NyiMaybe,
         Code::NyiEnum,
-        Code::NyiUnion,
         Code::NyiEvolves,
         Code::NyiDerivation,
         Code::RejectDiscriminantOnRecordField,
+        Code::RejectMissingDiscriminant,
+        Code::RejectDuplicateDiscriminant,
+        Code::RejectDuplicateAlternative,
         Code::RejectRedeclaration,
         Code::RejectUnknownName,
         Code::RejectTypeCycle,
@@ -77,10 +92,12 @@ impl Code {
             Code::NyiSet => "nyi/set",
             Code::NyiMaybe => "nyi/maybe",
             Code::NyiEnum => "nyi/enum",
-            Code::NyiUnion => "nyi/union",
             Code::NyiEvolves => "nyi/evolves",
             Code::NyiDerivation => "nyi/derivation",
             Code::RejectDiscriminantOnRecordField => "reject/discriminant-on-record-field",
+            Code::RejectMissingDiscriminant => "reject/missing-discriminant",
+            Code::RejectDuplicateDiscriminant => "reject/duplicate-discriminant",
+            Code::RejectDuplicateAlternative => "reject/duplicate-alternative",
             Code::RejectRedeclaration => "reject/redeclaration",
             Code::RejectUnknownName => "reject/unknown-name",
             Code::RejectTypeCycle => "reject/type-cycle",

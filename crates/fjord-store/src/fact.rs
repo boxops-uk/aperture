@@ -260,6 +260,29 @@ fn checked(
             Ok(Value::Record(out.into()))
         }
 
+        // **By name, and the discriminant comes from the schema** — the mirror image
+        // of [`encode_typed_at`](fjord_encoding::tuple::encode_typed_at), which
+        // matches on the tag and ignores the name. That asymmetry is this function's
+        // whole job: a hand-written fact knows what an alternative is *called*, and
+        // the number it is declared with is not something a caller should have to
+        // restate. A tag written by hand and disagreeing with the name would be
+        // silently authoritative once it reached the codec.
+        (PredicateTy::Union(alts), Value::Union { alt, value, .. }) => {
+            let declared = alts
+                .iter()
+                .find(|declared| interner.resolve(declared.name) == Some(alt.as_str()))
+                .ok_or_else(|| FactError::UnknownField {
+                    predicate: predicate.to_owned(),
+                    field: alt.clone(),
+                })?;
+
+            Ok(Value::Union {
+                disc: declared.disc,
+                alt: alt.clone(),
+                value: Box::new(checked(interner, predicate, &declared.ty, value)?),
+            })
+        }
+
         _ => Err(mismatch()),
     }
 }
@@ -271,6 +294,7 @@ fn describe(ty: &PredicateTy) -> String {
         PredicateTy::Str => "string".to_owned(),
         PredicateTy::Fact(predicate) => format!("a reference to predicate {}", predicate.0),
         PredicateTy::Record(fields) => format!("a record of {} field(s)", fields.len()),
+        PredicateTy::Union(alts) => format!("one of {} alternative(s)", alts.len()),
     }
 }
 
@@ -288,6 +312,7 @@ fn shape(value: &Value) -> String {
         Value::FactRef(id) if id.sequence() == 0 => "the reserved fact id".to_owned(),
         Value::FactRef(id) => format!("a reference to predicate {}", id.predicate().0),
         Value::Record(fields) => format!("a record of {} field(s)", fields.len()),
+        Value::Union { alt, .. } => format!("the `{alt}` alternative"),
     }
 }
 

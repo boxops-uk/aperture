@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use lasso::Rodeo;
 
-use crate::schema::{Predicate, PredicateId, PredicateTy, Schema};
+use crate::schema::{Alternative, Predicate, PredicateId, PredicateTy, Schema};
 
 use super::{
     diag::{Code, Diagnostic},
@@ -499,12 +499,7 @@ impl Resolver<'_, '_> {
         };
 
         if rule(self.cst, list) == Some(Rule::SumFields) {
-            return self.refuse(
-                node,
-                Code::NyiUnion,
-                "a union is not available until `PredicateTy` has one — its discriminants \
-                 are frozen the moment a union fact is written (I10)",
-            );
+            return self.union(list, depth);
         }
 
         let mut fields = Vec::new();
@@ -531,6 +526,93 @@ impl Resolver<'_, '_> {
         // decides the seek prefix, so this is the one place in the pipeline where *not*
         // sorting is the requirement (chapter 6).
         Some(PredicateTy::Record(fields.into()))
+    }
+
+    /// `{ a : int = 0 | b : string = 1 }` — **a union**.
+    ///
+    /// Three things are checked here and nowhere else, all of them
+    /// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10)'s
+    /// *within one schema* half — which is the only half a schema can be checked for
+    /// on its own, since under [I13] there is no second schema at load to compare it
+    /// against: every alternative carries a discriminant, no two carry the same one,
+    /// and no two carry the same name. The cross-version half — a tag that *moved* —
+    /// is the fingerprint's, and `schema diff` is where it is read.
+    ///
+    /// Alternatives are kept in **declaration order**, unlike a record's fields for a
+    /// different reason than it sounds: a record's order is its encoding order, while
+    /// a union's is only what a reader sees, because the tag is what the bytes carry.
+    /// The canonical form sorts by tag, so permuting a declaration moves no
+    /// fingerprint and renumbering one does.
+    ///
+    /// [I13]: https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13
+    fn union(&mut self, list: NodeRef, depth: usize) -> Option<PredicateTy> {
+        let mut alts: Vec<Alternative> = Vec::new();
+
+        for field in kids(self.cst, list).filter(|n| rule(self.cst, *n) == Some(Rule::Field)) {
+            let name = field_name(self.cst, field)?;
+
+            let Some(disc) = self.discriminant(field) else {
+                self.diags.push(Code::RejectMissingDiscriminant.at(
+                    self.cst.span(field),
+                    "an alternative needs an explicit discriminant — `= 0` — because a                      derived one renumbers the moment another alternative is inserted,                      and every value already written with the old number then reads as                      the wrong alternative (I10)",
+                ));
+                return None;
+            };
+
+            // **An alternative with no payload type is the empty record** — a real
+            // type, Angle's `Unit`, and what `enum` will be sugar for.
+            let ty = match kids(self.cst, field).find(|n| is_ty(self.cst, *n)) {
+                Some(ty) => self.ty(ty, depth)?,
+                None => PredicateTy::Record(Vec::new().into()),
+            };
+
+            let spur = self.rodeo.get_or_intern(name);
+
+            if let Some(clash) = alts.iter().find(|alt| alt.disc == disc) {
+                let other = self.rodeo.resolve(&clash.name).to_owned();
+                self.diags.push(Code::RejectDuplicateDiscriminant.at(
+                    self.cst.span(field),
+                    format!(
+                        "`{name}` and `{other}` are both discriminant {disc}; a tag names                          one alternative for the life of the database (I10)"
+                    ),
+                ));
+                return None;
+            }
+
+            if alts.iter().any(|alt| alt.name == spur) {
+                self.diags.push(Code::RejectDuplicateAlternative.at(
+                    self.cst.span(field),
+                    format!("this union already has an alternative called `{name}`"),
+                ));
+                return None;
+            }
+
+            alts.push(Alternative {
+                name: spur,
+                disc,
+                ty,
+            });
+        }
+
+        Some(PredicateTy::Union(alts.into()))
+    }
+
+    /// The `= <nat>` on an alternative, if it has one.
+    fn discriminant(&mut self, field: NodeRef) -> Option<u32> {
+        let text = token_text(self.cst, field, |t| t == super::lexer::Token::Nat)?;
+
+        match text.parse::<u32>() {
+            Ok(disc) => Some(disc),
+            // A tag past `u32` — refused here rather than truncated, since a
+            // truncation would silently make two alternatives share one.
+            Err(_) => {
+                self.diags.push(Code::RejectMissingDiscriminant.at(
+                    self.cst.span(field),
+                    format!("`{text}` is not a discriminant: a tag is a number below 2^32"),
+                ));
+                None
+            }
+        }
     }
 
     fn refuse<T>(

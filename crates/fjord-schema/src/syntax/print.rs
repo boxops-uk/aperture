@@ -183,6 +183,21 @@ fn same_ty(left: &Schema, ours: &PredicateTy, right: &Schema, theirs: &Predicate
                     })
         }
 
+        // **Tags compared, and the declaration order with them.** The order is not
+        // identity-bearing — the canonical form sorts by tag — but a round trip is a
+        // stronger claim than identity: the text that comes back has to be the text
+        // that went in, alternative for alternative, or `create --schema`'s embedded
+        // copy is not the schema it was given.
+        (PredicateTy::Union(ours), PredicateTy::Union(theirs)) => {
+            ours.len() == theirs.len()
+                && ours.iter().zip(theirs.iter()).all(|(ours, theirs)| {
+                    ours.disc == theirs.disc
+                        && left.interner().resolve(ours.name)
+                            == right.interner().resolve(theirs.name)
+                        && same_ty(left, &ours.ty, right, &theirs.ty)
+                })
+        }
+
         _ => false,
     }
 }
@@ -222,6 +237,34 @@ fn ty(out: &mut String, schema: &Schema, shape: &PredicateTy) {
                 out.push_str(": ");
                 ty(out, schema, field);
             }
+            out.push_str(" }");
+        }
+
+        // **Declaration order, and every tag written down** — this is the text
+        // `create --schema` embeds and `recover` reads back, so an alternative whose
+        // discriminant did not survive the round trip would be an alternative that
+        // renumbered on its way to disk.
+        PredicateTy::Union(alts) => {
+            out.push_str("{ ");
+            for (index, alt) in alts.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(" | ");
+                }
+                out.push_str(schema.interner().resolve(alt.name).unwrap_or(""));
+                out.push_str(": ");
+                ty(out, schema, &alt.ty);
+                let _ = std::fmt::Write::write_fmt(out, format_args!(" = {}", alt.disc));
+            }
+
+            // **A trailing `|` for a union of one**, and it is not a flourish: braces
+            // are shared with a record and the separator after the first field is what
+            // tells them apart, so `{ only: string = 0 }` reads back as a *record* of
+            // one field. The grammar allows the field after a separator to be absent
+            // exactly so a one-alternative union can be written down.
+            if alts.len() == 1 {
+                out.push_str(" |");
+            }
+
             out.push_str(" }");
         }
     }

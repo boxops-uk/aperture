@@ -66,6 +66,22 @@ pub fn desc_of(ty: &Ty, interner: &LocalInterner) -> Result<Desc, ServerError> {
                 .collect::<Result<Vec<_>, ServerError>>()?
                 .into(),
         ),
+        // The alternative names travel as text, exactly as a record's field names do
+        // — a peer has no interner, and a row carries only the tag.
+        Ty::Union(alts) => Desc::Union(
+            alts.iter()
+                .map(|(name, disc, alt)| {
+                    let name = interner
+                        .try_resolve(*name)
+                        .ok_or(ServerError::Unprojectable(
+                            "an alternative whose name this query's interner cannot resolve",
+                        ))?
+                        .to_owned();
+                    Ok((name, *disc, desc_of(alt, interner)?))
+                })
+                .collect::<Result<Vec<_>, ServerError>>()?
+                .into(),
+        ),
         Ty::Var(_) => {
             return Err(ServerError::Unprojectable(
                 "a head whose type is still undetermined",
@@ -126,6 +142,24 @@ pub fn to_wire(ty: &PredicateTy, value: &Value) -> Result<WireValue, ServerError
             }
 
             WireValue::Record(out.into())
+        }
+
+        // **By tag, and the tag survives.** The alternative is looked up rather than
+        // indexed, and what goes on the wire is the discriminant the row carried — not
+        // a position in this list, which is the one thing a client must not have to
+        // guess. The *name* is in the descriptor, which the client already has.
+        (PredicateTy::Union(alts), Value::Union { disc, value, .. }) => {
+            let alt =
+                alts.iter()
+                    .find(|alt| alt.disc == *disc)
+                    .ok_or(ServerError::Unprojectable(
+                        "a row holding an alternative its head's union does not declare",
+                    ))?;
+
+            WireValue::Union {
+                disc: *disc,
+                value: Box::new(to_wire(&alt.ty, value)?),
+            }
         }
 
         _ => {

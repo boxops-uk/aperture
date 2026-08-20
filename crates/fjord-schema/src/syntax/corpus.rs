@@ -105,6 +105,47 @@ pub const CORPUS: &[Entry] = &[
         "schema src { predicate File : string\n          predicate Ref : { at : { line : int, col : int }, file : File } }",
         Verdict::Lowers,
     ),
+    // ---- unions (8.6) -------------------------------------------------------------
+    entry(
+        "a union, with the explicit discriminants I10 requires",
+        "schema src { type T = { a : int = 0 | b : string = 1 }\n predicate P : T }",
+        Verdict::Lowers,
+    ),
+    entry(
+        "tags out of order, and neither of them a position",
+        "schema src { predicate P : { what : { num : int = 3 | text : string = 0 } } }",
+        Verdict::Lowers,
+    ),
+    entry(
+        "a single-alternative union, which needs the trailing `|` to be one at all",
+        "schema src { predicate P : { only : string = 0 | } }",
+        Verdict::Lowers,
+    ),
+    entry(
+        "an alternative with no payload type, which is the empty record",
+        "schema src { type Colour = { red = 0 | green = 1 } \n predicate P : Colour }",
+        Verdict::Lowers,
+    ),
+    entry(
+        "an alternative whose payload is a reference",
+        "schema src { predicate File : string\n predicate Ref : { at : { file : File = 0 | line : int = 1 } } }",
+        Verdict::Lowers,
+    ),
+    entry(
+        "an alternative with no discriminant, which I10 will not have",
+        "schema src { type T = { a : int | b : string = 1 }\n predicate P : T }",
+        Verdict::Diagnosed(Code::RejectMissingDiscriminant),
+    ),
+    entry(
+        "two alternatives sharing a tag — I10's within-a-schema half",
+        "schema src { type T = { a : int = 1 | b : string = 1 }\n predicate P : T }",
+        Verdict::Diagnosed(Code::RejectDuplicateDiscriminant),
+    ),
+    entry(
+        "two alternatives sharing a name",
+        "schema src { type T = { a : int = 0 | a : string = 1 }\n predicate P : T }",
+        Verdict::Diagnosed(Code::RejectDuplicateAlternative),
+    ),
     // ---- deferred: parses now, refused by name ----------------------------------
     entry(
         "an array — the multiplicity decision, settled as not yet",
@@ -125,11 +166,6 @@ pub const CORPUS: &[Entry] = &[
         "an enumeration",
         "schema src { type Colour = enum { red | green } }",
         Verdict::Diagnosed(Code::NyiEnum),
-    ),
-    entry(
-        "a union, with the explicit discriminants I10 requires",
-        "schema src { type T = { a : int = 0 | b : string = 1 } }",
-        Verdict::Diagnosed(Code::NyiUnion),
     ),
     entry(
         "evolves, which P0 does not have",

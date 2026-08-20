@@ -368,6 +368,39 @@ public static class RowDescriptor
                 return new FjordType.Record(fields);
             }
 
+            // A union: each alternative's **name and tag**, since a row carries only the
+            // tag. Tag 4, appended after the record's — which is what lets an older
+            // client meet it and say so rather than mis-read what follows.
+            case 4:
+            {
+                var count = Varint.Read(bytes, ref at);
+                if (count > (ulong)bytes.Length)
+                {
+                    throw new FjordProtocolException(
+                        "a descriptor declares more alternatives than could fit");
+                }
+
+                var alternatives = new List<(string, uint, FjordType)>((int)count);
+
+                for (ulong index = 0; index < count; index++)
+                {
+                    var length = Varint.Read(bytes, ref at);
+                    if (length > (ulong)(bytes.Length - at))
+                    {
+                        throw new FjordProtocolException(
+                            "an alternative name runs past the descriptor");
+                    }
+
+                    var name = Encoding.UTF8.GetString(bytes.Slice(at, (int)length));
+                    at += (int)length;
+
+                    var disc = Varint.Read(bytes, ref at);
+                    alternatives.Add((name, (uint)disc, Read(bytes, ref at)));
+                }
+
+                return new FjordType.Union(alternatives);
+            }
+
             default:
                 throw new FjordProtocolException($"unknown descriptor tag {tag}");
         }

@@ -222,6 +222,21 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
                     ResidualOp::EqRegisterFactId(address) => {
                         write!(out, "\n       where {at} == {address}#")
                     }
+                    // Named, not numbered: the tag is what the plan compares, and
+                    // the name is what the query said. A union whose alternative
+                    // this schema does not declare falls back to the number, which
+                    // is a plan built against another schema and worth reading as
+                    // odd rather than as absent.
+                    ResidualOp::DiscriminantEq(disc) => {
+                        write!(
+                            out,
+                            "\n       where {at} is {}",
+                            alternative_name(ty, *disc, schema).map_or_else(
+                                || format!("alternative {disc}"),
+                                |name| format!("`{name}`")
+                            )
+                        )
+                    }
                     ResidualOp::CmpConst { op, value } => {
                         write!(
                             out,
@@ -473,6 +488,12 @@ fn literal(schema: &Schema, value: &Value) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        // `{alt = payload}` — the one-field record it is written as, which is the
+        // point of that spelling: what a query says and what a row prints are the
+        // same text.
+        Value::Union { alt, value, .. } => {
+            format!("{{{alt} = {}}}", literal(schema, value))
+        }
     }
 }
 
@@ -537,14 +558,36 @@ fn field_ty<'a>(key_ty: Option<&'a PredicateTy>, path: &FieldPath) -> Option<&'a
     let mut ty = key_field_ty(key_ty, path.field_idx())?;
 
     for &step in path.steps() {
-        let PredicateTy::Record(fields) = ty else {
-            return None;
-        };
-
-        ty = fields.get(step).map(|(_, ty)| ty)?;
+        match ty {
+            PredicateTy::Record(fields) => ty = fields.get(step).map(|(_, ty)| ty)?,
+            // At a union the step is a discriminant, not an index — see
+            // [`FieldPath::payload`](crate::plan::FieldPath::payload).
+            PredicateTy::Union(alts) => {
+                ty = alts
+                    .iter()
+                    .find(|alt| u64::from(alt.disc) == step as u64)
+                    .map(|alt| &alt.ty)?;
+            }
+            _ => return None,
+        }
     }
 
     Some(ty)
+}
+
+/// The name a union declares for a discriminant, for a plan to read as the query
+/// wrote it.
+fn alternative_name<'a>(
+    ty: Option<&PredicateTy>,
+    disc: u32,
+    schema: &'a Schema,
+) -> Option<&'a str> {
+    let PredicateTy::Union(alts) = ty? else {
+        return None;
+    };
+
+    let alt = alts.iter().find(|alt| alt.disc == disc)?;
+    schema.interner().resolve(alt.name)
 }
 
 /// A path read out of some *other* register, named against the key of whatever
@@ -638,6 +681,24 @@ fn field_name(key_ty: Option<&PredicateTy>, path: &FieldPath, schema: &Schema) -
     let mut names = vec![];
 
     for index in std::iter::once(path.field_idx()).chain(path.steps().iter().copied()) {
+        // A step into a union names the **alternative**, since that is what the step
+        // is: `what.num`, never `what.3`.
+        if let PredicateTy::Union(alts) = ty {
+            let Some(alt) = alts.iter().find(|alt| u64::from(alt.disc) == index as u64) else {
+                return path.to_string();
+            };
+
+            names.push(
+                schema
+                    .interner()
+                    .resolve(alt.name)
+                    .unwrap_or("?")
+                    .to_owned(),
+            );
+            ty = &alt.ty;
+            continue;
+        }
+
         let PredicateTy::Record(fields) = ty else {
             // A scalar key is one field and has no name of its own.
             return if names.is_empty() {

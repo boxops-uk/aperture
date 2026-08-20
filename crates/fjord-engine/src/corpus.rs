@@ -484,9 +484,66 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X.alt? where X = test.Foo _",
-        Diagnosed(Code::NyiUnionSelect),
-        "union select lowers to a DiscriminantEq residual; PredicateTy has no \
-         Union variant yet (I10 freezes discriminants when it does)",
+        Diagnosed(Code::RejectNotAUnion),
+        "a select on something that is not a union at all — the shape of the \
+         mistake that used to be the whole feature's diagnostic",
+    ),
+    // ---- unions (8.6) --------------------------------------------------------
+    entry(
+        "X where test.Tagged {what = {num = X}, id = _}",
+        Supported("1; 2"),
+        "**an injection as a pattern**: a one-field record against a union-typed \
+         field is that alternative, and since `what` is the leading key field the \
+         tag is a *prefix* of the key order — one seek, not a filter",
+    ),
+    entry(
+        "X where test.Tagged {what = {text = X}, id = _}",
+        Supported("a; b"),
+        "the other alternative, whose tag is 0 where the first is 3 — a reader \
+         taking a tag for a position would answer these rows for the query above",
+    ),
+    entry(
+        "X where test.Tagged {what = {num = _}, id = X}",
+        Supported("10; 30"),
+        "a **wildcard payload**: the tag alone, which is the shortest prefix an \
+         alternative has and still a seek",
+    ),
+    entry(
+        "X where test.Label {id = _, what = {num = X}}",
+        Supported("1; 2"),
+        "the same question where the union is **not** the leading field, so the \
+         tag lands after the seek prefix has closed and filters — `check_residuals` \
+         rather than a seek key",
+    ),
+    entry(
+        "Y where test.Label X; Y = X.what.num?",
+        Supported("1; 2"),
+        "**the select**, `.alt?` — matches the tag and binds the payload, which \
+         must answer exactly what the injection above does",
+    ),
+    entry(
+        "X.what.num? where test.Label X",
+        Supported("1; 2"),
+        "a select in the **head**, which is a filter written where nothing can \
+         filter — so flatten hoists it into the residuals of the level binding `X`",
+    ),
+    entry(
+        "X where test.Label {id = X, what = {num = 2}}",
+        Supported("30"),
+        "an alternative **and** a payload, both constant: the tag and the payload \
+         are one comparison",
+    ),
+    entry(
+        "X where test.Tagged {what = {nosuch = X}, id = _}",
+        Diagnosed(Code::RejectUnknownAlternative),
+        "a name the union does not declare — a rejection, not a deferral: it is \
+         the same class of mistake as an unknown field",
+    ),
+    entry(
+        "X where test.Tagged {what = {num = X, text = _}, id = _}",
+        Diagnosed(Code::RejectUnionArity),
+        "two alternatives at once, which is what a *record* of two fields means \
+         and a union cannot",
     ),
     entry(
         "X where X = never",
@@ -1331,6 +1388,9 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Value::Union { alt, value, .. } => {
+                format!("{{{alt} = {}}}", render(value, schema))
+            }
             other => format!("{other:?}"),
         }
     }

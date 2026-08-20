@@ -33,6 +33,27 @@ public abstract record FjordType
     /// </summary>
     public sealed record Record(IReadOnlyList<(string Name, FjordType Type)> Fields) : FjordType;
 
+    /// <summary>
+    /// A union: one of several tagged alternatives.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Every alternative carries its own discriminant</b>, and it is written down
+    /// here rather than derived from the position. That is the schema language's rule
+    /// (I10) and this side has to honour it for the same reason: a tag taken from the
+    /// position renumbers the moment an alternative is inserted, and every value
+    /// already written with the old number then reads as a different alternative.
+    /// Declaration order carries no meaning here at all — the tag does.
+    /// </para>
+    /// <para>
+    /// The alternatives are in the order the schema declares them, as a record's fields
+    /// are, but for a weaker reason: a record's order is its encoding order, while this
+    /// is only what a reader sees.
+    /// </para>
+    /// </remarks>
+    public sealed record Union(
+        IReadOnlyList<(string Name, uint Disc, FjordType Type)> Alternatives) : FjordType;
+
     public static readonly FjordType Integer = new Int();
     public static readonly FjordType String = new Str();
 
@@ -40,6 +61,9 @@ public abstract record FjordType
 
     public static FjordType Rec(params (string Name, FjordType Type)[] fields) =>
         new Record(fields);
+
+    public static FjordType OneOf(params (string Name, uint Disc, FjordType Type)[] alternatives) =>
+        new Union(alternatives);
 }
 
 /// <summary>One predicate: its name, its key type, and its value side if it has one.</summary>

@@ -30,13 +30,22 @@
 //! predicate test.Deep   : { via : test.Ref }           // ...and a chain of two hops
 //! predicate test.Boxed  : { id : int } -> { lo : int, hi : int }   // a record *value*
 //! predicate test.Named  : { name : string, of : test.Foo }  // a *string* before a ref
+//! predicate test.Tagged : { what : union, id : int }    // a union in the *leading* field
+//! predicate test.Label  : { id : int, what : union }    // ...and not in the leading field
+//!
+//! where `union` is `{ num : int = 3 | text : string = 0 }` in both — tags neither
+//! contiguous, nor starting at zero, nor in declaration order, so nothing that read a
+//! discriminant as a position could pass.
 //! ```
 //!
 //! Four of those are deliberate awkward cases rather than data: `test.Shadow` has a
 //! key field literally named `value`, `test.Wide` carries `test.Nested`'s field name
 //! with a differently-shaped record, and `test.Ref`/`test.Link` differ only in
 //! whether the reference is the *leading* key field — which is what decides whether
-//! a fact-id compare narrows the scan or filters it.
+//! a fact-id compare narrows the scan or filters it. `test.Tagged`/`test.Label` are
+//! the same pair for a union: leading, matching an alternative is a **seek**; behind
+//! an `int`, it is a **residual**, and only one of those exercises
+//! `check_residuals`.
 //!
 //! # The facts
 //!
@@ -54,10 +63,10 @@ use std::sync::Arc;
 
 use lasso::Rodeo;
 
-use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, fact_ref_bytes, put_i64, put_str};
+use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, UnionTag, fact_ref_bytes, put_i64, put_str};
 use fjord_schema::{
     id::FactId,
-    schema::{Predicate, PredicateId, PredicateTy, Schema},
+    schema::{Alternative, Predicate, PredicateId, PredicateTy, Schema},
 };
 
 /// Predicate ids **are** positions in the schema, and a `Fact` field names one — so
@@ -77,6 +86,16 @@ const LINK: PredicateId = PredicateId(10);
 const DEEP: PredicateId = PredicateId(11);
 const BOXED: PredicateId = PredicateId(12);
 const NAMED: PredicateId = PredicateId(13);
+const TAGGED: PredicateId = PredicateId(14);
+const LABEL: PredicateId = PredicateId(15);
+
+/// The two alternatives every union in this fixture declares.
+///
+/// **`num` is 3 and `text` is 0**, declared in that order: not positions, not
+/// contiguous, not ascending. A reader that took a tag for an index would answer
+/// `num` for a `text` row, and nothing else in the fixture would notice.
+const NUM: u32 = 3;
+const TEXT: u32 = 0;
 
 /// The schema, hand-built.
 ///
@@ -209,6 +228,29 @@ pub fn schema() -> Schema {
             ])),
             value: None,
         },
+        // **A union in the leading key field**, so matching an alternative is a
+        // prefix of the key order and narrows the scan. `what` before `id` breaks
+        // this file's alphabetical habit deliberately: field order *is* key order,
+        // and which of these two questions is a seek is the thing being fixed.
+        Predicate {
+            name: sym("test.Tagged"),
+            key: PredicateTy::Record(Arc::from([
+                (sym("what"), tagged(&mut sym)),
+                (sym("id"), PredicateTy::Int),
+            ])),
+            value: None,
+        },
+        // The same union **behind** an int, so matching an alternative lands after
+        // the seek prefix has closed and filters instead — `test.Ref`/`test.Link`'s
+        // distinction, for a tag rather than an id.
+        Predicate {
+            name: sym("test.Label"),
+            key: PredicateTy::Record(Arc::from([
+                (sym("id"), PredicateTy::Int),
+                (sym("what"), tagged(&mut sym)),
+            ])),
+            value: None,
+        },
     ];
 
     // Field and predicate names queries use but that no declaration interns, so
@@ -218,6 +260,23 @@ pub fn schema() -> Schema {
     }
 
     Schema::new(names.into_reader(), Arc::from(predicates))
+}
+
+/// `{ num : int = 3 | text : string = 0 }` — the fixture's union, declared once and
+/// used by both predicates that have one.
+fn tagged(sym: &mut impl FnMut(&str) -> lasso::Spur) -> PredicateTy {
+    PredicateTy::Union(Arc::from([
+        Alternative {
+            name: sym("num"),
+            disc: NUM,
+            ty: PredicateTy::Int,
+        },
+        Alternative {
+            name: sym("text"),
+            disc: TEXT,
+            ty: PredicateTy::Str,
+        },
+    ]))
 }
 
 /// One fact, ready to write: its predicate, key bytes, value bytes, and the
@@ -311,6 +370,39 @@ pub fn facts() -> Vec<Fact> {
         [("a", 1u64), ("ab", 2)].map(|(name, of)| [string(name), a_foo(of)].concat()),
     );
 
+    // **Two of each alternative, in both predicates.** Two so that a select answers
+    // more than one row and its negation is not the whole predicate; both
+    // alternatives so that the tag is what separates them and the counts add up to
+    // the predicate — which is the partition law the union battery checks.
+    //
+    // The `id`s deliberately do *not* group by alternative: 10 and 30 are `num`, 20
+    // and 40 are `text`, so a plan that answered by scanning `id` order would give
+    // the rows away in the wrong order.
+    let what = |alt: u32, payload: Vec<u8>| union(alt, &payload);
+
+    push(
+        &mut out,
+        TAGGED,
+        [
+            (NUM, int(1), 10i64),
+            (TEXT, string("a"), 20),
+            (NUM, int(2), 30),
+            (TEXT, string("b"), 40),
+        ]
+        .map(|(alt, payload, id)| [what(alt, payload), int(id)].concat()),
+    );
+    push(
+        &mut out,
+        LABEL,
+        [
+            (10i64, NUM, int(1)),
+            (20, TEXT, string("a")),
+            (30, NUM, int(2)),
+            (40, TEXT, string("b")),
+        ]
+        .map(|(id, alt, payload)| [int(id), what(alt, payload)].concat()),
+    );
+
     out
 }
 
@@ -355,6 +447,16 @@ fn record(fields: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+/// A **union-typed field**: the tag, the payload, the terminator. A group, like a
+/// record, and for the same reason — see
+/// [`MARK_UNION`](fjord_encoding::tuple::MARK_UNION).
+fn union(disc: u32, payload: &[u8]) -> Vec<u8> {
+    let mut out = UnionTag::new(disc).as_bytes().to_vec();
+    out.extend_from_slice(payload);
+    out.push(MARK_TERM);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -381,6 +483,10 @@ mod tests {
             ("test.Ref", REF),
             ("test.Link", LINK),
             ("test.Deep", DEEP),
+            ("test.Boxed", BOXED),
+            ("test.Named", NAMED),
+            ("test.Tagged", TAGGED),
+            ("test.Label", LABEL),
         ] {
             assert_eq!(
                 schema.find_position(name).map(|(id, _)| id),

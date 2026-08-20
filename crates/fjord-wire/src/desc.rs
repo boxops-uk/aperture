@@ -23,7 +23,7 @@
 //!   C  [complete]
 //! ```
 
-use fjord_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
+use fjord_schema::schema::{Alternative, LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
 
 use crate::{error::WireError, varint};
 
@@ -31,12 +31,16 @@ const TAG_INT: u64 = 0;
 const TAG_STR: u64 = 1;
 const TAG_FACT: u64 = 2;
 const TAG_RECORD: u64 = 3;
+/// **Appended**, which is what keeps an older peer honest: it meets a tag it has no
+/// case for and reports [`WireError::UnknownRefForm`] rather than mis-reading the
+/// bytes that follow. Renumbering any tag above would do the opposite.
+const TAG_UNION: u64 = 4;
 
 /// A row's shape, with names a peer can read.
 ///
-/// The same four cases as [`PredicateTy`], which is not a coincidence — a well-typed
-/// head resolves to one of them — but with field names as `String` rather than as
-/// interned symbols, because the interner is ours and not the peer's.
+/// The same cases as [`PredicateTy`], which is not a coincidence — a well-typed head
+/// resolves to one of them — but with field and alternative names as `String` rather
+/// than as interned symbols, because the interner is ours and not the peer's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Desc {
     Int,
@@ -44,6 +48,12 @@ pub enum Desc {
     Fact(PredicateId),
     /// Fields in order. A row's values follow this order and carry no names.
     Record(Box<[(String, Desc)]>),
+    /// Alternatives, each with its **name and discriminant**. A row carries only the
+    /// tag, so this is what lets a peer print `{alt = …}` rather than `{4 = …}` — and
+    /// it is why a descriptor carries the number as well as the name: the row is
+    /// matched by tag, and the two must not be re-derived from position at either
+    /// end.
+    Union(Box<[(String, u32, Desc)]>),
 }
 
 impl Desc {
@@ -70,6 +80,21 @@ impl Desc {
                             ))?
                             .to_owned();
                         Ok((name, Desc::of(schema, field)?))
+                    })
+                    .collect::<Result<Vec<_>, WireError>>()?
+                    .into(),
+            ),
+            PredicateTy::Union(alts) => Desc::Union(
+                alts.iter()
+                    .map(|alt| {
+                        let name = schema
+                            .interner()
+                            .resolve(alt.name)
+                            .ok_or(WireError::TypeMismatch(
+                                "an alternative name this schema cannot resolve",
+                            ))?
+                            .to_owned();
+                        Ok((name, alt.disc, Desc::of(schema, &alt.ty)?))
                     })
                     .collect::<Result<Vec<_>, WireError>>()?
                     .into(),
@@ -105,6 +130,23 @@ impl Desc {
                     })
                     .collect(),
             ),
+            // Unlike a record's, an alternative's name is **not** a placeholder: a
+            // decoded union value carries it, so this is the name a peer sees. The
+            // discriminant is what the codec matches on either way.
+            Desc::Union(alts) => PredicateTy::Union(
+                alts.iter()
+                    .map(|(name, disc, alt)| {
+                        let symbol = match interner.get_or_intern(name) {
+                            Symbol::Schema(spur) | Symbol::Local(spur) => spur,
+                        };
+                        Alternative {
+                            name: symbol,
+                            disc: *disc,
+                            ty: alt.to_ty(interner),
+                        }
+                    })
+                    .collect(),
+            ),
         }
     }
 }
@@ -125,6 +167,16 @@ pub fn encode_desc(out: &mut Vec<u8>, desc: &Desc) {
                 varint::put_u64(out, name.len() as u64);
                 out.extend_from_slice(name.as_bytes());
                 encode_desc(out, field);
+            }
+        }
+        Desc::Union(alts) => {
+            varint::put_u64(out, TAG_UNION);
+            varint::put_u64(out, alts.len() as u64);
+            for (name, disc, alt) in alts.iter() {
+                varint::put_u64(out, name.len() as u64);
+                out.extend_from_slice(name.as_bytes());
+                varint::put_u64(out, u64::from(*disc));
+                encode_desc(out, alt);
             }
         }
     }
@@ -149,41 +201,11 @@ pub fn decode_desc(bytes: &[u8]) -> Result<(Desc, usize), WireError> {
             Desc::Fact(PredicateId(id))
         }
         TAG_RECORD => {
-            let (count, used) = varint::get_u64(&bytes[at..])?;
-            at += used;
-
-            // A count sizes an allocation, and it came from a peer.
-            let count = usize::try_from(count).map_err(|_| WireError::LengthOutOfRange {
-                declared: count,
-                available: bytes.len(),
-            })?;
-            if count > bytes.len() {
-                return Err(WireError::LengthOutOfRange {
-                    declared: count as u64,
-                    available: bytes.len(),
-                });
-            }
+            let count = take_count(bytes, &mut at)?;
 
             let mut fields = Vec::with_capacity(count);
             for _ in 0..count {
-                let (len, used) = varint::get_u64(&bytes[at..])?;
-                at += used;
-
-                let len = usize::try_from(len).map_err(|_| WireError::LengthOutOfRange {
-                    declared: len,
-                    available: bytes.len() - at,
-                })?;
-                if at + len > bytes.len() {
-                    return Err(WireError::LengthOutOfRange {
-                        declared: len as u64,
-                        available: bytes.len() - at,
-                    });
-                }
-
-                let name = std::str::from_utf8(&bytes[at..at + len])
-                    .map_err(|_| WireError::BadString)?
-                    .to_owned();
-                at += len;
+                let name = take_name(bytes, &mut at)?;
 
                 let (field, used) = decode_desc(&bytes[at..])?;
                 at += used;
@@ -193,10 +215,77 @@ pub fn decode_desc(bytes: &[u8]) -> Result<(Desc, usize), WireError> {
 
             Desc::Record(fields.into())
         }
+        TAG_UNION => {
+            let count = take_count(bytes, &mut at)?;
+
+            let mut alts = Vec::with_capacity(count);
+            for _ in 0..count {
+                let name = take_name(bytes, &mut at)?;
+
+                let (disc, used) = varint::get_u64(&bytes[at..])?;
+                at += used;
+                let disc = u32::try_from(disc).map_err(|_| WireError::UnknownDiscriminant(disc))?;
+
+                let (alt, used) = decode_desc(&bytes[at..])?;
+                at += used;
+
+                alts.push((name, disc, alt));
+            }
+
+            Desc::Union(alts.into())
+        }
         other => return Err(WireError::UnknownRefForm(other)),
     };
 
     Ok((desc, at))
+}
+
+/// A count of things to follow, checked before it sizes an allocation — it came
+/// from a peer.
+fn take_count(bytes: &[u8], at: &mut usize) -> Result<usize, WireError> {
+    let (count, used) = varint::get_u64(&bytes[*at..])?;
+    *at += used;
+
+    let count = usize::try_from(count).map_err(|_| WireError::LengthOutOfRange {
+        declared: count,
+        available: bytes.len(),
+    })?;
+
+    // Each thing costs at least a byte, so a count past what is left cannot be
+    // honoured whatever follows.
+    if count > bytes.len() {
+        return Err(WireError::LengthOutOfRange {
+            declared: count as u64,
+            available: bytes.len(),
+        });
+    }
+
+    Ok(count)
+}
+
+/// A length-prefixed name — a record's field or a union's alternative.
+fn take_name(bytes: &[u8], at: &mut usize) -> Result<String, WireError> {
+    let (len, used) = varint::get_u64(&bytes[*at..])?;
+    *at += used;
+
+    let len = usize::try_from(len).map_err(|_| WireError::LengthOutOfRange {
+        declared: len,
+        available: bytes.len() - *at,
+    })?;
+
+    if *at + len > bytes.len() {
+        return Err(WireError::LengthOutOfRange {
+            declared: len as u64,
+            available: bytes.len() - *at,
+        });
+    }
+
+    let name = std::str::from_utf8(&bytes[*at..*at + len])
+        .map_err(|_| WireError::BadString)?
+        .to_owned();
+    *at += len;
+
+    Ok(name)
 }
 
 #[cfg(test)]
@@ -212,22 +301,34 @@ mod tests {
         ];
 
         leaf.prop_recursive(3, 16, 4, |inner| {
-            ::proptest::collection::vec(
-                (
-                    ::proptest::sample::select(vec!["a", "name", "line", "of", ""]),
-                    inner,
+            // `Rc`, not `Arc`: a strategy is not `Send`, and a generator runs on one thread.
+            let inner = std::rc::Rc::new(inner);
+            let names = || ::proptest::sample::select(vec!["a", "name", "line", "of", ""]);
+
+            prop_oneof![
+                ::proptest::collection::vec((names(), inner.clone()), 0..4).prop_map(|fields| {
+                    Desc::Record(
+                        fields
+                            .into_iter()
+                            .map(|(n, d)| (n.to_owned(), d))
+                            .collect::<Vec<_>>()
+                            .into(),
+                    )
+                }),
+                // Tags drawn wide, including zero and numbers far past any count of
+                // alternatives: a descriptor carries the number, so a reader that
+                // rebuilt it from position would be caught by the round trip.
+                ::proptest::collection::vec((names(), 0u32..100_000, inner), 1..4).prop_map(
+                    |alts| {
+                        Desc::Union(
+                            alts.into_iter()
+                                .map(|(n, disc, d)| (n.to_owned(), disc, d))
+                                .collect::<Vec<_>>()
+                                .into(),
+                        )
+                    }
                 ),
-                0..4,
-            )
-            .prop_map(|fields| {
-                Desc::Record(
-                    fields
-                        .into_iter()
-                        .map(|(n, d)| (n.to_owned(), d))
-                        .collect::<Vec<_>>()
-                        .into(),
-                )
-            })
+            ]
         })
     }
 

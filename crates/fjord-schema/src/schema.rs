@@ -19,12 +19,55 @@ pub enum Symbol {
     Local(Spur),
 }
 
+/// One alternative of a [`PredicateTy::Union`]: a name, an **explicit
+/// discriminant**, and the type of its payload.
+///
+/// The discriminant is written down rather than derived from the position, which is
+/// the whole of [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10):
+/// a tag derived from a sorted or declared order renumbers the moment an alternative
+/// is inserted, and every stored value tagged with the old number then decodes as the
+/// wrong alternative. Angle numbers by position and buys stability back with a
+/// query-time transform; [I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)
+/// leaves no schema to transform between, so the tag is explicit here instead.
+///
+/// A struct rather than a `(Spur, u32, PredicateTy)` triple, unlike a record's
+/// fields: `alt.1` for a discriminant reads as an index into something, which is
+/// exactly the reading this type exists to refuse.
+#[derive(Debug, Clone)]
+pub struct Alternative {
+    pub name: Spur,
+    pub disc: u32,
+    pub ty: PredicateTy,
+}
+
 #[derive(Debug, Clone)]
 pub enum PredicateTy {
     Int,
     Str,
     Fact(PredicateId),
     Record(Arc<[(Spur, PredicateTy)]>),
+    /// A **tagged alternative** — one of N, each with its own payload type.
+    ///
+    /// Held in **declaration order**, and that order is *not* identity-bearing, which
+    /// is the one place a union differs from a record: a record's field order is its
+    /// encoding order, while a union's alternatives are addressed by their explicit
+    /// discriminants, so permuting the declaration changes no stored byte. The
+    /// canonical form therefore sorts by discriminant, and a *renumber* is the change
+    /// that moves the fingerprint ([chapter 6]).
+    ///
+    /// [chapter 6]: https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md
+    Union(Arc<[Alternative]>),
+}
+
+impl PredicateTy {
+    /// The alternative this discriminant names, if the union declares one.
+    #[must_use]
+    pub fn alternative(&self, disc: u32) -> Option<&Alternative> {
+        match self {
+            PredicateTy::Union(alts) => alts.iter().find(|alt| alt.disc == disc),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -464,38 +507,145 @@ mod guards {
     }
 }
 
-/// The one Phase-8 invariant guard still **pending**:
-/// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10), stable union discriminants.
+/// [I10](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i10) — **union
+/// discriminants are stable and append-only**, built at 8.6.
 ///
-/// It needs what 8.6 will build — a `Union` in `PredicateTy` — so it is written up
-/// front as the specification, `#[ignore]`d until its subject exists, and named under
-/// `pending_phase_8` so `cargo test -- --ignored --list` (the coverage ledger) shows
-/// the phase that owns it.
+/// **What the invariant asked for, and what is actually implementable.** Its guard was
+/// specified as *"a renumber is rejected at load"*, and that cannot be built as
+/// written: under [I13] a database's schema is frozen at create, so at load there is
+/// only ever **one** schema and nothing to compare it against. The rule decomposes
+/// into four checks, which together mean what I10 means — and each has a home:
 ///
-/// **[I13](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13)'s ingest half went green at 8.4 and left this
-/// crate.** Its guard could never have run here: validating an ingest needs a database
-/// to validate it against, a schema that was parsed rather than built, and a write path,
-/// and none of the three is below this crate. It is
-/// `fjord-client/tests/i13_embedded_schema.rs` now, keeping the name the registry
-/// knows it by — which is the rule [testing](https://github.com/boxops-uk/fjord/blob/main/docs/testing.md) states for a guard
-/// whose subject sits above the crate that specified it.
+/// 1. **Within one schema** — no two alternatives share a tag, and every alternative
+///    has one. The only half a single schema can be checked for, and the only one that
+///    is literally "at load": `syntax::lower`, with `reject/duplicate-discriminant`
+///    and `reject/missing-discriminant`, pinned by the schema corpus.
+/// 2. **Identity** — a tag is part of the canonical form, so renumbering moves the
+///    per-predicate and whole-schema fingerprint, while *permuting* the declaration
+///    does not. Below.
+/// 3. **`schema diff`** — a renumber is Breaking, and so is an appended alternative;
+///    the two are distinct and neither is Compatible. In `fjord-cli`'s `schema diff`
+///    tests, where the verdict lives.
+/// 4. **Decode** — a stored tag no alternative declares is
+///    [`UnknownDiscriminant`](fjord_encoding::error::StoreCodecError::UnknownDiscriminant),
+///    never a mis-read of whichever alternative sat nearby. In the codec's battery.
+///
+/// **What I10 buys, given I13.** Not cross-schema compatibility — the fingerprint
+/// handshake already refuses a client whose schema disagrees, so a renumbered tag can
+/// never be read by the schema that wrote the old one. What it buys is that a schema's
+/// *edit history* keeps every fact any earlier version of it wrote meaning the same
+/// thing: appending an alternative is a rebuild, where renumbering one would be a
+/// reindex, and anything that ever exports or migrates these bytes stands on that.
+///
+/// [I13]: https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i13
 #[cfg(test)]
-mod pending_phase_8 {
-    // I10 — union alternative discriminants are explicit, assigned once, and
-    // append-only. They are frozen the moment union data is written, because a
-    // discriminant is part of the on-disk encoding of every value of that type.
-    //
-    // Procedure: load a schema declaring a union, then load an edited version that
-    // renumbers an existing alternative, and one that reuses a retired
-    // discriminant for a new alternative — both must be rejected at load with a
-    // specific diagnostic, not silently accepted. Appending a fresh alternative
-    // with an unused discriminant must be accepted, since that is the one
-    // permitted evolution.
+mod i10_discriminants {
+    use crate::{
+        fingerprint::identity,
+        syntax::{lower::lower, parse::parse},
+    };
+
+    fn identity_of(source: &str) -> crate::fingerprint::Identity {
+        let mut diags = vec![];
+        let cst = parse(source, &mut diags).expect("it parses");
+        let lowered = lower(&cst, &mut diags).expect("it lowers");
+        assert!(diags.is_empty(), "{source}\n{diags:?}");
+        identity(&lowered.schema)
+    }
+
+    fn codes(source: &str) -> Vec<String> {
+        let mut diags = vec![];
+        if let Some(cst) = parse(source, &mut diags) {
+            let _ = lower(&cst, &mut diags);
+        }
+        diags.into_iter().filter_map(|d| d.code).collect()
+    }
+
+    /// A tag is **explicit**, and two alternatives may not share one.
+    ///
+    /// Check 1. This is the whole of what a single schema can say about I10, and it is
+    /// what stops the failure the invariant is really about: a tag nobody wrote down
+    /// would have to come from the position, and then inserting an alternative
+    /// renumbers every one after it.
     #[test]
-    #[ignore = "I10 — pending Phase 8 (needs the schema DSL + unions, PLAN 8)"]
-    fn discriminants_append_only() {
-        unimplemented!(
-            "Phase 8: assert renumbered and reused union discriminants are rejected at schema load"
+    fn a_tag_is_explicit_and_unique_within_a_union() {
+        assert_eq!(
+            codes("schema src { predicate P : { a : int | b : string = 1 | } }"),
+            ["reject/missing-discriminant"]
         );
+        assert_eq!(
+            codes("schema src { predicate P : { a : int = 1 | b : string = 1 } }"),
+            ["reject/duplicate-discriminant"]
+        );
+
+        // And the permitted shape, so the two above are not passing because unions do
+        // not lower at all.
+        assert!(codes("schema src { predicate P : { a : int = 1 | b : string = 2 } }").is_empty());
+    }
+
+    /// **Renumbering moves the fingerprint; permuting the declaration does not.**
+    ///
+    /// Check 2, and the pair is the point. A tag is what the bytes carry, so it is
+    /// identity-bearing and the canonical form sorts by it — which makes the order
+    /// alternatives are *written* in a formatting choice, and a tag a schema change.
+    /// That is the one place a union differs from a record, whose field order is its
+    /// encoding order and so cannot be permuted freely.
+    #[test]
+    fn a_renumbered_tag_moves_the_fingerprint_and_a_permuted_declaration_does_not() {
+        let plain = identity_of(
+            "schema src { predicate P : { what : { num : int = 3 | text : string = 0 } } }",
+        );
+
+        let permuted = identity_of(
+            "schema src { predicate P : { what : { text : string = 0 | num : int = 3 } } }",
+        );
+        assert_eq!(
+            plain.canonical(),
+            permuted.canonical(),
+            "the canonical form depends on the order alternatives were declared in"
+        );
+        assert_eq!(plain.schema(), permuted.schema());
+
+        // The negative controls: each of these is a different schema, and the number
+        // has to say so.
+        let renumbered = identity_of(
+            "schema src { predicate P : { what : { num : int = 4 | text : string = 0 } } }",
+        );
+        let swapped = identity_of(
+            "schema src { predicate P : { what : { num : int = 0 | text : string = 3 } } }",
+        );
+        let appended = identity_of(
+            "schema src { predicate P : { what : { num : int = 3 | text : string = 0 | \
+             nothing = 9 } } }",
+        );
+        let renamed = identity_of(
+            "schema src { predicate P : { what : { count : int = 3 | text : string = 0 } } }",
+        );
+        let a_record_instead =
+            identity_of("schema src { predicate P : { what : { num : int, text : string } } }");
+
+        for (what, other) in [
+            ("a renumbered alternative", &renumbered),
+            ("two alternatives' tags swapped", &swapped),
+            ("an appended alternative", &appended),
+            ("a renamed alternative", &renamed),
+            ("a record where a union was", &a_record_instead),
+        ] {
+            assert_ne!(
+                plain.schema(),
+                other.schema(),
+                "{what} must move the schema fingerprint"
+            );
+        }
+    }
+
+    /// A union is **not** a record of the same shape, in the canonical form as in the
+    /// bytes — so a schema cannot be silently reinterpreted as the other.
+    #[test]
+    fn a_union_and_a_record_are_different_canonical_forms() {
+        let union = identity_of("schema src { predicate P : { what : { a : int = 0 | } } }");
+        let record = identity_of("schema src { predicate P : { what : { a : int } } }");
+
+        assert_ne!(union.canonical(), record.canonical());
     }
 }

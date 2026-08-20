@@ -22,6 +22,7 @@ var address = FjordAddress
 // and writes the bytes out, for the Rust client's test to compare itself against. See
 // EmitGolden below for why that file exists.
 var goldenPath = Args("--golden");
+var unionGoldenPath = Args("--golden-unions");
 
 string? Args(string flag)
 {
@@ -203,6 +204,12 @@ var schema = new FjordSchema([
 if (goldenPath is not null)
 {
     EmitGolden(goldenPath);
+    return;
+}
+
+if (unionGoldenPath is not null)
+{
+    EmitUnionGolden(unionGoldenPath);
     return;
 }
 
@@ -437,6 +444,106 @@ void EmitGolden(string path)
     Console.WriteLine($"wrote {blocks.Length} golden blocks to {path}");
 }
 
+// ---- the union golden (8.6) ------------------------------------------------------
+//
+// A **second** corpus, over a schema of its own. `schemas/code.sigla` has no union and
+// putting one there would move its fingerprint, the two constants this client and the
+// indexer carry, and every block in the golden above — a flag day with nothing to do
+// with whether the two codecs agree about a tag.
+//
+// The schema is written down here and again in `fjord-client`'s test, and neither
+// statement is derived from the other. That is the point: a shared statement would make
+// the two encoders agree by construction.
+void EmitUnionGolden(string path)
+{
+    const uint Thing = 0;
+    const uint Tagged = 1;
+    const uint Labelled = 2;
+
+    // **The tags are not positions.** 3, 0, 40000 and 7, declared in that order: a
+    // client numbering alternatives by position writes `num` where this says `text`,
+    // and one truncating a varint cannot write 40000 at all.
+    const uint Num = 3;
+    const uint Text = 0;
+    const uint ThingAlt = 40_000;
+    const uint None = 7;
+
+    // One union, used in a key field *and* on a value side, so the same alternatives go
+    // through both paths.
+    FjordType Alternatives() => FjordType.OneOf(
+        ("num", Num, FjordType.Integer),
+        ("text", Text, FjordType.String),
+        ("thing", ThingAlt, FjordType.Reference(Thing)),
+        ("none", None, FjordType.Rec()));
+
+    var unionSchema = new FjordSchema(
+        [
+            new FjordPredicate("uni.Thing", FjordType.Rec(("id", FjordType.Integer)), null),
+            // The union leads, which on the wire changes nothing and in storage changes
+            // everything — stated the same way on both sides so the schemas match field
+            // for field.
+            new FjordPredicate("uni.Tagged", FjordType.Rec(
+                ("what", Alternatives()),
+                ("id", FjordType.Integer)), null),
+            new FjordPredicate("uni.Labelled",
+                FjordType.Rec(("id", FjordType.Integer)),
+                Alternatives()),
+        ],
+        // Carried, not computed — `fjord schema fingerprint`'s job, and for a corpus
+        // with no schema file of its own, `print_the_union_schema_fingerprint`'s.
+        0x84c63c4ec408796eUL);
+
+    FjordFact Thing_(long id) =>
+        new(Thing, FjordValue.Rec(FjordValue.Of(id)));
+
+    FjordFact Tagged_(FjordValue what, long id) =>
+        new(Tagged, FjordValue.Rec(what, FjordValue.Of(id)));
+
+    (string Name, uint Predicate, IReadOnlyList<FjordFact> Facts)[] blocks =
+    [
+        ("uni.Thing", Thing, [Thing_(1), Thing_(2)]),
+
+        ("uni.Tagged", Tagged,
+        [
+            Tagged_(FjordValue.Alt(Num, FjordValue.Of(5L)), 10),
+            Tagged_(FjordValue.Alt(Text, FjordValue.Of("a")), 20),
+            // A nested reference **inside a payload** — the case a walk that stops at a
+            // union misses, and the one that would leave a fact uninterned.
+            Tagged_(FjordValue.Alt(ThingAlt, FjordValue.Of(FjordRef.To(Thing_(1)))), 30),
+            // An alternative whose payload is the empty record, which is what an
+            // alternative declared with no type comes to: zero bytes after the tag.
+            Tagged_(FjordValue.Alt(None, FjordValue.Rec()), 40),
+        ]),
+
+        ("uni.Labelled", Labelled,
+        [
+            new(Labelled, FjordValue.Rec(FjordValue.Of(1L)),
+                FjordValue.Alt(Num, FjordValue.Of(7L))),
+            new(Labelled, FjordValue.Rec(FjordValue.Of(2L)),
+                FjordValue.Alt(Text, FjordValue.Of("b"))),
+        ]),
+    ];
+
+    List<string> lines =
+    [
+        "# Union blocks produced by the .NET client, as hex — Phase 8.6's half of 9e's",
+        "# criterion. `fjord-client` encodes the same facts and must produce the same bytes.",
+        "#",
+        "# A schema of its own, so a union costs `schemas/code.sigla` no flag day.",
+        "# Regenerate with ./clients/dotnet/emit-golden.sh.",
+        $"schema-fingerprint {unionSchema.Fingerprint:x16}",
+    ];
+
+    foreach (var (name, predicate, facts) in blocks)
+    {
+        var bytes = Block.Encode(unionSchema, predicate, facts);
+        lines.Add($"block {name} {predicate} {Convert.ToHexString(bytes).ToLowerInvariant()}");
+    }
+
+    System.IO.File.WriteAllLines(path, lines);
+    Console.WriteLine($"wrote {blocks.Length} golden union blocks to {path}");
+}
+
 static string Describe(FjordType type) => type switch
 {
     FjordType.Int => "int",
@@ -444,6 +551,9 @@ static string Describe(FjordType type) => type switch
     FjordType.Fact fact => $"fact({fact.Predicate})",
     FjordType.Record record =>
         "{" + string.Join(", ", record.Fields.Select(f => $"{f.Name} : {Describe(f.Type)}")) + "}",
+    FjordType.Union union =>
+        "{" + string.Join(" | ", union.Alternatives.Select(
+            a => $"{a.Name} : {Describe(a.Type)} = {a.Disc}")) + "}",
     _ => "?",
 };
 
@@ -454,5 +564,6 @@ static string Render(FjordValue value) => value switch
     FjordValue.Ref { Value: FjordRef.Id id } => $"#{id.FactId >> 40}:{id.FactId & 0xFFFFFFFFFF}",
     FjordValue.Ref { Value: FjordRef.Nested nested } => $"<{Render(nested.Fact.Key)}>",
     FjordValue.Record record => "{" + string.Join(", ", record.Fields.Select(Render)) + "}",
+    FjordValue.Union chosen => "{" + chosen.Disc + " = " + Render(chosen.Value) + "}",
     _ => "?",
 };

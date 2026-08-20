@@ -450,11 +450,13 @@ struct Golden {
 }
 
 fn golden() -> Golden {
-    let path = concat!(
+    golden_at(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../clients/dotnet/golden/blocks.txt"
-    );
+    ))
+}
 
+fn golden_at(path: &str) -> Golden {
     let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
         panic!("cannot read {path}: {error}\nregenerate with ./clients/dotnet/emit-golden.sh")
     });
@@ -573,4 +575,218 @@ fn the_dotnet_clients_blocks_decode_here() {
         assert_eq!(header.count as usize, facts.len(), "{name}");
         assert_eq!(&decoded, facts, "`{name}` decodes to different facts");
     }
+}
+
+// ---- unions (8.6) ---------------------------------------------------------
+//
+// A **second** golden, over a schema of its own, and the separation is deliberate: a
+// union in `schemas/code.sigla` would move that schema's fingerprint and with it two
+// constants in the .NET clients and every block in the golden above — a flag day, and
+// one that has nothing to do with whether the two codecs agree about a tag. So the
+// union corpus gets three predicates of its own, stated independently on each side
+// exactly as the corpus above is.
+
+const THING: PredicateId = PredicateId(0);
+const TAGGED: PredicateId = PredicateId(1);
+const LABELLED: PredicateId = PredicateId(2);
+
+/// The tags, which are **not** positions: 3, 0, 40000 and 7, declared in that order.
+///
+/// 40000 is past a single varint byte, and 0 is the tag a reader defaulting to "the
+/// first alternative" would produce — so a client numbering by position answers `num`
+/// where this says `text`, and one truncating a varint answers nothing at all.
+const NUM: u32 = 3;
+const TEXT: u32 = 0;
+const THING_ALT: u32 = 40_000;
+const NONE: u32 = 7;
+
+/// `uni.Thing`, `uni.Tagged` and `uni.Labelled`, restated in Rust.
+fn union_schema() -> Schema {
+    use fjord_schema::schema::Alternative;
+
+    let mut rodeo = Rodeo::new();
+    let mut sym = |name: &str| rodeo.get_or_intern(name);
+
+    let (thing, tagged, labelled) = (sym("uni.Thing"), sym("uni.Tagged"), sym("uni.Labelled"));
+    let (f_id, f_what) = (sym("id"), sym("what"));
+    let (a_num, a_text, a_thing, a_none) = (sym("num"), sym("text"), sym("thing"), sym("none"));
+
+    // One union, used in a key field *and* on a value side — so the same alternatives
+    // are encoded through both paths, and a client that special-cased one of them is
+    // caught.
+    let alternatives = || {
+        PredicateTy::Union(Arc::from([
+            Alternative {
+                name: a_num,
+                disc: NUM,
+                ty: PredicateTy::Int,
+            },
+            Alternative {
+                name: a_text,
+                disc: TEXT,
+                ty: PredicateTy::Str,
+            },
+            Alternative {
+                name: a_thing,
+                disc: THING_ALT,
+                ty: PredicateTy::Fact(THING),
+            },
+            Alternative {
+                name: a_none,
+                disc: NONE,
+                ty: PredicateTy::Record(Arc::from([])),
+            },
+        ]))
+    };
+
+    Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![
+            Predicate {
+                name: thing,
+                key: PredicateTy::Record(Arc::from([(f_id, PredicateTy::Int)])),
+                value: None,
+            },
+            // The union **leads**, which on the wire changes nothing and in storage
+            // changes everything — stated the same way on both sides so the two
+            // schemas match field for field.
+            Predicate {
+                name: tagged,
+                key: PredicateTy::Record(Arc::from([
+                    (f_what, alternatives()),
+                    (f_id, PredicateTy::Int),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: labelled,
+                key: PredicateTy::Record(Arc::from([(f_id, PredicateTy::Int)])),
+                value: Some(alternatives()),
+            },
+        ]),
+    )
+}
+
+fn thing(id: i64) -> WireFact {
+    WireFact {
+        predicate: THING,
+        key: WireValue::Record(Box::from([WireValue::Int(id)])),
+        value: None,
+    }
+}
+
+fn tagged(what: WireValue, id: i64) -> WireFact {
+    WireFact {
+        predicate: TAGGED,
+        key: WireValue::Record(Box::from([what, WireValue::Int(id)])),
+        value: None,
+    }
+}
+
+fn alt(disc: u32, value: WireValue) -> WireValue {
+    WireValue::Union {
+        disc,
+        value: Box::new(value),
+    }
+}
+
+/// One block per predicate, one fact per alternative.
+fn union_corpus() -> Vec<(&'static str, PredicateId, Vec<WireFact>)> {
+    vec![
+        ("uni.Thing", THING, vec![thing(1), thing(2)]),
+        (
+            "uni.Tagged",
+            TAGGED,
+            vec![
+                tagged(alt(NUM, WireValue::Int(5)), 10),
+                tagged(alt(TEXT, WireValue::Str("a".to_owned())), 20),
+                // **A nested reference inside a payload** — the case a walk that stops
+                // at a union misses, and the one that would leave a fact uninterned.
+                tagged(
+                    alt(
+                        THING_ALT,
+                        WireValue::Ref(WireRef::Nested(Box::new(thing(1)))),
+                    ),
+                    30,
+                ),
+                // An alternative whose payload is the empty record, which is what an
+                // alternative declared with no type at all comes to: zero bytes after
+                // the tag, so a reader expecting any is caught.
+                tagged(alt(NONE, WireValue::Record(Box::from([]))), 40),
+            ],
+        ),
+        (
+            "uni.Labelled",
+            LABELLED,
+            vec![
+                WireFact {
+                    predicate: LABELLED,
+                    key: WireValue::Record(Box::from([WireValue::Int(1)])),
+                    value: Some(alt(NUM, WireValue::Int(7))),
+                },
+                WireFact {
+                    predicate: LABELLED,
+                    key: WireValue::Record(Box::from([WireValue::Int(2)])),
+                    value: Some(alt(TEXT, WireValue::Str("b".to_owned()))),
+                },
+            ],
+        ),
+    ]
+}
+
+/// **The same criterion, for a tag.** Same facts, same schema, same bytes — over the
+/// one construct the transport codec had to grow a marker for.
+#[test]
+fn unions_are_byte_identical_with_the_dotnet_client() {
+    let golden = golden_at(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../clients/dotnet/golden/unions.txt"
+    ));
+    let schema = union_schema();
+
+    assert_eq!(
+        fingerprint::of(&schema),
+        golden.fingerprint,
+        "the two clients' union schemas disagree, so their blocks were never going to \
+         match"
+    );
+
+    let corpus = union_corpus();
+    assert_eq!(
+        corpus.len(),
+        golden.blocks.len(),
+        "the corpora have drifted: {} blocks here, {} in the golden",
+        corpus.len(),
+        golden.blocks.len()
+    );
+
+    for ((name, predicate, facts), (golden_name, golden_predicate, expected)) in
+        corpus.iter().zip(&golden.blocks)
+    {
+        assert_eq!(name, golden_name, "the corpora are in different orders");
+        assert_eq!(predicate.0, *golden_predicate, "{name}");
+
+        let mut block = vec![];
+        encode_block(&mut block, &schema, *predicate, facts).expect("it encodes");
+
+        assert_eq!(
+            hex(&block),
+            hex(expected),
+            "`{name}` differs between the Rust and C# clients"
+        );
+    }
+}
+
+/// The fingerprint the C# side has to **carry**, printed rather than asserted.
+///
+/// A client carries the number instead of computing it (chapter 6's D2), so somebody
+/// has to read it off. `fjord schema fingerprint` is how a real client's author gets it;
+/// this corpus has no `.sigla` file of its own, so this is that command for it.
+#[test]
+#[ignore = "prints the union corpus's schema fingerprint, for the C# client to carry"]
+fn print_the_union_schema_fingerprint() {
+    println!(
+        "union schema fingerprint {:016x}",
+        fingerprint::of(&union_schema())
+    );
 }

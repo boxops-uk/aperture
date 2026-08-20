@@ -22,6 +22,26 @@ pub const MARK_INT_POS_MAX: u8 = 0x50;
 
 pub const MARK_FACT_REF: u8 = 0x51;
 
+/// A **tagged alternative** — the marker, the discriminant, one payload, a
+/// terminator.
+///
+/// Appended after [`MARK_FACT_REF`], which is what [I3] permits and the only thing
+/// it permits: the table above it does not move. Highest in the table, so a union
+/// sorts after every other type, and within a union by discriminant then payload —
+/// so a key's alternatives **cluster**, and matching one is a prefix of the key
+/// order rather than a filter over all of it.
+///
+/// A union is encoded as a *group*, like a record: it carries a terminator and
+/// escapes a null payload, even though its arity of one would make the terminator
+/// redundant. That is a deliberate byte: it keeps "is a group" a single concept —
+/// terminated, null-escaping, depth-counted — so [`skip`] needs no notion of a
+/// value still owed, and `nested_field_span` walks a payload with the machinery it
+/// walks a record field with. See [phase 8.6 D-a].
+///
+/// [I3]: ../../../docs/invariants.md#i3
+/// [phase 8.6 D-a]: ../../../docs/phase-8.6-unions.md
+pub const MARK_UNION: u8 = 0x52;
+
 /// The encoded width of a fact-typed field: the marker, then a fixed-width id.
 ///
 /// Fixed-width rather than the integer codec's variable width, so a reference sorts
@@ -161,17 +181,72 @@ pub fn get_i64(bytes: &[u8]) -> Result<(i64, usize), StoreCodecError> {
     }
 }
 
+/// The encoding of an unsigned integer, on the stack: the marker, then the
+/// magnitude's significant bytes.
+///
+/// The **single definition** of the unsigned encoding — [`put_u64`] and
+/// [`UnionTag`] both go through it, so the bytes a seek prefix is built from and
+/// the bytes a stored value carries cannot drift apart.
+#[inline]
+fn u64_bytes(val: u64) -> ([u8; 1 + size_of::<u64>()], usize) {
+    let mut out = [0u8; 1 + size_of::<u64>()];
+
+    if val == 0 {
+        out[0] = MARK_INT_ZERO;
+        return (out, 1);
+    }
+
+    let width = int_width(val);
+    // 1..=8, as in `put_i64`.
+    out[0] = MARK_INT_ZERO + width as u8;
+    out[1..=width].copy_from_slice(&val.to_be_bytes()[8 - width..]);
+
+    (out, 1 + width)
+}
+
 #[inline]
 pub fn put_u64(out: &mut Vec<u8>, val: u64) {
-    if val == 0 {
-        out.push(MARK_INT_ZERO);
-        return;
+    let (bytes, len) = u64_bytes(val);
+    out.extend_from_slice(&bytes[..len]);
+}
+
+/// The longest a union's tag can be: the marker, plus an unsigned discriminant's
+/// marker and its four magnitude bytes.
+pub const UNION_TAG_MAX_LEN: usize = 1 + 1 + size_of::<u32>();
+
+/// A union's **tag** — `MARK_UNION` and the discriminant — on the stack.
+///
+/// The single statement of what every value of one alternative begins with, and the
+/// reason a select is a *prefix* rather than a filter: a seek splices these bytes to
+/// narrow a scan to one alternative, and the executor's residual compares against
+/// them without allocating, which is what keeps the hot loop allocation-free
+/// ([I9](../../../docs/invariants.md#i9)). Same shape, and the same job, as
+/// [`fact_ref_bytes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnionTag {
+    bytes: [u8; UNION_TAG_MAX_LEN],
+    len: usize,
+}
+
+impl UnionTag {
+    #[must_use]
+    pub fn new(disc: u32) -> UnionTag {
+        let mut bytes = [0u8; UNION_TAG_MAX_LEN];
+        bytes[0] = MARK_UNION;
+
+        let (disc_bytes, disc_len) = u64_bytes(u64::from(disc));
+        bytes[1..=disc_len].copy_from_slice(&disc_bytes[..disc_len]);
+
+        UnionTag {
+            bytes,
+            len: 1 + disc_len,
+        }
     }
-    let width = int_width(val);
-    let be = val.to_be_bytes();
-    // 1..=8, as in `put_i64`.
-    out.push(MARK_INT_ZERO + width as u8);
-    out.extend_from_slice(&be[8 - width..]);
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
 }
 
 pub fn get_u64(bytes: &[u8]) -> Result<(u64, usize), StoreCodecError> {
@@ -414,6 +489,32 @@ pub fn skip(
                 }
             }
 
+            // **A union is a group**, so it needs nothing here that a record does
+            // not: read the tag, then let the existing depth counter and terminator
+            // logic close it. That is the whole payoff of the terminator — a payload
+            // owed but unterminated would mean every `record_depth == 0` return
+            // above becoming "return only if nothing is still owed", in the one
+            // function whose failure mode is a silently wrong field offset.
+            //
+            // The discriminant is consumed positionally rather than scanned, so a
+            // tag whose bytes contain a `0x00` cannot be read as a terminator, and
+            // an unknown tag is still **skippable**: I2 does not depend on knowing
+            // what an alternative means.
+            MARK_UNION => {
+                if record_depth == MAX_RECORD_DEPTH {
+                    return Err(StoreCodecError::BadRecord);
+                }
+
+                let (_, disc_len) = get_u64(
+                    bytes
+                        .get(after_mark..)
+                        .ok_or(StoreCodecError::UnexpectedEof)?,
+                )?;
+
+                i = checked_advance(bytes, after_mark, disc_len)?;
+                record_depth += 1;
+            }
+
             other => return Err(StoreCodecError::UnexpectedMark(other)),
         }
     }
@@ -549,6 +650,36 @@ pub fn encode_typed_at(
             })
         }
 
+        (
+            PredicateTy::Union(alts),
+            Value::Union {
+                disc,
+                value: payload,
+                ..
+            },
+        ) => {
+            let tag = u64::from(*disc);
+
+            // **By discriminant, never by name.** The tag is the identity — it is
+            // what the bytes carry and what the order is over — and a name is not
+            // checked here for the same reason a record's field names are not: this
+            // encoder is positional, and a caller holding names owes it a pass
+            // through `fjord_store::fact::encode` first.
+            let alt = alts
+                .iter()
+                .find(|alt| alt.disc == *disc)
+                .ok_or(StoreCodecError::UnknownDiscriminant { tag })?;
+
+            enc.union(*disc, |enc| encode_typed_at(enc, &alt.ty, payload))
+                .map_err(|err| match err {
+                    // A shape mismatch under a payload *is* a payload that does not
+                    // match the alternative, and the tag is the actionable half of
+                    // saying so. A deeper union's own refusal keeps its own tag.
+                    StoreCodecError::BadRecord => StoreCodecError::BadUnion { tag },
+                    other => other,
+                })
+        }
+
         _ => Err(StoreCodecError::BadRecord),
     }
 }
@@ -624,6 +755,34 @@ impl<'a> TupleEncoder<'a> {
 
     pub fn put_fact_id(&mut self, id: FactId) {
         self.out.extend_from_slice(&fact_ref_bytes(id));
+    }
+
+    /// A **union**: the tag, then one payload, then the terminator every group
+    /// carries.
+    ///
+    /// Counted against the same depth bound a record is, and null-escaping inside it
+    /// for the same reason: within a group a bare `0x00` is the terminator, and a
+    /// payload that could be one has to be told apart from it.
+    pub fn union<R>(
+        &mut self,
+        disc: u32,
+        f: impl FnOnce(&mut TupleEncoder<'_>) -> Result<R, StoreCodecError>,
+    ) -> Result<R, StoreCodecError> {
+        if self.record_depth == MAX_RECORD_DEPTH {
+            return Err(StoreCodecError::BadRecord);
+        }
+
+        self.out.extend_from_slice(UnionTag::new(disc).as_bytes());
+
+        self.record_depth += 1;
+        let result = f(self);
+        self.record_depth -= 1;
+
+        let result = result?;
+
+        self.out.push(MARK_TERM);
+
+        Ok(result)
     }
 
     pub fn record<R>(
@@ -794,6 +953,54 @@ impl<'a> TupleDecoder<'a> {
 
         let result = (|| {
             let value = f(self)?;
+            self.expect_record_end().map_err(E::from)?;
+            Ok(value)
+        })();
+
+        self.record_depth = old_depth;
+
+        result
+    }
+
+    /// A **union**: the callback is handed the discriminant and the decoder
+    /// positioned at the payload, and the terminator is consumed after it.
+    ///
+    /// The discriminant is passed rather than resolved here because only the caller
+    /// holds the type that says which alternative it names — and answering that is
+    /// where [`UnknownDiscriminant`](StoreCodecError::UnknownDiscriminant) comes
+    /// from.
+    pub fn union<R, E>(
+        &mut self,
+        f: impl FnOnce(&mut TupleDecoder<'a>, u64) -> Result<R, E>,
+    ) -> Result<R, E>
+    where
+        E: From<StoreCodecError>,
+    {
+        let mark = self.peek_mark().map_err(E::from)?;
+
+        if mark != MARK_UNION {
+            return Err(E::from(StoreCodecError::UnexpectedMark(mark)));
+        }
+
+        let (disc, disc_len) = get_u64(
+            self.bytes
+                .get(self.pos + 1..)
+                .ok_or(StoreCodecError::UnexpectedEof)
+                .map_err(E::from)?,
+        )
+        .map_err(E::from)?;
+
+        if self.record_depth == MAX_RECORD_DEPTH {
+            return Err(E::from(StoreCodecError::BadRecord));
+        }
+
+        self.pos += 1 + disc_len;
+
+        let old_depth = self.record_depth;
+        self.record_depth += 1;
+
+        let result = (|| {
+            let value = f(self, disc)?;
             self.expect_record_end().map_err(E::from)?;
             Ok(value)
         })();
@@ -1088,6 +1295,27 @@ pub fn decode_typed_at(
 
             Ok(Value::Record(out.into_boxed_slice()))
         }),
+
+        PredicateTy::Union(alts) => dec.union(|dec, tag| {
+            let alt = alts
+                .iter()
+                .find(|alt| u64::from(alt.disc) == tag)
+                .ok_or(StoreCodecError::UnknownDiscriminant { tag })?;
+
+            let value = decode_typed_at(interner, dec, &alt.ty)?;
+
+            let symbol = Symbol::Schema(alt.name);
+            let name = interner
+                .try_resolve(symbol)
+                .ok_or(StoreCodecError::UnknownSymbol(symbol))?
+                .to_owned();
+
+            Ok(Value::Union {
+                disc: alt.disc,
+                alt: name,
+                value: Box::new(value),
+            })
+        }),
     }
 }
 
@@ -1098,6 +1326,20 @@ pub enum Value {
     Str(String),
     FactRef(FactId),
     Record(Box<[(String, Value)]>),
+    /// One alternative of a union: its **discriminant**, its name, and its payload.
+    ///
+    /// The discriminant is the identity — it is what the bytes hold and what the
+    /// order is taken over — and `alt` is the name that discriminant is declared
+    /// with, carried for the same reason a record's field names are: a `Value` is
+    /// serialised without its type ([`Serialize`]), so a union with no name in it
+    /// renders as a number. It is filled from the schema on decode and **not**
+    /// checked on encode, exactly as a record's names are not: the discriminant
+    /// locates the alternative, the name is what a reader sees.
+    Union {
+        disc: u32,
+        alt: String,
+        value: Box<Value>,
+    },
 }
 
 impl PartialEq for Value {
@@ -1125,6 +1367,7 @@ impl Ord for Value {
                 Value::Record(_) => MARK_RECORD,
                 Value::Int(_) => MARK_INT_NEG_MIN,
                 Value::FactRef(_) => MARK_FACT_REF,
+                Value::Union { .. } => MARK_UNION,
             }
         }
 
@@ -1140,6 +1383,23 @@ impl Ord for Value {
             (Str(a), Str(b)) => a.cmp(b),
             (FactRef(a), FactRef(b)) => a.raw().cmp(&b.raw()),
             (Record(a), Record(b)) => a.as_ref().cmp(b.as_ref()),
+            // Discriminant then payload, which is the encoded order. The *name* is
+            // deliberately not compared: it is determined by the discriminant, so
+            // for any value the schema could have produced it would decide nothing
+            // — and for one built by hand with a name that disagrees, ordering by
+            // it would disagree with the bytes.
+            (
+                Union {
+                    disc: a_disc,
+                    value: a_value,
+                    ..
+                },
+                Union {
+                    disc: b_disc,
+                    value: b_value,
+                    ..
+                },
+            ) => a_disc.cmp(b_disc).then_with(|| a_value.cmp(b_value)),
             (Null, Null) => Ordering::Equal,
             _ => unreachable!("equal rank for different Value variants"),
         }
@@ -1165,6 +1425,13 @@ impl Serialize for Value {
 
                 map.end()
             }
+            // `{"alt": payload}` — a union renders as the one-field object it is,
+            // which is also how it is written in a query and on the way in.
+            Value::Union { alt, value, .. } => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(alt, value)?;
+                map.end()
+            }
         }
     }
 }
@@ -1182,7 +1449,7 @@ pub mod proptest {
     use ::proptest::prelude::*;
     use fjord_schema::{
         id::{MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
-        schema::{PredicateId, PredicateTy, SchemaInterner},
+        schema::{Alternative, PredicateId, PredicateTy, SchemaInterner},
     };
     use lasso::Rodeo;
     use std::{cmp::Ordering, sync::Arc};
@@ -1196,6 +1463,12 @@ pub mod proptest {
         Str,
         Fact(PredicateId),
         Record(Vec<(String, TySpec)>),
+        /// Alternatives as `(name, discriminant, payload)`, in **declaration
+        /// order** — which the generator deliberately draws out of discriminant
+        /// order, because a tag that is not a position is the whole of I10 and a
+        /// generator that only ever declares them in order would never notice a
+        /// reader that assumed otherwise.
+        Union(Vec<(String, u32, TySpec)>),
     }
 
     #[derive(Debug, Clone)]
@@ -1245,6 +1518,19 @@ pub mod proptest {
                     .collect::<Vec<_>>();
 
                 PredicateTy::Record(Arc::from(fields.into_boxed_slice()))
+            }
+
+            TySpec::Union(alts) => {
+                let alts = alts
+                    .iter()
+                    .map(|(name, disc, alt_ty)| Alternative {
+                        name: rodeo.get_or_intern(name),
+                        disc: *disc,
+                        ty: materialize_ty_spec(alt_ty, rodeo),
+                    })
+                    .collect::<Vec<_>>();
+
+                PredicateTy::Union(Arc::from(alts.into_boxed_slice()))
             }
         }
     }
@@ -1331,6 +1617,36 @@ pub mod proptest {
                 Ordering::Equal
             }
 
+            // **Discriminant first, and only then the payload** — stated here
+            // independently of the encoder, which is what makes the ordering
+            // property a check rather than a tautology. Two different alternatives
+            // never compare their payloads at all: they are values of different
+            // types, and the tag is what separates them.
+            (
+                PredicateTy::Union(alts),
+                Value::Union {
+                    disc: a_disc,
+                    value: a_value,
+                    ..
+                },
+                Value::Union {
+                    disc: b_disc,
+                    value: b_value,
+                    ..
+                },
+            ) => {
+                if a_disc != b_disc {
+                    return a_disc.cmp(b_disc);
+                }
+
+                let alt = alts
+                    .iter()
+                    .find(|alt| alt.disc == *a_disc)
+                    .expect("a generated union value names a declared alternative");
+
+                cmp_typed(&alt.ty, a_value, b_value)
+            }
+
             _ => panic!("schema/value mismatch: ty={ty:?}, a={a:?}, b={b:?}"),
         }
     }
@@ -1415,27 +1731,126 @@ pub mod proptest {
             64, // max total generated nodes
             4,  // max fields per record
             |inner| {
-                prop::collection::vec(inner, 0..=4).prop_map(|children| {
-                    let mut field_tys = Vec::with_capacity(children.len());
-                    let mut a_fields = Vec::with_capacity(children.len());
-                    let mut b_fields = Vec::with_capacity(children.len());
+                // `inner` is a `BoxedStrategy`, which is not `Clone`, and both arms
+                // need it — a record's fields and a union's alternatives are the same
+                // recursion. `Rc`, not `Arc`: a strategy is not `Send`, and a generator
+                // runs on one thread.
+                let inner = std::rc::Rc::new(inner);
 
-                    for (i, child) in children.into_iter().enumerate() {
-                        let name = field_name(i);
+                prop_oneof![
+                    prop::collection::vec(inner.clone(), 0..=4).prop_map(|children| {
+                        let mut field_tys = Vec::with_capacity(children.len());
+                        let mut a_fields = Vec::with_capacity(children.len());
+                        let mut b_fields = Vec::with_capacity(children.len());
 
-                        field_tys.push((name.clone(), child.ty));
-                        a_fields.push((name.clone(), child.a));
-                        b_fields.push((name, child.b));
-                    }
+                        for (i, child) in children.into_iter().enumerate() {
+                            let name = field_name(i);
 
-                    TypedPairSpec {
-                        ty: TySpec::Record(field_tys),
-                        a: Value::Record(a_fields.into_boxed_slice()),
-                        b: Value::Record(b_fields.into_boxed_slice()),
-                    }
-                })
+                            field_tys.push((name.clone(), child.ty));
+                            a_fields.push((name.clone(), child.a));
+                            b_fields.push((name, child.b));
+                        }
+
+                        TypedPairSpec {
+                            ty: TySpec::Record(field_tys),
+                            a: Value::Record(a_fields.into_boxed_slice()),
+                            b: Value::Record(b_fields.into_boxed_slice()),
+                        }
+                    }),
+                    union_of(inner, false),
+                ]
             },
         )
+    }
+
+    /// The discriminants a generated union declares, given how many alternatives it
+    /// has and which table to use.
+    ///
+    /// Two tables, both drawn: the **canonical** one, where a tag happens to equal
+    /// its position, and a **scrambled** one, where it does not and where the
+    /// declaration is not in tag order. The second is the one that matters — every
+    /// reader that treats a discriminant as an index passes against the first — and
+    /// it carries the two edges a tag has: `0`, and a number far outside any
+    /// plausible count of alternatives.
+    fn discriminants(count: usize, scrambled: bool) -> Vec<u32> {
+        let table: [u32; 4] = if scrambled {
+            [3, 0, 40_000, 7]
+        } else {
+            [0, 1, 2, 3]
+        };
+
+        table[..count].to_vec()
+    }
+
+    fn alternative_name(i: usize) -> String {
+        format!("alt_{i}")
+    }
+
+    /// A pair of union values over one union type, each **independently** choosing
+    /// its alternative.
+    ///
+    /// Independent choice is the point: a pair sharing an alternative compares
+    /// payloads, a pair that does not compares tags, and a generator that only did
+    /// one of those would leave half of I1's union case unexercised.
+    fn union_of(
+        inner: impl Strategy<Value = TypedPairSpec> + 'static,
+        distinct: bool,
+    ) -> impl Strategy<Value = TypedPairSpec> {
+        // A pair that must land on *different* alternatives needs at least two to
+        // choose between. Stated as a bound on the generator rather than as a
+        // `prop_assume`, because assuming it away rejects every single-alternative
+        // draw and every coincidence of the two picks — enough of the space that
+        // proptest gives up before the law has been tested much at all.
+        let least = if distinct { 2 } else { 1 };
+
+        (
+            prop::collection::vec(inner, least..=4),
+            any::<bool>(),
+            0usize..4,
+            0usize..4,
+        )
+            .prop_map(move |(children, scrambled, pick_a, pick_b)| {
+                let discs = discriminants(children.len(), scrambled);
+
+                let alts = children
+                    .iter()
+                    .enumerate()
+                    .map(|(i, child)| (alternative_name(i), discs[i], child.ty.clone()))
+                    .collect::<Vec<_>>();
+
+                let i = pick_a % children.len();
+                let j = if distinct {
+                    (i + 1 + pick_b % (children.len() - 1)) % children.len()
+                } else {
+                    pick_b % children.len()
+                };
+
+                TypedPairSpec {
+                    ty: TySpec::Union(alts),
+                    a: Value::Union {
+                        disc: discs[i],
+                        alt: alternative_name(i),
+                        value: Box::new(children[i].a.clone()),
+                    },
+                    b: Value::Union {
+                        disc: discs[j],
+                        alt: alternative_name(j),
+                        value: Box::new(children[j].b.clone()),
+                    },
+                }
+            })
+    }
+
+    /// A pair whose **top node is a union**, for the laws that are about unions
+    /// rather than about values in general.
+    pub fn arb_union_pair() -> impl Strategy<Value = TypedPairSpec> {
+        union_of(arb_typed_pair().boxed(), false)
+    }
+
+    /// A pair of union values that are **certainly of different alternatives** — for
+    /// the law that says the tag decides the order whatever the payloads are.
+    pub fn arb_distinct_alternative_pair() -> impl Strategy<Value = TypedPairSpec> {
+        union_of(arb_typed_pair().boxed(), true)
     }
 
     /// A single typed value (the `a` half of a pair).
@@ -1458,6 +1873,7 @@ pub(crate) mod tests {
     use super::proptest::*;
     use super::*;
     use ::proptest::prelude::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_i64_rejects_positive_overflow() {
@@ -1963,6 +2379,7 @@ pub(crate) mod tests {
         assert_eq!(MARK_INT_POS_MIN, 0x49);
         assert_eq!(MARK_INT_POS_MAX, 0x50);
         assert_eq!(MARK_FACT_REF, 0x51);
+        assert_eq!(MARK_UNION, 0x52);
         assert_eq!(MARK_TERM, 0x00);
         assert_eq!(MARK_ESCAPE, 0xFF);
         assert_eq!(NULL, 0x00);
@@ -1980,6 +2397,7 @@ pub(crate) mod tests {
             MARK_INT_POS_MIN,
             MARK_INT_POS_MAX,
             MARK_FACT_REF,
+            MARK_UNION,
         ];
         assert!(
             ordered.windows(2).all(|w| w[0] < w[1]),
@@ -2035,6 +2453,26 @@ pub(crate) mod tests {
         let mut fact_ref = Vec::new();
         TupleEncoder::new(&mut fact_ref).put_fact_id(FactId::from_raw(1));
         assert_eq!(fact_ref, [0x51, 0, 0, 0, 0, 0, 0, 0, 1]);
+
+        // A union: the marker, the discriminant through the unsigned encoding, the
+        // payload, the terminator. Discriminant 0 is one byte, as `= 0` will be the
+        // common tag in any hand-written schema.
+        let union_enc = |disc: u32, payload: i64| {
+            let mut b = Vec::new();
+            TupleEncoder::new(&mut b)
+                .union(disc, |enc| {
+                    enc.put_i64(payload);
+                    Ok(())
+                })
+                .unwrap();
+            b
+        };
+        assert_eq!(union_enc(0, 0), [0x52, 0x48, 0x48, 0x00]);
+        assert_eq!(union_enc(1, 0), [0x52, 0x49, 0x01, 0x48, 0x00]);
+        assert_eq!(
+            union_enc(256, 1),
+            [0x52, 0x4A, 0x01, 0x00, 0x49, 0x01, 0x00]
+        );
     }
 
     // A fact-typed field is encoded with the resolved fact-reference marker
@@ -2444,6 +2882,262 @@ pub(crate) mod tests {
                 encoded_a,
                 encoded_b,
             );
+        }
+
+        /// **I2 at full generality**: skip is told nothing but the bytes.
+        ///
+        /// The existing skip properties cover one scalar family at a time and the
+        /// record cases are hand-built. This one hands `skip` whatever the value
+        /// generator produced — records, references, and now unions, nested — and
+        /// asserts it walks exactly one value and stops. It is the property a
+        /// mis-skip of a new constructor fails, and a mis-skip is not visible as an
+        /// error: it is a field offset one byte out, and a silently wrong answer.
+        #[test]
+        fn skip_walks_any_typed_value(spec in arb_typed_value()) {
+            let fixture = materialize_value_fixture(spec);
+            let bytes = encode_typed_for_test(&fixture.ty, &fixture.value).unwrap();
+
+            let end = skip(&bytes, 0, false)?;
+
+            prop_assert_eq!(
+                end,
+                bytes.len(),
+                "skip did not consume exactly one value\nty: {:#?}\nvalue: {:#?}\nbytes: {:02x?}",
+                fixture.ty,
+                fixture.value,
+                bytes,
+            );
+        }
+
+        /// **The law a select rests on**: every value of one alternative begins with
+        /// that alternative's tag.
+        ///
+        /// This is what makes matching an alternative a *prefix* of the key order —
+        /// a seek that narrows, and a residual that compares borrowed bytes — rather
+        /// than a decode per row. If it ever fails, `DiscriminantEq` silently matches
+        /// nothing.
+        #[test]
+        fn the_tag_is_a_byte_prefix_of_every_value_of_that_alternative(spec in arb_union_pair()) {
+            let fixture = materialize_pair_fixture(spec);
+
+            for value in [&fixture.a, &fixture.b] {
+                let Value::Union { disc, .. } = value else {
+                    unreachable!("arb_union_pair produces unions");
+                };
+
+                let bytes = encode_typed_for_test(&fixture.ty, value).unwrap();
+                let tag = UnionTag::new(*disc);
+
+                prop_assert!(
+                    bytes.starts_with(tag.as_bytes()),
+                    "a union value does not begin with its tag\ntag: {:02x?}\nbytes: {:02x?}",
+                    tag.as_bytes(),
+                    bytes,
+                );
+            }
+        }
+
+        /// **The tag dominates the payload.** Two values of different alternatives
+        /// order by discriminant whatever their payloads are — which is what
+        /// "alternatives cluster in a key" means, and is stated here without going
+        /// through `cmp_typed`, so an oracle that agreed with the encoder for the
+        /// wrong reason would not save it.
+        #[test]
+        fn a_discriminant_orders_before_any_payload(spec in arb_distinct_alternative_pair()) {
+            let fixture = materialize_pair_fixture(spec);
+
+            let (Value::Union { disc: a_disc, .. }, Value::Union { disc: b_disc, .. }) =
+                (&fixture.a, &fixture.b)
+            else {
+                unreachable!("arb_union_pair produces unions");
+            };
+
+            prop_assert_ne!(a_disc, b_disc, "the generator guarantees distinct alternatives");
+
+            let encoded_a = encode_typed_for_test(&fixture.ty, &fixture.a).unwrap();
+            let encoded_b = encode_typed_for_test(&fixture.ty, &fixture.b).unwrap();
+
+            prop_assert_eq!(
+                a_disc.cmp(b_disc),
+                encoded_a.cmp(&encoded_b),
+                "tag order and byte order disagree\na: {:#?}\nb: {:#?}\nencoded_a: {:02x?}\nencoded_b: {:02x?}",
+                fixture.a,
+                fixture.b,
+                encoded_a,
+                encoded_b,
+            );
+        }
+
+        /// The stack-built tag and the stored bytes are the same bytes.
+        ///
+        /// [`UnionTag`] exists so the hot path allocates nothing, and it reaches the
+        /// same encoding through [`u64_bytes`] rather than restating it — this is the
+        /// guard that keeps that true, since a second statement of an encoding is
+        /// exactly how a codec drifts.
+        #[test]
+        fn a_union_tag_is_the_marker_and_the_unsigned_discriminant(disc in any::<u32>()) {
+            let mut expected = vec![MARK_UNION];
+            put_u64(&mut expected, u64::from(disc));
+
+            let tag = UnionTag::new(disc);
+            prop_assert_eq!(tag.as_bytes(), &expected[..]);
+        }
+    }
+
+    /// The tests module's own union helpers: a type and an interner that can
+    /// resolve its names.
+    fn union_fixture(alts: &[(&str, u32, PredicateTy)]) -> (LocalInterner, PredicateTy) {
+        use fjord_schema::schema::{Alternative, SchemaInterner};
+        use lasso::Rodeo;
+
+        let mut rodeo = Rodeo::new();
+        let alts = alts
+            .iter()
+            .map(|(name, disc, ty)| Alternative {
+                name: rodeo.get_or_intern(name),
+                disc: *disc,
+                ty: ty.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let interner = LocalInterner::new(SchemaInterner::new(rodeo.into_reader()));
+
+        (
+            interner,
+            PredicateTy::Union(Arc::from(alts.into_boxed_slice())),
+        )
+    }
+
+    fn union_value(disc: u32, alt: &str, value: Value) -> Value {
+        Value::Union {
+            disc,
+            alt: alt.to_owned(),
+            value: Box::new(value),
+        }
+    }
+
+    /// A union of **one** alternative — the degenerate case
+    /// [`docs/testing.md`](../../../docs/testing.md) names, which no random draw
+    /// reliably produces and which is the shape `maybe`'s sugar will lean on.
+    #[test]
+    fn a_single_alternative_union_round_trips() {
+        let (interner, ty) = union_fixture(&[("only", 0, PredicateTy::Str)]);
+        let value = union_value(0, "only", Value::Str("x".to_owned()));
+
+        let bytes = encode_typed(&ty, &value).unwrap();
+
+        assert_eq!(skip(&bytes, 0, false).unwrap(), bytes.len());
+        assert_eq!(decode_typed(&interner, &bytes, &ty).unwrap(), value);
+    }
+
+    /// A union is a **group**, so a null payload is escaped inside it exactly as a
+    /// null element of a record is — which is what lets `skip` tell a payload from
+    /// the terminator that follows it with no state of its own.
+    #[test]
+    fn a_null_payload_is_escaped_inside_the_union_group() {
+        let (interner, ty) = union_fixture(&[("nothing", 0, PredicateTy::Record(Arc::from([])))]);
+
+        // The payload here is the *empty record*, which is what an alternative with
+        // no declared type lowers to. The null case is reached through a value
+        // encoder that can write one, so it is asserted on the bytes directly.
+        let mut out = Vec::new();
+        TupleEncoder::new(&mut out)
+            .union(0, |enc| {
+                enc.put_null();
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            out,
+            [MARK_UNION, MARK_INT_ZERO, MARK_NULL, MARK_ESCAPE, MARK_TERM]
+        );
+        assert_eq!(skip(&out, 0, false).unwrap(), out.len());
+
+        // And the declared shape still round-trips beside it.
+        let value = union_value(0, "nothing", Value::Record(Box::from([])));
+        let bytes = encode_typed(&ty, &value).unwrap();
+        assert_eq!(decode_typed(&interner, &bytes, &ty).unwrap(), value);
+    }
+
+    /// **D-c.** A tag no alternative declares is a refusal, not a mis-decode of
+    /// whatever alternative happens to sit nearby. A fact file outlives the schema
+    /// that wrote it, so this is a data condition rather than an impossibility.
+    #[test]
+    fn an_undeclared_discriminant_is_refused_rather_than_misread() {
+        let (_, wrote) = union_fixture(&[("a", 7, PredicateTy::Str)]);
+        let (reads_with, reads) = union_fixture(&[("a", 3, PredicateTy::Str)]);
+
+        let bytes = encode_typed(&wrote, &union_value(7, "a", Value::Str("x".to_owned()))).unwrap();
+
+        // Skippable without the schema even so — I2 does not depend on the tag
+        // being known, which is what lets a row be walked past a field a reader
+        // cannot interpret.
+        assert_eq!(skip(&bytes, 0, false).unwrap(), bytes.len());
+
+        let err = decode_typed(&reads_with, &bytes, &reads).unwrap_err();
+        assert!(
+            matches!(err, StoreCodecError::UnknownDiscriminant { tag: 7 }),
+            "expected UnknownDiscriminant, got {err:?}"
+        );
+    }
+
+    /// A payload of the wrong shape for the alternative its tag names is refused at
+    /// encode — the union's `BadRecord`.
+    #[test]
+    fn a_payload_that_does_not_match_its_alternative_is_refused() {
+        let (_, ty) = union_fixture(&[("text", 1, PredicateTy::Str)]);
+
+        let err = encode_typed(&ty, &union_value(1, "text", Value::Int(3))).unwrap_err();
+        assert!(
+            matches!(err, StoreCodecError::BadUnion { tag: 1 }),
+            "expected BadUnion, got {err:?}"
+        );
+
+        let err =
+            encode_typed(&ty, &union_value(9, "text", Value::Str("x".to_owned()))).unwrap_err();
+        assert!(
+            matches!(err, StoreCodecError::UnknownDiscriminant { tag: 9 }),
+            "expected UnknownDiscriminant, got {err:?}"
+        );
+    }
+
+    /// Nesting past the depth bound is an error, not a panic or a stack overflow —
+    /// the union's half of `test_skip_bad_record`, since a union counts against the
+    /// same bound a record does.
+    #[test]
+    fn a_union_nested_past_the_depth_bound_is_an_error_not_a_panic() {
+        let depth = MAX_RECORD_DEPTH + 1;
+
+        let mut bytes = Vec::new();
+        for _ in 0..depth {
+            bytes.extend_from_slice(&[MARK_UNION, MARK_INT_ZERO]);
+        }
+        bytes.push(MARK_INT_ZERO);
+        bytes.extend(std::iter::repeat_n(MARK_TERM, depth));
+
+        assert!(matches!(
+            skip(&bytes, 0, false),
+            Err(StoreCodecError::BadRecord)
+        ));
+    }
+
+    /// A union sorts **after every other type**, at the `Value` level as in the
+    /// bytes. Stated at both ends because `Value::Ord` is what a client compares
+    /// rows with and the bytes are what the store sorts by; the two agreeing is the
+    /// property, not either one alone.
+    #[test]
+    fn a_union_sorts_after_every_other_value() {
+        let union = union_value(0, "a", Value::Int(0));
+
+        for smaller in [
+            Value::Null,
+            Value::Str(String::new()),
+            Value::Record(Box::from([])),
+            Value::Int(i64::MAX),
+            Value::FactRef(FactId::from_raw(u64::MAX)),
+        ] {
+            assert!(smaller < union, "{smaller:?} should sort before a union");
         }
     }
 }

@@ -71,6 +71,28 @@ impl FieldPath {
         }
     }
 
+    /// This path, then **a union's payload** — the step being the discriminant the
+    /// payload is expected to be tagged with.
+    ///
+    /// A step's meaning already depends on the constructor it lands on: at a record
+    /// it is a field index, at a scalar it is an error, and here it is a tag. That is
+    /// what lets a payload be named without changing what a [`FieldPath`] *is* — this
+    /// type is in the fixed contract and the resume fingerprint hashes it — while
+    /// still carrying the expected alternative, so a payload read against the wrong
+    /// one is [`FjordError::DiscriminantMismatch`] rather than another type's bytes
+    /// read as this type's.
+    ///
+    /// Flatten emits the tag's own check *before* any residual reading through the
+    /// payload, so from a compiled plan that error is unreachable; it is here for a
+    /// plan built by hand or arriving over the wire. See [phase 8.6 D-d].
+    ///
+    /// [`FjordError::DiscriminantMismatch`]: crate::error::FjordError::DiscriminantMismatch
+    /// [phase 8.6 D-d]: ../../../docs/phase-8.6-unions.md
+    #[must_use]
+    pub fn payload(&self, disc: u32) -> Self {
+        self.then(disc as usize)
+    }
+
     /// This path, then one step further in — reading a field of a record field.
     #[must_use]
     pub fn then(&self, step: usize) -> Self {
@@ -162,6 +184,23 @@ pub enum ResidualOp {
     },
     /// The [`SeekKeyPart::RegisterFactId`] compare, once the seek prefix has closed.
     EqRegisterFactId(Address),
+
+    /// **This union field is this alternative** — the residual form of matching a
+    /// tag, once the seek prefix has closed.
+    ///
+    /// Implemented as a byte-prefix compare against
+    /// [`UnionTag`](fjord_encoding::tuple::UnionTag), because that is what it is: a
+    /// value of one alternative begins with that alternative's tag, so this reads a
+    /// borrowed span of the register's key and compares it against a stack buffer —
+    /// no decode, no allocation ([I9](../../../docs/invariants.md#i9)), nothing
+    /// fetched ([I6](../../../docs/invariants.md#i6)).
+    ///
+    /// Its own arm rather than a [`Prefix`](ResidualOp::Prefix) carrying those bytes,
+    /// for two reasons. A plan is read by people, and `alternative 3` says what
+    /// `prefix 52 4b 03` does not. And the fingerprint tags residuals by kind, so a
+    /// distinct arm is what keeps two plans differing only in this from accepting
+    /// each other's resume cursors.
+    DiscriminantEq(u32),
 
     /// `field < constant` and its three siblings.
     ///
@@ -808,6 +847,18 @@ impl Fingerprint {
                     self.ty(field);
                 }
             }
+            // **The discriminants are hashed and the names are not**, which is the
+            // same rule a record's fields follow and for a sharper reason: a tag is
+            // what the bytes carry, so two plans over unions differing in a tag are
+            // plans over different data.
+            PredicateTy::Union(alts) => {
+                self.byte(4);
+                self.len(alts.len());
+                for alt in alts.iter() {
+                    self.int(u64::from(alt.disc));
+                    self.ty(&alt.ty);
+                }
+            }
         }
     }
 
@@ -825,6 +876,11 @@ impl Fingerprint {
             Value::FactRef(id) => {
                 self.byte(3);
                 self.int(id.raw());
+            }
+            Value::Union { disc, value, .. } => {
+                self.byte(5);
+                self.int(u64::from(*disc));
+                self.value(value);
             }
             Value::Record(fields) => {
                 self.byte(4);
@@ -974,6 +1030,14 @@ impl Fingerprint {
                     self.byte(9);
                     self.byte(op.tag());
                     self.address(*address);
+                }
+                // Its own tag, and the discriminant inside it: two plans matching
+                // two different alternatives of one union differ in nothing else,
+                // and a cursor from one resuming into the other would answer the
+                // wrong alternative's rows from the point it stopped.
+                ResidualOp::DiscriminantEq(disc) => {
+                    self.byte(10);
+                    self.int(u64::from(*disc));
                 }
             }
         }
@@ -1584,9 +1648,11 @@ pub mod proptest {
         SeekKeyPart, Source, Step,
     };
     use crate::fixtures::{compose, i64_field, interner_with, str_field};
-    use fjord_encoding::tuple::Value;
-    use fjord_schema::schema::{LocalInterner, PredicateId, PredicateTy};
+    use fjord_encoding::tuple::{MARK_TERM, UnionTag, Value};
+    use fjord_schema::schema::{Alternative, LocalInterner, PredicateId, PredicateTy};
     use fjord_store::mem_store::MemStore;
+    use lasso::Spur;
+    use std::sync::Arc;
 
     /// Bounds are deliberately tight: the resume battery re-runs a plan once per
     /// cut point, so the work per case is quadratic in the row count.
@@ -1615,15 +1681,35 @@ pub mod proptest {
     /// record's fields are sorted by name, as every query-side record's are.
     const FIELD_NAMES: [&str; MAX_LEVELS] = ["r0", "r1", "r2"];
 
-    /// A key field's type. Scalars only: nested records in keys are the codec's
-    /// business and are covered by `codec::proptest`.
+    /// A key field's type. Scalars, and a **union of two scalars**: nested records in
+    /// keys are the codec's business and are covered by `codec::proptest`, but a union
+    /// is not only an encoding — it is a field the executor walks *into*, and a
+    /// discriminant a residual compares.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FieldTy {
         Int,
         Str,
+        /// `{ num : int = 3 | text : string = 0 }` — the same shape everywhere, with
+        /// the same tags the fixture uses and for the same reason: neither of them is a
+        /// position, and they are not in declaration order.
+        Union,
     }
 
+    /// The union every [`FieldTy::Union`] is.
+    pub const NUM: u32 = 3;
+    pub const TEXT: u32 = 0;
+
     impl FieldTy {
+        /// **Scalars only** — what the *query* generator
+        /// ([`flatten::proptest`](crate::flatten::proptest)) draws.
+        ///
+        /// It compares the executor against a model written in plain Rust, and that
+        /// model reasons about prefixes, constants and variable types field by field;
+        /// a union there would have to be taught to the oracle as well as to the
+        /// compiler, and an oracle that learned a new constructor at the same time as
+        /// the code under test is an oracle worth less. The plan generator below has no
+        /// such model — resume is checked against *itself*, uninterrupted against cut —
+        /// so it takes [`any`](FieldTy::any) instead.
         pub fn of(pick: u8) -> Self {
             if pick % 2 == 0 {
                 FieldTy::Int
@@ -1632,10 +1718,31 @@ pub mod proptest {
             }
         }
 
+        /// Every field type, unions included.
+        pub fn any(pick: u8) -> Self {
+            match pick % 4 {
+                0 | 1 => FieldTy::Int,
+                2 => FieldTy::Str,
+                _ => FieldTy::Union,
+            }
+        }
+
         pub fn predicate_ty(self) -> PredicateTy {
             match self {
                 FieldTy::Int => PredicateTy::Int,
                 FieldTy::Str => PredicateTy::Str,
+                FieldTy::Union => PredicateTy::Union(Arc::from([
+                    Alternative {
+                        name: Spur::default(),
+                        disc: NUM,
+                        ty: PredicateTy::Int,
+                    },
+                    Alternative {
+                        name: Spur::default(),
+                        disc: TEXT,
+                        ty: PredicateTy::Str,
+                    },
+                ])),
             }
         }
     }
@@ -1650,6 +1757,12 @@ pub mod proptest {
     pub enum FieldVal {
         Int(i64),
         Str(&'static str),
+        /// One alternative of [`FieldTy::Union`], with its payload.
+        ///
+        /// Ordered by **discriminant first**, which is what the encoding does — so a
+        /// spec sorted by this and a store sorted by bytes agree, and `facts()` hands
+        /// out the sequence a real allocator would.
+        Union(u32, Box<FieldVal>),
     }
 
     impl FieldVal {
@@ -1657,6 +1770,24 @@ pub mod proptest {
             match ty {
                 FieldTy::Int => FieldVal::Int(INTS[pick as usize % INTS.len()]),
                 FieldTy::Str => FieldVal::Str(STRS[pick as usize % STRS.len()]),
+                // **Both alternatives get drawn**, so a battery covers the tag as well
+                // as the payload: one pick chooses the alternative and the same pick
+                // chooses the value inside it.
+                FieldTy::Union => {
+                    if pick % 2 == 0 {
+                        FieldVal::Union(NUM, Box::new(FieldVal::of(FieldTy::Int, pick)))
+                    } else {
+                        FieldVal::Union(TEXT, Box::new(FieldVal::of(FieldTy::Str, pick)))
+                    }
+                }
+            }
+        }
+
+        /// The discriminant this value carries, for a plan that filters by it.
+        pub fn disc(&self) -> Option<u32> {
+            match self {
+                FieldVal::Union(disc, _) => Some(*disc),
+                _ => None,
             }
         }
 
@@ -1664,6 +1795,13 @@ pub mod proptest {
             match self {
                 FieldVal::Int(i) => i64_field(*i),
                 FieldVal::Str(s) => str_field(s),
+                // A group: the tag, the payload, the terminator.
+                FieldVal::Union(disc, payload) => {
+                    let mut out = UnionTag::new(*disc).as_bytes().to_vec();
+                    out.extend_from_slice(&payload.encode());
+                    out.push(MARK_TERM);
+                    out
+                }
             }
         }
 
@@ -1674,6 +1812,14 @@ pub mod proptest {
             match self {
                 FieldVal::Int(i) => Value::Int(*i),
                 FieldVal::Str(s) => Value::Str((*s).to_owned()),
+                // The name is what the *schema* calls the alternative, and this
+                // generator's schema interns none — so the empty one, which the
+                // comparison ignores (see `Value`'s `Ord`).
+                FieldVal::Union(disc, payload) => Value::Union {
+                    disc: *disc,
+                    alt: String::new(),
+                    value: Box::new(payload.to_value()),
+                },
             }
         }
 
@@ -1685,6 +1831,13 @@ pub mod proptest {
             match self {
                 FieldVal::Int(i) => i.to_string(),
                 FieldVal::Str(s) => format!("{s:?}"),
+                // Unreachable from the query generator, which draws no unions — see
+                // [`FieldTy::of`] — and spelled anyway so the two vocabularies stay one
+                // vocabulary.
+                FieldVal::Union(disc, payload) => {
+                    let alt = if *disc == NUM { "num" } else { "text" };
+                    format!("{{{alt} = {}}}", payload.source())
+                }
             }
         }
     }
@@ -1704,6 +1857,14 @@ pub mod proptest {
             field: usize,
             level: usize,
             ref_field: usize,
+        },
+        /// **This field is this alternative** — drawn only for a union-typed field,
+        /// and from a discriminant that actually occurs there, for the reason
+        /// [`constant_for`] picks a constant that occurs: a tag matching nothing
+        /// filters the predicate away and the case exercises no rows.
+        DiscriminantEq {
+            field: usize,
+            disc: u32,
         },
     }
 
@@ -1822,6 +1983,12 @@ pub mod proptest {
                                     Box::new([Residual {
                                         path: FieldPath::field(*field),
                                         op: ResidualOp::EqConst(val.encode().into_boxed_slice()),
+                                    }])
+                                }
+                                Some(ResidualSpec::DiscriminantEq { field, disc }) => {
+                                    Box::new([Residual {
+                                        path: FieldPath::field(*field),
+                                        op: ResidualOp::DiscriminantEq(*disc),
                                     }])
                                 }
                                 Some(ResidualSpec::EqRegisterField {
@@ -1982,7 +2149,7 @@ pub mod proptest {
                     .field_tys
                     .iter()
                     .take(draw.arity)
-                    .map(|&pick| FieldTy::of(pick))
+                    .map(|&pick| FieldTy::any(pick))
                     .collect(),
             })
             .collect();
@@ -2033,9 +2200,23 @@ pub mod proptest {
                 val: constant_for(&facts[predicate], field, fields[field], draw.constant),
             };
 
-            let residual = match draw.residual % 3 {
+            // A **tag check**, where the field is a union and some fact there carries
+            // one. Drawn from a discriminant that occurs, so the residual keeps rows
+            // rather than filtering the predicate away.
+            let tag = (fields[field] == FieldTy::Union)
+                .then(|| {
+                    constant_for(&facts[predicate], field, fields[field], draw.constant)
+                        .disc()
+                        .map(|disc| ResidualSpec::DiscriminantEq { field, disc })
+                })
+                .flatten();
+
+            let residual = match draw.residual % 4 {
                 0 => None,
                 1 => Some(constant),
+                // A tag where the field has one, and the constant otherwise — so this
+                // arm is the union's and costs the others nothing.
+                2 => Some(tag.unwrap_or(constant)),
                 // A cross-loop equality against a bound register — the residual
                 // form a seek can't express. Falls back to a constant when no
                 // earlier level offers a type-matching field.

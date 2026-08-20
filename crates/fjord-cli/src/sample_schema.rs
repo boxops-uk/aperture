@@ -376,6 +376,11 @@ mod tests {
                         walk(field, len, name);
                     }
                 }
+                PredicateTy::Union(alts) => {
+                    for alt in alts.iter() {
+                        walk(&alt.ty, len, name);
+                    }
+                }
                 PredicateTy::Int | PredicateTy::Str => {}
             }
         }

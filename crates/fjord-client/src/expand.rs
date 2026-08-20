@@ -348,6 +348,13 @@ impl Expander {
                 _ => value.clone(),
             },
 
+            // Nor is an alternative a hop, for the same reason a record's field is
+            // not: the payload is this fact's own value, one constructor down.
+            WireValue::Union { disc, value } => WireValue::Union {
+                disc: *disc,
+                value: Box::new(self.substitute(value, depth)),
+            },
+
             // Depth exhausted, or a nested reference that arrived nested — which a
             // server never sends, since stored a reference is an id. Left alone rather
             // than walked into: expanding what is already expanded would be guessing at
@@ -371,6 +378,10 @@ fn references(value: &WireValue, out: &mut Vec<FactId>) {
                 references(field, out);
             }
         }
+        // A reference inside a payload is a reference. Missing this arm would not
+        // fail — it would silently under-expand, which is the failure mode a
+        // display feature is least likely to have noticed.
+        WireValue::Union { value, .. } => references(value, out),
     }
 }
 

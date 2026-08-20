@@ -217,6 +217,39 @@ fn resolve<S: FactSink>(
             Ok(Value::Record(out.into()))
         }
 
+        // **A payload is walked, which is the whole of what a union costs here.** A
+        // reference can sit inside one, and interning is bottom-up: the payload
+        // resolves before the value holding it exists, exactly as a record field
+        // does, so a parent's key still has no bytes until its children have ids.
+        // Nothing about the striping rule changes — a payload is a child, not a
+        // second parent.
+        (PredicateTy::Union(alts), WireValue::Union { disc, value }) => {
+            let alt =
+                alts.iter()
+                    .find(|alt| alt.disc == *disc)
+                    .ok_or(IngestError::TypeMismatch {
+                        what: "a union value",
+                        detail: "is tagged with a discriminant this union does not declare",
+                    })?;
+
+            // The name comes from the schema here, for the reason a record's fields
+            // do: the wire value carries a tag and no name.
+            let name = schema
+                .interner()
+                .resolve(alt.name)
+                .ok_or(IngestError::TypeMismatch {
+                    what: "a union alternative",
+                    detail: "is named by a symbol this schema cannot resolve",
+                })?
+                .to_owned();
+
+            Ok(Value::Union {
+                disc: alt.disc,
+                alt: name,
+                value: Box::new(resolve(sink, schema, &alt.ty, value, counts)?),
+            })
+        }
+
         _ => Err(IngestError::TypeMismatch {
             what: "a value",
             detail: "does not fit the type the schema declares for it",
@@ -512,7 +545,15 @@ mod tests {
             test_runner::TestRunner,
         };
 
-        const RUNS: usize = 400;
+        // **2,000, and the number is load-bearing.** The rarest outcome here is a
+        // self-contradicting draw — one fact naming a target twice with two different
+        // value sides — and it arrives at roughly three in a thousand. At 400 the
+        // expectation was about one, so the assertion below held by luck; it stopped
+        // holding when the generator gained unions, which occupy a field without
+        // holding a reference and so made the rare case rarer. Raised rather than
+        // weakened: an assertion that a census reached an outcome is worth nothing if
+        // the census is too small to reach it.
+        const RUNS: usize = 2_000;
 
         let mut runner = TestRunner::deterministic();
         let (mut ingested, mut conflicted, mut nested) = (0, 0, 0);
