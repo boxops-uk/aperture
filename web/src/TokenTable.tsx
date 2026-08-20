@@ -27,7 +27,7 @@ export function TokenTable({
             <tr
               key={index}
               className={within(token.span, highlight) ? 'on' : undefined}
-              onMouseEnter={() => onHighlight({ span: token.span, node: null })}
+              onMouseEnter={() => onHighlight({ span: token.span, node: null, view: null })}
               onMouseLeave={() => onHighlight(null)}
             >
               <td className="num">

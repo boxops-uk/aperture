@@ -1,10 +1,10 @@
 // **The demo, driven in a real browser.**
 //
-// The console program is the test, as it is for `clients/dotnet`: a unit test
-// of this page would mock the one thing worth checking — that a WebAssembly
-// module built from the engine loads under a browser's own loader and answers
-// what the host suite says it answers. It builds, serves and drives the real
-// bundle, and fails on any console error.
+// The console program is the test, as it is for `clients/dotnet`: a unit test of
+// this page would mock the one thing worth checking — that a WebAssembly module
+// built from the engine loads under a browser's own loader and answers what the
+// host suite says it answers. It builds, serves and drives the real bundle, and
+// fails on any console error.
 //
 // It needs a Chrome to drive, from `$CHROME` or puppeteer's cache, and says so
 // rather than passing vacuously when there is none.
@@ -48,36 +48,63 @@ const check = (claim, ok) => {
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${claim}`)
   if (!ok) problems.push(claim)
 }
+const settle = () => new Promise((resolve) => setTimeout(resolve, 250))
+const type = async (selector, text) => {
+  await page.click(selector)
+  await page.keyboard.down('Control')
+  await page.keyboard.press('KeyA')
+  await page.keyboard.up('Control')
+  await page.keyboard.type(text)
+  await settle()
+}
+const texts = (selector) => page.$$eval(selector, (els) => els.map((el) => el.textContent))
+const nodeRow = async (kind) =>
+  (
+    await page.evaluateHandle(
+      (kind) =>
+        [...document.querySelectorAll('.tree li')].find(
+          (li) => li.querySelector('.kind')?.textContent === kind,
+        ),
+      kind,
+    )
+  ).asElement()
 
 await page.goto(url, { waitUntil: 'networkidle0' })
-await page.waitForSelector('.scroller tbody tr', { timeout: 15_000 })
-
-const rows = () =>
-  page.$$eval('.scroller tbody tr', (trs) =>
-    trs.map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent)),
-  )
+await page.waitForSelector('.lowered li', { timeout: 15_000 })
 
 check('the engine reports a version', /\d+\.\d+\.\d+/.test(await page.$eval('.status', (el) => el.textContent)))
 
-// Typing is the whole demo: the tokens must follow the keystrokes.
-await page.click('.input')
-await page.keyboard.down('Control')
-await page.keyboard.press('KeyA')
-await page.keyboard.up('Control')
-await page.keyboard.type('X where test.Count X; X = 7 ~')
-await new Promise((resolve) => setTimeout(resolve, 250))
+// ---- the lowered view: the phase that needs a schema ----
 
-const typed = (await rows()).filter((row) => row[2] !== 'whitespace')
 check(
-  'the tokens are the lexer\'s, kind for kind',
-  JSON.stringify(typed.map((row) => [row[1], row[2], row[3]])) ===
+  'the query is typed against the schema',
+  (await texts('.lowered .ty')).some((ty) => ty === 'string'),
+)
+check(
+  'every name in the view resolved',
+  !(await texts('.lowered li')).some((row) => row.includes('<unresolved>')),
+)
+
+// ---- the tokens: what the lexer says, on every keystroke ----
+
+await page.click('.tab:nth-child(1)')
+await page.waitForSelector('.scroller tbody tr')
+await type('.input', 'P where src.File P; P = 7 ~')
+
+const tokens = (await page.$$eval('.scroller tbody tr', (trs) =>
+  trs.map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent)),
+)).filter((row) => row[2] !== 'whitespace')
+
+check(
+  "the tokens are the lexer's, kind for kind",
+  JSON.stringify(tokens.map((row) => [row[1], row[2], row[3]])) ===
     JSON.stringify([
-      ['UId', 'variable', 'X'],
+      ['UId', 'variable', 'P'],
       ['Where', 'keyword', 'where'],
-      ['QId', 'predicate', 'test.Count'],
-      ['UId', 'variable', 'X'],
+      ['QId', 'predicate', 'src.File'],
+      ['UId', 'variable', 'P'],
       ['Semi', 'punctuation', ';'],
-      ['UId', 'variable', 'X'],
+      ['UId', 'variable', 'P'],
       ['Eq', 'punctuation', '='],
       ['Nat', 'number', '7'],
       ['Error', 'error', '~'],
@@ -85,41 +112,24 @@ check(
 )
 check(
   'an unreadable byte is reported where it is',
-  (await page.$$eval('.diagnostics li', (ls) => ls.map((l) => l.textContent)))
-    .some((text) => text.includes('invalid token')),
+  (await texts('.diagnostics li')).some((text) => text.includes('invalid token')),
 )
 check(
   'every class the page styles reaches the paint layer',
   new Set(await page.$$eval('.paint .tok', (ts) => ts.map((t) => t.className))).size >= 5,
 )
 
-// The parse tree is the second view, and the point of it is that a page can
-// address the *shape* rather than a rendered string.
+// ---- the parse tree: the shape, and how it is highlighted ----
+
 await page.click('.tab:nth-child(2)')
 await page.waitForSelector('.tree li')
-const kinds = await page.$$eval('.tree li .kind', (ks) => ks.map((k) => k.textContent))
-check('the tree is the parser\'s, rule for rule', ['Root', 'Query', 'StmtList'].every((k) => kinds.includes(k)))
+const kinds = await texts('.tree li .kind')
+check("the tree is the parser's, rule for rule", ['Root', 'Query', 'StmtList'].every((k) => kinds.includes(k)))
 check('a recovered parse marks where it recovered', kinds.includes('Error'))
 
-// Hovering a node highlights the source it covers: one span, two views.
-const nodeRow = (kind) =>
-  page.evaluateHandle((kind) => {
-    const row = [...document.querySelectorAll('.tree li')].find(
-      (li) => li.querySelector('.kind')?.textContent === kind,
-    )
-    return row
-  }, kind)
-
-const stmtList = (await nodeRow('StmtList')).asElement()
-await stmtList.hover()
-await new Promise((resolve) => setTimeout(resolve, 150))
-check(
-  'hovering a node highlights the source it covers',
-  (await page.$$('.paint .tok.on')).length > 0,
-)
-
-// **Containment, not overlap.** Every ancestor's span covers the hovered one,
-// so an overlap test would light up the path to `Root` — true, and noise.
+await (await nodeRow('StmtList')).hover()
+await settle()
+check('hovering a node highlights the source it covers', (await page.$$('.paint .tok.on')).length > 0)
 check(
   'hovering a node leaves its ancestors alone',
   await page.$$eval('.tree li.on .kind', (ks) => {
@@ -131,9 +141,8 @@ check(
 // The chain `ImplicitBindStmt → Pattern → Sum → Fact → FactPattern` all cover
 // exactly the same bytes, so nothing comparing *spans* can tell them apart. The
 // highlight is by node, and this is the assertion that says so.
-const factPattern = (await nodeRow('FactPattern')).asElement()
-await factPattern.hover()
-await new Promise((resolve) => setTimeout(resolve, 150))
+await (await nodeRow('FactPattern')).hover()
+await settle()
 check(
   'a same-span ancestor stays dark',
   await page.$$eval('.tree li.on .kind', (ks) => {
@@ -142,16 +151,21 @@ check(
   }),
 )
 
-// A query the corpus calls supported must parse without a word of complaint.
-await page.click('.input')
-await page.keyboard.down('Control')
-await page.keyboard.press('KeyA')
-await page.keyboard.up('Control')
-await page.keyboard.type('X where test.Foo {name = X}')
-await new Promise((resolve) => setTimeout(resolve, 250))
+// ---- a clean query, and then the schema it is clean against ----
+
+await type('.input', 'P where src.File P')
+check('a supported query compiles clean', (await page.$$('.diagnostics li')).length === 0)
+
+await page.click('.disclosure')
+await page.waitForSelector('.schema-input')
+check('the schema lists what it declares', (await page.$$('.predicates li')).length >= 20)
+
+// Editing the schema recompiles the query, which is the whole point of the page
+// holding one: the same schema the engine resolves names against.
+await type('.schema-input', 'schema src { predicate Nothing : string }')
 check(
-  'a supported query parses clean',
-  (await page.$$('.diagnostics li')).length === 0 && (await page.$$('.tree li')).length > 5,
+  'a query stops typechecking when its schema stops declaring it',
+  (await texts('.diagnostics li')).some((text) => text.includes('reject/unknown-predicate')),
 )
 
 await browser.close()

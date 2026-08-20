@@ -1,77 +1,78 @@
 import { useEffect, useState } from 'react'
-import { load, type Engine, type Tokens, type Tree } from './wasm'
+import { load, type Engine, type Lowered, type SchemaView, type Tokens, type Tree } from './wasm'
 import type { Highlight } from './span'
 import { Editor } from './Editor'
 import { TokenTable } from './TokenTable'
 import { TreeView } from './TreeView'
+import { LoweredView } from './LoweredView'
+import { SchemaPane } from './SchemaPane'
 import { Diagnostics } from './Diagnostics'
 import './app.css'
 
-/**
- * Sigla worth typing at, taken from the engine's own corpus — where each one is
- * already classified and its answer already asserted. A demo carrying examples
- * of its own would be a second statement of the language that nothing checks,
- * and the first version of this page proved the point: every sample it shipped
- * was missing its head, which the lexer was perfectly happy to tokenise.
- */
-const SAMPLES: { label: string; source: string }[] = [
-  { label: 'a join', source: 'X where test.Edge {from = X, to = Y}; test.Node {id = Y}' },
-  { label: 'a record head', source: '{a = X, b = Y} where test.Foo {name = X, id = Y}' },
-  { label: 'a constraint', source: 'X where test.Name X; X = "a"..' },
-  { label: 'a denial', source: 'X where test.Name X; X != "abc"' },
-  { label: 'a negation', source: 'X where test.Foo {id = X}; !test.Bar {id = X}' },
-  { label: 'a subquery', source: 'X where X = (Y where test.Foo {id = Y})' },
-  { label: 'junk', source: 'X where X = }' },
-]
-
-type Analysis = { tokens: Tokens; tree: Tree; micros: number }
+type Analysis = {
+  tokens: Tokens
+  tree: Tree
+  lowered: Lowered
+  schema: SchemaView
+  micros: number
+}
 
 /**
- * Lex, parse, and time the whole round trip — both calls, the JSON, and parsing
- * it back — because that is what a keystroke actually costs a page. The engine's
- * own share is far smaller, and printing that number would be measuring
- * something the reader cannot see.
+ * Everything the front end says about a query, and what the whole round trip
+ * cost — every call, the JSON, and parsing it back — because that is what a
+ * keystroke actually costs a page. The engine's own share is far smaller, and
+ * printing that number would be measuring something the reader cannot see.
+ *
+ * The schema is recompiled with the query rather than cached, and it is cheap
+ * enough not to matter: the module holds no state, which is what keeps the
+ * boundary a pair of strings instead of a handle nobody can free.
  *
  * Outside the component because it reads a clock: a measurement taken during
  * render is one that changes when React re-renders for reasons of its own.
  */
-function analyse(engine: Engine, source: string): Analysis {
+function analyse(engine: Engine, schemaSource: string, source: string): Analysis {
   const started = performance.now()
   const tokens = engine.lex(source)
   const tree = engine.parse(source)
-  return { tokens, tree, micros: (performance.now() - started) * 1000 }
+  const schema = engine.schema(schemaSource)
+  const lowered = engine.compile(schemaSource, source)
+  return { tokens, tree, schema, lowered, micros: (performance.now() - started) * 1000 }
 }
 
 export default function App() {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [highlight, setHighlight] = useState<Highlight | null>(null)
-  const [tab, setTab] = useState<'tokens' | 'tree'>('tokens')
+  const [tab, setTab] = useState<'tokens' | 'tree' | 'lowered'>('lowered')
 
-  // Source and analysis move together, updated by whatever changed the source —
-  // a keystroke, a sample, or the engine finishing loading.
-  const [state, setState] = useState<{ source: string; view: Analysis | null }>({
-    source: SAMPLES[0].source,
+  // Schema, query and analysis move together, updated by whatever changed
+  // either text — a keystroke, a sample, or the engine finishing loading.
+  const [state, setState] = useState<{ schema: string; source: string; view: Analysis | null }>({
+    schema: '',
+    source: '',
     view: null,
   })
 
-  const show = (source: string, engine: Engine | null) =>
-    setState({ source, view: engine ? analyse(engine, source) : null })
+  const show = (schema: string, source: string, engine: Engine | null) =>
+    setState({ schema, source, view: engine ? analyse(engine, schema, source) : null })
 
   useEffect(() => {
     load().then(
       (loaded) => {
         setEngine(loaded)
-        setState((current) => ({ ...current, view: analyse(loaded, current.source) }))
+        const schema = loaded.sampleSchema
+        const source = loaded.samples[0]?.source ?? ''
+        setState({ schema, source, view: analyse(loaded, schema, source) })
       },
       (error: unknown) => setFailure(String(error)),
     )
   }, [])
 
-  const { source, view } = state
-  // The parse reports what the lexer already said about a bad byte, so showing
-  // both would print every fault twice.
-  const diagnostics = view ? view.tree.diagnostics : []
+  const { schema, source, view } = state
+  // One list, from the compilation: it carries the lexer's and the parser's
+  // faults as well as its own, in the order `Diagnostics::in_source_order` puts
+  // them — so showing the parse's separately would print every one twice.
+  const diagnostics = view ? view.lowered.diagnostics : []
 
   return (
     <div className="page">
@@ -81,9 +82,10 @@ export default function App() {
           <div>
             <h1>sigla, in your browser</h1>
             <p>
-              The tokens and the tree below come from <code>fjord_engine</code> compiled
-              to WebAssembly — the same lexer and the same generated parser the server
-              and the shell run, not a re-implementation of either.
+              Everything below comes from <code>fjord_engine</code> compiled to
+              WebAssembly — the same lexer, parser, and typechecker the server and the
+              shell run. Edit the schema and the query stops typechecking, because it is
+              the same schema the query is resolved against.
             </p>
           </div>
         </div>
@@ -91,12 +93,12 @@ export default function App() {
       </header>
 
       <div className="samples">
-        {SAMPLES.map((sample) => (
+        {(engine?.samples ?? []).map((sample) => (
           <button
             key={sample.label}
             type="button"
             className={source === sample.source ? 'chip on' : 'chip'}
-            onClick={() => show(sample.source, engine)}
+            onClick={() => show(schema, sample.source, engine)}
           >
             {sample.label}
           </button>
@@ -110,10 +112,15 @@ export default function App() {
             source={source}
             tokens={view?.tokens.tokens ?? []}
             highlight={highlight}
-            onChange={(next) => show(next, engine)}
+            onChange={(next) => show(schema, next, engine)}
             onHighlight={setHighlight}
           />
           <Diagnostics diagnostics={diagnostics} source={source} />
+          <SchemaPane
+            source={schema}
+            view={view?.schema ?? null}
+            onChange={(next) => show(next, source, engine)}
+          />
         </section>
 
         <section className="pane">
@@ -132,20 +139,31 @@ export default function App() {
             >
               parse tree<span className="count">{view?.tree.nodes.length ?? 0}</span>
             </button>
+            <button
+              type="button"
+              className={tab === 'lowered' ? 'tab on' : 'tab'}
+              onClick={() => setTab('lowered')}
+            >
+              lowered<span className="count">{view?.lowered.nodes.length ?? 0}</span>
+            </button>
           </div>
 
-          {tab === 'tokens' ? (
+          {tab === 'tokens' && (
             <TokenTable
               tokens={view?.tokens.tokens ?? []}
               highlight={highlight}
               onHighlight={setHighlight}
             />
-          ) : (
+          )}
+          {tab === 'tree' && (
             <TreeView
               tree={view?.tree ?? { root: null, nodes: [], diagnostics: [] }}
               highlight={highlight}
               onHighlight={setHighlight}
             />
+          )}
+          {tab === 'lowered' && view && (
+            <LoweredView lowered={view.lowered} highlight={highlight} onHighlight={setHighlight} />
           )}
         </section>
       </main>

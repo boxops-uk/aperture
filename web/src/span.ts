@@ -1,4 +1,4 @@
-import type { Span, Tree } from './wasm'
+import type { Span } from './wasm'
 
 /**
  * What the cursor is on: a range of the source, and — when the cursor is on a
@@ -10,7 +10,7 @@ import type { Span, Tree } from './wasm'
  * chain when the cursor is on its last link. Which node the cursor is on is
  * knowledge only the tree has, and only the tree needs.
  */
-export type Highlight = { span: Span; node: number | null }
+export type Highlight = { span: Span; node: number | null; view: 'tree' | 'lowered' | null }
 
 /**
  * Whether `span` is inside the highlight — how the source and the token table
@@ -37,14 +37,22 @@ export function within(span: Span, highlight: Highlight | null): boolean {
  * descendants, or — when the cursor is in the source — whatever sits inside the
  * bytes it is over.
  */
-export function litNodes(tree: Tree, highlight: Highlight | null): Set<number> {
+export function litNodes(
+  tree: { nodes: { id: number; span: Span; children: number[] }[] },
+  highlight: Highlight | null,
+  view: 'tree' | 'lowered',
+): Set<number> {
   const lit = new Set<number>()
   if (!highlight) return lit
 
-  if (highlight.node !== null) {
+  // A node id only means something to the view that minted it: the parse tree
+  // and the lowered tree number their own arenas, and 7 is a different node in
+  // each. When the cursor is in the other one, fall back to the span.
+  if (highlight.node !== null && highlight.view === view) {
+    const byId = new Map(tree.nodes.map((node) => [node.id, node]))
     const walk = (id: number) => {
       lit.add(id)
-      for (const child of tree.nodes[id]?.children ?? []) walk(child)
+      for (const child of byId.get(id)?.children ?? []) walk(child)
     }
     walk(highlight.node)
     return lit

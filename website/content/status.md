@@ -30,7 +30,7 @@ built rather than described as if it were.
 | **Viewer** | A code-search site: browse, file view with cross-references, prefix search, symbol pages |
 | **Measurement** | Six instruments across seven rungs, and a findings register |
 | **Documentation** | This site, deployed on every push to main after the tests and the drift gate; each release carries it as an attested bundle beside the binaries |
-| **The engine in a browser** | `fjord-engine` compiles to `wasm32-unknown-unknown`, and two interactive segments run on it: type sigla and see the real lexer's tokens and the real parser's tree, with the diagnostics each reports. CI checks the browser build on every push |
+| **The engine in a browser** | `fjord-engine` compiles to `wasm32-unknown-unknown`, and the whole front end runs on it: type sigla and see the real lexer's tokens, the real parser's tree, and the lowered tree with the types typecheck inferred — against a schema you can edit in the page. CI checks the browser build on every push |
 
 ## Not built
 
@@ -42,7 +42,7 @@ built rather than described as if it were.
 | **`fjord write`, `db backup/restore/verify`, `completions`** | Named in the CLI design, absent from the binary. A Complete database is a directory, so `tar` is the backup | — |
 | **Per-predicate statistics** | Nothing feeds a selectivity heuristic, which is why the reorderer does not have one | `finish` is the natural place to record them |
 | **Per-stream flow control** | Bounded queues and per-connection backpressure in the meantime | — |
-| **The rest of the interactive site** | Lexing and parsing are real; the types, the plan and the wire views are not, and the published book still highlights its code samples with a hand-written JavaScript lexer | Everything left needs a schema in the page, because lowering resolves names against one. After that each view is additive |
+| **The rest of the interactive site** | Lexing, parsing and typechecking are real; the **plan** and the rows are not, and the published book still highlights its code samples with a hand-written JavaScript lexer | Each remaining view is additive — the compilation already produces a plan, and the view throws it away |
 | **A resumable deadline** | A timeout unwinds terminally instead of handing back a cursor | The token cannot represent a mid-descent position |
 | **Authentication** | None, by design. The transport is the trust boundary | — |
 

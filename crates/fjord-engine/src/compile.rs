@@ -185,6 +185,16 @@ impl<'src> Compilation<'src> {
         self.source
     }
 
+    /// The types [`check`](Self::check) gave this query's nodes.
+    ///
+    /// Beside [`ast`](Self::ast) rather than only returned by `check`, because a
+    /// view needs the annotation table *and* the tree it indexes, and a borrow
+    /// handed back by `&mut self` cannot be held while the tree is read.
+    #[must_use]
+    pub fn typed(&self) -> Option<&Typed> {
+        self.typed.as_ref()
+    }
+
     /// The diagnostics in the order a reader wants them — see
     /// [`Diagnostics::in_source_order`], which is where the rule lives.
     ///

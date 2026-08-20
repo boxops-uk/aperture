@@ -35,7 +35,7 @@ export function Editor({
             className={
               within(token.span, highlight) ? `tok tok-${token.class} on` : `tok tok-${token.class}`
             }
-            onMouseEnter={() => onHighlight({ span: token.span, node: null })}
+            onMouseEnter={() => onHighlight({ span: token.span, node: null, view: null })}
             onMouseLeave={() => onHighlight(null)}
           >
             {token.text}

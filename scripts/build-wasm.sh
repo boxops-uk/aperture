@@ -39,12 +39,33 @@ echo "==> wasm-bindgen --target web --out-dir ${out#"$root"/}"
 mkdir -p "$out"
 wasm-bindgen --target web --out-dir "$out" "$artifact"
 
+# `wasm-opt` from PATH if somebody has binaryen installed, otherwise the copy
+# `web/`'s dev-dependencies bring — so a checkout that has run `npm install`
+# needs nothing else to build a shipping-sized module.
 module="$out/fjord_wasm_bg.wasm"
-if command -v wasm-opt >/dev/null; then
+opt=$(command -v wasm-opt || true)
+[[ -n "$opt" ]] || opt=$([[ -x "$root/web/node_modules/.bin/wasm-opt" ]] && echo "$root/web/node_modules/.bin/wasm-opt")
+
+before=$(wc -c <"$module")
+if [[ -n "$opt" ]]; then
     echo "==> wasm-opt -Oz"
-    wasm-opt -Oz "$module" -o "$module"
+    # **The feature flags are not optional.** rustc's `wasm32-unknown-unknown`
+    # emits bulk-memory, sign-extension, non-trapping conversions, multivalue
+    # and reference types by default, and wasm-opt validates its *input* against
+    # the features it was told about — so without these it refuses a module it
+    # is perfectly able to optimise, with an error about `memory.copy` rather
+    # than about flags.
+    "$opt" -Oz \
+        --enable-bulk-memory \
+        --enable-bulk-memory-opt \
+        --enable-sign-ext \
+        --enable-nontrapping-float-to-int \
+        --enable-multivalue \
+        --enable-reference-types \
+        "$module" -o "$module"
 else
-    echo "==> wasm-opt not on PATH — shipping unoptimised (install binaryen to shrink it)"
+    echo "==> no wasm-opt: shipping unoptimised (npm install in web/, or install binaryen)"
 fi
 
-printf '==> %s: %s bytes\n' "${module#"$root"/}" "$(wc -c <"$module")"
+after=$(wc -c <"$module")
+printf '==> %s: %s bytes (from %s)\n' "${module#"$root"/}" "$after" "$before"

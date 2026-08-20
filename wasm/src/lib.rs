@@ -14,8 +14,9 @@
 //!
 //! What a browser cannot do, stated so it is not filed as a gap: **ingest**,
 //! because interning needs a real backend and durable id claims, and **schema
-//! `import`**, because resolution reads files. Everything from lexing to a plan
-//! runs here.
+//! `import`**, because resolution reads files — so a browser schema is
+//! single-file until a virtual resolver exists. Everything from lexing to a
+//! plan runs here.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -40,6 +41,46 @@ pub fn tokens(source: &str) -> String {
 #[must_use]
 pub fn tree(source: &str) -> String {
     fjord_inspect::tree_json(source)
+}
+
+/// Read `source` as a schema and answer the
+/// [schema view](fjord_inspect::SchemaView) as JSON.
+#[wasm_bindgen]
+#[must_use]
+pub fn schema(source: &str) -> String {
+    fjord_inspect::schema_json(source)
+}
+
+/// Compile `query` against `schema` through the whole front end — lex, parse,
+/// lower, typecheck, flatten, reorder — and answer the
+/// [lowered view](fjord_inspect::Lowered) as JSON.
+///
+/// Two strings in, because the module holds no state: a browser has no
+/// filesystem to keep a schema in, and a handle would be a lifetime to manage
+/// across a boundary that cannot express one. Schemas are small and compiling
+/// one is microseconds.
+#[wasm_bindgen]
+#[must_use]
+pub fn compile(schema: &str, query: &str) -> String {
+    fjord_inspect::lowered_json(schema, query)
+}
+
+/// The schema the site opens with — the repository's own `schemas/code.sigla`.
+#[wasm_bindgen]
+#[must_use]
+pub fn sample_schema() -> String {
+    fjord_inspect::SCHEMA.to_owned()
+}
+
+/// The queries the site opens with, as JSON.
+///
+/// From the module rather than the page because they are *tested* there:
+/// `every_sample_compiles_clean` is what stops the site shipping an example the
+/// language would refuse.
+#[wasm_bindgen]
+#[must_use]
+pub fn samples() -> String {
+    fjord_inspect::samples_json()
 }
 
 /// The version of Fjord this module was built from, for a page that wants to

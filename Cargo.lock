@@ -678,6 +678,7 @@ dependencies = [
  "codespan-reporting",
  "fjord-engine",
  "fjord-schema",
+ "fjord-store",
  "proptest",
  "serde",
  "serde_json",

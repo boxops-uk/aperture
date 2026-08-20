@@ -233,12 +233,12 @@ API (rotate in place at half TTL) → connection lifetime. Guards to write up fr
 
 ## The engine in a browser — WebAssembly
 
-**Built, as far as the front end's first two phases.** The store split is done,
-`fjord-inspect` holds the token and parse-tree views, `wasm/` builds a 72 KB
-module (29 KB over the wire), and `web/` is a React site that lexes *and*
-parses on every keystroke, with one span highlighting across every view. What
-is left is the phases that need a schema, and the decisions only they can
-settle.
+**Built, through the whole front end.** The store split is done,
+`fjord-inspect` holds the token, parse-tree and lowered views, `wasm/` builds a
+258 KB module (108 KB over the wire), and `web/` is a React site that lexes,
+parses, lowers and typechecks on every keystroke against a schema the reader
+can edit. What is left is showing the *plan* and the rows — the phases that
+have output beyond diagnostics.
 
 **The goal, unchanged.** The design book's interactive segments run the real
 lexer, parser, typechecker, planner, executor and transport codec, compiled to
@@ -297,13 +297,34 @@ The crate exists, with `Tokens` built and the rest to come.
 |---|---|---|
 | `Tokens` — `{kind, class, span, text}` + diagnostics | `lexer::tokenize` | ✅ |
 | `Tree` — a dense `{id, kind, token, label, span, children}` | the **CST**, through `cst::CstNode` | ✅ |
-| `Lowered` — the same shape, one tree in | `Ast` with spans from `print::spanned` | to build; **needs a schema**, which is the next decision below |
-| `Types` — per node, and the head | `Typed::ty`, `Compilation::head_ty` | to build |
+| `Lowered` — `{id, kind, label, ty, span, children}` plus the statement list | `Ast`, walked from the head and the body, with `Typed::ty` beside it | ✅ |
+| `SchemaView` — predicates and their declared types | `syntax::{parse, lower}`, typed by `print::signature` | ✅ enough for the page; canonical form and compatibility are not shown |
+| `Types` — per node, and the head | `Typed::ty`, `Compilation::head_ty` | ✅ folded into `Lowered` — a type is an annotation *on* a node, and a second panel would make a reader align two lists by hand |
 | `Diagnostics` — code, message, labels | the sink, through `Diagnostics::in_source_order` | ✅ for every phase that reports without a schema |
 | `PlanView` — steps, levels, seek keys, residuals, projections, fingerprint | mirrors the walk in `print::plan` | to build |
 | `Rows` and `ProfileView` | `fixtures::collect_rows` and `iter::enumerate_profiled` over a `MemStore` from `fixture::facts()` | to build |
 | `WireView` — frames, blocks, and a hex dump annotated by offset | `fjord_wire::{frame, block, value, protocol}` | to build |
 | `SchemaView` — predicates, canonical form, identity, compatibility | `fjord_schema::{syntax, print, fingerprint}` | to build |
+
+**The schema is text, and the page holds it.** `syntax::read` builds a schema
+from a string with no filesystem in reach, so the second editor was all it
+took. Two consequences worth keeping: the module stays **stateless** — two
+strings in, JSON out, no handle to a compiled schema that a page would have to
+free — and a reader can *break* the schema and watch the query stop
+typechecking, which is the clearest statement that these are the same phases
+the server runs.
+
+**The samples moved into the crate.** `fjord_inspect::SAMPLES` and `SCHEMA`
+(the repository's own `schemas/code.sigla`, embedded) are what the page opens
+with, and `every_sample_compiles_clean` is what makes them claims rather than
+decoration. The page invented its own examples once; all of them were missing
+the head a query requires.
+
+**The lowered view runs the whole front end, not just typecheck.** Several
+refusals a reader meets first are flatten's (`nyi/value-field`,
+`reject/not-a-generator`), and a page that showed "no errors" for a query
+`flatten` would refuse would be lying. The plan it produces is simply not shown
+yet.
 
 **The split between the two trees is the thing to keep straight.** The parse
 view is the *concrete* tree — the "lossless, untyped, grammar-shaped tree with
@@ -350,13 +371,19 @@ matters.
 
 ### What is left
 
-- **A schema in the page**, which is what everything left waits on. `Compilation`
-  takes `(&str, &Schema)` and `fjord_schema::syntax::read` builds one from text
-  with no filesystem in reach, so the shape is a second editor holding a schema
-  — the sample schema by default. That unblocks the lowered tree, the types,
-  the diagnostics with codes, and the plan.
-- **The remaining views**, in the order a reader meets them: `Lowered` and
-  `Types`, then `PlanView`, which is the argument for the whole exercise.
+- **`PlanView`**, which is the argument for the whole exercise: steps, levels,
+  seek keys, residuals, projections and the fingerprint. `Compilation::plan`
+  already runs — the view throws the `Plan` away. `print::plan` is the map of
+  what to expose.
+- **Rows and `ProfileView`**, which would make the site a playground rather than
+  a viewer: a `MemStore` seeded from `fixture::facts()` answers a query in the
+  browser. The fixture is in the seam crate and wasm-clean, so this is reachable;
+  what it needs is a schema and facts that agree, which today means the fixture's
+  rather than the sample schema's.
+- **Size.** 258 KB is the whole front end plus the schema language; `wasm-opt
+  -Oz` takes 34 KB off it and `web/`'s dev-dependencies now carry binaryen so
+  the build script finds one. If it matters more later, the lever is splitting
+  the module per segment rather than shrinking this one.
 - **Retire the hand-written highlighter** in `website/assets/app.js` once the
   new site carries the book's code samples. Until then two highlighters exist,
   which is the state this work is meant to end.

@@ -23,7 +23,7 @@ export function TreeView({
   onHighlight: (highlight: Highlight | null) => void
 }) {
   const [trivia, setTrivia] = useState(false)
-  const lit = useMemo(() => litNodes(tree, highlight), [tree, highlight])
+  const lit = useMemo(() => litNodes(tree, highlight, 'tree'), [tree, highlight])
 
   if (tree.root === null) {
     return (
@@ -56,7 +56,7 @@ export function TreeView({
             key={node.id}
             className={lit.has(node.id) ? 'on' : undefined}
             style={{ paddingLeft: `${depth * 1.1 + 0.75}rem` }}
-            onMouseEnter={() => onHighlight({ span: node.span, node: node.id })}
+            onMouseEnter={() => onHighlight({ span: node.span, node: node.id, view: 'tree' })}
             onMouseLeave={() => onHighlight(null)}
           >
             <span className={node.token ? 'kind leaf' : 'kind'}>{node.kind}</span>

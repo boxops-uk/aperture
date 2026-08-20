@@ -25,7 +25,8 @@ serde_json = "1.0.150"
 
 [dev-dependencies]
 # The corpus: real sigla, already classified, as the edge cases a generator
-# would not think to draw.
+# would not think to draw — and the fixture schema it is written against.
 fjord-engine = { path = "../fjord-engine", features = ["proptest"] }
+fjord-store = { path = "../fjord-store", features = ["proptest"] }
 proptest = "1.11.0"
 serde_json = "1.0.150"
