@@ -2,8 +2,10 @@
 
 What is not built, what building each piece requires, and the record of decisions already
 taken so they are not re-litigated. The design of record is the
-[design book](website/README.md); the working contract is [`AGENTS.md`](AGENTS.md); what has
-been measured is [`bench/FINDINGS.md`](bench/FINDINGS.md). The history of how the system was
+[design book](website/README.md) — **published** at <https://boxops-uk.github.io/fjord/> on
+every push to main, and shipped with each release as an attested `fjord-docs-site.tar.gz`
+beside the binaries; the working contract is [`AGENTS.md`](AGENTS.md); what has been
+measured is [`bench/FINDINGS.md`](bench/FINDINGS.md). The history of how the system was
 built lives in git, where it can be cited by commit.
 
 **Definition of done, everywhere:** a task ends in a green test (prefer a property), and

@@ -29,6 +29,7 @@ built rather than described as if it were.
 | **Second implementation** | A C# client, its demo producer, a real Roslyn/MSBuild indexer, and a byte-for-byte golden against the Rust encoder |
 | **Viewer** | A code-search site: browse, file view with cross-references, prefix search, symbol pages |
 | **Measurement** | Six instruments across seven rungs, and a findings register |
+| **Documentation** | This site, deployed on every push to main after the tests and the drift gate; each release carries it as an attested bundle beside the binaries |
 
 ## Not built
 
