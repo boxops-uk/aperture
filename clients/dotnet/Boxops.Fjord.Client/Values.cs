@@ -18,6 +18,14 @@ public abstract record FjordValue
 
     public sealed record Record(IReadOnlyList<FjordValue> Fields) : FjordValue;
 
+    /// <summary>One alternative of a union: its discriminant, then its payload.</summary>
+    /// <remarks>
+    /// The tag is the one thing the schema cannot supply — a record's shape is declared,
+    /// but <i>which</i> alternative a value took is a property of the value — so it is
+    /// the only marker this codec writes besides a reference's form.
+    /// </remarks>
+    public sealed record Union(uint Disc, FjordValue Value) : FjordValue;
+
     public static FjordValue Of(long value) => new Int(value);
 
     public static FjordValue Of(string value) => new Str(value);
@@ -25,6 +33,9 @@ public abstract record FjordValue
     public static FjordValue Of(FjordRef value) => new Ref(value);
 
     public static FjordValue Rec(params FjordValue[] fields) => new Record(fields);
+
+    /// <summary>The <paramref name="disc"/> alternative, holding <paramref name="value"/>.</summary>
+    public static FjordValue Alt(uint disc, FjordValue value) => new Union(disc, value);
 }
 
 /// <summary>
@@ -140,10 +151,42 @@ public static class ValueCodec
                 break;
             }
 
+            case (FjordType.Union declared, FjordValue.Union chosen):
+            {
+                var alternative = Alternative(declared, chosen.Disc);
+
+                // The tag, then the payload. A varint, not the storage codec's
+                // order-preserving form: nothing on this wire is sorted.
+                Varint.Write(sink, chosen.Disc);
+                WriteValue(sink, schema, alternative.Type, chosen.Value);
+                break;
+            }
+
             default:
                 throw new FjordProtocolException(
                     $"value {value.GetType().Name} does not fit type {type.GetType().Name}");
         }
+    }
+
+    /// <summary>The alternative a discriminant names.</summary>
+    /// <remarks>
+    /// Searched by tag rather than indexed by it, which is the whole of I10 on this
+    /// side: a discriminant is a name for an alternative, not its position.
+    /// </remarks>
+    private static (string Name, uint Disc, FjordType Type) Alternative(
+        FjordType.Union declared,
+        ulong disc)
+    {
+        foreach (var alternative in declared.Alternatives)
+        {
+            if (alternative.Disc == disc)
+            {
+                return alternative;
+            }
+        }
+
+        throw new FjordProtocolException(
+            $"no alternative with discriminant {disc} in this union");
     }
 
     private static void WriteRef(
@@ -230,6 +273,16 @@ public static class ValueCodec
                     fields.Add(ReadValue(bytes, schema, field, ref at));
                 }
                 return new FjordValue.Record(fields);
+            }
+
+            case FjordType.Union union:
+            {
+                var disc = Varint.Read(bytes, ref at);
+                var alternative = Alternative(union, disc);
+
+                return new FjordValue.Union(
+                    alternative.Disc,
+                    ReadValue(bytes, schema, alternative.Type, ref at));
             }
 
             default:

@@ -109,6 +109,18 @@ pub enum FjordError {
         found: PredicateId,
     },
 
+    /// A plan reading a union payload as one alternative where the row holds
+    /// another.
+    ///
+    /// A [`FieldPath`](crate::plan::FieldPath) step into a payload carries the
+    /// discriminant the plan compiled against, and flatten emits that tag's own
+    /// check ahead of any read through it — so from a compiled plan this is
+    /// unreachable, and from a plan built by hand or arriving over the wire it is
+    /// the refusal that stands in for reading another alternative's bytes as this
+    /// one's.
+    #[error("a plan reads the payload of alternative {expected}, and this row holds {found}")]
+    DiscriminantMismatch { expected: u64, found: u64 },
+
     #[error("operation cancelled")]
     Cancelled,
 

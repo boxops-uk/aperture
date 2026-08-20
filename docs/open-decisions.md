@@ -237,7 +237,8 @@ admissions about. The codec reserves the marker band, so this is not a one-way d
 Unchanged and still true: prefer the value side ([I6](invariants.md#i6) keeps it out of the scan
 loop), forbid or diagnose an array in a leading key field (a length-prefixed array cannot be
 prefix-matched), and `set T` is separately deferrable. `bool` and `maybe T` remain sugar over a
-union once unions land.
+union, which landed at 8.6 — each still deferred, because naming their alternatives is a
+decision that enters the fingerprint.
 
 ### A client never computes a fingerprint — settled while planning Phase 8
 
@@ -552,10 +553,12 @@ above), `evolves`, cross-DB queries. The two that are *not* additive — derived
 
 **Additive is not the same as small**, and five features that were on that list now have
 phases of their own to say so: disjunction, `never`, negation and subqueries are
-[`PLAN.md`](../PLAN.md) Phase 6b, and unions-as-data is Phase 8. None of them reshapes the
+[`PLAN.md`](../PLAN.md) Phase 6b, and unions-as-data was Phase 8.6. None of them reshaped the
 machine — but disjunction extends the resume `Cursor` with a per-branch discriminant, and a
 union freezes its discriminants on disk the moment one is written
-([I10](invariants.md#i10)), so both need acceptance criteria rather than a bullet.
+([I10](invariants.md#i10)), so both needed acceptance criteria rather than a bullet. Both are
+built; the union's cost landed in the codec and the field paths rather than in the executor
+([phase 8.6](phase-8.6-unions.md)).
 
 ---
 

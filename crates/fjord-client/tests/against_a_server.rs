@@ -12,7 +12,7 @@ use fjord_client::{
 };
 use fjord_schema::fingerprint;
 use fjord_schema::id::FactId;
-use fjord_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
+use fjord_schema::schema::{Alternative, Predicate, PredicateId, PredicateTy, Schema};
 use fjord_server::{Registry, registry::Schemas, server::Listener};
 use fjord_store::catalog::Catalog;
 use fjord_wire::protocol::Found;
@@ -21,6 +21,13 @@ use lasso::Rodeo;
 const FILE: PredicateId = PredicateId(0);
 const DECL: PredicateId = PredicateId(1);
 const DOC: PredicateId = PredicateId(2);
+const TAGGED: PredicateId = PredicateId(3);
+
+/// The alternatives of `src.Tagged`'s union: tags that are neither positions nor in
+/// declaration order, so a peer numbering them by position is caught by the rows.
+const NUM: u32 = 3;
+const TEXT: u32 = 0;
+const OF: u32 = 40_000;
 
 fn schema() -> Schema {
     let mut rodeo = Rodeo::new();
@@ -28,6 +35,13 @@ fn schema() -> Schema {
         rodeo.get_or_intern("src.File"),
         rodeo.get_or_intern("src.Decl"),
         rodeo.get_or_intern("src.Doc"),
+    );
+    let tagged = rodeo.get_or_intern("src.Tagged");
+    let (f_what, f_id) = (rodeo.get_or_intern("what"), rodeo.get_or_intern("id"));
+    let (a_num, a_text, a_of) = (
+        rodeo.get_or_intern("num"),
+        rodeo.get_or_intern("text"),
+        rodeo.get_or_intern("of"),
     );
     let (f_file, f_line, f_name, f_decl) = (
         rodeo.get_or_intern("file"),
@@ -66,6 +80,43 @@ fn schema() -> Schema {
                 name: doc,
                 key: PredicateTy::Record(vec![(f_decl, PredicateTy::Fact(DECL))].into()),
                 value: Some(PredicateTy::Str),
+            },
+            // **A union in the leading key field**, one of whose alternatives is a
+            // *reference* — so a fact written down this socket has to be interned
+            // through a payload, and a row read back off it has to be described by a
+            // descriptor that carries the alternatives' names.
+            Predicate {
+                name: tagged,
+                key: PredicateTy::Record(
+                    vec![
+                        (
+                            f_what,
+                            PredicateTy::Union(
+                                vec![
+                                    Alternative {
+                                        name: a_num,
+                                        disc: NUM,
+                                        ty: PredicateTy::Int,
+                                    },
+                                    Alternative {
+                                        name: a_text,
+                                        disc: TEXT,
+                                        ty: PredicateTy::Str,
+                                    },
+                                    Alternative {
+                                        name: a_of,
+                                        disc: OF,
+                                        ty: PredicateTy::Fact(FILE),
+                                    },
+                                ]
+                                .into(),
+                            ),
+                        ),
+                        (f_id, PredicateTy::Int),
+                    ]
+                    .into(),
+                ),
+                value: None,
             },
         ]),
     )
@@ -175,7 +226,7 @@ fn facts_written_by_this_client_are_queried_back_by_it() {
     let mut connection = serving.open(Mode::ReadWrite);
 
     assert_eq!(connection.hello().version, fjord_wire::protocol::VERSION);
-    assert_eq!(connection.hello().predicates, 3);
+    assert_eq!(connection.hello().predicates, 4);
     assert_eq!(
         connection.hello().schema_fingerprint,
         fingerprint::of(&schema()),
@@ -1366,5 +1417,87 @@ fn a_conflict_between_concurrent_writers_fails_exactly_one_of_them() {
         "exactly one of two contradictory writers must be refused — never both, which \
          would lose a fact nobody disagreed about, and never neither, which would mean \
          one silently won"
+    );
+}
+
+/// **A union, all the way down the socket and back.**
+///
+/// Three claims at once, and each of them is somewhere a union could work in isolation
+/// and still not work here:
+///
+/// - a schema declaring one survives `create`, which prints it to the database's
+///   embedded copy and reads it back before anything exists on disk;
+/// - a fact whose payload is a **reference** is interned through the payload, so the
+///   file it names is written first and the tagged fact's key has no bytes until then;
+/// - a row that *is* a union comes back with its alternative's **name**, which only the
+///   row descriptor can supply — the row itself carries the tag.
+#[test]
+fn a_union_is_written_and_read_back_over_the_wire() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    let tagged = |what: WireValue, id: i64| WireFact {
+        predicate: TAGGED,
+        key: WireValue::Record(Box::from([what, WireValue::Int(id)])),
+        value: None,
+    };
+    let alt = |disc: u32, value: WireValue| WireValue::Union {
+        disc,
+        value: Box::new(value),
+    };
+
+    let written = connection
+        .write(
+            TAGGED,
+            &[
+                tagged(alt(NUM, WireValue::Int(5)), 10),
+                tagged(alt(TEXT, WireValue::Str("a".to_owned())), 20),
+                // The payload is a nested fact: two facts written for one, and the
+                // reference resolved bottom-up.
+                tagged(
+                    alt(OF, WireValue::Ref(WireRef::Nested(Box::new(file("f.py"))))),
+                    30,
+                ),
+            ],
+        )
+        .expect("the facts are written");
+
+    assert_eq!(
+        (written.created, written.deduped),
+        (4, 0),
+        "three tagged facts and the file one of their payloads names"
+    );
+
+    // Matching an alternative: the tag is a prefix of the key order here, so this is a
+    // seek — and the rows say which alternative was matched, whatever the plan did.
+    let mut rows = connection
+        .query("X where src.Tagged {what = {num = X}, id = _}")
+        .expect("it compiles");
+    assert_eq!(
+        connection.drain(&mut rows).expect("the rows arrive"),
+        [WireValue::Int(5)]
+    );
+
+    // And the whole union, projected: the descriptor names the alternatives, so a
+    // client can tell `num` from `text` without holding the schema's tags itself.
+    let mut rows = connection
+        .query("W where src.Tagged {what = W, id = 20}")
+        .expect("it compiles");
+
+    let fjord_client::Desc::Union(alternatives) = rows.desc() else {
+        panic!("expected a union descriptor, got {:?}", rows.desc());
+    };
+    assert_eq!(
+        alternatives
+            .iter()
+            .map(|(name, disc, _)| (name.as_str(), *disc))
+            .collect::<Vec<_>>(),
+        [("num", NUM), ("text", TEXT), ("of", OF)],
+        "the descriptor carries every alternative's name and tag, in declaration order"
+    );
+
+    assert_eq!(
+        connection.drain(&mut rows).expect("the rows arrive"),
+        [alt(TEXT, WireValue::Str("a".to_owned()))]
     );
 }

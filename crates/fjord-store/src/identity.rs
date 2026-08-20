@@ -75,6 +75,10 @@ const TAG_REFERENCE: u8 = 4;
 const TAG_NULL: u8 = 5;
 const TAG_VALUE_SIDE: u8 = 6;
 const TAG_NO_VALUE_SIDE: u8 = 7;
+/// **Appended.** Every tag above keeps its number, so the identity of a database
+/// holding no unions is the number it always was — which is what makes this an
+/// addition rather than a migration of every artifact already sealed.
+const TAG_UNION: u8 = 8;
 
 /// What a database's content came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +197,17 @@ fn feed_value<S: FactStore>(
             for (_name, field) in fields.iter() {
                 feed_value(hash, store, schema, interner, field, depth)?;
             }
+        }
+
+        // **The discriminant, not the name.** A tag is what the value *is*; the name
+        // it is declared with is pinned by the schema fingerprint, which is folded in
+        // separately — the same argument that keeps a record's field names out of
+        // here. Two builds of one index agreeing fact for fact must agree on this
+        // number, and they do because the tag is explicit in both schemas.
+        Value::Union { disc, value, .. } => {
+            feed(hash, &[TAG_UNION]);
+            feed(hash, &u64::from(*disc).to_le_bytes());
+            feed_value(hash, store, schema, interner, value, depth)?;
         }
 
         // **The expansion.** A reference contributes the *logical* key of the fact it

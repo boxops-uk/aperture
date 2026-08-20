@@ -265,10 +265,18 @@ decoded data.
   ([chapter 7](docs/07-compilation.md#folding-a-constant-bind)).
 - **Additive is not the same as small.** The constructs that parsed and typechecked-as-deferred
   and now compile — `|`, `never`, `!`, subqueries — were **[Phase 6b](PLAN.md)**, and
-  **union types** are [Phase 8](PLAN.md) (a union cannot be declared before schemas parse, and
-  [I10](docs/invariants.md#i10) freezes its discriminants on disk once one is written). Neither
-  reshapes the machine, but disjunction extends the resume `Cursor`, so both carry acceptance
-  criteria rather than a bullet. **A negation is a `Step::Test`** — the third step kind, a filter
+  **union types** were [Phase 8.6](docs/phase-8.6-unions.md) (a union cannot be declared before
+  schemas parse, and [I10](docs/invariants.md#i10) freezes its discriminants on disk once one is
+  written). Neither reshaped the machine, but disjunction extends the resume `Cursor`, so both
+  carried acceptance criteria rather than a bullet. **What a union cost the machine** was one
+  residual arm (`DiscriminantEq`, a byte-prefix compare against `UnionTag`), one branch in
+  `nested_field_span`, and a projection arm — no new `Source`, `Step`, frame kind or cursor
+  entry. The expensive parts were elsewhere and are worth knowing before touching either: a union
+  is a **terminated group** in the codec, so `skip` needs no notion of a value still owed; and a
+  `FieldPath` step at a union position **is the expected discriminant**, checked, so a payload
+  read against the wrong alternative is an error rather than another type's bytes. Flatten owes
+  the executor the tag's check *before* any read through that payload, which is why
+  `apply_selects` prepends. **A negation is a `Step::Test`** — the third step kind, a filter
   that binds nothing, takes no cursor entry, and is re-decided on restore rather than replayed;
   its variables are `reads`, which is the whole of the rule that a negation runs after whatever
   binds them, so `reorder` needed no new kind of constraint. Do not add one. What still draws

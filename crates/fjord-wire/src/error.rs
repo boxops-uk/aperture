@@ -50,6 +50,17 @@ pub enum WireError {
     #[error("unknown reference form {0}")]
     UnknownRefForm(u64),
 
+    /// A union value tagged with a discriminant the schema declares no alternative
+    /// for — which is what a peer built against a different schema looks like from
+    /// here.
+    ///
+    /// The storage codec's `StoreCodecError::UnknownDiscriminant` is the same refusal
+    /// for bytes that were already written. Named rather than linked: this crate does
+    /// not depend on that one — the transport codec and the storage codec are siblings
+    /// and share no bytes — which is itself the thing worth knowing here.
+    #[error("no alternative with discriminant {0} in this union")]
+    UnknownDiscriminant(u64),
+
     /// A `FactId` that is not one — sequence zero is reserved, so a zeroed or
     /// corrupt eight bytes is detectably not a fact
     /// ([I11](https://github.com/boxops-uk/fjord/blob/main/docs/invariants.md#i11)).

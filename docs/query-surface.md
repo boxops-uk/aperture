@@ -63,7 +63,7 @@ lopsided:
 | `X = Y`, both bound | 0 or 1 | no | none |
 | `X != "a"..` (denial) — **built** | 0 or 1 | no | none |
 | comparisons (`<`, `>`) | 0 or 1 | no | none |
-| union select (`.alt?`) | 0 or 1, plus a bind | no | none |
+| union select (`.alt?`) — **built** | 0 or 1, plus a bind | no | none |
 | `Source::Fetch` (through a reference) — **built** | exactly 1, deterministic | no | none¹ |
 | primitives (arithmetic, strings) | exactly 1 | no | none |
 | **`\|` (disjunction)** | **N** | **yes** | **a source index** |

@@ -283,6 +283,10 @@ pub fn render(value: &WireValue) -> String {
             let cells: Vec<String> = fields.iter().map(render).collect();
             format!("{{{}}}", cells.join(", "))
         }
+
+        // The tag, since a row carries no names — a table cell is one line and the
+        // descriptor's names belong to the JSON rendering, which has room for them.
+        WireValue::Union { disc, value } => format!("{{{disc} = {}}}", render(value)),
     }
 }
 
@@ -339,6 +343,34 @@ fn json(value: &WireValue, desc: &Desc, schema: Option<&Schema>, colour: bool) -
                 punct("}", colour)
             )
         }
+
+        // **`{"alt": payload}`** — the descriptor is what turns the tag back into a
+        // name, which is the reason it carries both.
+        (WireValue::Union { disc, value }, Desc::Union(alts)) => {
+            match alts.iter().find(|(_, alt_disc, _)| alt_disc == disc) {
+                Some((name, _, alt)) => format!(
+                    "{}{}{} {} {}",
+                    punct("{", colour),
+                    paint(KEY, &json_string(name), colour),
+                    punct(":", colour),
+                    json(value, alt, schema, colour),
+                    punct("}", colour)
+                ),
+                // A tag the descriptor does not name: the same rule a record of the
+                // wrong width follows — the value wins, printed by number, because a
+                // row that arrived is worth printing.
+                None => format!(
+                    "{}{}{} {} {}",
+                    punct("{", colour),
+                    paint(KEY, &json_string(&disc.to_string()), colour),
+                    punct(":", colour),
+                    json(value, &Desc::Str, schema, colour),
+                    punct("}", colour)
+                ),
+            }
+        }
+
+        (WireValue::Union { value, .. }, _) => json(value, &Desc::Str, schema, colour),
 
         (WireValue::Record(fields), _) => {
             let cells: Vec<String> = fields

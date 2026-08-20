@@ -33,21 +33,24 @@ enum PredicateTy {
     Str,                              // → MARK_STRING
     Fact(PredicateId),                // a reference to a fact → MARK_FACT_REF
     Record(Arc<[(Spur, PredicateTy)]>), // → MARK_RECORD … MARK_TERM
-    // Union { … }  — designed-for, not yet present (see below)
+    Union(Arc<[Alternative]>),          // → MARK_UNION tag … MARK_TERM  (8.6)
 }
+
+/// One alternative: a name, an **explicit** discriminant, and a payload type.
+struct Alternative { name: Spur, disc: u32, ty: PredicateTy }
 ```
 
 Each variant maps to a codec marker family from [chapter 2](02-tuple-codec.md), which is
 why the type system and the codec must agree: a `Fact`-typed field encodes with
 `MARK_FACT_REF` and carries a `PredicateId` naming *which* predicate it points at.
 
-**Four constructors, and that is the whole model** — no arrays, sets, unions, or a byte/nat
+**Five constructors, and that is the whole model** — no arrays, sets, or a byte/nat
 distinction. The gap to Glean is smaller than Glean's surface syntax suggests. Glean's
 *runtime* type model is **eight** constructors — byte, nat, string, array, tuple, sum, set,
 predicate-ref (`glean/hs/Glean/RTS/Types.hs:185-194`) — and `bool`, `maybe`, `enum`, tuples
 and named types are **sugar, lowered before storage**, so they cost its codec nothing.
-Measured against that runtime model, Fjord is **three** constructors short (array, sum, and
-the byte/nat pair), not eight behind a surface list — and one constructor **wider**: sigla's
+Measured against that runtime model, Fjord is **two** constructors short (array and the
+byte/nat pair), not eight behind a surface list — and one constructor **wider**: sigla's
 `Int` is a signed `i64` with its own negative marker band
 ([chapter 2](02-tuple-codec.md#the-marker-table)), where Glean has no signed integer at all.
 
@@ -118,18 +121,19 @@ at plan-build time so the executor is interner-free ([conventions](conventions.m
 
 ## Unions and stable discriminants ([I10](invariants.md#i10))
 
-Unions ("sum types" / tagged alternatives) are **designed-for but not yet in
-`PredicateTy`**. They land with the schema DSL ([`PLAN.md`](../PLAN.md) Phase 8) rather than
-with the rest of the deferred query surface (Phase 6b), because a union cannot be *declared*
-until schemas are parsed — and the freeze below is a reason to want the declaration first, not
-a reason to rush the type in. When they land, the load-bearing rule is:
+Unions ("sum types" / tagged alternatives) landed at **8.6**, with the schema DSL
+([`PLAN.md`](../PLAN.md) Phase 8) rather than with the rest of the deferred query surface
+(Phase 6b), because a union cannot be *declared* until schemas are parsed — and the freeze below
+was a reason to want the declaration first, not a reason to rush the type in. The load-bearing
+rule:
 
 > **I10 — union alternative discriminants are stable and append-only.** Like protobuf field
 > numbers: each alternative has an explicit discriminant, assigned once, never reused, new
 > alternatives appended. Frozen the moment union-typed data is written.
 >
-> *Guard:* `schema::discriminants_append_only` — a schema edit that renumbers or reuses a
-> discriminant is rejected at load.
+> *Guard:* four checks rather than one — see [the registry](invariants.md#i10). "Rejected at
+> load" turned out not to be implementable as written: under [I13](invariants.md#i13) there is
+> only ever one schema at load, and nothing to compare it against.
 
 Why it's a one-way door: a union value is stored tagged by its discriminant. If
 discriminants were derived from, say, sorted alternative names, adding an alternative would
@@ -151,20 +155,36 @@ right call. Recorded as a divergence in [the ledger](glean-comparison.md). Get i
 writing any union facts — after that it's an on-disk migration
 ([I3](02-tuple-codec.md) territory).
 
-**What I10 does not yet say is what a decoder does with a tag it has never seen.** Append-only
-tags do not make that impossible: a fact file can outlive the schema that wrote it, and a
-retired alternative's tag is still on disk. Glean has a defined answer, the synthetic `unknown`;
-Fjord has none, and per errors-not-panics ([conventions](conventions.md)) it must surface as
-an `FjordError` rather than a panic or a mis-decode. Decide it with the discriminant encoding
-in Phase 8.
+**A tag a decoder has never seen is a refusal** — `StoreCodecError::UnknownDiscriminant`,
+settled at 8.6. Append-only tags do not make the case impossible: a fact file can outlive the
+schema that wrote it, and a retired alternative's tag is still on disk. Glean answers it with a
+synthetic `unknown` because it projects between schemas at query time; Fjord has nowhere for such
+a projection to live, so per errors-not-panics ([conventions](conventions.md)) the answer is an
+error rather than a mis-decode. Note what it does *not* affect: [I2](02-tuple-codec.md) still
+holds, so a row can be **skipped past** a field whose tag means nothing to the reader.
 
-### How unions are used (mostly) needs no new machine
+### How unions are used needs no new machine — and that held
 
 Selecting an alternative — `x.alt?` — lowers to a **match against the bound value**: a
-`ResidualOp::DiscriminantEq(n)` check plus a payload bind. That's a residual and a field
-bind, **not** a new generator or operator ([chapter 7](07-compilation.md),
-[executor](04-executor.md)). Unions-as-data is genuinely additive; only the discriminant
-freeze is a hard constraint.
+`ResidualOp::DiscriminantEq(n)` check plus a payload bind. That's a residual and a field bind,
+**not** a new generator or operator ([chapter 7](07-compilation.md),
+[executor](04-executor.md)). 8.6 confirmed it: the machine gained one residual arm, one branch
+in the nested-field walk, and a projection arm — no new `Source`, `Step`, frame kind or cursor
+entry, so [I4](invariants.md#i4), [I7](invariants.md#i7) and [I8](invariants.md#i8) were re-run
+rather than re-established. What the cost turned out to be instead was the *encoding* and the
+paths: a union is a terminated **group** so `skip` needs no notion of a value still owed, and a
+`FieldPath` step at a union position means the **discriminant** rather than an index — see
+[phase 8.6](phase-8.6-unions.md).
+
+**Two spellings, and neither needed new syntax.** `{alt = p}` against a union-typed position is
+that alternative — a *checked* form, never an inferred one, since a one-field record on its own
+is a record — and `X.alt?` is the select. Both already parsed. `{alt = _}` is the tag alone,
+which is a byte prefix of the field and so a **seek** where the union is a leading key field.
+
+**One asymmetry with a record is worth knowing.** A record's field order *is* its encoding
+order, so permuting it is a semantic change. A union's alternatives are addressed by their
+tags, so permuting the declaration changes no stored byte: the canonical form sorts by
+discriminant, and it is *renumbering* that moves the fingerprint.
 
 ---
 
@@ -298,7 +318,7 @@ disabled can. Three ways it can still bite, each cheaper to decide in **Phase 8*
 
 | # | Statement | Guard test |
 |---|-----------|------------|
-| [I10](invariants.md#i10) | Union discriminants are stable and append-only. | `schema::discriminants_append_only` (pending unions) |
+| [I10](invariants.md#i10) | Union discriminants are stable and append-only. | `i10_discriminants::*` — four checks, since "rejected at load" is not implementable under I13 ([registry](invariants.md#i10)) |
 | [I13](invariants.md#i13) | The DB's schema is embedded and frozen at create. | `i13_embedded_schema::ingest_rejects_incompatible_schema` + `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` |
 
 Related: [I3](02-tuple-codec.md) (frozen markers) — the codec-side counterpart of the same

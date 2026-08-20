@@ -210,6 +210,20 @@ pub fn render_ty(ty: &Ty, schema: &Schema, interner: &LocalInterner) -> String {
                 .join(", ");
             format!("{{{rendered}}}")
         }
+        Ty::Union(alts) => {
+            let rendered = alts
+                .iter()
+                .map(|(name, disc, alt)| {
+                    format!(
+                        "{}: {} = {disc}",
+                        interner.try_resolve(*name).unwrap_or("?"),
+                        render_ty(alt, schema, interner)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!("{{{rendered}}}")
+        }
     }
 }
 

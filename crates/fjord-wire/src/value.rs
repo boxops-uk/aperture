@@ -87,6 +87,16 @@ pub enum WireValue {
     Ref(WireRef),
     /// Fields **in schema order**, no names. See the module docs.
     Record(Box<[WireValue]>),
+    /// One alternative of a union: its **discriminant**, then its payload.
+    ///
+    /// The tag is the one thing here the schema cannot supply — a record's shape is
+    /// declared, but which alternative a value took is a property of the value — so
+    /// it is the only marker this codec writes. No name: the schema resolves the tag,
+    /// exactly as it resolves a record's field order.
+    Union {
+        disc: u32,
+        value: Box<WireValue>,
+    },
 }
 
 /// How a reference reaches us: as an id, or as the fact it names.
@@ -159,6 +169,25 @@ pub fn encode_value(
                 encode_value(out, schema, field_ty, field)?;
             }
             Ok(())
+        }
+
+        (
+            PredicateTy::Union(alts),
+            WireValue::Union {
+                disc,
+                value: payload,
+            },
+        ) => {
+            let alt = alts
+                .iter()
+                .find(|alt| alt.disc == *disc)
+                .ok_or(WireError::UnknownDiscriminant(u64::from(*disc)))?;
+
+            // The tag, then the payload. A varint rather than the storage codec's
+            // order-preserving form, for the reason every number on this wire is one:
+            // nothing here is sorted.
+            varint::put_u64(out, u64::from(*disc));
+            encode_value(out, schema, &alt.ty, payload)
         }
 
         _ => Err(WireError::TypeMismatch("value does not fit this type")),
@@ -281,6 +310,25 @@ pub fn decode_value(
 
             Ok((WireValue::Record(fields.into()), at))
         }
+
+        PredicateTy::Union(alts) => {
+            let (tag, used) = varint::get_u64(bytes)?;
+
+            let alt = alts
+                .iter()
+                .find(|alt| u64::from(alt.disc) == tag)
+                .ok_or(WireError::UnknownDiscriminant(tag))?;
+
+            let (payload, payload_used) = decode_value(&bytes[used..], schema, &alt.ty)?;
+
+            Ok((
+                WireValue::Union {
+                    disc: alt.disc,
+                    value: Box::new(payload),
+                },
+                used + payload_used,
+            ))
+        }
     }
 }
 
@@ -396,7 +444,7 @@ pub fn from_bytes(
 pub mod proptest {
     use super::*;
     use ::proptest::prelude::*;
-    use fjord_schema::schema::Predicate;
+    use fjord_schema::schema::{Alternative, Predicate};
     use lasso::Rodeo;
     use std::sync::Arc;
 
@@ -415,6 +463,10 @@ pub mod proptest {
         /// backwards; a predicate with none before it gets [`TySpec::Int`] instead.
         Ref(u8),
         Record(Vec<TySpec>),
+        /// Alternatives, in declaration order. Their discriminants are assigned by
+        /// [`materialise`] out of tag order, so a peer that read a tag as a position
+        /// would be caught here rather than by a user.
+        Union(Vec<TySpec>),
     }
 
     #[derive(Debug, Clone)]
@@ -445,7 +497,21 @@ pub mod proptest {
         ];
 
         leaf.prop_recursive(3, 12, MAX_FIELDS as u32, |inner| {
-            ::proptest::collection::vec(inner, 0..=MAX_FIELDS).prop_map(TySpec::Record)
+            // `Rc`, not `Arc`: a strategy is not `Send`, and a generator runs on one thread.
+            let inner = std::rc::Rc::new(inner);
+
+            // **Weighted, not even.** A union arm as likely as a record's makes
+            // generated schemas union-heavy, which dilutes every property drawing on
+            // this generator — the census in `fjord-ingest` noticed first, stopping
+            // reaching a self-contradictory draw at all. Unions are the newest
+            // constructor, not the commonest.
+            prop_oneof![
+                3 => ::proptest::collection::vec(inner.clone(), 0..=MAX_FIELDS)
+                    .prop_map(TySpec::Record),
+                // At least one, because a union with no alternatives is a type no
+                // value inhabits and the tape would have nothing to draw.
+                1 => ::proptest::collection::vec(inner, 1..=MAX_FIELDS).prop_map(TySpec::Union),
+            ]
         })
     }
 
@@ -544,8 +610,24 @@ pub mod proptest {
                     .map(|(f, field)| (names[f], materialise(field, index, names)))
                     .collect(),
             ),
+            // Tags out of declaration order and not starting at zero, for the reason
+            // the variant's doc gives.
+            TySpec::Union(alts) => PredicateTy::Union(
+                alts.iter()
+                    .enumerate()
+                    .map(|(a, alt)| Alternative {
+                        name: names[a],
+                        disc: DISCRIMINANTS[a % DISCRIMINANTS.len()],
+                        ty: materialise(alt, index, names),
+                    })
+                    .collect(),
+            ),
         }
     }
+
+    /// The tags a generated union declares, in declaration order — deliberately
+    /// neither sorted nor contiguous.
+    const DISCRIMINANTS: [u32; MAX_FIELDS] = [5, 0, 900];
 
     struct Tape<'a> {
         draws: &'a SchemaAndFact,
@@ -609,6 +691,17 @@ pub mod proptest {
                         .map(|(_, field_ty)| self.value(schema, field_ty))
                         .collect(),
                 ),
+
+                // Which alternative is drawn, so a battery covers each of them
+                // rather than whichever was declared first.
+                PredicateTy::Union(alts) => {
+                    let alt = &alts[self.next_pick() as usize % alts.len()];
+
+                    WireValue::Union {
+                        disc: alt.disc,
+                        value: Box::new(self.value(schema, &alt.ty)),
+                    }
+                }
             }
         }
     }
@@ -618,7 +711,7 @@ pub mod proptest {
 mod tests {
     use super::{proptest::arb_schema_and_fact, *};
     use ::proptest::prelude::*;
-    use fjord_schema::schema::Predicate;
+    use fjord_schema::schema::{Alternative, Predicate};
     use lasso::Rodeo;
     use std::sync::Arc;
 
@@ -634,6 +727,93 @@ mod tests {
                 value: None,
             }]),
         )
+    }
+
+    /// A two-alternative union: `{ a : int = 5, b : string = 900 }`, tags out of
+    /// order and neither of them a position.
+    fn union_ty(rodeo: &mut Rodeo) -> PredicateTy {
+        PredicateTy::Union(
+            vec![
+                Alternative {
+                    name: rodeo.get_or_intern("a"),
+                    disc: 5,
+                    ty: PredicateTy::Int,
+                },
+                Alternative {
+                    name: rodeo.get_or_intern("b"),
+                    disc: 900,
+                    ty: PredicateTy::Str,
+                },
+            ]
+            .into(),
+        )
+    }
+
+    /// **The tag is the only marker this codec writes.** A record's shape is
+    /// declared, so it costs nothing on the wire; which alternative a value took is a
+    /// property of the value, so it costs a varint.
+    #[test]
+    fn a_union_is_its_tag_then_its_payload() {
+        let mut rodeo = Rodeo::new();
+        let ty = union_ty(&mut rodeo);
+
+        let bytes = encoded(
+            ty.clone(),
+            WireValue::Union {
+                disc: 5,
+                value: Box::new(WireValue::Int(1)),
+            },
+        );
+
+        let mut expected = vec![];
+        varint::put_u64(&mut expected, 5);
+        varint::put_i64(&mut expected, 1);
+        assert_eq!(bytes, expected);
+
+        // And the *second* alternative's tag is 900, not 1 — a peer reading a tag as
+        // a position would decode this as an int.
+        let bytes = encoded(
+            ty,
+            WireValue::Union {
+                disc: 900,
+                value: Box::new(WireValue::Str("x".to_owned())),
+            },
+        );
+
+        let mut expected = vec![];
+        varint::put_u64(&mut expected, 900);
+        varint::put_u64(&mut expected, 1);
+        expected.extend_from_slice(b"x");
+        assert_eq!(bytes, expected);
+    }
+
+    /// A tag the schema declares no alternative for is refused at both ends — which
+    /// is what a peer built against a different schema looks like from here.
+    #[test]
+    fn an_undeclared_tag_is_refused_in_both_directions() {
+        let mut rodeo = Rodeo::new();
+        let ty = union_ty(&mut rodeo);
+        let schema = schema_of(ty.clone());
+
+        let mut out = vec![];
+        let err = encode_value(
+            &mut out,
+            &schema,
+            &ty,
+            &WireValue::Union {
+                disc: 7,
+                value: Box::new(WireValue::Int(1)),
+            },
+        )
+        .expect_err("an undeclared tag does not encode");
+        assert!(matches!(err, WireError::UnknownDiscriminant(7)), "{err:?}");
+
+        let mut bytes = vec![];
+        varint::put_u64(&mut bytes, 7);
+        varint::put_i64(&mut bytes, 1);
+
+        let err = decode_value(&bytes, &schema, &ty).expect_err("nor does it decode");
+        assert!(matches!(err, WireError::UnknownDiscriminant(7)), "{err:?}");
     }
 
     fn encoded(key: PredicateTy, value: WireValue) -> Vec<u8> {
@@ -871,6 +1051,11 @@ mod tests {
             empty_record: bool,
             value_side: bool,
             string_needing_escape_in_storage: bool,
+            union: bool,
+            /// Two facts of one schema taking **different** alternatives of the same
+            /// union — the draw that says a battery covers more than the alternative
+            /// that happened to be declared first.
+            second_alternative: bool,
         }
 
         fn walk(value: &WireValue, seen: &mut Seen, depth: usize) {
@@ -894,6 +1079,13 @@ mod tests {
                     for field in fields.iter() {
                         walk(field, seen, depth);
                     }
+                }
+                WireValue::Union { disc, value } => {
+                    seen.union = true;
+                    // The generator's tag table starts at 5, so anything else is a
+                    // second alternative of some union.
+                    seen.second_alternative |= *disc != 5;
+                    walk(value, seen, depth);
                 }
             }
         }
@@ -930,6 +1122,8 @@ mod tests {
                 seen.string_needing_escape_in_storage,
                 "a string holding a NUL — what storage escapes and this does not",
             ),
+            (seen.union, "a union"),
+            (seen.second_alternative, "a union's second alternative"),
         ]
         .into_iter()
         .filter_map(|(present, what)| (!present).then_some(what))

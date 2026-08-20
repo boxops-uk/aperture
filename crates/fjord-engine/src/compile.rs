@@ -369,7 +369,7 @@ mod tests {
 
         for (source, code) in [
             ("X where X = nosuch.Pred _", "reject/unknown-predicate"),
-            ("X.alt? where X = test.Foo _", "nyi/union-select"),
+            ("X.alt? where X = test.Foo _", "reject/not-a-union"),
             ("_ where test.Foo _", "reject/wildcard-in-head"),
         ] {
             let mut compilation = Compilation::new(source, &schema);

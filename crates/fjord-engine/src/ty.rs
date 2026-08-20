@@ -493,14 +493,41 @@ impl Checker<'_> {
             // the empty relation needs nothing else — it matches no rows, so no
             // value of any type ever comes out of it.
             ExprKind::Never => self.fresh_var(),
-            ExprKind::Select(..) => {
-                self.nyi(
-                    ast,
-                    id,
-                    Code::NyiUnionSelect,
-                    "selecting a union alternative",
-                );
-                Ty::Error
+            // **The select** — `X.alt?`. Reads the alternative out of a union and is
+            // the payload's type; the *matching* half is not a typing question, which
+            // is why this looks like an access and lowers to a filter.
+            ExprKind::Select(name, base) => {
+                let (name, base) = (*name, *base);
+                let base_ty = self.infer(ast, base);
+
+                match self.repr(&base_ty) {
+                    Ty::Error => Ty::Error,
+                    Ty::Union(alts) => match alts.iter().find(|(alt, _, _)| *alt == name) {
+                        Some((_, _, payload)) => payload.clone(),
+                        None => {
+                            let name = self.name_of(name).to_owned();
+                            self.reject_ty(
+                                ast,
+                                id,
+                                Code::RejectUnknownAlternative,
+                                format!("`{name}` is not an alternative of this union"),
+                            )
+                        }
+                    },
+                    // A variable here is a select on something nothing has pinned
+                    // down. Reported as unresolved rather than as "not a union",
+                    // which is the same answer `.field` gives for the same shape.
+                    Ty::Var(_) => self.unresolved(ast, id),
+                    other => {
+                        let got = self.render(&other);
+                        self.reject_ty(
+                            ast,
+                            id,
+                            Code::RejectNotAUnion,
+                            format!("only a union has alternatives; this is {got}"),
+                        )
+                    }
+                }
             }
             // **Every branch has the one type the disjunction has.** Unified rather
             // than merely compared, so a branch may *inform* the type — `never | 1`
@@ -602,6 +629,47 @@ impl Checker<'_> {
                     }
                     self.annotate(id, expected.clone());
                 }
+                // **The injection.** `{alt = p}` against a union-typed position is
+                // that alternative — the spelling Angle uses, and the reason unions
+                // needed no new syntax. It is a *checked* form and never an inferred
+                // one: a one-field record on its own is a record, and only an
+                // expectation says otherwise. Every position that can hold a union
+                // has a declared type, so the expectation is always there when it
+                // matters.
+                Ty::Union(alts) => {
+                    let [(name, value)] = &fields[..] else {
+                        self.reject(
+                            ast,
+                            id,
+                            Code::RejectUnionArity,
+                            format!(
+                                "a union value is one alternative, and this names {}",
+                                fields.len()
+                            ),
+                        );
+                        return;
+                    };
+
+                    let (name, value) = (*name, *value);
+
+                    match alts.iter().find(|(alt, _, _)| *alt == name) {
+                        Some((_, _, payload)) => {
+                            let payload = payload.clone();
+                            self.check(ast, value, &payload);
+                            self.annotate(id, expected.clone());
+                        }
+                        None => {
+                            let name = self.name_of(name).to_owned();
+                            self.reject(
+                                ast,
+                                id,
+                                Code::RejectUnknownAlternative,
+                                format!("`{name}` is not an alternative of this union"),
+                            );
+                        }
+                    }
+                }
+
                 _ => self.infer_then_unify(ast, id, &expected),
             },
 
@@ -830,6 +898,16 @@ impl Checker<'_> {
                     .map(|(name, field)| (*name, self.zonk(field)))
                     .collect(),
             ),
+
+            // Walked for uniformity rather than for need: a union type is always the
+            // schema's, and a declared type holds no variables. Rebuilding it here
+            // costs one clone per select and keeps the resolver total, which is worth
+            // more than the arm that would have to say it cannot happen.
+            Ty::Union(alts) => Ty::Union(
+                alts.iter()
+                    .map(|(name, disc, alt)| (*name, *disc, self.zonk(alt)))
+                    .collect(),
+            ),
         }
     }
 
@@ -838,6 +916,7 @@ impl Checker<'_> {
             Ty::Error | Ty::Int | Ty::String | Ty::Fact(_) => false,
             Ty::Var(other) => other == var,
             Ty::Record(fields) => fields.iter().any(|(_, field)| self.occurs(var, field)),
+            Ty::Union(alts) => alts.iter().any(|(_, _, alt)| self.occurs(var, alt)),
         }
     }
 
@@ -1007,6 +1086,20 @@ impl Checker<'_> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            // As it is declared, tags included: a diagnostic about a union is nearly
+            // always about *which* alternative, and a rendering that dropped the
+            // names would leave nothing to say it with.
+            Ty::Union(alts) => format!(
+                "{{{}}}",
+                alts.iter()
+                    .map(|(name, disc, ty)| format!(
+                        "{} : {} = {disc}",
+                        self.name_of(*name),
+                        self.render(ty)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ),
         }
     }
 }
@@ -1021,6 +1114,11 @@ fn schema_ty(ty: &PredicateTy) -> Ty {
             fields
                 .iter()
                 .map(|(name, field)| (Symbol::Schema(*name), schema_ty(field)))
+                .collect(),
+        ),
+        PredicateTy::Union(alts) => Ty::Union(
+            alts.iter()
+                .map(|alt| (Symbol::Schema(alt.name), alt.disc, schema_ty(&alt.ty)))
                 .collect(),
         ),
     }
@@ -1134,6 +1232,17 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Ty::Union(alts) => format!(
+                "{{{}}}",
+                alts.iter()
+                    .map(|(n, disc, t)| format!(
+                        "{}:{}={disc}",
+                        interner.try_resolve(*n).unwrap_or("?"),
+                        render(t, interner)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("|")
+            ),
         }
     }
 
@@ -1222,16 +1331,44 @@ mod tests {
         assert_eq!(codes(&checked), ["reject/value-shadowed"]);
     }
 
-    /// Every deferred construct reports itself by name, exactly once.
+    /// **Nothing typecheck sees is deferred any more.**
     ///
-    /// **One is left** — union select, which waits on a `PredicateTy::Union` to
-    /// exist at all ([Phase 8](../../../PLAN.md)). Negation was the other, and is now
-    /// a plan; what still carries its code is narrower and is flatten's, so the
-    /// corpus is where those are pinned.
+    /// Union select was the last one, and 8.6 made it a plan. What still carries an
+    /// `nyi/` code is narrower and is flatten's — a value in no register, a read
+    /// through a reference in the wrong position — so the corpus is where those are
+    /// pinned. Kept as a test rather than deleted because the claim is worth
+    /// asserting: this is the phase where typecheck stopped deferring anything.
     #[test]
-    fn deferred_constructs_report_themselves() {
+    fn typecheck_defers_nothing() {
+        for source in [
+            "X.what.num? where test.Label X",
+            "X where test.Tagged {what = {num = X}, id = _}",
+            "X where X = never",
+            "X where test.Foo {id = X} | test.Bar {id = X}",
+            "X where test.Foo {id = X}; !test.Bar {id = X}",
+            "X where X = (Y where test.Foo {id = Y})",
+        ] {
+            let checked = compile(source);
+            let deferred: Vec<String> = checked
+                .diagnostics
+                .iter()
+                .filter_map(|d| d.code.clone())
+                .filter(|code| code.starts_with("nyi/"))
+                .collect();
+
+            assert_eq!(deferred, [] as [String; 0], "{source:?}");
+        }
+    }
+
+    /// A select on something that is not a union at all — the shape that used to be
+    /// the whole feature's diagnostic, and is now an ordinary rejection.
+    #[test]
+    fn selecting_an_alternative_of_a_non_union_is_rejected() {
         let checked = compile("X.alt? where X = test.Foo _");
-        assert_eq!(codes(&checked), ["nyi/union-select"]);
+        assert_eq!(codes(&checked), ["reject/not-a-union"]);
+
+        let checked = compile("X where test.Tagged {what = {nosuch = X}, id = _}");
+        assert_eq!(codes(&checked), ["reject/unknown-alternative"]);
     }
 
     /// **A negation is typechecked, and only its types are typecheck's business.**
@@ -1516,7 +1653,7 @@ mod tests {
     /// the distinction is the whole point of the permissive grammar.
     #[test]
     fn deferred_messages_say_yet() {
-        let checked = compile("X.alt? where X = test.Foo _");
+        let checked = compile("X where test.Foo {id = X}; {a = 1} = {a = Y}");
         let first = checked.diagnostics.iter().next().expect("a diagnostic");
         assert!(
             first.message.contains("not implemented yet"),

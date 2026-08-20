@@ -58,7 +58,6 @@ pub enum Code {
     NyiNever,
     NyiRepeatedVariable,
     NyiSubquery,
-    NyiUnionSelect,
     NyiValueBind,
     NyiValueField,
     NyiValueMatch,
@@ -70,11 +69,23 @@ pub enum Code {
     RejectInfiniteType,
     RejectNoValue,
     RejectNotAGenerator,
+    /// `X.alt?` where `X` is not a union — a select has nothing to select from.
+    RejectNotAUnion,
     RejectNotProjectable,
     RejectTypeMismatch,
     RejectUnboundVariable,
+    /// `{nosuch = …}` against a union that declares no such alternative. The
+    /// alternative-shaped twin of [`RejectUnknownField`](Code::RejectUnknownField),
+    /// and separate from it because the fix is different: a field is a typo, an
+    /// alternative may be a schema that has moved on.
+    RejectUnknownAlternative,
     RejectUnknownField,
     RejectUnknownPredicate,
+    /// A record of two or more fields where a union is declared. One alternative is
+    /// what a union value *is*, so this is an arity error rather than a mismatch —
+    /// and worth its own code, because "expected a union, got a record" would be
+    /// wrong: a one-field record is exactly how a union is written.
+    RejectUnionArity,
     RejectUnresolvedAccess,
     RejectValueShadowed,
     RejectWildcardInHead,
@@ -100,7 +111,6 @@ impl Code {
         Code::NyiNever,
         Code::NyiRepeatedVariable,
         Code::NyiSubquery,
-        Code::NyiUnionSelect,
         Code::NyiValueBind,
         Code::NyiValueField,
         Code::NyiValueMatch,
@@ -110,11 +120,14 @@ impl Code {
         Code::RejectInfiniteType,
         Code::RejectNoValue,
         Code::RejectNotAGenerator,
+        Code::RejectNotAUnion,
         Code::RejectNotProjectable,
         Code::RejectTypeMismatch,
         Code::RejectUnboundVariable,
+        Code::RejectUnknownAlternative,
         Code::RejectUnknownField,
         Code::RejectUnknownPredicate,
+        Code::RejectUnionArity,
         Code::RejectUnresolvedAccess,
         Code::RejectValueShadowed,
         Code::RejectWildcardInHead,
@@ -135,7 +148,6 @@ impl Code {
             Code::NyiNever => "nyi/never",
             Code::NyiRepeatedVariable => "nyi/repeated-variable",
             Code::NyiSubquery => "nyi/subquery",
-            Code::NyiUnionSelect => "nyi/union-select",
             Code::NyiValueBind => "nyi/value-bind",
             Code::NyiValueField => "nyi/value-field",
             Code::NyiValueMatch => "nyi/value-match",
@@ -146,11 +158,14 @@ impl Code {
             Code::RejectInfiniteType => "reject/infinite-type",
             Code::RejectNoValue => "reject/no-value",
             Code::RejectNotAGenerator => "reject/not-a-generator",
+            Code::RejectNotAUnion => "reject/not-a-union",
             Code::RejectNotProjectable => "reject/not-projectable",
             Code::RejectTypeMismatch => "reject/type-mismatch",
             Code::RejectUnboundVariable => "reject/unbound-variable",
+            Code::RejectUnknownAlternative => "reject/unknown-alternative",
             Code::RejectUnknownField => "reject/unknown-field",
             Code::RejectUnknownPredicate => "reject/unknown-predicate",
+            Code::RejectUnionArity => "reject/union-arity",
             Code::RejectUnresolvedAccess => "reject/unresolved-access",
             Code::RejectValueShadowed => "reject/value-shadowed",
             Code::RejectWildcardInHead => "reject/wildcard-in-head",
@@ -174,7 +189,6 @@ impl Code {
             | Code::NyiNever
             | Code::NyiRepeatedVariable
             | Code::NyiSubquery
-            | Code::NyiUnionSelect
             | Code::NyiValueBind
             | Code::NyiValueField
             | Code::NyiValueMatch
@@ -185,11 +199,14 @@ impl Code {
             | Code::RejectInfiniteType
             | Code::RejectNoValue
             | Code::RejectNotAGenerator
+            | Code::RejectNotAUnion
             | Code::RejectNotProjectable
             | Code::RejectTypeMismatch
             | Code::RejectUnboundVariable
+            | Code::RejectUnknownAlternative
             | Code::RejectUnknownField
             | Code::RejectUnknownPredicate
+            | Code::RejectUnionArity
             | Code::RejectUnresolvedAccess
             | Code::RejectValueShadowed
             | Code::RejectWildcardInHead => Kind::Meaningless,
@@ -391,7 +408,6 @@ mod tests {
                 | Code::NyiNever
                 | Code::NyiRepeatedVariable
                 | Code::NyiSubquery
-                | Code::NyiUnionSelect
                 | Code::NyiValueBind
                 | Code::NyiValueField
                 | Code::NyiValueMatch
@@ -401,11 +417,14 @@ mod tests {
                 | Code::RejectInfiniteType
                 | Code::RejectNoValue
                 | Code::RejectNotAGenerator
+                | Code::RejectNotAUnion
                 | Code::RejectNotProjectable
                 | Code::RejectTypeMismatch
                 | Code::RejectUnboundVariable
+                | Code::RejectUnknownAlternative
                 | Code::RejectUnknownField
                 | Code::RejectUnknownPredicate
+                | Code::RejectUnionArity
                 | Code::RejectUnresolvedAccess
                 | Code::RejectValueShadowed
                 | Code::RejectWildcardInHead

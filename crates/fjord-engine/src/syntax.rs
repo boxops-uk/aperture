@@ -84,6 +84,15 @@ pub enum Ty {
     /// `Ty` clone has to be a refcount bump rather than a deep copy of the tree
     /// (see `ty::Checker::repr`).
     Record(Arc<[(Symbol, Ty)]>),
+    /// Alternatives as `(name, discriminant, payload)`, in the schema's declaration
+    /// order.
+    ///
+    /// A union type is only ever *declared* — nothing in a query builds one, and
+    /// there is no inference rule that produces one from parts — so unlike
+    /// [`Ty::Record`] this never holds a type variable in practice. It is here
+    /// because a select has to read the alternative out of something, and because a
+    /// one-field record checked against it is how a union is written.
+    Union(Arc<[(Symbol, u32, Ty)]>),
     Var(TyVarId),
     Error,
 }

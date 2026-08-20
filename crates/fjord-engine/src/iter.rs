@@ -14,8 +14,8 @@ use crate::{
 use fjord_encoding::{
     error::StoreCodecError,
     tuple::{
-        MARK_ESCAPE, MARK_RECORD, MARK_TERM, TupleDecoder, Value, decode_typed, fact_ref_bytes,
-        skip, strinc,
+        MARK_ESCAPE, MARK_RECORD, MARK_TERM, MARK_UNION, TupleDecoder, UnionTag, Value,
+        decode_typed, fact_ref_bytes, get_u64, skip, strinc,
     },
 };
 use fjord_schema::{
@@ -332,6 +332,48 @@ fn nested_field_span(
     outer: Range<usize>,
     step: usize,
 ) -> Result<Range<usize>, FjordError> {
+    // **A union payload**, where the step is the discriminant the plan compiled
+    // against rather than an index ([`FieldPath::payload`]).
+    //
+    // Checked, not assumed: a payload read against the wrong alternative would
+    // otherwise decode another type's bytes at this offset and answer with whatever
+    // was there. Flatten emits the tag's residual first, so a compiled plan never
+    // reaches the error — it is the backstop for a plan built by hand or arriving
+    // over the wire, and it is a refusal rather than a mis-read.
+    //
+    // [`FieldPath::payload`]: crate::plan::FieldPath::payload
+    if key.get(outer.start) == Some(&MARK_UNION) {
+        let bytes = key
+            .get(outer.clone())
+            .ok_or(FjordError::Decode(StoreCodecError::UnexpectedEof))?;
+
+        let (found, tag_len) = get_u64(
+            bytes
+                .get(1..)
+                .ok_or(FjordError::Decode(StoreCodecError::UnexpectedEof))?,
+        )
+        .map_err(FjordError::Decode)?;
+
+        if found != step as u64 {
+            return Err(FjordError::DiscriminantMismatch {
+                expected: step as u64,
+                found,
+            });
+        }
+
+        // The payload is what is left once the tag is off the front and the group's
+        // terminator off the end — a union is arity one, so there is nothing to skip
+        // past and nothing after it.
+        let start = outer.start + 1 + tag_len;
+        let end = outer
+            .end
+            .checked_sub(1)
+            .filter(|end| *end >= start)
+            .ok_or(FjordError::Decode(StoreCodecError::UnexpectedEof))?;
+
+        return Ok(start..end);
+    }
+
     if key.get(outer.start) != Some(&MARK_RECORD) {
         return Err(FjordError::NotARecord { step });
     }
@@ -820,6 +862,20 @@ impl<S: FactStore> StackFrame<S> {
                 // the scan loop ([I9]).
                 ResidualOp::EqRegisterFactId(var_address) => {
                     field == fact_ref_bytes(state.fact(*var_address)?.fact_id)
+                }
+
+                // **The tag, as a prefix.** Every value of one alternative begins
+                // with that alternative's tag, so matching one is a compare against
+                // a stack buffer over a borrowed span — the same shape as the
+                // reference compare above it, and for the same reason.
+                //
+                // Where this sits in the list matters: flatten puts it **before**
+                // any residual reading through the payload, so by the time a payload
+                // path is walked on this row the alternative is known. The residual
+                // walk short-circuits on the first failure, which is what makes that
+                // ordering enough.
+                ResidualOp::DiscriminantEq(disc) => {
+                    field.starts_with(UnionTag::new(*disc).as_bytes())
                 }
 
                 // **The order comparisons, as a byte compare.** The key encoding is
@@ -2999,6 +3055,94 @@ mod tests {
         store
     }
 
+    // ---- a union payload, at the machine ----------------------------------
+    //
+    // Flatten emits the tag's check ahead of any read through its payload, so the
+    // mismatch below is unreachable from a compiled query. These pin what the machine
+    // does with a plan that arrived some other way — by hand, or over the wire — and
+    // the answer has to be a refusal: reading the other alternative's bytes at that
+    // offset answers with whatever was there, silently.
+
+    /// A key of one union field holding `disc`'s payload.
+    fn union_key(disc: u32, payload: &[u8]) -> Vec<u8> {
+        let mut out = UnionTag::new(disc).as_bytes().to_vec();
+        out.extend_from_slice(payload);
+        out.push(MARK_TERM);
+        out
+    }
+
+    /// One predicate, two rows: alternative 3 holding `7`, alternative 0 holding
+    /// `"x"`. Tags neither contiguous nor positions, as everywhere else here.
+    fn two_alternatives(p: PredicateId) -> MemStore {
+        let mut store = MemStore::new();
+        store.insert(p, union_key(3, &i64_field(7)), 1);
+        store.insert(p, union_key(0, &str_field("x")), 2);
+        store
+    }
+
+    /// A payload path reads the payload, and a
+    /// [`ResidualOp::DiscriminantEq`] picks the row it belongs to.
+    #[test]
+    fn a_tag_residual_and_a_payload_path_read_one_alternative() {
+        let p = PredicateId(0);
+        let payload = FieldPath::field(0).payload(3);
+
+        let plan = Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
+                    path: FieldPath::field(0),
+                    op: ResidualOp::DiscriminantEq(3),
+                }]),
+            ))]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: payload,
+                ty: PredicateTy::Int,
+            },
+        };
+
+        assert_eq!(run(two_alternatives(p), plan), vec![Value::Int(7)]);
+    }
+
+    /// **The backstop.** The same plan without its tag check reaches the second
+    /// row, whose payload is a string where the path says alternative 3 — and that is
+    /// an error, not a decode of whatever sits at the offset.
+    #[test]
+    fn a_payload_read_against_the_wrong_alternative_is_an_error() {
+        let p = PredicateId(0);
+
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([scan_all(p, 0)]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0).payload(3),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let interner = LocalInterner::new(fjord_store::fixture::schema().interner().clone());
+        let error = crate::fixtures::collect_rows(two_alternatives(p), plan, &interner)
+            .expect_err("the second row's alternative is not the one the path names");
+
+        assert!(
+            matches!(
+                error,
+                FjordError::DiscriminantMismatch {
+                    expected: 3,
+                    found: 0
+                }
+            ),
+            "expected a discriminant mismatch, got {error:?}"
+        );
+    }
+
     /// **A level with no sources is the empty relation.** Not an error and not
     /// one row — the level is exhausted the moment it is entered, so the plan
     /// answers nothing at all.
@@ -5161,6 +5305,73 @@ mod tests {
         );
     }
 
+    /// **The census, for unions.** The battery says nothing about a union key unless
+    /// the generator draws one — and nothing about a *tag check* unless a level filters
+    /// by one.
+    ///
+    /// Both are worth counting separately. A union in a key exercises the codec's group
+    /// through the executor: a field offset walked past a tag and a terminator, a
+    /// cursor holding those bytes, and a projection decoding them. A
+    /// [`ResidualOp::DiscriminantEq`] exercises the filter, which is the part a resume
+    /// has to re-decide rather than replay.
+    #[test]
+    fn the_battery_reaches_a_union_key_and_a_tag_check() {
+        use crate::plan::ResidualOp;
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 300;
+
+        let mut runner = TestRunner::deterministic();
+        let (mut union_rows, mut tag_checks) = (0usize, 0usize);
+
+        for _ in 0..RUNS {
+            let spec = arb_plan_and_store()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+            let interner = spec.interner();
+            let (store, plan) = spec.build(&interner);
+
+            for step in plan.body.iter() {
+                let Step::Level(level) = step else { continue };
+
+                for source in level.sources.iter() {
+                    for residual in source.residuals().iter() {
+                        if matches!(residual.op, ResidualOp::DiscriminantEq(_)) {
+                            tag_checks += 1;
+                        }
+                    }
+                }
+            }
+
+            // A row actually *produced* out of a store holding a union, rather than a
+            // schema that merely declares one: an empty answer walks no payload.
+            let rows = crate::fixtures::collect_rows(store, plan, &interner).expect("a run");
+            union_rows += rows.iter().filter(|row| holds_a_union(row)).count();
+        }
+
+        assert!(
+            union_rows > 0,
+            "{RUNS} generated runs never produced a row holding a union"
+        );
+        assert!(
+            tag_checks > 0,
+            "{RUNS} generated plans never filtered by a discriminant"
+        );
+    }
+
+    /// Whether a projected row holds a union anywhere in it.
+    fn holds_a_union(value: &Value) -> bool {
+        match value {
+            Value::Union { .. } => true,
+            Value::Record(fields) => fields.iter().any(|(_, field)| holds_a_union(field)),
+            _ => false,
+        }
+    }
+
     // ---- The same battery, against fjall (1d) -----------------------------
     //
     // I4 is only half-tested on `MemStore`: a `Cursor` is bytes-only and a resume
@@ -5446,6 +5657,74 @@ mod tests {
         assert_eq!(
             bytes_n, bytes_2n,
             "hot path allocates per row by volume: {bytes_n} bytes for 64 rows vs {bytes_2n} for 128"
+        );
+    }
+
+    /// **I9, for a tag check.** The same N-against-2N comparison over a union key and a
+    /// [`ResidualOp::DiscriminantEq`], which is a per-row code path of its own.
+    ///
+    /// It is a compare of a borrowed span against a stack buffer — that is the design —
+    /// and this is what says so mechanically. A residual that built its tag bytes into a
+    /// `Vec` per row would answer every query correctly and cost an allocation for each
+    /// row it examined, which nothing else here would notice.
+    #[test]
+    fn a_tag_check_is_alloc_free_per_row() {
+        let control = allocation_counter::measure(|| {
+            std::hint::black_box(Vec::<u8>::with_capacity(4096));
+        });
+        assert!(
+            control.count_total > 0,
+            "counting allocator is not installed; this guard would pass vacuously"
+        );
+
+        let p = PredicateId(0);
+
+        // Alternating alternatives, so the residual both keeps and drops rows.
+        let keys = |count: u64| {
+            (1..=count).map(move |i| {
+                let disc = if i % 2 == 0 { 3 } else { 0 };
+                (union_key(disc, &i64_field(i as i64)), i)
+            })
+        };
+
+        let store_n = FrozenStore::from_keys(p, keys(64));
+        let store_2n = FrozenStore::from_keys(p, keys(128));
+
+        let plan = || Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
+                    path: FieldPath::field(0),
+                    op: ResidualOp::DiscriminantEq(3),
+                }]),
+            ))]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let mut n1 = 0;
+        let mut n2 = 0;
+        let info_n = allocation_counter::measure(|| n1 = count_rows(store_n, plan()).unwrap());
+        let info_2n = allocation_counter::measure(|| n2 = count_rows(store_2n, plan()).unwrap());
+
+        assert_eq!(
+            (n1, n2),
+            (32, 64),
+            "half the rows are the matching alternative"
+        );
+        assert_eq!(
+            info_n.count_total, info_2n.count_total,
+            "a tag check allocates per row: {} allocs for 64 rows vs {} for 128",
+            info_n.count_total, info_2n.count_total
+        );
+        assert_eq!(
+            info_n.bytes_total, info_2n.bytes_total,
+            "a tag check allocates per row by volume: {} bytes vs {}",
+            info_n.bytes_total, info_2n.bytes_total
         );
     }
 }
