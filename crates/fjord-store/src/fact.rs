@@ -30,7 +30,7 @@
 //! names a `db`, a `schema` and a `file` that no example builds. An `ignore` block is
 //! still a test, so it would appear in `cargo test -- --ignored --list`, which is this
 //! project's coverage ledger for guards written before their subject exists
-//! ([`docs/testing.md`](../../../docs/testing.md)). An illustration counted there is an
+//! ([`website/content/testing.md`](../../../website/content/testing.md)). An illustration counted there is an
 //! illustration that reads as an unbuilt invariant.
 //!
 //! ```text
@@ -65,8 +65,8 @@
 //! have to reorder against a schema it cannot see. The checks below are what a derive
 //! would need to be layered on top of, not replaced by.
 //!
-//! [chapter 6]: ../../../docs/06-types-and-schema.md
-//! [I11]: ../../../docs/invariants.md#i11
+//! [chapter 6]: ../../../website/content/schema-language.md
+//! [I11]: ../../../website/content/invariants.md#i11
 
 use crate::error::FactError;
 use fjord_encoding::tuple::{Value, encode_key, encode_typed};
@@ -79,7 +79,7 @@ use fjord_schema::{
 ///
 /// The predicate is a *name*, resolved against the schema at write time rather than
 /// an id baked into the type: a predicate id is a position in a schema
-/// ([chapter 6](../../../docs/06-types-and-schema.md)), so a type carrying one would
+/// ([chapter 6](../../../website/content/schema-language.md)), so a type carrying one would
 /// silently mean a different predicate under a schema that declared them in another
 /// order.
 pub trait Fact {

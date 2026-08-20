@@ -1,6 +1,6 @@
 //! The **embedded schema copy** — `schema/` beside the sidecar.
 //!
-//! [I13](../../../docs/invariants.md#i13): a database carries its own schema, embedded
+//! [I13](../../../website/content/invariants.md#i13): a database carries its own schema, embedded
 //! at create and frozen for its lifetime. This is that copy, and since Phase 8.4 it is
 //! **load-bearing** rather than belt-and-braces: it is what a server reads to learn what
 //! a database holds, so a store root can hold databases built from different schemas
@@ -18,7 +18,7 @@
 //!
 //! A predicate's id is a *position*, and it is the tag in every
 //! [`FactId`](fjord_schema::id::FactId) the database holds. Ordinary lowering assigns
-//! ids by sorted name ([D1](../../../docs/phase-8-schemas.md)) — right for a schema
+//! ids by sorted name ([D1](../../../website/content/schema-language.md)) — right for a schema
 //! being declared, and wrong here, where the numbering is already frozen on disk. So the
 //! copy is printed in id order and read back in declaration order, and `create` proves
 //! the round trip before the database exists at all.

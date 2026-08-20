@@ -55,7 +55,7 @@ pub enum PredicateTy {
     /// canonical form therefore sorts by discriminant, and a *renumber* is the change
     /// that moves the fingerprint ([chapter 6]).
     ///
-    /// [chapter 6]: https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md
+    /// [chapter 6]: https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md
     Union(Arc<[Alternative]>),
 }
 

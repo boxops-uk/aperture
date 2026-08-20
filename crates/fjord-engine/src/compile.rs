@@ -23,7 +23,7 @@
 //! nothing reads again. `Ast` and `Typed` are owned outright, so the context is a
 //! plain struct parameterised by the source's lifetime.
 //!
-//! [chapter 7]: ../../../docs/07-compilation.md
+//! [chapter 7]: ../../../website/content/query-language.md
 //! [`PLAN.md`]: ../../../PLAN.md
 
 use codespan_reporting::{diagnostic::LabelStyle, files, files::SimpleFile, term};

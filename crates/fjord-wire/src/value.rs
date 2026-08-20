@@ -6,7 +6,7 @@
 //! that is the central design decision rather than a shortcut. Both peers have the
 //! schema — the handshake compares the client's expected schema fingerprint against
 //! the DB's before a byte of data flows
-//! ([operations §6](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md#6-wire-protocol--the-write-stream)),
+//! ([operations §6](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md#6-wire-protocol--the-write-stream)),
 //! and [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13) freezes a DB's schema at create — so
 //! the field names, their order and their types are known to the reader in advance.
 //! Sending them again is sending what the reader already has.
@@ -32,14 +32,14 @@
 //! O(1) access with no parse step, paid for with fixed-width fields that are larger
 //! on the wire than varints. Neither half fits: every inbound fact is decoded
 //! anyway — to intern its references and to re-encode it as a storage tuple
-//! ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/docs/03-storage-model.md#interning-a-nested-fact)) — so
+//! ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/website/content/storage.md#interning-a-nested-fact)) — so
 //! there is no parse to avoid, and the size is worse.
 //!
 //! # A reference is a union, and it is the only tag on the wire
 //!
 //! A `Fact`-typed field holds either a [`FactId`] the producer already has or the
 //! target fact written inline
-//! ([settled](https://github.com/boxops-uk/fjord/blob/main/docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)).
+//! ([settled](https://github.com/boxops-uk/fjord/blob/main/PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline)).
 //! That choice is genuinely per-occurrence, so it is the one thing the schema cannot
 //! predict and the one place a discriminator is written — a varint branch index,
 //! which is exactly how Avro encodes a union. It appears only at `Fact`-typed
@@ -438,7 +438,7 @@ pub fn from_bytes(
 /// which is not a simplification but the real constraint written down. A reference
 /// in a key cannot be part of a cycle, because the target has to be fully identified
 /// before the referring key has any bytes at all
-/// ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/docs/03-storage-model.md#interning-a-nested-fact)). A
+/// ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/website/content/storage.md#interning-a-nested-fact)). A
 /// generator that drew cycles would draw facts no producer could send.
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
@@ -557,7 +557,7 @@ pub mod proptest {
 
         /// Materialise the schema. Field names are `f0`, `f1`, … — ascending, so
         /// sorted-by-name is also declaration order, which is what a record's
-        /// encoding order means ([chapter 6](https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md)).
+        /// encoding order means ([chapter 6](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md)).
         #[must_use]
         pub fn schema(&self) -> Schema {
             let mut rodeo = Rodeo::new();

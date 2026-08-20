@@ -9,7 +9,7 @@
 //!
 //! What it is made of is `fjord-wire` and a socket. It depends on **no** storage
 //! engine, no query engine and no runtime, which is
-//! [operations §10](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)'s `client → wire → encoding` and
+//! [operations §10](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)'s `client → wire → encoding` and
 //! its rule that nothing depends on the server.
 //!
 //! ```no_run

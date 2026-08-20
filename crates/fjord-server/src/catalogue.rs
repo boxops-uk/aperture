@@ -1,6 +1,6 @@
 //! **`fjord.db.List` and `fjord.db.Interning` — the server, answered as facts.**
 //!
-//! [Operations §5](../../../docs/fjord-cli-design.md) asks for enumeration to ride
+//! [Operations §5](../../../website/content/operations.md) asks for enumeration to ride
 //! the query machinery rather than a control message, and this is that: `\l` is a query,
 //! with a plan, a seek, residuals, a profile and a resume cursor, exactly as a query over
 //! `src.File` is. What it buys is not tidiness — it is that filtering, joining and paging
@@ -18,7 +18,7 @@
 //!
 //! Putting it here rather than in the machine means the plan IR gains no variant, the
 //! resume cursor gains no case, [`enumerate`](fjord_engine::iter) is not touched, and
-//! [I4](../../../docs/invariants.md#i4) needs no re-proving — the resume battery is
+//! [I4](../../../website/content/invariants.md#i4) needs no re-proving — the resume battery is
 //! already written over an arbitrary `FactStore`, so a store that happens to hold its
 //! rows in a `Vec` is a store it already covers. Against that, the IR does not *name*
 //! virtual sources, so `:plan` shows a scan of predicate 22 and says nothing about where
@@ -32,7 +32,7 @@
 //! the same function a hand-written deriver writes a fact with, and each row is
 //! `predicate_id ++ key`, byte for byte what a scan of a real keyspace produces. Sorted
 //! by those bytes, which is the order a keyspace would have held them in, because the
-//! codec is order-preserving ([I1](../../../docs/invariants.md#i1)). Nothing above this
+//! codec is order-preserving ([I1](../../../website/content/invariants.md#i1)). Nothing above this
 //! module can tell the difference, which is the point: a virtual predicate that needed
 //! special handling anywhere else would not be worth having.
 //!
@@ -49,7 +49,7 @@
 //! A schema declaring neither has no catalogue at all, which is every schema but a
 //! server's — a client's, a test's, and the copy embedded in a database.
 //!
-//! # One listing per query, and that is [I8](../../../docs/invariants.md#i8)'s shape
+//! # One listing per query, and that is [I8](../../../website/content/invariants.md#i8)'s shape
 //!
 //! The rows are materialised once, when the query is prepared, and the same `Arc` is
 //! shared by every chunk of that query — so a `create` between two pages of `\more` is

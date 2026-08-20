@@ -24,7 +24,7 @@ pub type Diagnostic = codespan_reporting::diagnostic::Diagnostic<()>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Code {
     /// `[T]` — the multiplicity decision, settled as *not yet*
-    /// ([open decisions](https://github.com/boxops-uk/fjord/blob/main/docs/open-decisions.md)).
+    /// ([open decisions](https://github.com/boxops-uk/fjord/blob/main/PLAN.md)).
     NyiArray,
     /// `set T`.
     NyiSet,

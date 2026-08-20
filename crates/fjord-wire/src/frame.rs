@@ -11,7 +11,7 @@
 //! reason for departing — PG's model is strictly serial, so a long query blocks a
 //! short one behind it. Here a query is a stream and a write is a stream, several
 //! run at once on one connection, and a frame says which
-//! ([operations §6](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md#6-wire-protocol--the-write-stream)).
+//! ([operations §6](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md#6-wire-protocol--the-write-stream)).
 //!
 //! # The frame layer does not know the protocol
 //!

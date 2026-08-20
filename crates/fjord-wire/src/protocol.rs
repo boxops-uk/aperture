@@ -33,7 +33,7 @@
 //!
 //! `create`, `finish` and `remove` are [control](Control) frames on an ordinary
 //! stream, which is what makes them work **against a running server** instead of
-//! requiring one to be stopped ([operations §5](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)).
+//! requiring one to be stopped ([operations §5](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)).
 //! Putting them on a stream rather than on stream 0 buys the whole of the existing
 //! machinery: they queue fairly behind other work, a failure answers on the stream that
 //! caused it, and a slow `create` does not stall the connection's reader.
@@ -90,7 +90,7 @@ use crate::{
 ///
 /// **2 is Phase 8's.** A startup frame's `schema_fingerprint` used to carry a
 /// provisional hash this crate computed; it now carries
-/// [chapter 6](https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md)'s schema identity, computed in
+/// [chapter 6](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md)'s schema identity, computed in
 /// `fjord-schema` over the canonical form. Every number changed, so a client pinned
 /// to the old one is told it speaks a different protocol rather than left to fail a
 /// comparison it cannot interpret.
@@ -203,7 +203,7 @@ pub mod kinds {
     /// combination. Asking about the ids in a row *after* the row arrived composes with
     /// every way of asking for rows, and costs a client that never asks nothing at all.
     ///
-    /// [settled]: ../../../docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
+    /// [settled]: ../../../PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
     pub const FETCH: FrameKind = FrameKind(b'F');
     /// Server → client: the facts those ids name, **in the order they were asked
     /// about**.
@@ -269,7 +269,7 @@ pub struct Startup {
     /// shapes it *uses*, and containment is what chapter 6 says compatibility is.
     ///
     /// Empty means "no per-predicate claim", which is what a client carrying a single
-    /// constant sends — see [the decision](https://github.com/boxops-uk/fjord/blob/main/docs/open-decisions.md) that a
+    /// constant sends — see [the decision](https://github.com/boxops-uk/fjord/blob/main/PLAN.md) that a
     /// client never computes a fingerprint. A Rust client links the algorithm and can
     /// compute this from the schema it holds; a hand-written one carries a number and
     /// leaves this empty.

@@ -6,7 +6,7 @@
 //! database to validate it against, a schema that was parsed rather than built, and a
 //! write path. All three exist now, and none of them is in that crate — so the guard
 //! lives here, over the real client and the real server, and
-//! [`docs/invariants.md`](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md) points at it by this name.
+//! [`website/content/invariants.md`](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md) points at it by this name.
 //!
 //! # What containment means on the way in
 //!
@@ -22,7 +22,7 @@
 //!   that name and not that shape — and a fact encoded against the producer's idea of it
 //!   would decode as something else rather than fail.
 //!
-//! Each of those is a fact file's producing schema in [chapter 6](https://github.com/boxops-uk/fjord/blob/main/docs/06-types-and-schema.md)'s
+//! Each of those is a fact file's producing schema in [chapter 6](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md)'s
 //! wording; over the write stream, the producer *is* the file's header, so the check
 //! lands at the handshake and no bytes flow before it.
 

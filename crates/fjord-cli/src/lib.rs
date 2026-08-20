@@ -14,7 +14,7 @@
 //! also parse the schema twice and hand out two `Schema`s that compare equal and are not
 //! the same `Arc`.
 //!
-//! This is `fjord-cli` in [operations §10](../../../docs/fjord-cli-design.md)'s
+//! This is `fjord-cli` in [operations §10](../../../website/content/operations.md)'s
 //! layout, and the package is named for that.
 
 pub mod sample_schema;

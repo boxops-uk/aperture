@@ -58,7 +58,7 @@ impl NodeId {
     /// Index into a side table. `NodeId`s are dense — the store is append-only —
     /// so an annotation table is a `Vec`, not a map ([chapter 7]).
     ///
-    /// [chapter 7]: ../../../docs/07-compilation.md
+    /// [chapter 7]: ../../../website/content/query-language.md
     pub fn index(self) -> usize {
         self.0 as usize
     }
@@ -313,7 +313,7 @@ impl Ast {
 /// stable for the tree's life and later phases annotate it through *side tables*
 /// rather than mutating the tree ([chapter 7]).
 ///
-/// [chapter 7]: ../../../docs/07-compilation.md
+/// [chapter 7]: ../../../website/content/query-language.md
 pub struct SyntaxTree<K: Recursive> {
     kinds: Vec<K>,
     spans: Vec<NodeSpan>,

@@ -37,7 +37,7 @@
 //! That matters here for a different reason than it does in storage. In storage a
 //! second encoding would break order-preservation, which is stated over encodings.
 //! Here it would break *identity of a block*: a fact file's block carries a
-//! [CRC32](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md) and the same encoding is used on
+//! [CRC32](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md) and the same encoding is used on
 //! the wire and on disk, so "the same facts" has to mean "the same bytes" for a
 //! checksum to be worth computing or a block to be comparable at all.
 

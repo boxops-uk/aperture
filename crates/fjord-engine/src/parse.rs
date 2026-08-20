@@ -4,7 +4,7 @@
 //! ([chapter 7]): it accepts the full intended feature surface and leaves
 //! *meaning* — including "not yet implemented" — to typecheck and flatten.
 //!
-//! [chapter 7]: ../../../docs/07-compilation.md
+//! [chapter 7]: ../../../website/content/query-language.md
 
 use codespan_reporting::diagnostic::Label;
 
@@ -27,7 +27,7 @@ use crate::{
 /// Deliberately the same limit as the codec's `MAX_RECORD_DEPTH`: a pattern
 /// nested deeper than the codec can encode has nothing to match against.
 ///
-/// [conventions]: ../../../docs/conventions.md
+/// [conventions]: ../../../AGENTS.md
 const MAX_NEST_DEPTH: usize = 256;
 
 /// The longest source [`parse`] accepts.

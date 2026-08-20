@@ -668,7 +668,7 @@ fn a_long_query_does_not_delay_a_short_one() {
 ///
 /// A thousand rows is four chunks at [`CHUNK_ROWS`](fjord_server::session), so the
 /// executor is entered once and *resumed* three times — through the same bytes-only
-/// cursor [chapter 5](../../../docs/05-resume.md) is about. Until now that machinery
+/// cursor [chapter 5](../../../website/content/executor.md) is about. Until now that machinery
 /// was exercised only by its own batteries; this is the first thing that uses it for
 /// what it is for.
 ///

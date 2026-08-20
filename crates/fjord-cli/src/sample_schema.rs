@@ -59,7 +59,7 @@ const SOURCE: &str = include_str!("../../../schemas/code.sigla");
 /// thing pointing at it rather than repeating it.
 ///
 /// **There are no id constants, and that is the point.** An id is a *position*, and
-/// positions come from sorting the schema's names ([D1](../../../docs/phase-8-schemas.md)),
+/// positions come from sorting the schema's names ([D1](../../../website/content/schema-language.md)),
 /// so a constant would be a second statement of something the schema already decides —
 /// wrong the first time somebody adds a predicate that sorts earlier. Ask [`id`] by
 /// name. Nothing outside this process ever sees one anyway: a block header carries the

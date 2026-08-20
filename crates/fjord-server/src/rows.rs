@@ -188,10 +188,10 @@ pub fn to_wire(ty: &PredicateTy, value: &Value) -> Result<WireValue, ServerError
 /// # It reads the store as it is now, and for a stored fact that is not a race
 ///
 /// A query holds an immutable snapshot and releases it at every suspend
-/// ([I8](../../../docs/invariants.md#i8)), so an id resolved after the fact is read
+/// ([I8](../../../website/content/invariants.md#i8)), so an id resolved after the fact is read
 /// under a *later* view of the store than the row that carried it. Nothing follows from
 /// that for a stored fact: one is immutable once written and an id is never reused
-/// ([I11](../../../docs/invariants.md#i11)), so an id that was in a row is in every
+/// ([I11](../../../website/content/invariants.md#i11)), so an id that was in a row is in every
 /// later state, naming the same fact. A reader that took its own snapshot per batch would
 /// be buying consistency that immutability already gave it.
 ///

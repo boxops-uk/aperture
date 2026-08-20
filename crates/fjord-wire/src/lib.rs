@@ -67,7 +67,7 @@
 //!
 //! **The file envelope.** A fact file's header (magic, format version, producing
 //! schema fingerprint) and its optional footer of block offsets are
-//! [operations §8](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)'s and belong to Phase 7b with
+//! [operations §8](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)'s and belong to Phase 7b with
 //! the rest of the file pipeline. Blocks are here because they are shared with the
 //! wire; the envelope is not shared with anything.
 //!
@@ -75,7 +75,7 @@
 //! it opens no socket, holds no state and decides nothing about retries, timeouts or
 //! concurrency. That is `fjord-client`'s on one side and `fjord-server`'s on the
 //! other, and it is why both can share this crate without sharing each other —
-//! [operations §10](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)'s "shared by server and client,
+//! [operations §10](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)'s "shared by server and client,
 //! no I/O policy", and its rule that nothing depends on the server.
 //!
 //! The vocabulary lived in `fjord-server` until 9e, which was fine while the server
@@ -84,12 +84,12 @@
 //! handshake — or write a second copy of the message formats, which is exactly the
 //! drift the .NET client exists to detect rather than to cause.
 //!
-//! [I1]: ../../docs/invariants.md#i1
-//! [I2]: ../../docs/invariants.md#i2
-//! [I3]: ../../docs/invariants.md#i3
-//! [I13]: ../../docs/invariants.md#i13
-//! [settled]: ../../docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
-//! [operations §6 and §8]: ../../docs/fjord-cli-design.md#6-wire-protocol--the-write-stream
+//! [I1]: ../../website/content/invariants.md#i1
+//! [I2]: ../../website/content/invariants.md#i2
+//! [I3]: ../../website/content/invariants.md#i3
+//! [I13]: ../../website/content/invariants.md#i13
+//! [settled]: ../../PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
+//! [operations §6 and §8]: ../../website/content/operations.md#6-wire-protocol--the-write-stream
 
 pub mod block;
 pub mod crc;

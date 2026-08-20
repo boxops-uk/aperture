@@ -316,7 +316,7 @@ fn computed(plan: &Plan, schema: &Schema, value: &Computed) -> String {
 /// The parts are paired with key fields **by position**, which is what they are: a
 /// seek is a byte prefix of the stored key, so the parts are the leading fields in
 /// order and the first field not fully determined ends the seek
-/// ([chapter 7](../../../docs/07-compilation.md)). One constant part can cover
+/// ([chapter 7](../../../website/content/query-language.md)). One constant part can cover
 /// several fields, since a run of them is merged into a single [`SeekKey::Prefix`],
 /// and that is why the walk is a cursor rather than an index.
 fn seek(
@@ -380,7 +380,7 @@ fn seek(
 /// The key fields a run of **constant** seek bytes pins, from field `from`.
 ///
 /// A stored key is its top-level fields back to back and the encoding is
-/// self-delimiting ([I2](../../../docs/invariants.md#i2)), so the run is split by
+/// self-delimiting ([I2](../../../website/content/invariants.md#i2)), so the run is split by
 /// decoding one field at a time against the declared type — the same walk the
 /// executor makes, rather than a second reading of the layout.
 ///
@@ -446,7 +446,7 @@ fn constant(
 ///
 /// The bytes are a string's encoding with its terminator dropped — which is exactly
 /// what makes the pattern a range, since every string beginning with it begins with
-/// these bytes ([I1](../../../docs/invariants.md#i1)). So the terminator is put back
+/// these bytes ([I1](../../../website/content/invariants.md#i1)). So the terminator is put back
 /// and the codec decodes it, rather than this reimplementing the escaping and
 /// drifting from it.
 fn prefix(interner: &LocalInterner, ty: Option<&PredicateTy>, bytes: &[u8]) -> Option<String> {

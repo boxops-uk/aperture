@@ -260,7 +260,7 @@ impl<W: Write> Sink<W> {
 /// A reference prints as `#predicate:sequence` rather than as its raw `u64`, because
 /// that is what a [`FactId`](fjord_schema::id::FactId) *is* — a snowflake, the
 /// owning predicate in the high bits and a per-predicate sequence in the low
-/// ([I11](../../../docs/invariants.md#i11)) — and a sixteen-digit number hides both halves.
+/// ([I11](../../../website/content/invariants.md#i11)) — and a sixteen-digit number hides both halves.
 #[must_use]
 pub fn render(value: &WireValue) -> String {
     match value {

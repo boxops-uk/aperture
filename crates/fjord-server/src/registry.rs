@@ -5,7 +5,7 @@
 //! `create` cannot add to a list nobody holds, and a `remove` cannot delete a directory
 //! this process has open. The registry is the mutable form of that list, plus the
 //! [`Catalog`] the CLI's offline path already uses — which is what makes
-//! [operations §5](../../../docs/fjord-cli-design.md)'s "two front doors, one
+//! [operations §5](../../../website/content/operations.md)'s "two front doors, one
 //! implementation" true rather than aspirational. Everything below delegates the actual
 //! work to `fjord-store`; what lives here is *when* it is safe to do it.
 //!
@@ -51,7 +51,7 @@ use crate::{
 
 /// How a database's schema is arrived at.
 ///
-/// **A schema belongs to a database, not to a server** ([I13](../../../docs/invariants.md#i13)):
+/// **A schema belongs to a database, not to a server** ([I13](../../../website/content/invariants.md#i13)):
 /// each one embedded its own at create, and this is what reads it back. Exactly one piece
 /// is the server's rather than the database's — the **virtual** predicates,
 /// `fjord.db.List` and `fjord.db.Interning`, which the server answers out of the root it
@@ -64,7 +64,7 @@ use crate::{
 /// error and the quiet version a query answering zero rows. So a database with no
 /// embedded copy is now **listed and not served**, which is already how a copy this
 /// server cannot *read* is treated, and is the same refusal
-/// [I15](../../../docs/invariants.md#i15) makes of a database carrying no format stamp.
+/// [I15](../../../website/content/invariants.md#i15) makes of a database carrying no format stamp.
 ///
 /// The virtual half is carried as *source* rather than as a `Schema`, because composing
 /// two schemas means composing two interners, and the language already has an operator
@@ -449,7 +449,7 @@ impl Registry {
     /// guess [`Schemas`] no longer makes: it created a database whose embedded schema was
     /// whatever binary happened to be listening, so the same command against two builds
     /// produced two different artifacts. `create` requires a schema — which is what
-    /// [operations §5](../../../docs/fjord-cli-design.md) always specified.
+    /// [operations §5](../../../website/content/operations.md) always specified.
     ///
     /// # Errors
     ///

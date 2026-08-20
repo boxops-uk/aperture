@@ -12,7 +12,7 @@
 //! and [`CstNode::para`] (bottom-up, keeping the node beside each result) — which
 //! is what lowering runs on.
 //!
-//! [chapter 7]: ../../../docs/07-compilation.md
+//! [chapter 7]: ../../../website/content/query-language.md
 
 use crate::{
     lexer::Token,

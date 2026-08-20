@@ -13,10 +13,10 @@
 //!
 //! - **`nyi/…`** — deferred features: disjunction, negation, subqueries, union
 //!   select, `never`, and the hard half of `pattern = pattern`
-//!   ([open decisions](../../../docs/open-decisions.md)).
+//!   ([open decisions](../../../PLAN.md)).
 //! - **`reject/…`** — constructs that are meaningless and will not be implemented:
 //!   a wildcard head, a literal as a bind target, `.value` where the key shadows it
-//!   ([conventions](../../../docs/conventions.md)).
+//!   ([conventions](../../../AGENTS.md)).
 //!
 //! Inference is Hindley–Milner-shaped — unification over type variables with an
 //! occurs check — ported from the superseded `lens` prototype, with records as
@@ -24,7 +24,7 @@
 //! rolls its substitution back so a mistake in one field cannot poison its
 //! siblings, and checking continues.
 //!
-//! [chapter 7]: ../../../docs/07-compilation.md
+//! [chapter 7]: ../../../website/content/query-language.md
 
 use crate::{
     diag::{Code, Diagnostics},
@@ -251,7 +251,7 @@ impl Checker<'_> {
     /// What stays deferred here is a left side that is none of the three: a literal
     /// (which can never be a target), a generator, or a field read — each wants
     /// pattern-pushing rather than a bind
-    /// ([open decisions](../../../docs/open-decisions.md)).
+    /// ([open decisions](../../../PLAN.md)).
     fn bind(&mut self, ast: &Ast, lhs: NodeId, rhs: NodeId) {
         match ast.store().kind(lhs) {
             ExprKind::Wildcard => {

@@ -1,7 +1,7 @@
 //! **Expanding a reference into the fact it names**, recursively.
 //!
 //! A row carries a reference as a `FactId`, because that is what a reference *is* once
-//! stored ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/docs/03-storage-model.md)). So a query over a code index
+//! stored ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/website/content/storage.md)). So a query over a code index
 //! answers `{"to": "#3:7", "file": "#1:12"}`, and the two interesting fields of the
 //! interesting predicate are numbers naming facts the reader cannot see. This turns them
 //! into the facts:
@@ -51,7 +51,7 @@
 //! [`unresolved`](Expander::unresolved) counts it rather than hiding it behind a
 //! plausible-looking row.
 //!
-//! [settled]: ../../../docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
+//! [settled]: ../../../PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -71,7 +71,7 @@ use crate::{connection::Connection, error::ClientError};
 /// **A guard rather than a limit anybody should reach.** In the data, expansion always
 /// terminates: a reference in a *key* cannot be part of a cycle, because the target has
 /// to be fully identified before the referring key has any bytes at all
-/// ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/docs/03-storage-model.md#interning-a-nested-fact)) — so the
+/// ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/website/content/storage.md#interning-a-nested-fact)) — so the
 /// logical form of a fact is a finite tree, and the built-in code index's deepest is
 /// three hops. What this bounds is a *schema* nobody has written yet, where a mistake in
 /// this walk would be a page of point reads instead of a wrong answer. A person who

@@ -1,4 +1,4 @@
-//! The command tree — [operations §4](../../../docs/fjord-cli-design.md).
+//! The command tree — [operations §4](../../../website/content/operations.md).
 //!
 //! Common lifecycle verbs stay top-level because they are the daily drivers; admin
 //! tooling nests one level. Every database-taking command is meant to accept any
@@ -220,7 +220,7 @@ pub enum Command {
 }
 
 /// The three questions a schema can be asked away from a database
-/// ([operations §5](../../../docs/fjord-cli-design.md)).
+/// ([operations §5](../../../website/content/operations.md)).
 ///
 /// All three take **files**, and `diff` takes a database name just as happily: what is
 /// being compared is a schema, and where it was read from is the caller's business.
@@ -240,7 +240,7 @@ pub enum SchemaCommand {
     /// Print a schema's fingerprint, and each predicate's.
     ///
     /// **This is the number a client carries.** A client never computes one
-    /// ([open decisions](../../../docs/open-decisions.md)); it holds what this prints, and a
+    /// ([open decisions](../../../PLAN.md)); it holds what this prints, and a
     /// stale constant is refused at the handshake by name.
     Fingerprint {
         file: PathBuf,

@@ -10,7 +10,7 @@ use crate::{
 /// A database that now exists, however it was made.
 ///
 /// One type for both doors, so the caller does not have to know which one answered —
-/// which is [operations §5](../../../../docs/fjord-cli-design.md)'s rule that local and
+/// which is [operations §5](../../../../website/content/operations.md)'s rule that local and
 /// remote are a property of the *address*, seen from the printing end.
 pub struct Created {
     pub name: String,

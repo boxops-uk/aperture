@@ -19,7 +19,7 @@
 //! alternative makes the *indexer* keep a map from each entity to its assigned
 //! identity ([settled]). Turning that back into an id is **interning**:
 //! resolve-or-create against the target predicate, then substitute
-//! ([chapter 3](../../../docs/03-storage-model.md#interning-a-nested-fact)).
+//! ([chapter 3](../../../website/content/storage.md#interning-a-nested-fact)).
 //!
 //! ```text
 //!   src.Decl { file = src.File "keys.py", line = 12, name = "key_of" }
@@ -48,9 +48,9 @@
 //!   both names and *defines* its target, so a nested value disagreeing with a
 //!   stored one is exactly `ops-I5`'s same-key-different-value case.
 //! - **Atomicity** is `put_fact`'s single batch across both column families
-//!   ([I12](../../../docs/invariants.md#i12)).
+//!   ([I12](../../../website/content/invariants.md#i12)).
 //! - **Id allocation** is the per-predicate counter
-//!   ([I11](../../../docs/invariants.md#i11)).
+//!   ([I11](../../../website/content/invariants.md#i11)).
 //!
 //! What this crate adds is the *walk*, the substitution, and the type checking of a
 //! wire value against the schema on the way through.
@@ -81,7 +81,7 @@
 //! interns cleanly and which then conflicts has **written the target**: interning is
 //! not a transaction, and whether a failed stream's already-written facts are rolled
 //! back is a P0 decision that belongs with the transaction story
-//! ([operations §6](../../../docs/fjord-cli-design.md#6-wire-protocol--the-write-stream)).
+//! ([operations §6](../../../website/content/operations.md#6-wire-protocol--the-write-stream)).
 //!
 //! It is also close to harmless, for a reason worth knowing. A written target is a
 //! fact that was legitimately named and legitimately defined; facts are immutable and
@@ -89,7 +89,7 @@
 //! conflict dedups against it rather than duplicating it. The failure mode a
 //! transaction would prevent here is a wasted row, not a wrong answer.
 //!
-//! [settled]: ../../docs/open-decisions.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
+//! [settled]: ../../PLAN.md#what-a-reference-is-on-the-way-in--settled-the-target-fact-written-inline
 
 pub mod error;
 pub mod intern;

@@ -3,7 +3,7 @@
 //! Not a mock, for the reason every other integration test here is not one: what is
 //! being checked is that the *queries* answer, and a mock would only check that the
 //! rendering compiles. Each one of them is a shape
-//! [phase 11](../../../docs/phase-11-code-search.md) argued about — the file view in
+//! [phase 11](../../../website/content/clients.md) argued about — the file view in
 //! particular, which was a scan of the largest predicate in the index until
 //! `src.FileXRef` existed.
 //!

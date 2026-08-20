@@ -3,7 +3,7 @@
 //! One block is a run of facts of *one predicate*, so the predicate id is paid once
 //! rather than per fact. An indexer writing in visitation order emits small blocks in
 //! bursts; a writer that has grouped its output emits large ones
-//! ([operations §8](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md)). The same bytes are a
+//! ([operations §8](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)). The same bytes are a
 //! `CopyData` frame's payload on the wire and a run of a fact file on disk, which is
 //! what makes "one fact encoding, not two" a thing that can be checked.
 //!
@@ -36,7 +36,7 @@
 //! Glean's opaque sequential `Batch` cannot offer and the reason this format has a
 //! marker at all.
 //!
-//! [Operations §8](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md) specifies the marker as "a
+//! [Operations §8](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md) specifies the marker as "a
 //! reserved, structurally-illegal byte sequence (unused type-tag run the encoder
 //! never emits)", and describes every hit as *only a candidate* because "values
 //! carry arbitrary bytes (blobs/source text), so a marker can occur inside one".

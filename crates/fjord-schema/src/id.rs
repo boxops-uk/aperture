@@ -64,8 +64,8 @@ pub const MAX_FACT_SEQUENCE: u64 = (1 << FACT_ID_SEQUENCE_BITS) - 1;
 /// Uniqueness is structural rather than enforced: the tag partitions the id space,
 /// so two predicates cannot collide however their sequences are allocated.
 ///
-/// [I11]: ../../../docs/invariants.md#i11
-/// [chapter 3]: ../../../docs/03-storage-model.md
+/// [I11]: ../../../website/content/invariants.md#i11
+/// [chapter 3]: ../../../website/content/storage.md
 /// `Hash` because an id is a thing callers key a map by — a client caching the fact
 /// each one names, say. It agrees with `Eq` by construction, both being the `u64`'s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

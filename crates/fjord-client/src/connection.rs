@@ -302,7 +302,7 @@ impl Connection {
         // fingerprint and is not wrong about anything ([I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)).
         //
         // A Rust client computes both because it links the algorithm. That is not the
-        // thing [D2](https://github.com/boxops-uk/fjord/blob/main/docs/open-decisions.md) rules out: what a *foreign*
+        // thing [D2](https://github.com/boxops-uk/fjord/blob/main/PLAN.md) rules out: what a *foreign*
         // client must not do is reimplement the canonical form, and one that carries a
         // constant simply sends no map.
         let (fingerprint, predicates) = if assert_schema {

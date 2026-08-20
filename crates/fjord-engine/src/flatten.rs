@@ -3,7 +3,7 @@
 //! The last front-end phase and the one the two halves of the system meet at
 //! ([chapter 7]). It takes the typed tree and produces an ordered `[Level]`
 //! plus a `head: Project`, which is the fixed contract
-//! ([chapter 4](../../../docs/04-executor.md)); everything after this point is the
+//! ([chapter 4](../../../website/content/executor.md)); everything after this point is the
 //! executor's.
 //!
 //! Four things happen here, in this order, and the order is the design:
@@ -62,9 +62,9 @@
 //! Each of those is a corpus entry, so the promise is checked rather than
 //! described ([`corpus`](crate::corpus)).
 //!
-//! [chapter 7]: ../../../docs/07-compilation.md
-//! [chapter 3]: ../../../docs/03-storage-model.md
-//! [I6]: ../../../docs/invariants.md#i6
+//! [chapter 7]: ../../../website/content/query-language.md
+//! [chapter 3]: ../../../website/content/storage.md
+//! [I6]: ../../../website/content/invariants.md#i6
 
 use crate::{
     diag::{Code, Diagnostics},
@@ -105,7 +105,7 @@ enum Slot {
     /// register.
     ///
     /// It needs no plan support, because [a stored key is
-    /// flat](../../../docs/03-storage-model.md#a-stored-key-is-flat): its top-level
+    /// flat](../../../website/content/storage.md#a-stored-key-is-flat): its top-level
     /// fields sit back to back, so splicing every field in declared order
     /// reconstructs exactly the bytes of the whole key, and projecting is a record
     /// over those fields. Under a wrapped layout neither would be true — the
@@ -128,7 +128,7 @@ enum Slot {
     },
     /// A row's value side. Projectable; never matched ([I6]).
     ///
-    /// [I6]: ../../../docs/invariants.md#i6
+    /// [I6]: ../../../website/content/invariants.md#i6
     Value { address: Address, ty: PredicateTy },
     /// A **constant**, from `X = 42` — held as the literal's own node rather than
     /// as bytes or a decoded value, so every use resolves by *substitution*: a key
@@ -472,7 +472,7 @@ impl Body {
     ///
     /// Not a level: it produces one value, `enumerate` does not iterate it, and the
     /// cursor stores nothing for it — it is recomputed on resume, which is what
-    /// [I14](../../../docs/invariants.md#i14) is about.
+    /// [I14](../../../website/content/invariants.md#i14) is about.
     fn push_derive(&mut self, value: Computed) -> Address {
         let bind = self.next_address();
         self.steps.push(Step::Derive(DerivedBind { bind, value }));
@@ -1038,7 +1038,7 @@ impl Flattener<'_> {
                 // statement before, so the placement rule *is* the graph — no
                 // immovability tag, no second mechanism, and completeness survives
                 // because `reads` is still structural and `bound` still only grows
-                // ([the query-surface note](../../../docs/query-surface.md)).
+                // ([the query-surface note](../../../website/content/query-language.md)).
                 Stmt::Negate(generator) => {
                     for alt in generator.alternatives.clone().iter() {
                         self.scan_key(alt.key, alt.predicate, &claims, &mut occurrences);
@@ -1312,7 +1312,7 @@ impl Flattener<'_> {
     /// actually resolves depends on the order, and `emit` reports what does not.
     /// What this excludes is the derived bind — a record mentioning a captured
     /// variable, a string prefix — which is in no register and would have to be
-    /// built ([chapter 7](../../../docs/07-compilation.md#derived-facts)).
+    /// built ([chapter 7](../../../website/content/query-language.md#derived-facts)).
     fn names_a_location(&self, node: NodeId) -> bool {
         match self.ast.store().kind(node) {
             ExprKind::Var(_) | ExprKind::Fact(..) => true,
@@ -1425,7 +1425,7 @@ impl Flattener<'_> {
     /// **Lookup-chasing**: mark the row binds that may be lowered as a fetch.
     ///
     /// Glean's `Opt` pass calls this lookup-chasing, and
-    /// [the comparison](../../../docs/glean-comparison.md) listed it as the one part of
+    /// [the comparison](../../../docs/glean.md) listed it as the one part of
     /// that pass genuinely absent here. This is it.
     ///
     /// # What it is for
@@ -1438,7 +1438,7 @@ impl Flattener<'_> {
     /// binding it had to run first: `src.Decl` scanned whole, and the seek reduced to a
     /// residual on identity because `name`'s prefix had already closed the seek. On a
     /// 25M-fact index that is 30,222 ms, against 2.1 ms for the same answer written as a
-    /// read through the reference ([phase 11](../../../docs/phase-11-code-search.md) §6d).
+    /// read through the reference ([phase 11](../../../website/content/clients.md) §6d).
     ///
     /// Marking it chasable stops the bind claiming its row, so the statement holding the
     /// reference is free to capture it — and where the order then puts that statement
@@ -1991,7 +1991,7 @@ impl Flattener<'_> {
     /// statement here binds what it names, and the two readings of `!test.Bar {id =
     /// Y}` are indistinguishable at a glance, which is the argument for refusing it
     /// rather than picking one ([the query-surface
-    /// note](../../../docs/query-surface.md)). The wildcard reading is spellable —
+    /// note](../../../website/content/query-language.md)). The wildcard reading is spellable —
     /// `_` — so this asks for that spelling.
     ///
     /// **A rejection, not a deferral**, and it carries the code the safety check
@@ -2247,7 +2247,7 @@ impl Flattener<'_> {
     /// Every leaf has to be somewhere the machine can read at run time: an integer
     /// literal, an integer field of a bound row, or another derived bind. A string,
     /// a whole row and a fact's value are each refused by name — the last because
-    /// values live in `entities` and [I6](../../../docs/invariants.md#i6) keeps
+    /// values live in `entities` and [I6](../../../website/content/invariants.md#i6) keeps
     /// those out of the row loop.
     fn computed(&mut self, node: NodeId) -> Option<Computed> {
         if let ExprKind::Arith(operands, ops) = self.ast.store().kind(node) {
@@ -3212,7 +3212,7 @@ impl Flattener<'_> {
                 // The same register is *this* row: an intra-row equality, which
                 // needs a same-row residual the executor does not have. Rejected
                 // for Phase 4 rather than adding an operator nothing else uses
-                // ([open decisions](../../../docs/open-decisions.md)).
+                // ([open decisions](../../../PLAN.md)).
                 if *from == address {
                     self.report(
                         node,
@@ -3583,7 +3583,7 @@ impl Flattener<'_> {
                 // `entities`, and [I6] keeps `entities` out of the scan loop. Same
                 // deferral a prefix written at a key field draws.
                 //
-                // [I6]: ../../../docs/invariants.md#i6
+                // [I6]: ../../../website/content/invariants.md#i6
                 Some(Slot::Value { .. }) => self.report(
                     pattern,
                     Code::NyiValueMatch,
@@ -3802,7 +3802,7 @@ impl Flattener<'_> {
 
             // **A derived bind on one side.** The other side's field is decoded and
             // compared as a number, rather than the computed value being encoded per
-            // row — which would allocate ([I9](../../../docs/invariants.md#i9)).
+            // row — which would allocate ([I9](../../../website/content/invariants.md#i9)).
             //
             // The residual goes on the *field's* level, which is the level that runs
             // later by construction: a derive reads what its operands bind, so it is
@@ -3867,7 +3867,7 @@ impl Flattener<'_> {
             // `entities` out of the scan loop. The same deferral matching on a value
             // draws, for the same reason.
             //
-            // [I6]: ../../../docs/invariants.md#i6
+            // [I6]: ../../../website/content/invariants.md#i6
             (Slot::Value { .. }, _) | (_, Slot::Value { .. }) => {
                 self.report(
                     *left,
@@ -4041,7 +4041,7 @@ impl Flattener<'_> {
                 // form draws, for the same reason — polarity is not what makes it
                 // unreachable.
                 //
-                // [I6]: ../../../docs/invariants.md#i6
+                // [I6]: ../../../website/content/invariants.md#i6
                 Some(Slot::Value { .. }) => self.report(
                     pattern,
                     Code::NyiValueMatch,
@@ -4226,7 +4226,7 @@ impl Flattener<'_> {
     /// head, an alias's right side, and a record's pieces when it destructures. That
     /// is what keeps a construct from meaning one thing in one position and
     /// something else in another — the failure mode of answering the question six
-    /// times ([chapter 7](../../../docs/07-compilation.md)).
+    /// times ([chapter 7](../../../website/content/query-language.md)).
     ///
     /// `None` is "this denotes no place". Some of those are reported here (a read
     /// through a reference); the rest were reported by the phase that owns them.
@@ -4446,7 +4446,7 @@ impl Flattener<'_> {
             // value's type and accepts it, and there is no projection that can name
             // it — [`Project::Value`](crate::plan::Project) carries an address and no
             // path, because a value is fetched whole by a point read
-            // ([I6](../../../docs/invariants.md#i6)) rather than lying in a register
+            // ([I6](../../../website/content/invariants.md#i6)) rather than lying in a register
             // to be walked.
             //
             // Declining *quietly* here is what it used to do, which tripped
@@ -4566,7 +4566,7 @@ impl Flattener<'_> {
 }
 
 /// The pattern a record gives for `name`, if it gives one. An omitted field is a
-/// wildcard ([chapter 7](../../../docs/07-compilation.md)).
+/// wildcard ([chapter 7](../../../website/content/query-language.md)).
 fn field_pattern(fields: &[(Symbol, NodeId)], name: Symbol) -> Option<NodeId> {
     fields
         .iter()
@@ -4973,7 +4973,7 @@ mod tests {
     /// narrows with are the field's encoding — which is what makes the narrowing a
     /// prefix scan at all ([I1]).
     ///
-    /// [I1]: ../../../docs/invariants.md#i1
+    /// [I1]: ../../../website/content/invariants.md#i1
     #[test]
     fn a_leading_constant_becomes_a_seek_prefix() {
         let flattened = compile("X where X = test.Foo {id = 1}");
@@ -5623,7 +5623,7 @@ mod tests {
     /// **A join through a reference.** The bound row's *identity* is what a
     /// fact-typed field holds, so the splice is its fact id — not its key bytes,
     /// which is the trap — and it narrows the scan like any other leading constant.
-    /// No store read is involved, so [I6](../../../docs/invariants.md#i6) stays
+    /// No store read is involved, so [I6](../../../website/content/invariants.md#i6) stays
     /// structural.
     #[test]
     fn a_bound_row_splices_its_fact_id_into_the_seek() {
@@ -5696,7 +5696,7 @@ mod tests {
     /// predicate whole. Both conditions hold, so the bind is a fetch.
     ///
     /// This is the shape that cost the viewer 30,222 ms against 2.1 ms at 25M facts
-    /// ([phase 11](../../../docs/phase-11-code-search.md) §6d), in miniature.
+    /// ([phase 11](../../../website/content/clients.md) §6d), in miniature.
     #[test]
     fn a_row_bind_that_would_scan_is_chased_through_the_reference() {
         assert_eq!(
@@ -6138,7 +6138,7 @@ mod tests {
     /// cross-level `EqRegisterField`, because there is no outer register to compare
     /// against. Rather than add an operator the executor has no other use for yet,
     /// the pattern is rejected, with the diagnostic saying what to write instead
-    /// ([open decisions](../../../docs/open-decisions.md)).
+    /// ([open decisions](../../../PLAN.md)).
     #[test]
     fn an_intra_row_repeat_is_rejected() {
         for source in [
@@ -6303,7 +6303,7 @@ mod tests {
     }
 
     /// A `.value` alias projects, and still cannot be matched: a value is fetched
-    /// per row and never enters the scan ([I6](../../../docs/invariants.md#i6)).
+    /// per row and never enters the scan ([I6](../../../website/content/invariants.md#i6)).
     /// The deferral is the value one, reported where the match is attempted.
     #[test]
     fn a_value_alias_projects_but_does_not_match() {
@@ -6815,7 +6815,7 @@ mod tests {
     }
 
     /// A value may be projected but not matched: it lives in `entities`, which
-    /// [I6](../../../docs/invariants.md#i6) keeps out of the scan loop.
+    /// [I6](../../../website/content/invariants.md#i6) keeps out of the scan loop.
     #[test]
     fn matching_on_a_value_is_not_implemented_yet() {
         assert_eq!(
@@ -7523,7 +7523,7 @@ mod tests {
 /// draws a **query, in sigla text**, together with a store it runs against and an
 /// **independent model** of what it means — so the property is "compiling and
 /// running this query gives the rows the query denotes", with the model as the
-/// oracle ([testing](../../../docs/testing.md), tier 3).
+/// oracle ([testing](../../../website/content/testing.md), tier 3).
 ///
 /// Valid by construction, in the same style: draw a schema (predicates × key field
 /// types) → draw conforming facts → draw statements over that schema whose every
@@ -7709,7 +7709,7 @@ pub mod proptest {
     impl GenVal {
         /// The field's stored bytes. A **record keeps its wrapper** — it is one
         /// value among others inside the key, and has to be skippable as one
-        /// ([chapter 3](../../../docs/03-storage-model.md#a-stored-key-is-flat)).
+        /// ([chapter 3](../../../website/content/storage.md#a-stored-key-is-flat)).
         fn encode(&self) -> Vec<u8> {
             match self {
                 GenVal::Scalar(val) => val.encode(),
@@ -7968,7 +7968,7 @@ pub mod proptest {
         ///
         /// Field names are ascending so that sorted-by-name is also declaration
         /// order — a record's field order is part of its encoding
-        /// ([chapter 6](../../../docs/06-types-and-schema.md)).
+        /// ([chapter 6](../../../website/content/schema-language.md)).
         pub fn schema(&self) -> Schema {
             let mut rodeo = Rodeo::new();
             let fields: Vec<_> = (0..MAX_ARITY)
@@ -8235,7 +8235,7 @@ pub mod proptest {
         /// One deterministic order, walked by every store this spec seeds — which is
         /// what makes a `MemStore` and a fjall DB built from it agree fact for fact,
         /// ids included, since the numbering matches what the real per-predicate
-        /// allocator hands out ([I11](../../../docs/invariants.md#i11)). A projected
+        /// allocator hands out ([I11](../../../website/content/invariants.md#i11)). A projected
         /// `FactRef` is comparable against the model only because of that.
         pub fn facts(&self) -> impl Iterator<Item = (PredicateId, Vec<u8>, Vec<u8>, u64)> + '_ {
             self.facts
@@ -9731,7 +9731,7 @@ mod battery {
 
     // ---- resume, over plans the compiler produced --------------------------
     //
-    // [I4](../../../docs/invariants.md#i4) is guarded over *hand-built* plan shapes
+    // [I4](../../../website/content/invariants.md#i4) is guarded over *hand-built* plan shapes
     // (`plan::proptest`), which is where it belongs — the executor is what it is
     // about. But flatten emits shapes that generator never draws: constant seek
     // prefixes, composite seeks of several parts, `ResidualOp::Prefix`, nested
@@ -10062,7 +10062,7 @@ mod battery {
         ///
         /// **The order is drawn, not the identity**, and that is what puts a step
         /// that binds nothing *above* a scan. Phase 6 learned this the expensive
-        /// way: the first [I14](../../../docs/invariants.md#i14) guard passed with
+        /// way: the first [I14](../../../website/content/invariants.md#i14) guard passed with
         /// resume's recompute deleted, because the derive sat below the scan and
         /// `enumerate` re-entered it from beneath on the way back up. A negation is
         /// the same shape of step and would hide the same fault — written last in

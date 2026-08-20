@@ -1380,7 +1380,7 @@ fn two_connections_write_one_database_at_the_same_time() {
 /// exactly one of them.
 ///
 /// `ops-I5`'s reject is the rule that survives parallelism, and it is the rule
-/// [`ops-I4`](https://github.com/boxops-uk/fjord/blob/main/docs/fjord-cli-design.md) actually needs: *which* producer is
+/// [`ops-I4`](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md) actually needs: *which* producer is
 /// told no may vary with the interleaving, but that one of them is told no may not. A
 /// pick-one rule would make the database depend on a race; a reject makes the failure
 /// depend on it, which is a different and acceptable thing.

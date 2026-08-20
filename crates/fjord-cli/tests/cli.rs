@@ -240,7 +240,7 @@ fn a_held_store_root_refuses_lifecycle_commands() {
 }
 
 /// **A schema is a file the tool reads**, and the three questions it can be asked
-/// before any database holds one — [operations §5](../../../docs/fjord-cli-design.md)'s
+/// before any database holds one — [operations §5](../../../website/content/operations.md)'s
 /// `check`, `fingerprint` and `diff`.
 #[test]
 fn a_schema_is_checked_fingerprinted_and_diffed_as_a_file() {

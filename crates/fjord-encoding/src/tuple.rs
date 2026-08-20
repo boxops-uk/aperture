@@ -38,8 +38,8 @@ pub const MARK_FACT_REF: u8 = 0x51;
 /// value still owed, and `nested_field_span` walks a payload with the machinery it
 /// walks a record field with. See [phase 8.6 D-a].
 ///
-/// [I3]: ../../../docs/invariants.md#i3
-/// [phase 8.6 D-a]: ../../../docs/phase-8.6-unions.md
+/// [I3]: ../../../website/content/invariants.md#i3
+/// [phase 8.6 D-a]: ../../../website/content/storage.md
 pub const MARK_UNION: u8 = 0x52;
 
 /// The encoded width of a fact-typed field: the marker, then a fixed-width id.
@@ -48,7 +48,7 @@ pub const MARK_UNION: u8 = 0x52;
 /// as a band of its own after every integer ([I1]) and can be compared without a
 /// decode.
 ///
-/// [I1]: ../../../docs/invariants.md#i1
+/// [I1]: ../../../website/content/invariants.md#i1
 pub const FACT_REF_FIELD_LEN: usize = 1 + size_of::<u64>();
 
 pub const MARK_TERM: u8 = 0x00;
@@ -69,7 +69,7 @@ pub fn int_width(mag: u64) -> usize {
 ///
 /// The single definition of the encoding — [`TupleEncoder::put_fact_id`] writes these
 /// bytes, and the executor's residual compares against them without allocating, which
-/// is what keeps the hot loop allocation-free ([I9](../../../docs/invariants.md#i9)).
+/// is what keeps the hot loop allocation-free ([I9](../../../website/content/invariants.md#i9)).
 #[must_use]
 pub fn fact_ref_bytes(id: FactId) -> [u8; FACT_REF_FIELD_LEN] {
     let mut out = [0u8; FACT_REF_FIELD_LEN];
@@ -220,7 +220,7 @@ pub const UNION_TAG_MAX_LEN: usize = 1 + 1 + size_of::<u32>();
 /// reason a select is a *prefix* rather than a filter: a seek splices these bytes to
 /// narrow a scan to one alternative, and the executor's residual compares against
 /// them without allocating, which is what keeps the hot loop allocation-free
-/// ([I9](../../../docs/invariants.md#i9)). Same shape, and the same job, as
+/// ([I9](../../../website/content/invariants.md#i9)). Same shape, and the same job, as
 /// [`fact_ref_bytes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnionTag {
@@ -545,7 +545,7 @@ pub fn strinc(prefix: &[u8]) -> Option<Vec<u8>> {
 /// `fjord_store::fact::encode`, which resolves names against the
 /// schema and hands back a value already in this order.
 ///
-/// [chapter 3]: ../../../docs/03-storage-model.md#a-stored-key-is-flat
+/// [chapter 3]: ../../../website/content/storage.md#a-stored-key-is-flat
 pub fn encode_typed(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodecError> {
     let mut out = Vec::new();
     encode_typed_at(&mut TupleEncoder::new(&mut out), ty, value)?;
@@ -563,7 +563,7 @@ pub fn encode_typed(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCod
 /// A **scalar** key is one field and needs none of this — the same asymmetry a query
 /// meets as `nyi/whole-key`.
 ///
-/// [chapter 3]: ../../../docs/03-storage-model.md#a-stored-key-is-flat
+/// [chapter 3]: ../../../website/content/storage.md#a-stored-key-is-flat
 pub fn encode_key(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodecError> {
     let (PredicateTy::Record(field_tys), Value::Record(fields)) = (ty, value) else {
         return encode_typed(ty, value);
@@ -917,7 +917,7 @@ impl<'a> TupleDecoder<'a> {
         let id = FactId::from_raw(u64::from_be_bytes(buf));
 
         // Sequence 0 is reserved so that zeroed or truncated bytes are
-        // *detectably* not a fact ([I11](../../../docs/invariants.md#i11)), and a
+        // *detectably* not a fact ([I11](../../../website/content/invariants.md#i11)), and a
         // property nothing checks is only an intention. The stored-`keys`-row
         // decoder (`store::decode_fact_id`) already enforces it; this is the same
         // rule at the decoder that reads a reference embedded **in a key**, which
@@ -1134,7 +1134,7 @@ where
 ///
 /// Every typed field decode bumps a thread-local counter; the guard asserts that
 /// binding variables triggers zero decodes — decoding happens only at read
-/// sites (projection), never at bind time. See `docs/testing.md`.
+/// sites (projection), never at bind time. See `website/content/testing.md`.
 #[cfg(any(test, feature = "proptest"))]
 pub mod decode_probe {
     use std::cell::Cell;
@@ -1186,13 +1186,13 @@ pub fn decode_typed(
 /// That asymmetry is the layout, not an accident: a key is stored flat so a seek
 /// can extend a prefix by whole fields and the executor can reach field *k* by
 /// skipping the *k* before it, which is what the field-offset cache holds
-/// ([I2](../../../docs/invariants.md#i2)). A *nested* record inside a field keeps its
+/// ([I2](../../../website/content/invariants.md#i2)). A *nested* record inside a field keeps its
 /// wrapper, because there it is one value among others and has to be skippable as
 /// one. So [`decode_typed`] reads a field or a value, and this reads a whole key;
 /// handing a record-keyed predicate's key to `decode_typed` looks for a
 /// `MARK_RECORD` that was never written.
 ///
-/// [chapter 3]: ../../docs/03-storage-model.md
+/// [chapter 3]: ../../website/content/storage.md
 pub fn decode_key(
     interner: &LocalInterner,
     bytes: &[u8],
@@ -1442,7 +1442,7 @@ impl Serialize for Value {
 /// generators (e.g. the schema-first `(plan, store)` generator) can build on
 /// them, and the independent oracles (`cmp_typed`, `encode_typed_for_test`) are
 /// shared test machinery rather than per-test boilerplate. See
-/// [`docs/testing.md`](../../../docs/testing.md).
+/// [`website/content/testing.md`](../../../website/content/testing.md).
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use super::*;
@@ -2560,7 +2560,7 @@ pub(crate) mod tests {
     /// `keys` row; this is the same rule at the other decoder, the one that reads
     /// a reference embedded **in a key**.
     ///
-    /// [I11]: ../../../docs/invariants.md#i11
+    /// [I11]: ../../../website/content/invariants.md#i11
     #[test]
     fn a_fact_ref_of_the_reserved_sequence_is_rejected() {
         use fjord_schema::schema::{PredicateId, SchemaInterner};
@@ -3017,7 +3017,7 @@ pub(crate) mod tests {
     }
 
     /// A union of **one** alternative — the degenerate case
-    /// [`docs/testing.md`](../../../docs/testing.md) names, which no random draw
+    /// [`website/content/testing.md`](../../../website/content/testing.md) names, which no random draw
     /// reliably produces and which is the shape `maybe`'s sugar will lean on.
     #[test]
     fn a_single_alternative_union_round_trips() {

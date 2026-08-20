@@ -4,7 +4,7 @@
 //! [`commands`]; this file is deliberately thin, because the interesting decisions
 //! are about *ownership* and *addressing* rather than about argument parsing.
 //!
-//! See [operations §4](../../../docs/fjord-cli-design.md) for the tree and §2 for the
+//! See [operations §4](../../../website/content/operations.md) for the tree and §2 for the
 //! addressing rules it is built to obey.
 
 mod cli;

@@ -1,7 +1,7 @@
 //! `fjord shell <db>` — the REPL, always over the wire.
 //!
 //! **Remote-first, and that is the point rather than a limitation**
-//! ([operations §5](../../../../docs/fjord-cli-design.md)). The shell is the permanent
+//! ([operations §5](../../../../website/content/operations.md)). The shell is the permanent
 //! exerciser of the wire format: every query a person types here is a real handshake, a
 //! real stream and a real page of `DATA_ROW` frames, so a format change that the tests
 //! happen not to cover still cannot survive somebody using the tool. `fjord shell`
@@ -17,7 +17,7 @@
 //! before anything crosses the socket, and `:plan` and `:type` are answerable at all.
 //!
 //! Fetching the schema is what makes that honest rather than hopeful. A database
-//! carries the schema it was created against ([I13](../../../../docs/invariants.md#i13)), so
+//! carries the schema it was created against ([I13](../../../../website/content/invariants.md#i13)), so
 //! compiling against this tool's *built-in* one would be checking a query against a
 //! schema nobody is using. The one assumption left is that the server's compiler is
 //! this compiler: against a server of a different build the local answer can differ,
@@ -30,10 +30,10 @@
 //! stops; nothing is held at either end, because the place is kept by the *stream*
 //! staying open — server-side, parked on a full outbound queue with a bytes-only cursor
 //! whose snapshot was released at the chunk boundary
-//! ([I8](../../../../docs/invariants.md#i8)). A pause of a millisecond and a pause of an hour
+//! ([I8](../../../../website/content/invariants.md#i8)). A pause of a millisecond and a pause of an hour
 //! cost the server the same thing.
 //!
-//! Until this existed, [I4](../../../../docs/invariants.md#i4) — resume equals an
+//! Until this existed, [I4](../../../../website/content/invariants.md#i4) — resume equals an
 //! uninterrupted run, the most heavily tested machinery in this project — had **no
 //! interactive exerciser at all**: Phase 5's REPL discards the resume token at both of
 //! its call sites. `:more` is a person holding a cursor across a round trip, and
@@ -440,7 +440,7 @@ impl Repl {
             // written out rather than hidden behind a control message precisely so that
             // it can be edited: the text is a starting point a person can paste, narrow
             // with a `status =`, or page with `:more`, which is what
-            // [operations §5](../../../../docs/fjord-cli-design.md) means by putting
+            // [operations §5](../../../../website/content/operations.md) means by putting
             // enumeration through the normal machinery.
             ":list" => self.run_or_report(LISTING, out)?,
             ":interning" => self.run_or_report(INTERNING, out)?,
@@ -660,8 +660,8 @@ impl Repl {
         }
 
         // **Never silent.** A reference that names no fact cannot happen — both column
-        // families are written together ([I12](../../../../docs/invariants.md#i12)) and ids are
-        // never reused ([I11](../../../../docs/invariants.md#i11)) — so one that did is
+        // families are written together ([I12](../../../../website/content/invariants.md#i12)) and ids are
+        // never reused ([I11](../../../../website/content/invariants.md#i11)) — so one that did is
         // corruption, and a row rendering the id instead would look like an ordinary
         // unexpanded field.
         if dangling > 0 {
@@ -1233,7 +1233,7 @@ mod tests {
     /// **The acceptance criterion of Phase 9f, and of this whole shell.**
     ///
     /// `:more` holds a bytes-only cursor across a round trip and resumes it, which is
-    /// [I4](../../../../docs/invariants.md#i4) — resume equals an uninterrupted run —
+    /// [I4](../../../../website/content/invariants.md#i4) — resume equals an uninterrupted run —
     /// exercised interactively for the first time. The battery has proved this over
     /// generated plans since Phase 0; what it has never had is a person's hand on it.
     ///
