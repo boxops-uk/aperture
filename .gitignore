@@ -31,3 +31,9 @@ rustc-ice-*.txt
 # so nothing in the build makes these — but running the corpus does, and it is real
 # enough to run.
 __pycache__/
+
+# The interactive site's dependencies and output, and the WebAssembly module
+# `scripts/build-wasm.sh` writes into it. `target` above already covers
+# `wasm/target`.
+node_modules/
+web/dist/

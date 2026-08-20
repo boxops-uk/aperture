@@ -27,14 +27,33 @@ their rustdoc is built with `-D warnings` in CI.
 | `fjord-schema` | the type model (`schema`), the physical row id (`id`), schema identity (`fingerprint`) and the schema DSL front end (`syntax`: lexer, grammar, parse, lower, print, resolve, corpus). Depends on no Fjord crate |
 | `fjord-encoding` | the order-preserving storage tuple codec (`tuple`) and `StoreCodecError` |
 | `fjord-wire` | the **transport** codec and protocol vocabulary: `varint`, schema-driven `value`, `crc`, `block`, `frame`, `protocol`. A sibling of `fjord-encoding`, not a layer on it — shares no bytes with the storage codec |
-| `fjord-store` | the `FactStore` seam, the fjall backend, `MemStore` (tests only), `fact`, the format stamp, storage errors — and the lifecycle: `catalog`, `meta`, `schema_doc`, `identity`, `ulid`, `lookup_cache` |
+| `fjord-store` | **the seam and nothing else**: the `FactStore` trait, `fact` (a fact written by hand), `keys` (the predicate a bound names), the format stamp, and `StoreError` — whose `Backend` variant is a boxed source, because *the backend failed* is the trait's business and *which* backend is not. Plus the shared test support: `fixture` (the database every battery queries) and `fixtures` (the probes, generic over `FactStore`). Links no fjall, no filesystem, no threads |
+| `fjord-store-mem` | `MemStore` — an implementation, not test machinery: the differential oracle, and the store an engine compiled to WebAssembly runs on |
+| `fjord-store-fjall` | the fjall backend (`store`, `lookup_cache`) and the lifecycle (`catalog`, `meta`, `schema_doc`, `identity`, `ulid`), with `CatalogError` for what is about a database as an *artifact* — a sidecar path, a held root lock, a database that is Complete |
 | `fjord-ingest` | the write funnel: `FactSink` (the write seam, as `FactStore` is the read seam) and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up |
-| `fjord-engine` | **sigla** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor. All new query work lands here. `lib.rs` is the module list and nothing else |
+| `fjord-engine` | **sigla** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor. All new query work lands here. `lib.rs` is the module list and nothing else. Depends on the **seam**, never on a backend — that edge is what makes a browser build possible, and `dependency_closure` is its guard |
+| `fjord-inspect` | the **JSON view** of every construct: view models that derive `Serialize`, and the mapping from the engine's internals onto them. Never `Serialize` on the internals — a `Symbol` means nothing without the interner that minted it. The precedent is `fjord_wire::desc`, and a browser is one more peer with no interner |
 | `fjord-client` | the client: `address`, `connection` (Unix socket or TCP, one `Transport` enum), `rows` (a result as a bookmark), `expand`. Depends on `wire` and nothing else |
 | `fjord-server` | the protocol over a socket: `session`, `registry`, `outbound` (the fair writer), `rows`, `blocking`, `server`, `stats`, `catalogue` (the virtual `fjord.db.*` predicates — the reserved namespace is marked virtual so a stored predicate can never collide with it) |
 | `fjord-viewer` | the code-search site. Depends on `fjord-client` and nothing below it — the claim being that a viewer is an ordinary consumer of the protocol. Binary: `fjord-viewer` |
 | `fjord-cli` | the tool: `cli`, `config`, `commands/`, `output`, `prompt`, `sample_schema` (a **fixture**, not a default), `workload`. Binary: `fjord` |
 | `fjord-db` | the published facade crate |
+
+**Test support spans three crates now, and which one a thing lives in is decided
+by what it must *be*.** `fjord-store::fixtures` holds the probes (`DropProbe`,
+`PointSpy`, `FrozenStore`) because a probe has to be **the same** `FactStore` as
+the store it wraps; `fjord-store::fixture` holds the shared database because
+facts are backend-agnostic data; `fjord-engine::fixtures` holds the plan
+runners. A guard that must see both implementations at once is a test in
+`fjord-store-fjall`, the only crate that can — and a test that reaches back
+through the engine goes in `tests/`, never `src/`, or it compiles a second copy
+of its own crate.
+
+**`wasm/` is outside the workspace, and so is `web/`.** The WebAssembly shell is
+a `cdylib` that only builds for `wasm32-unknown-unknown`; as a workspace member
+it would break `cargo build` on the host and quietly narrow the coverage ledger.
+It is built by `scripts/build-wasm.sh` and consumed by `web/`, the interactive
+site — both consumers of the tree, in the way `clients/dotnet` is.
 
 **A non-Rust client is part of the test surface.** `clients/dotnet` implements the protocol
 from outside — no shared constants, no shared enums — and is a checked-in golden:
@@ -76,6 +95,10 @@ cargo test -- --ignored --list      # the invariant coverage ledger
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the design book builds clean (CI runs this)
+
+cargo check -p fjord-engine --target wasm32-unknown-unknown   # the browser build
+./scripts/build-wasm.sh             # the module the interactive site imports
+(cd web && npm run smoke)           # that demo, driven in a real browser
 ```
 
 **The `+1.97.1` is not decoration.** CI's lint gate runs on that pinned toolchain and the

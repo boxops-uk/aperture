@@ -20,7 +20,8 @@ is "fearless."
 > site built on nothing but the client.
 >
 > **Not built:** authentication, stored derivation, ingestion from files, arrays and sets,
-> per-predicate statistics. [`CHANGELOG.md`](CHANGELOG.md) is the full inventory — including,
+> per-predicate statistics. The engine compiles to WebAssembly and one interactive segment
+> runs on it — the rest of that site does not exist yet. [`CHANGELOG.md`](CHANGELOG.md) is the full inventory — including,
 > deliberately, what each release does not contain — and [`PLAN.md`](PLAN.md) is the roadmap.
 
 ---

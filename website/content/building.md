@@ -50,18 +50,45 @@ any more — the compiler refuses the other direction, and there is no edge poin
 | `fjord-schema` | The type model (`schema`), the physical row id (`id`), schema identity (`fingerprint`) and the schema DSL's front end (`syntax`: lexer, grammar, parse, lower, print, import resolution). Depends on no Fjord crate. |
 | `fjord-encoding` | The order-preserving storage tuple codec (`tuple`) and its error type. |
 | `fjord-wire` | The **transport** codec and the protocol vocabulary: `varint`, `value`, `crc`, `block`, `frame`, `protocol`. A sibling of `fjord-encoding`, not a layer on it — it shares no bytes with the storage codec. |
-| `fjord-store` | The `FactStore` seam, the fjall backend, the in-memory test store, `fact`, the format stamp, and the lifecycle: `catalog`, `meta`, `schema_doc`, `identity`, `ulid`, `lookup_cache`. |
+| `fjord-store` | **The seam alone**: the `FactStore` trait, `fact`, `keys`, the format stamp and `StoreError`. It links no fjall, no filesystem and no threads, which is what lets everything above it compile for a browser. |
+| `fjord-store-mem` | `MemStore` — the in-memory implementation. The differential oracle, and the store an engine compiled to WebAssembly runs on. |
+| `fjord-store-fjall` | The fjall backend and the lifecycle: `store`, `lookup_cache`, `catalog`, `meta`, `schema_doc`, `identity`, `ulid`, and `CatalogError`. |
 | `fjord-ingest` | The write funnel: `FactSink` (the write seam) and `intern` — a wire fact in, a `FactId` out, nested references resolved bottom-up. |
-| `fjord-engine` | **sigla and the machine**: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor. All new query work lands here. |
+| `fjord-engine` | **sigla and the machine**: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor. All new query work lands here. It depends on the *seam*, never on a backend. |
+| `fjord-inspect` | The JSON view of every construct — what a page renders, and what a browser receives. Depends on the engine and the schema, and never on the fjall backend. |
 | `fjord-client` | The client: `address`, `connection`, `rows` (a result as a bookmark), `expand`. Depends on `fjord-wire` and nothing else. |
 | `fjord-server` | The protocol over a Unix socket or TCP: `session`, `registry`, `outbound` (the fair writer), `rows`, `blocking`, `server`, `stats`, `catalogue`. |
 | `fjord-viewer` | The code-search site: `query`, `render`, `pool`, and the routes. An ordinary consumer of the client. |
 | `fjord-cli` | The tool: `cli`, `config`, `commands/`, `output`, `prompt`, `sample_schema`, `workload`. The binary is `fjord`. |
 
-Two test-support modules span crates, and the split is load-bearing:
-`fjord_store::fixtures` holds everything store-shaped (probes, model stores,
-scan-contract assertions) because a probe has to be *the same* `FactStore` as the store it
-wraps; `fjord_engine::fixtures` holds the plan runners and re-exports the rest.
+Test support spans three crates, and the split is load-bearing: `fjord_store::fixtures`
+holds everything store-shaped (the probes and the scan-contract assertions) because a probe
+has to be *the same* `FactStore` as the store it wraps; `fjord_store::fixture` holds the
+shared database, which is backend-agnostic data; `fjord_engine::fixtures` holds the plan
+runners and re-exports the rest. A guard that must see both implementations at once lives in
+`fjord-store-fjall`, the only crate that can.
+
+Two directories sit **outside** the workspace on purpose, so that `cargo build` and
+`cargo test -- --ignored --list` keep meaning "everything": `wasm/`, a `cdylib` that only
+builds for `wasm32-unknown-unknown`, and `web/`, the interactive site that imports it. Both
+are consumers of the tree, in the way `clients/dotnet` is.
+
+### The browser build
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --locked      # the CLI and the crate must be the same version
+
+cargo check -p fjord-engine --target wasm32-unknown-unknown   # what must never break
+./scripts/build-wasm.sh                                       # the module the site imports
+(cd web && npm install && npm run dev)                        # http://localhost:5173
+(cd web && npm run smoke)                                     # the demo, driven in Chrome
+```
+
+The one edge that decides whether this works is `fjord-engine → fjord-store`: the seam links
+no backend, so nothing drags in `fjall`, `libc` or `getrandom` — and `getrandom` refuses
+`wasm32-unknown-unknown` outright. `dependency_closure` in `fjord-store` reads the workspace
+manifests and fails if that edge grows back.
 
 ## Binaries
 
@@ -135,6 +162,9 @@ fjord/
 ├── bench/FINDINGS.md    what has actually been measured
 ├── AGENTS.md            the working contract for contributors
 ├── PLAN.md              the roadmap, and the record of settled decisions
+├── wasm/                the WebAssembly shell — its own workspace, built by
+│                       scripts/build-wasm.sh, never by a cargo build at the root
+├── web/                 the interactive site: the book with the engine running in it
 └── website/             this site — which is the design book
 ```
 

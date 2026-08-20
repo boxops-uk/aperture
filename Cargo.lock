@@ -723,7 +723,6 @@ dependencies = [
  "fjord-encoding",
  "fjord-schema",
  "lasso",
- "proptest",
  "thiserror",
 ]
 

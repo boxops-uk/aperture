@@ -1,0 +1,31 @@
+[package]
+name = "fjord-inspect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "A JSON view of every construct sigla compiles — what a page renders, and what a browser receives — an internal crate"
+# Not on crates.io. A package is the client library for a language and nothing
+# else — what it takes to construct facts, talk to a database and read rows back.
+# This is an internal of the implementation, and publishing it would make its
+# shape somebody's dependency.
+publish = false
+
+[dependencies]
+# **Never `fjord-store-fjall`.** The whole point of this crate is to be
+# compilable for `wasm32-unknown-unknown`, and `dependency_closure` asserts it.
+# The diagnostic type is `codespan_reporting`'s, and a label's style is what
+# says which span a reader is being pointed at.
+codespan-reporting = "0.13.1"
+fjord-engine = { path = "../fjord-engine" }
+fjord-schema = { path = "../fjord-schema" }
+serde = { workspace = true }
+serde_json = "1.0.150"
+
+[dev-dependencies]
+# The corpus: real sigla, already classified, as the edge cases a generator
+# would not think to draw.
+fjord-engine = { path = "../fjord-engine", features = ["proptest"] }
+proptest = "1.11.0"
+serde_json = "1.0.150"

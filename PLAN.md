@@ -21,6 +21,7 @@ decomposition is always wrong — each ending green, ordered by dependency and d
 | [Stored derivation](#stored-derivation) | designed; two rules banked | the [re-derivation decision](#the-open-decision-re-derivation-vs-i11) |
 | [The read-path benchmark](#the-read-path-benchmark-against-glean) | planned, with predictions | a quiet machine and the indexed corpus |
 | [Authentication](#authentication) | design of record below; nothing built | wanting it |
+| [The engine in a browser](#the-engine-in-a-browser--webassembly) | **the store split, `fjord-inspect`, `wasm/` and the lexer segment are built**; the remaining views are not | nothing |
 | [Operational gaps](#operational-gaps) | each named with the seam that keeps it cheap | — |
 | [Language backlog](#language-backlog) | additive; none reshapes the machine | — |
 
@@ -229,6 +230,133 @@ API (rotate in place at half TTL) → connection lifetime. Guards to write up fr
 `the_dotnet_client_still_connects_at_protocol_version_2`.
 
 ---
+
+## The engine in a browser — WebAssembly
+
+**Built, as far as one segment.** The store split is done, `fjord-inspect` exists
+with its first view, `wasm/` builds a 49 KB module (21 KB over the wire), and
+`web/` is a React site whose lexer segment runs `fjord_engine::lexer` on every
+keystroke. What is left is more views, and the decisions that only a second
+segment can settle.
+
+**The goal, unchanged.** The design book's interactive segments run the real
+lexer, parser, typechecker, planner, executor and transport codec, compiled to
+`wasm32-unknown-unknown` — not a JavaScript imitation of them. The boundary
+carries **JSON of the constructs, not a rendered string**, because a page that
+receives structure can lay it out and a page that receives text can only print
+it.
+
+### Movement 1 — the seam becomes a crate, and each implementation its own ✅
+
+Three crates replace `fjord-store`. It keeps its name and becomes **the
+abstraction**; each implementation has its own crate, which is what makes a
+third backend additive rather than a refactor.
+
+| Crate | Holds |
+|---|---|
+| `fjord-store` | the seam: `fact_store`, `error`, `fact`, `format`, `keys`, and the shared test support (`fixture`, `fixtures`) |
+| `fjord-store-mem` | `MemStore`, no longer test-gated |
+| `fjord-store-fjall` | `FjallDb`, `FjallStore`, `Staged`, `FjallScan`, `lookup_cache`, and the lifecycle: `catalog`, `meta`, `schema_doc`, `identity`, `ulid` |
+
+**The error split went as designed, with one addition.** Eleven variants stayed
+on the seam and ten moved to `CatalogError` in `fjord-store-fjall`, which
+carries `Store(#[from] StoreError)` so a seam fault still bubbles through one
+`?`. `StoreError::Backend` is now `Box<dyn Error + Send + Sync>`, constructed
+through `StoreError::backend` — `#[from]` cannot do that job, because a blanket
+`From<E: Error>` would swallow every other error in the crate. The addition:
+two sites that used `StoreError::Meta` for something that was never a sidecar —
+a malformed id reservation in the `meta` keyspace, and a virtual catalogue
+predicate that disagrees with its declaration — now box a **local** error
+through `Backend`. That is the seam-correct reading: from the trait's side,
+this backend failing to be what it wrote *is* the backend failing.
+
+**What the ripple actually cost**, against the estimate of seventy-five
+references: about that, and nothing surprising in them. `ServerError` and
+`CliError` each gained a `Catalog` arm, and the server's `code()` — the one
+place the split is visible on the wire — routes lifecycle refusals from
+`CatalogError` and delegates `CatalogError::Store` to the same function the
+seam's own arm uses, so no client is told anything different.
+
+**The trap the extraction found, exactly where AGENTS.md says it lives:**
+`fjord-store`'s own unit tests could no longer use `MemStore`, because a
+dev-dependency on `fjord-store-mem` links a *second copy* of `fjord-store` and
+the two `FactStore`s are then different types. Those tests moved with `store.rs`
+into `fjord-store-fjall`, where both implementations are ordinary dependencies.
+One consequence to remember: `fjord-store-fjall` dev-depends on **itself** with
+`features = ["proptest"]`, because the witnesses its guards need
+(`open_snapshots`, `table_counts`, `flush_to_tables`) are feature-gated and an
+integration test is a separate crate. While those guards lived in `fjord-store`
+the feature arrived by unification from the engine's dev-dependency.
+
+### Movement 2 — `fjord-inspect`: a JSON view of every construct ◐
+
+The crate exists, with `Tokens` built and the rest to come.
+
+| View | Built from | State |
+|---|---|---|
+| `Tokens` — `{kind, class, span, text}` + diagnostics | `lexer::tokenize` | ✅ |
+| `Tree` — a dense `{id, kind, children, span, label}` | `Ast` with spans from `print::spanned` | to build |
+| `Types` — per node, and the head | `Typed::ty`, `Compilation::head_ty` | to build |
+| `Diagnostics` — code, severity, message, labels, notes | the `Compilation`'s sink, `in_source_order` | ◐ the lexer's half is built; the compiler's needs `in_source_order` made `pub` |
+| `PlanView` — steps, levels, seek keys, residuals, projections, fingerprint | mirrors the walk in `print::plan` | to build |
+| `Rows` and `ProfileView` | `fixtures::collect_rows` and `iter::enumerate_profiled` over a `MemStore` from `fixture::facts()` | to build |
+| `WireView` — frames, blocks, and a hex dump annotated by offset | `fjord_wire::{frame, block, value, protocol}` | to build |
+| `SchemaView` — predicates, canonical form, identity, compatibility | `fjord_schema::{syntax, print, fingerprint}` | to build |
+
+**One decision made while building the first view, worth keeping.** A token
+carries a `class` (keyword, predicate, variable, field, …) as well as its
+`kind`, and the class is decided in Rust. A page styles what the language says a
+token *is* and never re-decides it — which is what stops the highlighter growing
+back in TypeScript. Both mappings are exhaustive `match`es with no wildcard, so
+a token added to sigla does not compile until somebody says what it is called
+and what it is.
+
+**`tokens_json` lives in `fjord-inspect`, not in the shell.** The JSON a browser
+receives is then the string the host suite asserts on, and
+`a_view_is_the_same_json_on_the_host_and_in_wasm` is a consequence of there
+being one encoder rather than a claim needing a test.
+
+### Movement 3 — `fjord-wasm`: the shell, and nothing else ✅
+
+`wasm/` at the repository root with its own `[workspace]` table, a `cdylib`
+whose every export takes a `&str` and returns a `String` of JSON, and no logic —
+`tokens` is one forwarding call. `scripts/build-wasm.sh` runs cargo, then
+`wasm-bindgen --target web`, then `wasm-opt -Oz` if binaryen is installed, and
+prints the byte size. It refuses to run if the `wasm-bindgen` CLI and crate
+versions differ, because that mismatch fails with a message about a section
+rather than about versions.
+
+**How the artifact reaches the site, decided:** built, not committed.
+`web/src/wasm/` is gitignored, the page says so when the module is absent, and
+it does **not** degrade to a JavaScript highlighter — the highlighter is the
+thing being replaced, and a fallback would hide exactly the failure that
+matters.
+
+### What is left
+
+- **The remaining views**, in the order a reader meets them: `Tree` and `Types`
+  next, because two-way source-to-tree highlighting is what the token view
+  cannot do; then `PlanView`, which is the argument for the whole exercise.
+- **`Compilation::in_source_order` becomes `pub`** — the one engine edit
+  Movement 2 needs, still unmade because the lexer's diagnostics do not go
+  through `Compilation`.
+- **Retire the hand-written highlighter** in `website/assets/app.js` once the
+  new site carries the book's code samples. Until then two highlighters exist,
+  which is the state this work is meant to end.
+- **CI.** Nothing in `.github/workflows/release.yml` builds `wasm/` or `web/`
+  yet, and Pages accepts one artifact per run — so publishing the interactive
+  site means either building it into a subdirectory of `website/site/` after
+  `build.py` (which `rmtree`s that directory first, so order is load-bearing) or
+  staging both. The cheap first step is a `test`-job step running
+  `cargo check -p fjord-engine --target wasm32-unknown-unknown`, which is what
+  `dependency_closure` cannot prove on its own.
+- **A virtual import resolver**, so browser schemas are not single-file:
+  `syntax::resolve` reads files, and everything else in `fjord-schema` is clean.
+- **`ts-rs` behind a feature**, so `web/src/wasm.ts`'s types are generated from
+  the view structs instead of stated a second time.
+- **Ingest stays impossible in a browser**, and that is not a gap: interning
+  needs a real backend and durable id claims.
+
 
 ## Operational gaps
 

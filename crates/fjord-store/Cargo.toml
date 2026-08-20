@@ -16,15 +16,15 @@ publish = false
 # The shared fixture database and the store-shaped probes, for consumers
 # outside this crate's own `cfg(test)` — both implementations, and the engine's
 # batteries above all.
-proptest = ["dep:proptest"]
+# A plain feature, with no dependency behind it: what it gates is the shared
+# fixture database and the store-shaped probes, and neither draws a value. The
+# strategies that do live above this crate.
+proptest = []
 
 [dependencies]
 fjord-encoding = { path = "../fjord-encoding" }
 fjord-schema = { path = "../fjord-schema" }
 byteview = { workspace = true }
 lasso = { workspace = true }
-proptest = { version = "1.11.0", optional = true }
 thiserror = { workspace = true }
 
-[dev-dependencies]
-proptest = "1.11.0"

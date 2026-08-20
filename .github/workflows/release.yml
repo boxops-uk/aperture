@@ -94,7 +94,13 @@ jobs:
       # Installed second, so it is the default: the suite runs on whatever stable is
       # today, because that is what a consumer has. `build` floats too, so a compiler
       # that breaks the tree is still caught the day it lands — just not as a lint.
+      #
+      # The wasm target rides along because of the check below: it costs one
+      # component download and it is the only thing that can prove the browser
+      # build still exists.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -119,6 +125,14 @@ jobs:
       # edited by whoever un-ignores one, and the list is what a reviewer reads.
       - name: Invariant coverage ledger
         run: cargo test --locked -- --ignored --list
+      # **The claim `dependency_closure` cannot make on its own.** That guard reads
+      # the workspace manifests and fails if the engine grows an edge to a backend;
+      # only a compile can catch a *third-party* dependency that refuses the target
+      # — which is how this breaks in practice, since `getrandom` compile-errors on
+      # `wasm32-unknown-unknown` rather than failing to link. `wasm/` is its own
+      # workspace, so the crate that matters is named explicitly here.
+      - name: The engine still compiles for a browser
+        run: cargo check -p fjord-engine -p fjord-inspect --target wasm32-unknown-unknown --locked
       # The website is the design book. `--strict` turns the generator's own
       # warnings — a page missing from the nav, a nav entry with no page — into a
       # failure, so the book cannot silently lose a page.
