@@ -390,6 +390,170 @@ it does **not** degrade to a JavaScript highlighter — the highlighter is the
 thing being replaced, and a fallback would hide exactly the failure that
 matters.
 
+### Movement 4 — stepping the executor: a query debugger
+
+**Nothing here is built.** This is the design of record for the next segment,
+and it is the largest change to the engine the browser work has asked for — so
+the shape is argued here before a line of it exists.
+
+**Goal.** Not "run a query in the page" but *step* one: see the registers as
+they fill, where the machine is in the plan, what it has yielded so far, and
+what it has read to get there. A reader who has watched a nested loop backtrack
+understands the executor in a way no amount of prose achieves.
+
+**Why this needs no new machine, and must not have one.** `iter.rs` is a
+**defunctionalised state machine** ([I7](website/content/invariants.md#i7)):
+`depth`, a stack of frames, and one loop whose every iteration is exactly one
+transition. Stepping is therefore *exposing one iteration at a time* — not a
+second interpreter in the view crate, which would be the very thing this whole
+exercise exists to avoid. The nine transitions are already there to be named:
+**open** a source, **produce** a row into a register, **drain** an alternative,
+**close** a level, **yield** a row, **compute** a derived bind, **pass** a test,
+**fail** a test, **done**.
+
+**Rows dropped by a residual are the point, not a detail.** They never reach the
+loop — `frame.next` filters them inside the scan — and they are exactly what
+makes a scan cost more than a seek, so the debugger shows each one and *which
+residual rejected it* (`check_residuals` knows). The scan loop is where
+[I6](website/content/invariants.md#i6) and
+[I9](website/content/invariants.md#i9) live, so this is paid for the way this
+repository already pays for instrumentation: `FieldOffsets::witness_row` has a
+real implementation under `cfg(debug_assertions)` and an empty `#[inline]` one
+otherwise.
+
+**A Cargo feature, `fjord-engine/trace`, off by default** — not
+`debug_assertions`, which is on for every dev build and off in release, and the
+browser wants a *release* build with tracing in it. The hook goes exactly where
+`Profile.examined` is already incremented, because that increment is why skipped
+rows are counted at all: the trace point and the counter are the same site. It
+rides on the `Deadline`, which is already the per-run instrumentation carrier
+threaded into the row loop — and which will want a better name once it carries
+two things.
+
+**Plus a runtime `Option`, even in the traced build.** That is what keeps
+[I9](website/content/invariants.md#i9) honest: the allocation guard runs with
+the sink switched off and must still count zero per row. Compile-time gating
+alone would leave the guard measuring code that no longer resembles what ships.
+
+**Both configurations are tested, which is the part that matters.**
+`fjord-inspect` enables the feature, so `cargo test --workspace` builds the
+engine *traced* and every existing guard — alloc-free per row, no value fetch in
+the scan, resume equals uninterrupted — runs against the traced build.
+`cargo test -p fjord-engine` has no `fjord-inspect` in its graph and builds it
+*untraced*. CI runs both. A feature nobody tests is an aspiration.
+
+#### The database in the page
+
+`MemStore` is wasm-clean already; what is missing is facts — and, it turns out,
+a schema. `schemas/code.sigla` has **no union and no nested record**, so a
+select (`.what.func?`), a union pattern, a discriminant residual and a nested
+record key have nothing to bind against. A union in a *leading* key field is a
+seek and behind another field is a residual — the same query shape, two costs —
+which is one of the sharpest things the plan view can show, so a database that
+cannot demonstrate it is not a demonstration of the language.
+
+**So the site gets a schema of its own: `schemas/demo.sigla`.** Code-search
+shaped, because that is what Fjord is for, but small enough to read in one
+screen and chosen so every shape the language has appears exactly once:
+
+| Predicate | Shape it is there for |
+|---|---|
+| `code.File : string` | a **scalar** key — and a prefix constraint (`"src/"..`) that excludes something |
+| `code.Decl { file : File, name : string, line : int } -> string` | a **record** key with a **leading reference**, a three-field prefix a seek can pin part of, an `int` for comparisons and arithmetic, and a **value side** |
+| `code.Ref { from : Decl, to : Decl }` | a reference that is **not** leading (a fact-id compare as a residual rather than a seek), and a **two-hop chain** through `from.file` |
+| `code.Span { decl : Decl, at : { line : int, col : int } }` | a **nested record** inside a key |
+| `code.Kind { decl : Decl, what : kind }` | a **union behind** another field — matched by a residual on the discriminant |
+| `code.KindOf { what : kind, decl : Decl }` | the same fact in the other key order, so the union **leads** and the tag is a seek. The pattern `code.sigla` already uses for `Attribute`/`AttributeOf`, and for the same reason: the leading run is what a query narrows on |
+
+with `kind` declared as `{ type : string = 5 | func : int = 2 }` — two
+alternatives, tags **neither contiguous, nor starting at zero, nor in
+declaration order**, so nothing that read a discriminant as a position can pass
+([I10](website/content/invariants.md#i10)).
+
+A real file rather than a string in a crate, so the same database can be built
+outside the browser — `fjord create demo --schema schemas/demo.sigla` — and the
+queries a reader tried in the page can be run against a real one.
+
+**The facts: around fifteen, and each one earns its place.** Three files (one
+outside `src/`, so a prefix excludes it); three declarations, two of them in one
+file, so a join returns two rows for one outer row and **none** for another —
+backtracking a reader can watch; two reference edges forming a chain, with one
+declaration referenced by nothing, so a negation has something to be true about;
+one span; and a kind per declaration in both key orders.
+
+They are authored through `fjord_store::fact::encode` — the path the .NET golden
+and the server's catalogue take — so there is one encoder, with name resolution
+and field reordering included, and references are written as the fixture writes
+them: sequences chosen up front so `Decl`'s `file` names a `File` that exists.
+**Hand-encoding a key is the anti-pattern `AGENTS.md` names**, and its three
+silent preconditions apply here exactly.
+
+Guard: `every_sample_answers_what_it_says` — each sample query's rows asserted
+in the host suite, which is the corpus's discipline applied to the demo. A
+sample that answers nothing is a sample that demonstrates nothing, so the guard
+also refuses an empty answer unless the sample says it expects one.
+
+#### `Executor::advance`
+
+The loop body of `enumerate_profiled` becomes
+
+```rust
+fn advance(&mut self, deadline: &mut Deadline<'_>) -> Result<Transition, FjordError>
+```
+
+with `enumerate_profiled` looping over it. **The yield policy stays where it
+is**: what to do with a row — `Stream::Continue` or `Stream::Suspend`, and the
+`depth -= 1` after — is the streaming caller's business, so `advance` reports
+`Yielded` and leaves the machine standing on the head. Accessors follow for what
+a debugger reads between transitions: `depth`, `state` (already public types),
+and a `row` that is `Some` exactly when the machine is standing on the head.
+
+**The trap to name up front:** `advance` must not become the place where
+*policy* lives. Descending or backtracking is read off the frame rather than
+carried as a variable, which is what keeps the machine defunctionalised, and a
+`Transition` return value must not become a second way of saying the same thing.
+
+The safety net for the extraction is the strongest battery in the repository:
+resume-equals-uninterrupted on both stores, the corpus suspending at every cut
+point from 1 to 64, alloc-free per row under a counting allocator, no value
+fetch in the scan, and the I8 drop probe. New guard:
+`stepping_yields_what_running_yields` — drive `advance` to completion over every
+corpus entry and compare the rows with `enumerate`'s.
+
+#### `fjord_inspect::trace`
+
+**The whole trace in one call.** `trace(schema, query)` runs the query to
+completion and answers the entire run as a list of steps, each carrying only
+what *changed*: the transition, the depth, the register written, the row
+examined or rejected and by which residual, the row yielded. The page folds that
+into cumulative state and scrubs a local array — instant in both directions, one
+round trip, no state on the boundary, nothing for JavaScript to free, and no
+O(n²) from replaying a prefix per step. "Step over" is then a client-side search
+for the next `Yielded` entry, and costs nothing.
+
+A run over a fifteen-fact database is tens of transitions; a deliberately silly
+one is thousands. **The cap is stated rather than silent**: past a bound the
+trace stops and says it stopped, because a truncated run rendered as a whole one
+is the exact failure this repository keeps guarding against.
+
+The escape hatch, if the browser database ever stops being a toy, is a
+`#[wasm_bindgen]` struct owning a live `Executor` — O(1) per step, at the cost
+of state on the boundary and a `free()` for JavaScript to forget.
+
+The view, per step: the transition and the plan step it happened at, the depth,
+every register (empty, a decoded row, or a computed value), the rows yielded so
+far, and `Profile.examined` as it stands. **A register is decoded against
+`fact_id.predicate()`** — the predicate of the row actually bound, not the
+level's — because a level with alternatives can bind rows of different
+predicates, and decoding against the wrong one reads plausible bytes.
+
+#### The page
+
+A **run** tab: transport controls (step, back, play, to end), a scrub bar over
+the whole run, the register panel, the rows yielded so far, and the plan with
+the current step highlighted and its `examined` count beside it. Stepping back
+costs a replay and nothing else.
+
 ### What is left
 
 - **Rows and `ProfileView`**, which would make the site a playground rather than
