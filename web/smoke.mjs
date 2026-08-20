@@ -85,11 +85,56 @@ const nodeRow = async (kind) =>
   ).asElement()
 
 await page.goto(url, { waitUntil: 'networkidle0' })
-// The page opens on the plan, which is the last thing the front end produces —
-// so its presence says every phase before it ran.
-await page.waitForSelector('.plan .steps li', { timeout: 15_000 })
+// The page opens on the run, which is the last thing there is — so its presence
+// says every phase before it ran too.
+await page.waitForSelector('.run .transport', { timeout: 15_000 })
 
 check('the engine reports a version', /\d+\.\d+\.\d+/.test(await page.$eval('.status', (el) => el.textContent)))
+
+// ---- the debugger: the machine, one transition at a time ----
+
+// A query whose scan reads rows and drops them, which is the thing that is
+// invisible everywhere except here.
+await type('.input', 'N where code.Decl {file = _, name = N, line = L}; L > 15')
+await page.waitForSelector('.run .transport')
+
+const events = async () => {
+  const seen = []
+  const total = Number((await page.$eval('.run .count', (el) => el.textContent)).split('/')[1])
+  for (let i = 0; i < total; i++) {
+    seen.push(await page.$eval('.run .event .badge', (el) => el.textContent))
+    if (i < total - 1) await page.click('.run .transport button:nth-child(4)')
+  }
+  return seen
+}
+
+const seen = await events()
+check('the run steps through every transition', seen.length > 8)
+check('a row read and dropped is shown as one', seen.includes('reject'))
+check('a row answered is shown as one', seen.includes('yield'))
+check('the run ends by saying so', seen.at(-1) === 'done')
+
+// Stepping back is free, because the whole trace is already here.
+await page.click('.run .transport button:nth-child(1)')
+check(
+  'stepping back to the start empties the registers',
+  (await page.$$('.run .registers li')).length === 0,
+)
+
+// Step over: to the next row rather than the next transition.
+await page.click('.run .transport button:nth-child(5)')
+check(
+  'step over lands on a row',
+  (await page.$eval('.run .event .badge', (el) => el.textContent)) === 'yield',
+)
+check(
+  'a register holds the row the answer came from',
+  (await texts('.run .registers li')).some((row) => row.includes('code.Decl#')),
+)
+check(
+  'the rows so far are the rows yielded so far',
+  (await page.$$('.run .yielded li')).length === 1,
+)
 
 // ---- the lowered view: the phase that needs a schema ----
 
@@ -108,7 +153,7 @@ check(
 
 await page.click('.tab:nth-child(1)')
 await page.waitForSelector('.scroller tbody tr')
-await type('.input', 'P where src.File P; P = 7 ~')
+await type('.input', 'P where code.File P; P = 7 ~')
 
 const tokens = (await page.$$eval('.scroller tbody tr', (trs) =>
   trs.map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent)),
@@ -120,7 +165,7 @@ check(
     JSON.stringify([
       ['UId', 'variable', 'P'],
       ['Where', 'keyword', 'where'],
-      ['QId', 'predicate', 'src.File'],
+      ['QId', 'predicate', 'code.File'],
       ['UId', 'variable', 'P'],
       ['Semi', 'punctuation', ';'],
       ['UId', 'variable', 'P'],
@@ -172,25 +217,25 @@ check(
 
 // ---- a clean query, and then the plan it compiles to ----
 
-await type('.input', 'P where src.File P')
+await type('.input', 'P where code.File P')
 check('a supported query compiles clean', (await page.$$('.diagnostics li')).length === 0)
 
 await page.click('.tab:nth-child(4)')
 await page.waitForSelector('.plan .steps li')
 check(
   'the plan is what the engine printed',
-  (await texts('.plan pre')).some((text) => text.includes('src.File scan')),
+  (await texts('.plan pre')).some((text) => text.includes('code.File scan')),
 )
 
 // **The reorderer is the thing worth seeing.** Written in this order the join
 // reads File second; the constraint on it makes it the cheaper place to start,
 // and the plan says so by putting it first.
-await type('.input', 'N where src.Module {file = F, name = N}; F = src.File P; P = "src/"..')
+await type('.input', 'N where code.Decl {file = F, name = N, line = _}; F = code.File P; P = "src/u"..')
 await page.waitForSelector('.plan .steps li')
 const steps = await texts('.plan .steps pre')
 check(
   'the reorderer moved the constrained predicate first',
-  steps[0].includes('src.File') && steps[1].includes('src.Module'),
+  steps[0].includes('code.File') && steps[1].includes('code.Decl'),
 )
 check(
   'a seek is told apart from a scan',
@@ -202,7 +247,7 @@ check(
 )
 
 // A refused query has no plan at all, which is the rule the server runs under.
-await type('.input', 'X where src.Nonesuch X')
+await type('.input', 'X where code.Nonesuch X')
 check(
   'a refused query shows no plan',
   (await page.$$('.plan .steps li')).length === 0 && (await page.$$('.empty')).length === 1,
@@ -210,7 +255,7 @@ check(
 
 await page.click('.disclosure')
 await page.waitForSelector('.editor.tall .input')
-check('the schema lists what it declares', (await page.$$('.predicates li')).length >= 20)
+check('the schema lists what it declares', (await page.$$('.predicates li')).length === 6)
 
 // The schema pane is painted by the *schema* lexer, which has comments where
 // sigla has none — and `schemas/code.sigla` is more comment than declaration.
@@ -228,7 +273,7 @@ check(
 
 // Editing the schema recompiles the query, which is the whole point of the page
 // holding one: the same schema the engine resolves names against.
-await type('.editor.tall .input', 'schema src { predicate Nothing : string }')
+await type('.editor.tall .input', 'schema code { predicate Nothing : string }')
 check(
   'a query stops typechecking when its schema stops declaring it',
   (await texts('.diagnostics li')).some((text) => text.includes('reject/unknown-predicate')),

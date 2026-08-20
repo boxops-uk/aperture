@@ -790,48 +790,6 @@ impl Flattener<'_> {
 
         for stmt in self.ast.query().body() {
             match stmt {
-                // **A subquery inlines.** Its statements are the enclosing query's,
-                // and its head is the value the bind names — which is why the
-                // grammar makes group and subquery one rule: a subquery is shaped
-                // like a query, so lowering reuses the query algebra rather than
-                // needing an operator.
-                QueryStmt::Bind(lhs, rhs)
-                    if matches!(self.ast.store().kind(*rhs), ExprKind::Subquery(_)) =>
-                {
-                    let ExprKind::Subquery(query) = self.ast.store().kind(*rhs) else {
-                        continue;
-                    };
-
-                    // Copied out rather than borrowed: the statements live in the
-                    // tree, and inlining them calls back into `self`. Neither
-                    // `Query` nor `QueryStmt` is `Clone` on purpose — ownership
-                    // signals sharing here — so this says what it copies.
-                    let head = *query.head();
-                    let body: Vec<QueryStmt<NodeId>> = query
-                        .body()
-                        .iter()
-                        .map(|stmt| match stmt {
-                            QueryStmt::Implicit(node) => QueryStmt::Implicit(*node),
-                            QueryStmt::Bind(lhs, rhs) => QueryStmt::Bind(*lhs, *rhs),
-                            QueryStmt::Negation(node) => QueryStmt::Negation(*node),
-                            QueryStmt::Deny(lhs, rhs) => QueryStmt::Deny(*lhs, *rhs),
-                            QueryStmt::Compare(lhs, rhs, op) => QueryStmt::Compare(*lhs, *rhs, *op),
-                        })
-                        .collect();
-
-                    if self.subquery_shadows(&body, *rhs) {
-                        continue;
-                    }
-
-                    self.inline(&body, &mut stmts);
-
-                    stmts.push(Stmt::Alias(Alias {
-                        pattern: *lhs,
-                        value: head,
-                        span: self.ast.store().span(*rhs),
-                    }));
-                }
-
                 QueryStmt::Implicit(node) => {
                     if let Some(generator) = self.generator(*node, None) {
                         for alt in generator.alternatives.clone().iter() {
@@ -841,87 +799,7 @@ impl Flattener<'_> {
                     }
                 }
 
-                QueryStmt::Bind(lhs, rhs) => {
-                    // Typecheck accepts a bind only where the left side is a
-                    // variable or a wildcard, so this is the whole of what it can be.
-                    // The variable need not be one the query mentions here first —
-                    // binding a row a field already named is an ordering question,
-                    // and the duplicate-row check below is what it is *not*.
-                    let row = match self.ast.store().kind(*lhs) {
-                        ExprKind::Var(symbol) => Some(*symbol),
-                        _ => None,
-                    };
-
-                    // A generator on the right — a fact pattern, a disjunction of
-                    // them, or `never`. All three bind the left side to a *row* of
-                    // the level they become, which is why they share this arm.
-                    if matches!(
-                        self.ast.store().kind(*rhs),
-                        ExprKind::Fact(..) | ExprKind::Disjunction(_) | ExprKind::Never
-                    ) {
-                        if let Some(generator) = self.generator(*rhs, row) {
-                            for alt in generator.alternatives.clone().iter() {
-                                self.hoist_within(alt.key, &mut stmts);
-                            }
-                            stmts.push(Stmt::Scan(generator));
-                        }
-                    } else if self.is_foldable(*rhs) {
-                        // A constant bind: recorded and substituted at every use, so
-                        // it contributes no generator and no step. The left side is a
-                        // variable, a wildcard, or a record destructured piece by
-                        // piece — all three are the same substitution.
-                        //
-                        // Folded **here**, before any order is chosen, and not as the
-                        // alias below: a bare variable at a key field is capturable,
-                        // so a statement reading `N` would otherwise offer to bind it
-                        // and `reorder` would be free to run that first. A constant
-                        // is what `N` *is*, in every order, so it cannot wait.
-                        self.fold_into(*lhs, *rhs);
-                    } else if matches!(self.ast.store().kind(*rhs), ExprKind::Prefix(_)) {
-                        // A **pattern**, not a value: a range has nothing for the
-                        // left side to be, so this constrains where that side
-                        // already lives rather than binding it — see
-                        // [`Constraint`]. Recorded here for the same reason the
-                        // fold above is: the level that captures the variable has
-                        // to see it whatever order that level runs in.
-                        if let ExprKind::Var(symbol) = self.ast.store().kind(*lhs) {
-                            self.constraints.push((*symbol, *rhs));
-                        }
-
-                        stmts.push(Stmt::Constrain(Constraint {
-                            var: *lhs,
-                            span: self.ast.store().span(*rhs),
-                        }));
-                    } else if matches!(self.ast.store().kind(*rhs), ExprKind::Arith(..)) {
-                        // **A derived bind** — the first thing in sigla that lowers
-                        // a `Step::Derive`. Not a fold, because an operand is a
-                        // register rather than a literal; not an alias, because
-                        // there is no place the value already lives.
-                        stmts.push(Stmt::Derive(Derived {
-                            pattern: *lhs,
-                            value: *rhs,
-                            span: self.ast.store().span(*rhs),
-                        }));
-                    } else if self.names_a_location(*rhs) {
-                        // An **alias**: the right side denotes a place — a register,
-                        // a field inside one, a fact's value — so the left side is a
-                        // second name for it and needs nothing computed. A generator
-                        // written under the read is a level like any other.
-                        self.hoist_within(*rhs, &mut stmts);
-                        stmts.push(Stmt::Alias(Alias {
-                            pattern: *lhs,
-                            value: *rhs,
-                            span: self.ast.store().span(*rhs),
-                        }));
-                    } else {
-                        self.report(
-                            *rhs,
-                            Code::NyiValueBind,
-                            "binding a variable to a value that is in no register is not \
-                             implemented yet; it needs a derived bind",
-                        );
-                    }
-                }
+                QueryStmt::Bind(lhs, rhs) => self.bind(*lhs, *rhs, &mut stmts),
 
                 QueryStmt::Negation(node) => {
                     if let Some(generator) = self.negated(*node) {
@@ -1370,6 +1248,134 @@ impl Flattener<'_> {
         self.hoisted.push((node, row));
     }
 
+    /// One `pattern = pattern` statement, wherever it is written.
+    ///
+    /// **In one place because a subquery's statements are the enclosing
+    /// query's.** While this lived inline in [`collect`](Self::collect), the
+    /// subquery inliner carried a copy that handled only the *alias* case — so
+    /// a constraint written inside a subquery was dropped, which is a silently
+    /// wrong answer, and a generator bind declined to plan without reporting
+    /// why, which is a refusal with nothing to read. Both are what one path
+    /// rather than two prevents.
+    fn bind(&mut self, lhs: NodeId, rhs: NodeId, stmts: &mut Vec<Stmt>) {
+        if matches!(self.ast.store().kind(rhs), ExprKind::Subquery(_)) {
+            let ExprKind::Subquery(query) = self.ast.store().kind(rhs) else {
+                return;
+            };
+
+            // Copied out rather than borrowed: the statements live in the
+            // tree, and inlining them calls back into `self`. Neither
+            // `Query` nor `QueryStmt` is `Clone` on purpose — ownership
+            // signals sharing here — so this says what it copies.
+            let head = *query.head();
+            let body: Vec<QueryStmt<NodeId>> = query
+                .body()
+                .iter()
+                .map(|stmt| match stmt {
+                    QueryStmt::Implicit(node) => QueryStmt::Implicit(*node),
+                    QueryStmt::Bind(lhs, rhs) => QueryStmt::Bind(*lhs, *rhs),
+                    QueryStmt::Negation(node) => QueryStmt::Negation(*node),
+                    QueryStmt::Deny(lhs, rhs) => QueryStmt::Deny(*lhs, *rhs),
+                    QueryStmt::Compare(lhs, rhs, op) => QueryStmt::Compare(*lhs, *rhs, *op),
+                })
+                .collect();
+
+            if self.subquery_shadows(&body, rhs) {
+                return;
+            }
+
+            self.inline(&body, stmts);
+
+            stmts.push(Stmt::Alias(Alias {
+                pattern: lhs,
+                value: head,
+                span: self.ast.store().span(rhs),
+            }));
+
+            return;
+        }
+
+        // Typecheck accepts a bind only where the left side is a
+        // variable or a wildcard, so this is the whole of what it can be.
+        // The variable need not be one the query mentions here first —
+        // binding a row a field already named is an ordering question,
+        // and the duplicate-row check below is what it is *not*.
+        let row = match self.ast.store().kind(lhs) {
+            ExprKind::Var(symbol) => Some(*symbol),
+            _ => None,
+        };
+
+        // A generator on the right — a fact pattern, a disjunction of
+        // them, or `never`. All three bind the left side to a *row* of
+        // the level they become, which is why they share this arm.
+        if matches!(
+            self.ast.store().kind(rhs),
+            ExprKind::Fact(..) | ExprKind::Disjunction(_) | ExprKind::Never
+        ) {
+            if let Some(generator) = self.generator(rhs, row) {
+                for alt in generator.alternatives.clone().iter() {
+                    self.hoist_within(alt.key, stmts);
+                }
+                stmts.push(Stmt::Scan(generator));
+            }
+        } else if self.is_foldable(rhs) {
+            // A constant bind: recorded and substituted at every use, so
+            // it contributes no generator and no step. The left side is a
+            // variable, a wildcard, or a record destructured piece by
+            // piece — all three are the same substitution.
+            //
+            // Folded **here**, before any order is chosen, and not as the
+            // alias below: a bare variable at a key field is capturable,
+            // so a statement reading `N` would otherwise offer to bind it
+            // and `reorder` would be free to run that first. A constant
+            // is what `N` *is*, in every order, so it cannot wait.
+            self.fold_into(lhs, rhs);
+        } else if matches!(self.ast.store().kind(rhs), ExprKind::Prefix(_)) {
+            // A **pattern**, not a value: a range has nothing for the
+            // left side to be, so this constrains where that side
+            // already lives rather than binding it — see
+            // [`Constraint`]. Recorded here for the same reason the
+            // fold above is: the level that captures the variable has
+            // to see it whatever order that level runs in.
+            if let ExprKind::Var(symbol) = self.ast.store().kind(lhs) {
+                self.constraints.push((*symbol, rhs));
+            }
+
+            stmts.push(Stmt::Constrain(Constraint {
+                var: lhs,
+                span: self.ast.store().span(rhs),
+            }));
+        } else if matches!(self.ast.store().kind(rhs), ExprKind::Arith(..)) {
+            // **A derived bind** — the first thing in sigla that lowers
+            // a `Step::Derive`. Not a fold, because an operand is a
+            // register rather than a literal; not an alias, because
+            // there is no place the value already lives.
+            stmts.push(Stmt::Derive(Derived {
+                pattern: lhs,
+                value: rhs,
+                span: self.ast.store().span(rhs),
+            }));
+        } else if self.names_a_location(rhs) {
+            // An **alias**: the right side denotes a place — a register,
+            // a field inside one, a fact's value — so the left side is a
+            // second name for it and needs nothing computed. A generator
+            // written under the read is a level like any other.
+            self.hoist_within(rhs, stmts);
+            stmts.push(Stmt::Alias(Alias {
+                pattern: lhs,
+                value: rhs,
+                span: self.ast.store().span(rhs),
+            }));
+        } else {
+            self.report(
+                rhs,
+                Code::NyiValueBind,
+                "binding a variable to a value that is in no register is not \
+                         implemented yet; it needs a derived bind",
+            );
+        }
+    }
+
     /// Inline a subquery's statements into the enclosing list.
     ///
     /// One level deep per call, and recursive through `collect`'s own arms, so a
@@ -1388,14 +1394,10 @@ impl Flattener<'_> {
                         stmts.push(Stmt::Scan(generator));
                     }
                 }
-                QueryStmt::Bind(lhs, rhs) => {
-                    self.hoist_within(*rhs, stmts);
-                    stmts.push(Stmt::Alias(Alias {
-                        pattern: *lhs,
-                        value: *rhs,
-                        span: self.ast.store().span(*rhs),
-                    }));
-                }
+                // The same statement it would be outside, through the same
+                // walk: a constraint constrains, a generator generates, a
+                // subquery inlines again.
+                QueryStmt::Bind(lhs, rhs) => self.bind(*lhs, *rhs, stmts),
                 QueryStmt::Negation(node) => {
                     self.report(
                         *node,

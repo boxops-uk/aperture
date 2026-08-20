@@ -7,11 +7,13 @@
 // is the thing this replaces.
 import init, {
   compile,
+  run,
   sample_schema,
   samples,
   schema,
   schema_tokens,
   tokens,
+  trace,
   tree,
   version,
 } from './wasm/fjord_wasm.js'
@@ -125,7 +127,50 @@ export type Lowered = {
   diagnostics: DiagnosticView[]
 }
 
-export type Sample = { label: string; source: string }
+export type Sample = { label: string; source: string; rows: number | null }
+
+export type RowView = { at: number; value: unknown }
+
+export type Rows = {
+  rows: RowView[]
+  /** Rows pulled per plan step — matched or skipped. */
+  examined: number[]
+  examined_total: number
+  truncated: boolean
+  diagnostics: DiagnosticView[]
+}
+
+export type RegisterView = {
+  address: number
+  /** `fact`, `value`, or `empty`. */
+  kind: string
+  /** `code.Decl#4`, for a register holding a row. */
+  fact: string | null
+  value: unknown
+}
+
+export type Rejection = { step: number; residual: number; row: RegisterView }
+
+export type TraceStep = {
+  at: number
+  /** `step`, `yield`, `reject`, or `done`. */
+  event: string
+  depth: number
+  /** Only the registers this transition changed — the page folds them. */
+  registers: RegisterView[]
+  row: unknown
+  rejected: Rejection | null
+  examined: number[]
+}
+
+export type Trace = {
+  steps: TraceStep[]
+  rows: number
+  examined_total: number
+  /** Whether the run stopped at the cap rather than because it was done. */
+  truncated: boolean
+  diagnostics: DiagnosticView[]
+}
 
 export type Engine = {
   version: string
@@ -139,6 +184,10 @@ export type Engine = {
   lexSchema: (source: string) => Tokens
   /** The whole front end: lex, parse, lower, typecheck, flatten, reorder. */
   compile: (schema: string, query: string) => Lowered
+  /** Run the query against the demo database. */
+  run: (schema: string, query: string) => Rows
+  /** The whole run, one transition at a time. */
+  trace: (schema: string, query: string) => Trace
   /** What the site opens with — both tested in the Rust suite, not invented here. */
   sampleSchema: string
   samples: Sample[]
@@ -161,6 +210,10 @@ export function load(): Promise<Engine> {
       lexSchema: (source: string) => JSON.parse(schema_tokens(source)) as Tokens,
       compile: (schemaSource: string, query: string) =>
         JSON.parse(compile(schemaSource, query)) as Lowered,
+      run: (schemaSource: string, query: string) =>
+        JSON.parse(run(schemaSource, query)) as Rows,
+      trace: (schemaSource: string, query: string) =>
+        JSON.parse(trace(schemaSource, query)) as Trace,
       sampleSchema: sample_schema(),
       samples: JSON.parse(samples()) as Sample[],
     }

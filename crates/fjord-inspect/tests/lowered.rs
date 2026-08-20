@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 
 use fjord_engine::corpus::{CORPUS, Expectation};
-use fjord_inspect::{SAMPLES, SCHEMA, lowered, lowered::UNRESOLVED, schema};
+use fjord_inspect::{SAMPLES, SCHEMA, lowered, lowered::UNRESOLVED, rows, schema};
 
 /// The fixture schema, as text — the corpus is written against it, and a view
 /// can only be checked over queries somebody has already classified.
@@ -24,18 +24,27 @@ fn the_shipped_schema_is_a_schema() {
 
     assert!(
         view.ok,
-        "`schemas/code.sigla` does not lower: {:?}",
+        "`schemas/demo.sigla` does not lower: {:?}",
         view.diagnostics
     );
-    assert!(
-        view.predicates.len() >= 20,
-        "only {} predicates — the sample schema is the tour's, and it is bigger than that",
-        view.predicates.len()
+    assert_eq!(
+        view.predicates.len(),
+        6,
+        "the site's schema is six predicates, one per shape the language has"
     );
-    assert!(
-        view.predicates.iter().any(|p| p.name == "src.File"),
-        "the schema the site opens with does not declare `src.File`"
-    );
+    for wanted in [
+        "code.File",
+        "code.Decl",
+        "code.Ref",
+        "code.Span",
+        "code.Kind",
+        "code.KindOf",
+    ] {
+        assert!(
+            view.predicates.iter().any(|p| p.name == wanted),
+            "the schema the site opens with does not declare `{wanted}`"
+        );
+    }
     for predicate in &view.predicates {
         assert!(
             !predicate.ty.is_empty(),
@@ -60,8 +69,7 @@ fn every_sample_compiles_clean() {
         let view = lowered(SCHEMA, sample.source);
         assert!(view.schema_ok, "the shipped schema did not lower");
 
-        let expected_to_fail = matches!(sample.label, "an unknown predicate" | "junk");
-        if expected_to_fail {
+        if sample.rows.is_none() {
             assert!(
                 !view.diagnostics.is_empty(),
                 "`{}` is meant to be refused and was not: {}",
@@ -245,7 +253,7 @@ fn the_corpus_reaches_every_shape_the_type_panel_shows() {
 /// The JSON a page parses, pinned by example.
 #[test]
 fn the_json_is_the_shape_the_page_reads() {
-    let json = serde_json::to_value(lowered(SCHEMA, "P where src.File P")).expect("serialises");
+    let json = serde_json::to_value(lowered(SCHEMA, "P where code.File P")).expect("serialises");
 
     assert_eq!(json["schema_ok"], true);
     assert_eq!(json["head_ty"], "string");
@@ -262,4 +270,71 @@ fn the_json_is_the_shape_the_page_reads() {
     assert_eq!(node["kind"], "Var");
     assert_eq!(node["label"], "P");
     assert_eq!(node["ty"], "string");
+}
+
+/// **The samples answer, and answer what they say.**
+///
+/// A demo query that returns nothing demonstrates nothing, and one that returns
+/// a single row shows no backtracking — which is most of what there is to watch
+/// in a debugger. So the count is part of the sample, and this is what holds it
+/// there: change the database and a sample that stops answering says so, rather
+/// than quietly becoming a blank panel.
+#[test]
+fn every_sample_answers_what_it_says() {
+    for sample in SAMPLES {
+        let answered = rows(SCHEMA, sample.source);
+
+        assert!(
+            answered.diagnostics.is_empty() || sample.rows.is_none(),
+            "`{}` does not compile: {:?}",
+            sample.label,
+            answered.diagnostics
+        );
+
+        match sample.rows {
+            Some(expected) => {
+                assert_eq!(
+                    answered.rows.len(),
+                    expected,
+                    "`{}` says it answers {expected} rows and answers {}: {}\n  {:?}",
+                    sample.label,
+                    answered.rows.len(),
+                    sample.source,
+                    answered.rows
+                );
+                assert!(
+                    !answered.truncated,
+                    "`{}` hit the row cap, which no sample should",
+                    sample.label
+                );
+                assert!(
+                    answered.examined_total >= answered.rows.len() as u64,
+                    "`{}` answered more rows than it examined",
+                    sample.label
+                );
+            }
+            None => assert!(
+                answered.rows.is_empty(),
+                "`{}` is meant to be refused and answered rows",
+                sample.label
+            ),
+        }
+    }
+}
+
+/// **Every sample answers two or three rows**, which is the constraint the
+/// database was sized for. Stated separately from the counts above so that a
+/// sample added with `rows: Some(1)` fails here rather than passing quietly.
+#[test]
+fn a_sample_answers_more_than_one_row() {
+    for sample in SAMPLES {
+        if let Some(rows) = sample.rows {
+            assert!(
+                (2..=4).contains(&rows),
+                "`{}` answers {rows} rows; a demo query wants two or three — one \
+                 shows no backtracking and a dozen shows no detail",
+                sample.label
+            );
+        }
+    }
 }

@@ -686,6 +686,38 @@ pub const CORPUS: &[Entry] = &[
          of its own and a denial opens nothing",
     ),
     entry(
+        "X where X = (Y where test.Name Y; Y = \"a\"..)",
+        Supported("abc; ann; anna"),
+        "**the constraint form of the entry above, and the one that was wrong**: a \
+         subquery's statements are the enclosing query's, so a constraint written \
+         inside one narrows the level that captures the variable exactly as it does \
+         outside. While the inliner had a copy of the bind walk that handled only \
+         the alias case, this compiled to an unnarrowed scan and answered rows the \
+         constraint excludes — a silently wrong answer, which is why both paths now \
+         go through one `bind`",
+    ),
+    entry(
+        "X where X = (Y where Y = test.Foo _)",
+        Supported("test.Foo#1; test.Foo#2; test.Foo#3"),
+        "a **generator bind** inside a subquery. The same copy of the walk declined \
+         to plan this at all, and declined *quietly* — a debug build tripped \
+         flatten's own \"no plan without a reason\" assertion and a release build \
+         refused with an empty sink",
+    ),
+    entry(
+        "X where X = (Y where Y = (Z where test.Name Z))",
+        Supported("abc; ann; anna; bob"),
+        "a subquery **inside a subquery**, which is the claim the inliner's comment \
+         always made and nothing checked: inlining is recursive because the walk it \
+         calls is the one that inlines",
+    ),
+    entry(
+        "X where X = (Y where test.Count C; Y = C + 1)",
+        Supported("-9223372036854775807; -41; 8; 1001"),
+        "a **derived bind** inside a subquery — a step rather than a level, lifted \
+         out of the subquery like everything else",
+    ),
+    entry(
         "X where X = \"abc\"; X != \"a\"..",
         Supported(""),
         "both sides known at compile time and the denial is **met**, so the query is \
@@ -1257,6 +1289,94 @@ mod tests {
     ///
     /// It found nothing when it was written, which is the point of writing it
     /// before the next construct rather than after.
+    /// **Stepping is running, one transition at a time.**
+    ///
+    /// A debugger drives [`Executor::step`] and takes the row whenever the
+    /// machine stands on the head; a run drives the same transition from inside
+    /// `enumerate` and calls back. If the two ever answered differently — other
+    /// rows, another order, one row twice — then what a reader watches in the
+    /// browser would not be what the server does, which is the whole claim the
+    /// interactive site makes.
+    ///
+    /// Over the corpus, because that is every construct the language has, and
+    /// because the transitions a query takes differ by construct: a negation
+    /// backtracks where a scan descends.
+    #[test]
+    fn stepping_yields_what_running_yields() {
+        use crate::{
+            compile::Compilation,
+            fixtures::collect_rows,
+            iter::{Executor, Profile, Transition},
+        };
+        use fjord_store::fixture;
+        use fjord_store_mem::MemStore;
+        use tokio_util::sync::CancellationToken;
+
+        let schema = schema();
+
+        let store = || {
+            let mut store = MemStore::new();
+            for fixture::Fact {
+                predicate,
+                key,
+                value,
+                sequence,
+            } in fixture::facts()
+            {
+                store.insert_valued(predicate, key, sequence, value);
+            }
+            store
+        };
+
+        let mut wrong = vec![];
+
+        for Entry { source, expect, .. } in CORPUS {
+            let Supported(_) = expect else { continue };
+
+            let mut compilation = Compilation::new(source, &schema);
+            let Some(plan) = compilation.plan() else {
+                continue;
+            };
+            let interner = compilation.into_interner();
+
+            let running =
+                collect_rows(store(), plan.clone(), &interner).expect("a supported entry runs");
+
+            let mut stepped = vec![];
+            let mut executor = Executor::new(store(), plan.clone());
+            let mut profile = Profile::for_plan(&plan);
+            let token = CancellationToken::new();
+
+            loop {
+                if let Some(mut row) = executor.row() {
+                    stepped.push(row.to_value(&interner).expect("a row projects"));
+                    if !executor.resume_after_row() {
+                        break;
+                    }
+                    continue;
+                }
+
+                match executor.step(&token, &mut profile).expect("a step") {
+                    Transition::Stepped => continue,
+                    Transition::Done => break,
+                }
+            }
+
+            if stepped != running {
+                wrong.push(format!(
+                    "    {source:?}\n      running  {running:?}\n      stepping {stepped:?}"
+                ));
+            }
+        }
+
+        assert!(
+            wrong.is_empty(),
+            "{} entr(ies) answer differently stepped than run:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+    }
+
     #[test]
     fn every_supported_entry_resumes_to_the_same_rows() {
         use crate::{compile::Compilation, fixtures::run_with_suspends};

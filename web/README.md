@@ -6,14 +6,17 @@ does is *asking the lexer*, not paraphrasing it.
 
 It lives beside [`website/`](../website/README.md) rather than replacing it: the
 book is published on every push to main and nothing here is finished enough to
-stand in for it yet. Four views exist — **tokens**, the **parse tree**, the **lowered tree with its
-types**, and the **plan** — which is the whole compiler, run against a schema the
-reader can edit. The lexer came first because it is the one that
+stand in for it yet. Five views exist — **tokens**, the **parse tree**, the **lowered tree with its
+types**, the **plan**, and the **run** — which is the whole compiler *and* the
+executor, against a schema the reader can edit and a database in the page. The lexer came first because it is the one that
 retires something: `website/assets/app.js` carries a hand-written sigla
 highlighter, which is a second implementation of the lexer and a second thing to
 keep true.
 
-What is left is *running* the plan: rows need a store in the browser.
+The run is a **debugger**: the whole trace arrives in one call, so stepping is
+an index into an array — forwards, backwards, on to the next row, or scrubbed —
+showing the registers as they fill, the rows answered, and the rows a residual
+read and dropped.
 
 ```bash
 ../scripts/build-wasm.sh   # or: npm run wasm
@@ -36,6 +39,8 @@ written in JavaScript, because that is the thing being replaced.
 | `src/SchemaPane.tsx` | the schema, as text — the only form a browser can hold one in, since `import` resolution reads files — painted by the schema language's own lexer |
 | `src/LoweredView.tsx` | the lowered tree as the query's own shape: a head, then one section per statement |
 | `src/PlanPane.tsx` | the plan: each step's text is the engine's own (`print::steps`), with the structure a reader counts around it |
+| `src/RunPane.tsx` | the debugger: transport controls over a local array, and the machine's state folded from the changes each step carries |
+| `src/playback.ts` | play — one transition every fifth of a second, which is about as fast as a register can be read |
 | `src/Editor.tsx` | a textarea with the real tokens painted underneath it — used for the query and the schema, since the only difference is which lexer produced the tokens |
 | `src/TokenTable.tsx`, `src/TreeView.tsx` | the two views — the second walks the arena from its root, which is already in reading order |
 | `src/span.ts` | what the cursor is on, and the rule every view highlights by: a node lights up **its subtree** and the bytes it covers, never the path above it — that is what the indentation already shows |
@@ -49,9 +54,10 @@ without anyone editing a regex here — which is the whole argument for compilin
 the engine rather than reimplementing it. The same holds for the tree: a rule
 added to `grammar.llw` does not compile until `fjord-inspect` names it.
 
-The sample queries and the schema come from the **module**, not from here:
-`fjord_inspect::SAMPLES` and `fjord_inspect::SCHEMA` (which is the repository's
-own `schemas/code.sigla`), with `every_sample_compiles_clean` asserting each one
-in the Rust suite. That is not tidiness. The first version of this page invented
+The sample queries, the schema and the facts all come from the **module**, not
+from here: `fjord_inspect::SAMPLES` over `schemas/demo.sigla` and the demo
+database, with `every_sample_compiles_clean` and `every_sample_answers_what_it_says`
+asserting each one in the Rust suite — down to how many rows it answers, because
+a demo query that returns nothing demonstrates nothing. That is not tidiness. The first version of this page invented
 its own samples, and **every one of them was missing the head a query requires**
 — the lexer tokenised them happily, and it took the parse view to notice.

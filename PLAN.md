@@ -390,18 +390,20 @@ it does **not** degrade to a JavaScript highlighter — the highlighter is the
 thing being replaced, and a fallback would hide exactly the failure that
 matters.
 
-### Movement 4 — stepping the executor: a query debugger
+### Movement 4 — stepping the executor: a query debugger ✅
 
-**Nothing here is built.** This is the design of record for the next segment,
-and it is the largest change to the engine the browser work has asked for — so
-the shape is argued here before a line of it exists.
+**Built.** The site runs queries against a database in the page and steps
+through the run one transition at a time: registers as they fill, the row each
+`yield` answers, and the rows a residual read and dropped. What follows is the
+design as it was argued before it was built, amended where building it found
+something.
 
 **Goal.** Not "run a query in the page" but *step* one: see the registers as
 they fill, where the machine is in the plan, what it has yielded so far, and
 what it has read to get there. A reader who has watched a nested loop backtrack
 understands the executor in a way no amount of prose achieves.
 
-**Why this needs no new machine, and must not have one.** `iter.rs` is a
+**It needed no new machine, which was the bet.** `iter.rs` is a
 **defunctionalised state machine** ([I7](website/content/invariants.md#i7)):
 `depth`, a stack of frames, and one loop whose every iteration is exactly one
 transition. Stepping is therefore *exposing one iteration at a time* — not a
@@ -549,18 +551,35 @@ predicates, and decoding against the wrong one reads plausible bytes.
 
 #### The page
 
-A **run** tab: transport controls (step, back, play, to end), a scrub bar over
-the whole run, the register panel, the rows yielded so far, and the plan with
-the current step highlighted and its `examined` count beside it. Stepping back
-costs a replay and nothing else.
+A **run** tab: transport controls (start, back a row, back one transition, one
+transition, on to the next row, play, end), a scrub bar over the whole run, the
+register panel, and the rows yielded so far. Stepping back is free, because the
+trace is already in hand.
+
+#### What building it found
+
+**A silently wrong answer, in `flatten`.** A constraint written inside a
+subquery — `X = (Y where code.File Y; Y = "src/"..)` — was *dropped*, so the
+query answered rows the constraint excludes; and a generator bind inside one
+(`X = (Y where Y = test.Foo _)`) declined to plan at all, tripping flatten's own
+"no plan without a reason" assertion in a debug build and refusing with an empty
+sink in a release one. The cause was two paths for one thing: the subquery
+inliner carried its own copy of the bind walk that handled only the *alias*
+case. Both now go through one `Flattener::bind`, and four corpus entries pin the
+combinations that were missing — which is why it survived: the corpus is how the
+language surface is specified, and nothing had written these down.
+
+**A reference reads as the fact it names.** `Value`'s serialiser writes a
+`FactRef` as the `u64` it is, which is right for a wire and unreadable in a
+panel, so the view renders one as `code.File#2`. Not a second codec: nothing
+there decodes bytes.
 
 ### What is left
 
-- **Rows and `ProfileView`**, which would make the site a playground rather than
-  a viewer: a `MemStore` seeded from `fixture::facts()` answers a query in the
-  browser. The fixture is in the seam crate and wasm-clean, so this is reachable;
-  what it needs is a schema and facts that agree, which today means the fixture's
-  rather than the sample schema's.
+- **The `WireView`** — frames, blocks and a hex dump annotated by offset — which
+  is the one view in the original list nothing has needed yet.
+- **Retiring the hand-written highlighter** in `website/assets/app.js`, which
+  waits on the new site carrying the book's code samples.
 - **A schema handle, if a bigger schema ever makes it hurt.** `compile` re-reads
   the schema on every keystroke, because the module holds no state — two strings
   in, JSON out, and no handle a page has to free. Measured on

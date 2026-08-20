@@ -676,12 +676,15 @@ name = "fjord-inspect"
 version = "0.0.1"
 dependencies = [
  "codespan-reporting",
+ "fjord-encoding",
  "fjord-engine",
  "fjord-schema",
  "fjord-store",
+ "fjord-store-mem",
  "proptest",
  "serde",
  "serde_json",
+ "tokio-util",
 ]
 
 [[package]]

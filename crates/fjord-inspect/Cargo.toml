@@ -18,9 +18,22 @@ publish = false
 # The diagnostic type is `codespan_reporting`'s, and a label's style is what
 # says which span a reader is being pointed at.
 codespan-reporting = "0.13.1"
-fjord-engine = { path = "../fjord-engine" }
+# **With the trace hook on.** A workspace `cargo test` therefore builds the
+# engine traced, so every guard in it — alloc-free per row above all — runs
+# against the build the browser ships; `cargo test -p fjord-engine` builds the
+# other one.
+fjord-engine = { path = "../fjord-engine", features = ["trace"] }
 fjord-schema = { path = "../fjord-schema" }
+# The seam and the in-memory implementation: the site's database is a `MemStore`
+# holding facts written through the seam's one encoder. Never the fjall backend
+# — `dependency_closure` says so.
+fjord-encoding = { path = "../fjord-encoding" }
+fjord-store = { path = "../fjord-store" }
+fjord-store-mem = { path = "../fjord-store-mem" }
 serde = { workspace = true }
+# The cancellation token the executor takes. Nothing here cancels; a run over
+# the demo database is bounded by the database.
+tokio-util = "0.7.18"
 serde_json = "1.0.150"
 
 [dev-dependencies]

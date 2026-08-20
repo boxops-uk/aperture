@@ -454,3 +454,109 @@ h1 {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ---- the debugger ---- */
+
+.run .transport {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  gap: .25rem;
+  align-items: center;
+  padding: .45rem .6rem;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--rule);
+}
+
+.run .transport button {
+  border: 1px solid transparent;
+  border-radius: .3rem;
+  background: none;
+  padding: .1rem .4rem;
+  font: inherit;
+  font-size: .78rem;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.run .transport button:hover:not(:disabled) { background: var(--bg-raised); border-color: var(--rule); color: var(--ink); }
+.run .transport button:disabled { opacity: .3; cursor: default; }
+.run .transport button.playing { color: var(--accent-ink); border-color: var(--accent); }
+.run .transport input[type="range"] { flex: 1; margin: 0 .4rem; accent-color: var(--accent); }
+.run .transport .count { font-family: var(--mono); font-size: .75rem; color: var(--ink-faint); white-space: nowrap; }
+
+.run .event {
+  display: flex;
+  gap: .5rem;
+  align-items: baseline;
+  margin: 0;
+  padding: .55rem .75rem;
+  border-bottom: 1px solid var(--rule);
+  font-size: .85rem;
+}
+
+.run .event .badge {
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: .05rem .4rem;
+  border-radius: .3rem;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-soft);
+}
+
+/* The three things worth telling apart at a glance: a row answered, a row read
+   and dropped, and the machine simply moving. */
+.run .event.yield .badge { color: var(--str); border-color: color-mix(in srgb, var(--str) 50%, transparent); }
+.run .event.reject .badge { color: var(--num); border-color: color-mix(in srgb, var(--num) 50%, transparent); }
+.run .event.done .badge { color: var(--accent-ink); border-color: var(--accent); }
+.run .event .said { color: var(--ink-soft); }
+.run .event .said code { font-family: var(--mono); color: var(--ink); font-size: .8rem; }
+
+.run .shape { display: flex; gap: 1.5rem; margin: 0; padding: .5rem .75rem; border-bottom: 1px solid var(--rule); }
+.run .shape dt { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); }
+.run .shape dd { margin: .1rem 0 0; font-family: var(--mono); font-size: .85rem; font-variant-numeric: tabular-nums; }
+
+.run section { padding: .5rem .75rem; border-bottom: 1px solid var(--rule); }
+.run section:last-child { border-bottom: 0; }
+
+.run h3 {
+  margin: 0 0 .4rem;
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.run ul, .run ol { list-style: none; margin: 0; padding: 0; display: grid; gap: .2rem; }
+
+.run .registers li {
+  display: flex;
+  gap: .5rem;
+  align-items: baseline;
+  padding: .15rem .35rem;
+  border-radius: .3rem;
+  font-size: .82rem;
+}
+
+/* The register this transition wrote — the one thing a reader is looking for. */
+.run .registers li.written { background: var(--accent-soft); }
+.run .registers .address { font-family: var(--mono); color: var(--ink-faint); }
+.run .registers .fact { font-family: var(--mono); color: var(--fn); }
+.run .registers .value { font-family: var(--mono); color: var(--code-ink); word-break: break-all; }
+
+.run .yielded li { padding: .15rem .35rem; border-radius: .3rem; font-family: var(--mono); font-size: .82rem; }
+.run .yielded li.fresh { background: color-mix(in srgb, var(--str) 16%, transparent); }
+
+.run .capped {
+  margin: 0;
+  padding: .5rem .75rem;
+  background: var(--bad-soft);
+  border-top: 1px solid var(--rule);
+  color: var(--bad);
+  font-size: .82rem;
+}

@@ -98,10 +98,14 @@ name = "fjord-inspect"
 version = "0.0.1"
 dependencies = [
  "codespan-reporting",
+ "fjord-encoding",
  "fjord-engine",
  "fjord-schema",
+ "fjord-store",
+ "fjord-store-mem",
  "serde",
  "serde_json",
+ "tokio-util",
 ]
 
 [[package]]
@@ -125,6 +129,16 @@ dependencies = [
  "fjord-schema",
  "lasso",
  "thiserror",
+]
+
+[[package]]
+name = "fjord-store-mem"
+version = "0.0.1"
+dependencies = [
+ "byteview",
+ "fjord-encoding",
+ "fjord-schema",
+ "fjord-store",
 ]
 
 [[package]]

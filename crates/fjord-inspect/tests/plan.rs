@@ -207,8 +207,7 @@ fn the_corpus_reaches_every_shape_a_plan_can_have() {
 fn the_json_is_the_shape_the_page_reads() {
     let view = lowered(
         SCHEMA,
-        "D where M = src.Module {file = _, name = \"Fjord.Client\"}; \
-         src.Decl {module = M, name = D, line = _}",
+        "N where F = code.File \"src/lib.rs\"; code.Decl {file = F, name = N, line = _}",
     );
     let json = serde_json::to_value(&view).expect("serialises");
     let plan = &json["plan"];
@@ -217,9 +216,8 @@ fn the_json_is_the_shape_the_page_reads() {
     assert_eq!(plan["steps"][0]["kind"], "Level");
     assert_eq!(plan["steps"][0]["register"], "r0");
     assert_eq!(plan["steps"][0]["level"], 0);
-    assert_eq!(plan["steps"][0]["predicates"][0], "src.Module");
-    assert_eq!(plan["steps"][0]["access"][0], "scan");
-    assert_eq!(plan["steps"][0]["residuals"], 1);
+    assert_eq!(plan["steps"][0]["predicates"][0], "code.File");
+    assert_eq!(plan["steps"][0]["access"][0], "seek");
     assert_eq!(plan["steps"][1]["access"][0], "seek");
     assert!(
         plan["head"].as_str().is_some_and(|head| !head.is_empty()),
@@ -228,7 +226,7 @@ fn the_json_is_the_shape_the_page_reads() {
     assert!(
         plan["steps"][0]["text"]
             .as_str()
-            .is_some_and(|text| text.contains("src.Module")),
+            .is_some_and(|text| text.contains("code.File")),
         "a step's text does not name the predicate it reads"
     );
 }

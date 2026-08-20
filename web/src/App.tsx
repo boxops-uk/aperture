@@ -1,17 +1,27 @@
 import { useEffect, useState } from 'react'
-import { load, type Engine, type Lowered, type SchemaView, type Tokens, type Tree } from './wasm'
+import {
+  load,
+  type Engine,
+  type Lowered,
+  type SchemaView,
+  type Tokens,
+  type Trace,
+  type Tree,
+} from './wasm'
 import type { Highlight } from './span'
 import { Editor } from './Editor'
 import { TokenTable } from './TokenTable'
 import { TreeView } from './TreeView'
 import { LoweredView } from './LoweredView'
 import { PlanPane } from './PlanPane'
+import { RunPane } from './RunPane'
+import { usePlayback } from './playback'
 import { SchemaPane } from './SchemaPane'
 import { Diagnostics } from './Diagnostics'
 import './app.css'
 
 /** What the front end says about the query, and what saying it cost. */
-type Analysis = { tokens: Tokens; tree: Tree; lowered: Lowered; micros: number }
+type Analysis = { tokens: Tokens; tree: Tree; lowered: Lowered; trace: Trace; micros: number }
 
 /** What the schema says about itself — recomputed only when the schema changes. */
 type SchemaAnalysis = { view: SchemaView; tokens: Tokens }
@@ -35,7 +45,10 @@ function analyse(engine: Engine, schemaSource: string, source: string): Analysis
   const tokens = engine.lex(source)
   const tree = engine.parse(source)
   const lowered = engine.compile(schemaSource, source)
-  return { tokens, tree, lowered, micros: (performance.now() - started) * 1000 }
+  // The whole run, in the same breath: a trace over the demo database is tens
+  // of transitions, and fetching it now is what makes stepping instant.
+  const trace = engine.trace(schemaSource, source)
+  return { tokens, tree, lowered, trace, micros: (performance.now() - started) * 1000 }
 }
 
 /**
@@ -52,7 +65,8 @@ export default function App() {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [highlight, setHighlight] = useState<Highlight | null>(null)
-  const [tab, setTab] = useState<'tokens' | 'tree' | 'lowered' | 'plan'>('plan')
+  const [tab, setTab] = useState<'tokens' | 'tree' | 'lowered' | 'plan' | 'run'>('run')
+  const [at, setAt] = useState(0)
 
   // Schema, query and analysis move together, updated by whatever changed
   // either text — a keystroke, a sample, or the engine finishing loading. The
@@ -64,7 +78,8 @@ export default function App() {
     schemaView: SchemaAnalysis | null
   }>({ schema: '', source: '', view: null, schemaView: null })
 
-  const show = (schema: string, source: string, engine: Engine | null) =>
+  const show = (schema: string, source: string, engine: Engine | null) => {
+    setAt(0)
     setState((current) => ({
       schema,
       source,
@@ -74,6 +89,7 @@ export default function App() {
           ? analyseSchema(engine, schema)
           : current.schemaView,
     }))
+  }
 
   useEffect(() => {
     load().then(
@@ -93,6 +109,7 @@ export default function App() {
   }, [])
 
   const { schema, source, view, schemaView } = state
+  const playback = usePlayback(view?.trace.steps.length ?? 0, at, setAt)
   // One list, from the compilation: it carries the lexer's and the parser's
   // faults as well as its own, in the order `Diagnostics::in_source_order` puts
   // them — so showing the parse's separately would print every one twice.
@@ -178,6 +195,13 @@ export default function App() {
             >
               plan<span className="count">{view?.lowered.plan?.levels ?? 0}</span>
             </button>
+            <button
+              type="button"
+              className={tab === 'run' ? 'tab on' : 'tab'}
+              onClick={() => setTab('run')}
+            >
+              run<span className="count">{view?.trace.rows ?? 0}</span>
+            </button>
           </div>
 
           {tab === 'tokens' && (
@@ -201,6 +225,15 @@ export default function App() {
             <PlanPane
               plan={view?.lowered.plan ?? null}
               refused={(view?.lowered.diagnostics.length ?? 0) > 0}
+            />
+          )}
+          {tab === 'run' && (
+            <RunPane
+              trace={view?.trace ?? null}
+              plan={view?.lowered.plan ?? null}
+              at={at}
+              onSeek={setAt}
+              playback={playback}
             />
           )}
         </section>

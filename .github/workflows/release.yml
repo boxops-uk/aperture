@@ -125,6 +125,13 @@ jobs:
       # edited by whoever un-ignores one, and the list is what a reviewer reads.
       - name: Invariant coverage ledger
         run: cargo test --locked -- --ignored --list
+      # **The other configuration.** `fjord-inspect` turns the engine's `trace`
+      # feature on, so the workspace run above builds the engine *traced* — which
+      # is what puts the alloc-free and no-value-fetch guards on the build the
+      # browser ships. This builds it without, since nothing in this graph asks
+      # for the feature, and a feature nobody tests is an aspiration.
+      - name: The engine without its trace hook
+        run: cargo test --locked -p fjord-engine
       # **The claim `dependency_closure` cannot make on its own.** That guard reads
       # the workspace manifests and fails if the engine grows an edge to a backend;
       # only a compile can catch a *third-party* dependency that refuses the target

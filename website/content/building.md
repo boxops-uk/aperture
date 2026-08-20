@@ -156,7 +156,9 @@ for the same corpus. The Rust test needs no `dotnet`; regenerating the golden do
 fjord/
 ├── crates/              the workspace, bottom to top (table above). `fjord-cli` is
 │                       the `fjord` binary; its examples/ are the instruments
-├── schemas/             code.sigla, the sample schema every client here builds against
+├── schemas/             code.sigla, the sample schema every client here builds
+│                       against, and demo.sigla, the interactive site's own — six
+│                       predicates chosen so every shape the language has appears once
 ├── clients/dotnet/      the C# client, demo producer and real indexer
 ├── docs/glean.md        where every idea stands against Glean
 ├── bench/FINDINGS.md    what has actually been measured

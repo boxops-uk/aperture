@@ -15,8 +15,9 @@
 //! What a browser cannot do, stated so it is not filed as a gap: **ingest**,
 //! because interning needs a real backend and durable id claims, and **schema
 //! `import`**, because resolution reads files — so a browser schema is
-//! single-file until a virtual resolver exists. Everything from lexing to a
-//! plan runs here.
+//! single-file until a virtual resolver exists. Everything else runs here,
+//! lexing to executing: the queries answer against a `MemStore` holding the
+//! demo database, through the same executor the server runs.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -73,6 +74,27 @@ pub fn schema(source: &str) -> String {
 #[must_use]
 pub fn compile(schema: &str, query: &str) -> String {
     fjord_inspect::lowered_json(schema, query)
+}
+
+/// Run `query` against the demo database and answer the rows, with what
+/// reading them cost.
+#[wasm_bindgen]
+#[must_use]
+pub fn run(schema: &str, query: &str) -> String {
+    fjord_inspect::rows_json(schema, query)
+}
+
+/// **Trace `query`** — the whole run, one transition at a time.
+///
+/// The executor is a state machine whose every loop iteration is one
+/// transition, so this is that loop driven a step at a time, with the machine's
+/// registers read between steps. The whole run comes back at once: a page folds
+/// the changes and scrubs a local array, forwards and backwards, rather than
+/// asking again per step.
+#[wasm_bindgen]
+#[must_use]
+pub fn trace(schema: &str, query: &str) -> String {
+    fjord_inspect::trace_json(schema, query)
 }
 
 /// The schema the site opens with — the repository's own `schemas/code.sigla`.

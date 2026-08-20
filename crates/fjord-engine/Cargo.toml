@@ -22,6 +22,17 @@ proptest = [
     "fjord-store/proptest",
 ]
 
+# **The executor's trace hook, off by default.** It sits inside the scan loop,
+# where I6 and I9 live, so a production build carries no branch there at all:
+# `Deadline::rejected` is an empty `#[inline]` function without this, exactly as
+# `FieldOffsets::witness_row` is outside a debug build.
+#
+# Not `debug_assertions`, which is on for every dev build and off in release —
+# the browser wants a *release* build with tracing in it. `fjord-inspect` turns
+# it on, so `cargo test --workspace` exercises the traced build and
+# `cargo test -p fjord-engine` exercises the other one.
+trace = []
+
 [dependencies]
 fjord-encoding = { path = "../fjord-encoding" }
 fjord-schema = { path = "../fjord-schema" }

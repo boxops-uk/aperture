@@ -22,27 +22,38 @@
 //! `fjord-schema`, and **never** `fjord-store-fjall` — checked by
 //! `dependency_closure` in `fjord-store`.
 
+/// The database the site queries: its schema, and its facts.
+pub mod demo;
 /// The lowered tree, and the types typecheck gave it.
 pub mod lowered;
 /// The plan: what the query does, and in what order.
 pub mod plan;
+/// Running the query: the answers, and what reading them cost.
+pub mod rows;
 /// What the site opens with — a schema, and queries over it.
 pub mod samples;
 /// What a schema declares — what everything after parsing resolves against.
 pub mod schema;
 /// The lexer's answer: what each token is, and where.
 pub mod tokens;
+/// Stepping the query: the run, one transition at a time.
+pub mod trace;
 /// The parser's answer: the grammar-shaped tree, with every node's span.
 pub mod tree;
+/// A decoded value, as a page shows it.
+pub mod value;
 /// What every view says the same way — a span, and a diagnostic.
 pub mod view;
 
+pub use demo::SCHEMA;
 pub use lowered::{Lowered, LoweredNode, StatementView, lowered, lowered_json};
 pub use plan::{PlanView, StepView};
-pub use samples::{SAMPLES, SCHEMA, Sample, samples_json};
+pub use rows::{ROW_CAP, RowView, Rows, rows, rows_json};
+pub use samples::{SAMPLES, Sample, samples_json};
 pub use schema::{PredicateView, SchemaView, schema, schema_json};
 pub use tokens::{
     TokenClass, TokenView, Tokens, schema_tokens, schema_tokens_json, tokens, tokens_json,
 };
+pub use trace::{RegisterView, Rejection, TRACE_CAP, Trace, TraceStep, trace, trace_json};
 pub use tree::{Tree, TreeNode, tree, tree_json};
 pub use view::{DiagnosticView, Label, Span};
