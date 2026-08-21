@@ -239,13 +239,15 @@ jobs:
   # binaries, because "verify anything it produced" should not have an exception for
   # documentation.
   #
-  # **A page here is a path**, not a file and not a fragment, and that costs the bundle
-  # two things the tree of `.html` files did not. A host has to answer an unknown path
-  # with the application — `dist/404.html` is that answer where a host uses one, which
-  # is how Pages does it — and the base the assets and routes are written against is
-  # compiled in, so this builds twice and the two copies are **not** interchangeable:
-  # the tarball is for a site at a root, and Pages serves this one under the
-  # repository's name.
+  # **A page here is a path**, and the bundle carries a document per route so that a
+  # path is also a *file*: Pages answers anything it does not have with `404.html`,
+  # which renders the right page and returns 404, and a docs site that is a 404 to every
+  # link preview and crawler is live only to a reader who starts at the root.
+  #
+  # What is left compiled in is the base the assets and the routes are written against,
+  # which is why this builds twice and the two copies are **not** interchangeable: the
+  # tarball is for a site at a root, and Pages serves this one under the repository's
+  # name.
   site:
     name: site
     runs-on: ubuntu-latest
@@ -482,8 +484,7 @@ jobs:
 
           \`fjord-docs-site.tar.gz\` is the design book as built at this tag — the
           interactive site, with the engine compiled into the page, attested the same
-          way. A page in it is a path, so serve it from a root with unknown paths
-          answered by \`index.html\`; the \`404.html\` beside it is that answer for a
-          host that uses one." \
+          way. Serve it from a root: every page in it is a file, and \`404.html\` is
+          there for a path nothing knows about." \
             dist/fjord dist/fjord-viewer dist/SHA256SUMS \
             dist/fjord-docs-site.tar.gz dist/fjord-docs-site.tar.gz.sha256

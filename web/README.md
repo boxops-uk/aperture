@@ -166,10 +166,15 @@ keeps them together.
 
 ## Serving it
 
-A page is a path, so a host has to answer every path with the application:
-`npm run build` writes `dist/404.html` as a copy of `dist/index.html`, which is
-how GitHub Pages does that. `SITE_BASE=/fjord/ npm run build` sets the base for a
-site served from a subdirectory.
+A page is a path, so a host has to answer every path with the application.
+`npm run build` writes **a document per route** — `storage.html` and
+`storage/index.html`, the two shapes a static host resolves an extensionless path
+through — plus `dist/404.html` for a path nothing knows about. The copies are the
+point: a fallback alone renders the right page and answers **404**, which makes
+every page but the root a 404 to a link preview or a crawler, and the smoke check
+asserts the documents exist rather than trusting the fallback.
+`SITE_BASE=/fjord/ npm run build` sets the base for a site served from a
+subdirectory.
 
 **The base is compiled in**, which is why CI builds the bundle twice and the two
 are not interchangeable: `SITE_BASE` taken from the repository's name for the

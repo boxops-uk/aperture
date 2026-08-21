@@ -181,6 +181,6 @@ dialect that drifts is a page that reads differently depending on which copy you
 **What publishes is `web/`.** Every push to main deploys that bundle to
 <https://boxops-uk.github.io/fjord/> — after the suite, the drift gate, and the bundle being
 driven in a real browser — and every release carries it as `fjord-docs-site.tar.gz`, attested
-like the binaries. A page in it is a path rather than a file, so a host serving the tarball
-has to answer an unknown path with `index.html`; the `404.html` beside it is that answer
-where a host uses one.
+like the binaries. A page there is a path, and the bundle carries a document per route —
+`storage.html` and `storage/index.html` — so a static host answers a page with the page and
+keeps `404.html` for a path nothing knows about.
