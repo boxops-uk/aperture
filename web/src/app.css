@@ -115,6 +115,21 @@
 
 /* ---- diagnostics ---- */
 
+/* A banner that is a *statement* — a title and a sentence, nothing to unfold —
+   reads with its status icon and its control centred against the two lines. The
+   book's callouts keep the top alignment they need: theirs is a label over
+   paragraphs, and an icon halfway down one of those is lost. Which is which is
+   said by where the banner is, because `className` does not reach a Banner's
+   root element to say it directly.
+
+   The `:not(#\#)` chain is the specificity the design system's own atomic rules
+   carry; a plain class selector loses to them. */
+.diagnostics .astryx-banner:not(#\#):not(#\#):not(#\#),
+.demo .astryx-banner:not(#\#):not(#\#):not(#\#),
+.page .astryx-banner:not(#\#):not(#\#):not(#\#) {
+  align-items: center;
+}
+
 /* The list is layout; every diagnostic in it is a `Banner`, which is what the
    rest of the site says "something is wrong" with. */
 .diagnostics {
