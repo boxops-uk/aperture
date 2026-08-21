@@ -1,18 +1,31 @@
 /**
- * **The fallback painter** — the same rules the generated site uses.
+ * **The fallback tokenizer** — the same rules the generated site paints with.
  *
- * `sigla`, `schema` and `plan` blocks are painted by the engine's own lexer as
- * soon as the module has loaded (see `Code`), which is the whole point of a
- * site that carries the engine. These rules cover the languages the engine has
- * no opinion about — Rust, C#, Python, shells, JSON — and stand in for the
- * others until the module lands, so a page is never a wall of grey.
+ * `CodeBlock` knows shells, JSON and the JavaScript family; it has never heard
+ * of sigla, and it has no Rust. These rules cover the difference, and they are
+ * the ones in `website/assets/app.js` so a block looks the same in both copies
+ * of the book. A `sigla` or `schema` block only falls back to them until the
+ * engine has loaded — after that the real lexer paints it.
  *
- * Lossless by construction: it only wraps spans, so a block always shows
+ * Lossless by construction: it emits spans, never text, so a block always shows
  * exactly what was written.
  */
-import { escapeHtml } from './markdown'
+
+/** What `CodeBlock` expects from a tokenizer: a type and a span. */
+export type SyntaxToken = { type: string; start: number; end: number }
 
 type Rule = [string, RegExp]
+
+/** Our rule names, as the design system's syntax token keys. */
+const AS: Record<string, string> = {
+  kw: 'keyword',
+  str: 'string',
+  num: 'number',
+  com: 'comment',
+  fn: 'function',
+  pun: 'punctuation',
+  var: 'variable',
+}
 
 const RULES: Record<string, Rule[]> = {
   sigla: [
@@ -64,39 +77,8 @@ const RULES: Record<string, Rule[]> = {
     ['fn', /\b[A-Z][A-Za-z0-9_]*\b/],
     ['pun', /=>|[{}()[\]<>:;,.=!+\-|?]/],
   ],
-  python: [
-    ['com', /#[^\n]*/],
-    ['str', /"""[\s\S]*?"""|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/],
-    [
-      'kw',
-      /\b(?:and|as|assert|class|def|elif|else|except|finally|for|from|if|import|in|is|lambda|none|not|or|pass|raise|return|try|while|with|yield|None|True|False)\b/,
-    ],
-    ['num', /\b\d[\d_]*(?:\.\d+)?\b/],
-    ['fn', /\b[A-Z][A-Za-z0-9_]*\b/],
-    ['pun', /[{}()[\]:;,.=!+\-*|?]/],
-  ],
-  bash: [
-    ['com', /#[^\n]*/],
-    ['str', /"(?:[^"\\\n]|\\.)*"|'[^'\n]*'/],
-    [
-      'kw',
-      /\b(?:cargo|python3|dotnet|fjord|fjord-viewer|git|export|cd|rm|mkdir|sleep|while|do|done|if|then|fi|kill|tar|curl|echo)\b/,
-    ],
-    ['num', /\b\d+\b/],
-    ['fn', /(?:^|\s)--?[A-Za-z][\w-]*/],
-    ['pun', /[|&;<>(){}$]/],
-  ],
-  json: [
-    ['str', /"(?:[^"\\\n]|\\.)*"/],
-    ['kw', /\b(?:true|false|null)\b/],
-    ['num', /-?\b\d+(?:\.\d+)?\b/],
-    ['pun', /[{}[\]:,]/],
-  ],
 }
 
-RULES.sh = RULES.bash
-RULES.console = RULES.bash
-RULES.jsonl = RULES.json
 RULES.cs = RULES.csharp
 
 // One global regex per rule, reused with `lastIndex` — recompiling per token
@@ -112,11 +94,11 @@ export function paints(language: string): boolean {
   return COMPILED.has(language)
 }
 
-export function paint(source: string, language: string): string {
+export function tokenize(source: string, language: string): SyntaxToken[] {
   const rules = COMPILED.get(language)
-  if (!rules) return escapeHtml(source)
+  if (!rules) return []
 
-  let out = ''
+  const out: SyntaxToken[] = []
   let at = 0
   while (at < source.length) {
     let bestIndex = -1
@@ -132,18 +114,12 @@ export function paint(source: string, language: string): string {
       }
       if (bestIndex === at) break
     }
-    if (bestIndex === -1 || bestMatch === null) {
-      out += escapeHtml(source.slice(at))
-      break
-    }
-    out += escapeHtml(source.slice(at, bestIndex))
+    if (bestIndex === -1 || bestMatch === null || bestKind === null) break
     const lead = /^\s+/.exec(bestMatch)
-    if (lead) {
-      out += escapeHtml(lead[0])
-      bestMatch = bestMatch.slice(lead[0].length)
-    }
-    out += `<span class="tok-${bestKind}">${escapeHtml(bestMatch)}</span>`
-    at = bestIndex + (lead ? lead[0].length : 0) + bestMatch.length
+    const start = bestIndex + (lead ? lead[0].length : 0)
+    const text = lead ? bestMatch.slice(lead[0].length) : bestMatch
+    out.push({ type: AS[bestKind] ?? bestKind, start, end: start + text.length })
+    at = start + text.length
   }
   return out
 }

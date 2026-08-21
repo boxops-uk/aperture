@@ -1,52 +1,48 @@
-import { useEffect } from 'react'
 import type { ReactNode } from 'react'
+import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog'
+import { VStack } from '@astryxdesign/core/Stack'
 
 /**
- * A drawer over the page, for what is context rather than work.
+ * A dialog over the page, for what is context rather than work.
  *
- * The schema lives here: a reader edits it rarely and reads it often, and
- * giving it a column of its own costs the width the database table needs. It
- * closes on Escape and on a click outside, because a drawer that traps you is
- * worse than a panel.
+ * The schema lives here: a reader edits it rarely and reads it often, and giving
+ * it a column of its own costs the width the database table needs. `purpose`
+ * decides the dismissal rules — this one is `info`, so Escape and a click
+ * outside both close it, because a panel that traps you is worse than no panel.
  */
 export function Drawer({
   open,
-  title,
+  summary,
   onClose,
   children,
 }: {
   open: boolean
-  title: ReactNode
+  /** What the schema says about itself, in the header rather than beside it. */
+  summary: ReactNode
   onClose: () => void
   children: ReactNode
 }) {
-  useEffect(() => {
-    if (!open) return
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', escape)
-    return () => document.removeEventListener('keydown', escape)
-  }, [open, onClose])
-
-  if (!open) return null
-
   return (
-    <div className="drawer-backdrop" onClick={onClose}>
-      <aside
-        className="drawer"
-        role="dialog"
-        aria-label="schema"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header>
-          {title}
-          <button type="button" className="close" onClick={onClose} title="close">
-            ✕
-          </button>
-        </header>
-        <div className="drawer-body">{children}</div>
-      </aside>
-    </div>
+    <Dialog
+      isOpen={open}
+      onOpenChange={(next) => {
+        if (!next) onClose()
+      }}
+      purpose="info"
+      width={760}
+      maxHeight="84vh"
+    >
+      <DialogHeader
+        title="Schema"
+        subtitle={typeof summary === 'string' ? summary : undefined}
+        hasDivider
+        onOpenChange={(next) => {
+          if (!next) onClose()
+        }}
+      />
+      <VStack isScrollable padding={4} gap={3}>
+        {children}
+      </VStack>
+    </Dialog>
   )
 }

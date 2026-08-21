@@ -1,77 +1,77 @@
-import { useState } from 'react'
+import { useCallback } from 'react'
+import { CodeBlock } from '@astryxdesign/core/CodeBlock'
 import { useEngine } from '../engine'
-import { paint } from './highlight'
+import { paints, tokenize, type SyntaxToken } from './highlight'
+import type { TokenClass } from '../wasm'
 
 /**
  * A fenced block from the book, **painted by the engine when there is one**.
  *
- * `sigla` and `schema` blocks are the two languages this repository owns, and a
- * regular expression that agrees with the lexer today is a regular expression
- * that disagrees with it after the next keyword. So when a demo elsewhere on
- * the page has brought the module in, these blocks are re-painted by the same
- * lexer the compiler runs — token for token, including the ones it rejects.
- * Until then, the fallback rules paint them, and they are only ever colours.
+ * `sigla` and `schema` are the two languages this repository owns, and a regular
+ * expression that agrees with the lexer today is a regular expression that
+ * disagrees with it after the next keyword. So when a demo elsewhere on the page
+ * has brought the module in, these blocks are tokenized by the same lexer the
+ * compiler runs — token for token, including the ones it rejects. Until then,
+ * and for Rust and the plan printer, the fallback rules stand in.
  */
+
+/** What the lexer calls a token, as a syntax token type. */
+const AS: Record<TokenClass, string> = {
+  keyword: 'keyword',
+  predicate: 'function',
+  namespace: 'type',
+  variable: 'variable',
+  field: 'property',
+  number: 'number',
+  string: 'string',
+  wildcard: 'constant',
+  comment: 'comment',
+  punctuation: 'punctuation',
+  whitespace: '',
+  error: 'tag',
+}
+
 export function Code({ lang, source }: { lang: string; source: string }) {
   // Observing, not demanding: a page of prose does not fetch a compiler.
   const { engine } = useEngine()
-  const [copied, setCopied] = useState(false)
+  const ours = lang === 'sigla' || lang === 'schema'
 
-  const copy = () => {
-    navigator.clipboard?.writeText(source).then(
-      () => {
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1400)
-      },
-      () => {
-        // A browser that refuses the clipboard is not a failure worth saying.
-      },
-    )
-  }
-
-  const lexed = engine && (lang === 'sigla' || lang === 'schema')
-
-  return (
-    <figure className="code">
-      <figcaption>
-        <span className="lang">{lang}</span>
-        <button
-          type="button"
-          className={copied ? 'copy done' : 'copy'}
-          onClick={copy}
-          aria-label="Copy code"
-        >
-          {copied ? 'copied' : 'copy'}
-        </button>
-      </figcaption>
-      <pre>
-        {lexed ? (
-          <code className={`lang-${lang}`}>
-            <Lexed source={source} schema={lang === 'schema'} />
-          </code>
-        ) : (
-          <code
-            className={`lang-${lang}`}
-            dangerouslySetInnerHTML={{ __html: paint(source, lang) }}
-          />
-        )}
-      </pre>
-    </figure>
+  const tokenizer = useCallback(
+    (code: string, language: string): SyntaxToken[] => {
+      if (engine && (language === 'sigla' || language === 'schema')) {
+        // The lexer measures in bytes and this string is indexed in UTF-16
+        // units, so a block with a character outside ASCII would be painted one
+        // token to the left of itself. Those fall back to the rules instead.
+        if (!/[^\x20-\x7e\n\t]/.test(code)) {
+          const { tokens } = language === 'schema' ? engine.lexSchema(code) : engine.lex(code)
+          return tokens
+            .filter((token) => AS[token.class])
+            .map((token) => ({
+              type: AS[token.class],
+              start: token.span.start,
+              end: token.span.end,
+            }))
+        }
+      }
+      return tokenize(code, language)
+    },
+    [engine],
   )
-}
 
-/** The same painting the editors use: one span per token, from the lexer. */
-function Lexed({ source, schema }: { source: string; schema: boolean }) {
-  const { engine } = useEngine()
-  if (!engine) return <>{source}</>
-  const { tokens } = schema ? engine.lexSchema(source) : engine.lex(source)
+  const custom = ours || paints(lang)
+
   return (
-    <>
-      {tokens.map((token, index) => (
-        <span key={index} className={`tok tok-${token.class}`}>
-          {token.text}
-        </span>
-      ))}
-    </>
+    <CodeBlock
+      code={source}
+      language={lang === 'text' ? 'plaintext' : lang}
+      tokenizer={custom ? tokenizer : undefined}
+      // Which painter this block got. The highlights themselves are CSS ranges
+      // rather than elements, so this is the only place the difference between
+      // the engine's lexer and the fallback rules is visible from outside.
+      data-painted={ours && engine ? 'engine' : 'rules'}
+      width="100%"
+      size="sm"
+      maxHeight={520}
+    />
   )
 }

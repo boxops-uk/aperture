@@ -1,44 +1,52 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { AppShell } from '@astryxdesign/core/AppShell'
+import { TopNav, TopNavHeading } from '@astryxdesign/core/TopNav'
+import { SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav'
+import { Layout as Panes, LayoutContent, LayoutPanel } from '@astryxdesign/core/Layout'
+import { Outline } from '@astryxdesign/core/Outline'
+import { Button } from '@astryxdesign/core/Button'
+import { IconButton } from '@astryxdesign/core/IconButton'
+import { Kbd } from '@astryxdesign/core/Kbd'
+import { HStack } from '@astryxdesign/core/Stack'
 import { GROUPS } from './content'
 import type { Heading } from './markdown'
 import { route } from './markdown'
 import { navigate } from './router'
-import { useTheme } from './theme'
 import { Search } from './Search'
-import { Toc } from './Toc'
+import { ContrastIcon } from './ContrastIcon'
 
 /**
  * The shell: a bar, the reading order, the page, and where you are in it.
  *
- * Two shapes, one shell. A page of the book scrolls between a sidebar and a
- * table of contents; the playground is an application that owns the viewport
- * and cannot share it with either. The bar is the same in both, because it is
- * how a reader gets from one to the other.
+ * Responsive contract, at the frame root:
+ *   > 1180px  nav 260 | prose | outline 240
+ *   <= 1180px the outline drops; the prose keeps the measure
+ *   <= 768px  the side nav collapses into AppShell's mobile drawer
+ *
+ * Two shapes, one shell. A page of the book scrolls between the nav and its own
+ * contents; the workbench is an application that owns the viewport and cannot
+ * share it with an outline. `height` is what separates them — `auto` lets a page
+ * grow, `fill` hands the viewport to the panes inside it.
  */
 export function Layout({
   slug,
   toc,
   fills,
+  onToggleMode,
   children,
 }: {
   slug: string
   toc: Heading[]
   /** The page is an application: it takes the height and does its own scrolling. */
   fills?: boolean
+  onToggleMode: () => void
   children: ReactNode
 }) {
   const [searching, setSearching] = useState(false)
-  const [menu, setMenu] = useState(false)
-  const { toggle } = useTheme()
 
   // `/` and ⌘K open search from anywhere that is not already taking the key.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setSearching(false)
-        setMenu(false)
-        return
-      }
       const target = event.target as HTMLElement | null
       const typing =
         target instanceof HTMLInputElement ||
@@ -54,8 +62,9 @@ export function Layout({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // The prose is HTML, so its links are not components: one listener at the top
-  // keeps every link in the book a navigation rather than a page load.
+  // Most links in the prose are rendered by the markdown renderer rather than
+  // written here: one listener at the top keeps every one of them a navigation
+  // rather than a page load.
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey) return
@@ -65,76 +74,93 @@ export function Layout({
       if (!href || link.target === '_blank') return
       if (/^(https?:|mailto:)/.test(href)) return
       event.preventDefault()
-      // Following a link closes the menu it may have been followed from: on a
-      // phone the sidebar is over the page it is navigating to.
-      setMenu(false)
       navigate(href)
     }
     document.addEventListener('click', onClick)
     return () => document.removeEventListener('click', onClick)
   }, [])
 
+  const items = useMemo(
+    () => toc.map(({ anchor, text, level }) => ({ id: anchor, label: text, level })),
+    [toc],
+  )
+
   return (
     <>
-      <a className="skip" href="#main">
-        Skip to content
-      </a>
-      <header className="topbar">
-        <button
-          className={fills ? 'menu always' : 'menu'}
-          type="button"
-          aria-label="Menu"
-          aria-expanded={menu}
-          onClick={() => setMenu((open) => !open)}
-        >
-          ☰
-        </button>
-        <a className="brand" href={route('index')}>
-          <span className="mark" aria-hidden="true" />
-          <span className="brand-text">
-            <b>Fjord DB</b>
-            <i>An embedded, immutable fact database</i>
-          </span>
-        </a>
-        <button className="search-open" type="button" onClick={() => setSearching(true)}>
-          <span>Search</span>
-          <kbd>/</kbd>
-        </button>
-        <button className="theme" type="button" aria-label="Toggle colour scheme" onClick={toggle}>
-          ◐
-        </button>
-      </header>
-
-      <div className={fills ? 'layout fills' : 'layout'}>
-        <div className={menu ? 'sidebar open' : 'sidebar'}>
-          <nav className="nav" aria-label="Documentation">
+      <AppShell
+        height={fills ? 'fill' : 'auto'}
+        contentPadding={0}
+        variant="section"
+        topNav={
+          <TopNav
+            label="Site"
+            heading={
+              <TopNavHeading
+                heading="Fjord DB"
+                subheading="An embedded, immutable fact database"
+                headingHref={route('index')}
+              />
+            }
+            endContent={
+              <HStack gap={2} align="center">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setSearching(true)}
+                  label="Search"
+                  endContent={<Kbd keys="/" />}
+                  data-testid="search"
+                />
+                <IconButton
+                  variant="ghost"
+                  size="sm"
+                  icon={<ContrastIcon width={18} height={18} />}
+                  label="Toggle colour scheme"
+                  onClick={onToggleMode}
+                  data-testid="mode"
+                />
+              </HStack>
+            }
+          />
+        }
+        sideNav={
+          <SideNav resizable={{ defaultWidth: 260, autoSaveId: 'fjord-nav' }}>
             {GROUPS.map((group) => (
-              <div key={group.label}>
-                <p className="nav-group">{group.label}</p>
-                <ul>
-                  {group.pages.map((page) => (
-                    <li key={page.slug}>
-                      <a
-                        href={route(page.slug)}
-                        className={page.slug === slug ? 'current' : undefined}
-                        aria-current={page.slug === slug ? 'page' : undefined}
-                      >
-                        {page.title}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              <SideNavSection key={group.label} title={group.label}>
+                {group.pages.map((page) => (
+                  <SideNavItem
+                    key={page.slug}
+                    label={page.title}
+                    href={route(page.slug)}
+                    isSelected={page.slug === slug}
+                  />
+                ))}
+              </SideNavSection>
             ))}
-          </nav>
-        </div>
+          </SideNav>
+        }
+      >
+        {fills ? (
+          children
+        ) : (
+          <Panes
+            height="auto"
+            content={<LayoutContent>{children}</LayoutContent>}
+            end={
+              items.length > 1 ? (
+                <LayoutPanel width={280} label="On this page" padding={4}>
+                  {/* The bar overlays the top of the scroll root, so the
+                      outline has to land headings below it rather than under
+                      it. */}
+                  <Outline items={items} density="compact" offset={72} />
+                </LayoutPanel>
+              ) : undefined
+            }
+          />
+        )}
+      </AppShell>
 
-        <main id="main">{children}</main>
-
-        {!fills && <Toc toc={toc} slug={slug} />}
-      </div>
-
-      {searching && <Search onClose={() => setSearching(false)} />}
+      <Search isOpen={searching} onOpenChange={setSearching} />
     </>
   )
 }

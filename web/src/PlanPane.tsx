@@ -1,3 +1,4 @@
+import { Token } from '@astryxdesign/core/Token'
 import type { PlanView } from './wasm'
 
 /**
@@ -66,11 +67,9 @@ export function PlanPane({
           <li key={step.index} className={step.index === active ? 'on' : undefined}>
             <div className="head">
               <span className="index">{step.level === null ? '·' : step.level}</span>
-              <span className={`badge ${step.kind.toLowerCase()}`}>{step.kind}</span>
+              <Token size="sm" color={step.kind === 'Level' ? 'blue' : 'gray'} label={step.kind} />
               {step.access.map((access, at) => (
-                <span key={at} className={`badge access ${access}`}>
-                  {access}
-                </span>
+                <Token key={at} size="sm" color={access === 'seek' ? 'green' : 'gray'} label={access} />
               ))}
               {step.residuals > 0 && (
                 <span

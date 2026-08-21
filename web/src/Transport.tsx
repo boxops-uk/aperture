@@ -1,3 +1,9 @@
+import { Toolbar } from '@astryxdesign/core/Toolbar'
+import { Button } from '@astryxdesign/core/Button'
+import { ButtonGroup } from '@astryxdesign/core/ButtonGroup'
+import { Slider } from '@astryxdesign/core/Slider'
+import { Text } from '@astryxdesign/core/Text'
+import { HStack } from '@astryxdesign/core/Stack'
 import type { Trace } from './wasm'
 
 /**
@@ -5,9 +11,9 @@ import type { Trace } from './wasm'
  * way, on to the next row, play, the end, and a scrub bar over the whole trace.
  *
  * Two traps, both about a hand and a timer wanting the play head at once. Any
- * navigation stops the run, or a reader who steps back watches the machine
- * step forward over them. And the buttons keep their size as they change
- * state: the one being clicked is the one under the pointer.
+ * navigation stops the run, or a reader who steps back watches the machine step
+ * forward over them. And the buttons keep their size as they change state: the
+ * one being clicked is the one under the pointer.
  */
 export function Transport({
   trace,
@@ -30,69 +36,63 @@ export function Transport({
   const previousYield = findLast(trace.steps, here - 1, (step) => step.event === 'yield')
 
   return (
-    // Labels rather than transport glyphs: ⏮ and ⏩ are not in every monospace
-    // font, and a control that renders as a box is worse than a word.
-    <div className="transport">
-      <button type="button" onClick={() => seek(0)} disabled={here === 0} title="to the start">
-        |◀ start
-      </button>
-      <button
-        type="button"
-        onClick={() => seek(previousYield)}
-        disabled={previousYield < 0}
-        title="back to the previous row"
-      >
-        ◀ row
-      </button>
-      <button
-        type="button"
-        onClick={() => seek(here - 1)}
-        disabled={here === 0}
-        title="back one transition"
-      >
-        ◀
-      </button>
-      <button type="button" onClick={() => seek(here + 1)} disabled={here >= end} title="one transition">
-        ▶
-      </button>
-      <button
-        type="button"
-        onClick={() => seek(nextYield)}
-        disabled={nextYield < 0}
-        title="on to the next row — step over"
-      >
-        row ▶
-      </button>
-      <button
-        type="button"
-        className={playback.playing ? 'play playing' : 'play'}
-        onClick={() => {
-          if (playback.playing) return playback.setPlaying(false)
-          // Play from the end is play from the start: there is nowhere else for
-          // it to mean.
-          if (here >= end) onSeek(0)
-          playback.setPlaying(true)
-        }}
-        title={playback.playing ? 'pause' : here >= end ? 'play again from the start' : 'play'}
-      >
-        {playback.playing ? 'pause' : 'play'}
-      </button>
-      <button type="button" onClick={() => seek(end)} disabled={here >= end} title="to the end">
-        end ▶|
-      </button>
-
-      <input
-        type="range"
-        min={0}
-        max={end}
-        value={here}
-        onChange={(event) => seek(Number(event.target.value))}
-        aria-label="step"
-      />
-      <span className="count">
-        {here + 1}/{trace.steps.length}
-      </span>
-    </div>
+    <Toolbar
+      className="transport"
+      label="Run"
+      size="sm"
+      variant="muted"
+      startContent={
+        // Labels rather than transport glyphs: ⏮ and ⏩ are not in every
+        // monospace font, and a control that renders as a box is worse than a
+        // word.
+        <ButtonGroup label="Move the run">
+          <Button variant="secondary" label="|◀ start" onClick={() => seek(0)} isDisabled={here === 0} />
+          <Button
+            variant="secondary"
+            label="◀ row"
+            onClick={() => seek(previousYield)}
+            isDisabled={previousYield < 0}
+          />
+          <Button variant="secondary" label="◀" onClick={() => seek(here - 1)} isDisabled={here === 0} />
+          <Button variant="secondary" label="▶" onClick={() => seek(here + 1)} isDisabled={here >= end} />
+          <Button
+            variant="secondary"
+            label="row ▶"
+            onClick={() => seek(nextYield)}
+            isDisabled={nextYield < 0}
+          />
+          <Button
+            variant={playback.playing ? 'primary' : 'secondary'}
+            label={playback.playing ? 'pause' : 'play'}
+            onClick={() => {
+              if (playback.playing) return playback.setPlaying(false)
+              // Play from the end is play from the start: there is nowhere else
+              // for it to mean.
+              if (here >= end) onSeek(0)
+              playback.setPlaying(true)
+            }}
+          />
+          <Button variant="secondary" label="end ▶|" onClick={() => seek(end)} isDisabled={here >= end} />
+        </ButtonGroup>
+      }
+      endContent={
+        <HStack gap={3} align="center">
+          <Slider
+            label="step"
+            isLabelHidden
+            width={200}
+            value={here}
+            min={0}
+            max={Math.max(end, 1)}
+            onChange={((value: number) => seek(value)) as (value: number) => void}
+            valueDisplay="none"
+          />
+          <Text className="count" type="supporting" hasTabularNumbers>
+            {here + 1}/{trace.steps.length}
+          </Text>
+        </HStack>
+      }
+    />
   )
 }
 

@@ -1,266 +1,43 @@
-/* **An app, not a document.** The page is exactly the viewport and never
-   scrolls: the two sides of the split scroll independently, so a tall database
-   does not push the transport controls off the top and a long parse tree does
-   not push the database off the bottom. */
-.page {
-  max-width: 120rem;
-  height: 100%;
-  margin: 0 auto;
-  padding: .75rem 1rem .5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
+/* **An app, not a document.** The workbench is exactly the viewport and never
+   scrolls: the two panes scroll independently, so a tall database does not push
+   the transport off the top and a long parse tree does not push the database
+   off the bottom. */
+.page { min-height: 0; }
 
-.top, .samples { flex: none; }
-
-/* ---- header ---- */
-
-.top {
-  display: flex;
-  flex-wrap: wrap;
-  gap: .75rem 1.5rem;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: .5rem;
-  border-bottom: 1px solid var(--rule);
-}
-
-h1 {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.tools { display: flex; gap: 1.25rem; align-items: center; }
-.schema-open .bad { color: var(--bad); }
-
-.status {
-  display: flex;
-  gap: 1.25rem;
-  margin: 0;
-  font-size: .8rem;
-  color: var(--ink-soft);
-}
-
-.status dt { color: var(--ink-faint); font-size: .64rem; text-transform: uppercase; letter-spacing: .06em; }
-.status dd { margin: 0; font-family: var(--mono); font-size: .8rem; color: var(--ink); font-variant-numeric: tabular-nums; }
-.status.bad { display: block; color: var(--bad); max-width: 24rem; font-size: .75rem; }
-.status .detail { font-family: var(--mono); font-size: .7rem; color: var(--ink-faint); }
-
-/* ---- samples ---- */
-
-.samples { display: flex; flex-wrap: wrap; gap: .35rem; margin: .6rem 0 .75rem; }
-
-.chip {
-  border: 1px solid var(--rule-strong);
-  background: var(--bg-raised);
-  color: var(--ink-soft);
-  border-radius: 999px;
-  padding: .15rem .7rem;
-  font: inherit;
-  font-size: .8rem;
-  cursor: pointer;
-}
-
-.chip:hover { border-color: var(--accent); color: var(--ink); }
-.chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
-
-/* ---- the split: views on the left, the database on the right ---- */
-
-.split {
-  display: grid;
-  gap: 0;
-  /* Fills what the header left, and `min-height: 0` is what lets its children
-     shrink instead of growing the page — the grid default is `auto`, which is
-     "as tall as the content", which is the whole problem. */
-  flex: 1;
-  min-height: 0;
-}
-
-.split .side {
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-/* A wide hit area with a thin line down the middle: easy to grab, quiet to
-   look at, and with room either side so it never touches the table. */
-.grip {
-  align-self: stretch;
-  position: relative;
-  cursor: col-resize;
-}
-
-.grip::after {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 50%;
-  width: 2px;
-  transform: translateX(-50%);
-  border-radius: 999px;
-  background: var(--rule);
-  transition: background .12s ease;
-}
-
-.grip:hover::after, .grip:focus-visible::after, .split.dragging .grip::after { background: var(--accent); }
-.grip:focus-visible { outline: none; }
-/* While dragging, the pointer belongs to the grip and nothing else. */
-.split.dragging { user-select: none; cursor: col-resize; }
-
-/* The left side scrolls on its own, so opening every section does not move the
-   database. */
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  padding-right: .75rem;
-  padding-bottom: 1rem;
-  overflow: auto;
-  min-height: 0;
-}
-
-/* **`flex: none`, and the reason is worth writing down.** A section clips its
-   own corners with `overflow: hidden`, which zeroes its automatic minimum size
-   — so in a height-constrained column the layout is free to squash it to
-   nothing, and a panel showing three of its eight rows looks like a bug in the
-   panel. Sections are their content's height; the column scrolls. */
+.stack { display: flex; flex-direction: column; min-height: 0; }
 .stack > * { flex: none; }
 
-.stack > .pane { margin-bottom: .6rem; }
-
+/* A pane's heading names the pane; the page's headings are the book's. */
 .pane h2 {
-  display: flex;
-  gap: .5rem;
-  align-items: baseline;
-  margin: 0 0 .6rem;
-  font-size: .78rem;
+  margin: 0 0 var(--spacing-2);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: .06em;
   text-transform: uppercase;
-  letter-spacing: .08em;
-  color: var(--ink-faint);
-  font-weight: 600;
+  color: var(--color-text-disabled);
 }
 
-/* ---- the accordion ---- */
-
-/* One column, not a stack of cards: sections share their edges, so the eye
-   reads a list of panels rather than six floating boxes. */
-.stack > .section {
-  border: 1px solid var(--rule);
-  border-bottom: 0;
-  border-radius: 0;
-  background: var(--bg-raised);
-  overflow: hidden;
-}
-
-.stack > .section:first-of-type { border-top-left-radius: .5rem; border-top-right-radius: .5rem; }
-
-.stack > .section:last-of-type {
-  border-bottom: 1px solid var(--rule);
-  border-bottom-left-radius: .5rem;
-  border-bottom-right-radius: .5rem;
-}
-
-.section-head {
-  display: flex;
-  gap: .5rem;
-  align-items: baseline;
-  width: 100%;
-  padding: .45rem .7rem;
-  border: 0;
-  background: var(--bg-sunken);
-  font: inherit;
-  font-size: .78rem;
-  text-transform: uppercase;
-  letter-spacing: .07em;
-  font-weight: 600;
-  color: var(--ink-faint);
-  cursor: pointer;
-  text-align: left;
-}
-
-.section-head:hover { color: var(--ink-soft); }
-.section.open .section-head { color: var(--ink); }
-.section-head .arrow { transition: transform .12s ease; font-size: .7rem; }
-.section-head .arrow.open { transform: rotate(90deg); }
-.section-head .count { margin-left: auto; font-family: var(--mono); text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--ink-faint); }
-
-/* A list view caps, so one open parse tree cannot fill the column and hide
-   every section under it — but the run and the plan are the *work*, and a
-   panel that clips its own registers is a panel nobody can use. Those two are
-   as tall as they are; the column scrolls. */
-.section-body > .scroller { border: 0; border-radius: 0; box-shadow: none; max-height: 24rem; }
-.section-body > .run,
-.section-body > .plan { max-height: none; }
-
-/* ---- the schema drawer ---- */
-
-.drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-  background: color-mix(in srgb, var(--ink) 22%, transparent);
-  display: flex;
-  justify-content: flex-end;
-}
-
-.drawer {
-  width: min(46rem, 92vw);
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-  border-left: 1px solid var(--rule-strong);
-  box-shadow: var(--shadow);
-}
-
-.drawer header {
-  display: flex;
-  gap: .6rem;
-  align-items: baseline;
-  padding: .8rem 1rem;
-  border-bottom: 1px solid var(--rule);
-}
-
-.drawer header .what { font-weight: 600; font-size: .95rem; }
-.drawer header .summary { font-family: var(--mono); font-size: .8rem; color: var(--ink-faint); }
-.drawer header .summary.bad { color: var(--bad); }
-
-.drawer .close {
-  margin-left: auto;
-  border: 1px solid var(--rule);
-  border-radius: .35rem;
-  background: var(--bg-raised);
-  padding: .1rem .45rem;
-  font: inherit;
-  font-size: .8rem;
-  color: var(--ink-soft);
-  cursor: pointer;
-}
-
-.drawer .close:hover { border-color: var(--accent); color: var(--ink); }
-.drawer-body { padding: 1rem; overflow: auto; }
+.pane { padding: var(--spacing-3) var(--spacing-3) 0; }
 
 /* ---- the editor: a textarea over its own tokens ---- */
 
 .editor {
   position: relative;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--color-border);
   border-radius: .6rem;
-  background: var(--code-bg);
-  box-shadow: var(--shadow);
+  background: var(--color-syntax-background);
+  box-shadow: var(--shadow-med);
   overflow: hidden;
 }
 
 .paint,
 .input {
   margin: 0;
-  padding: 1rem;
-  min-height: 13rem;
-  font-family: var(--mono);
+  padding: var(--spacing-3);
+  /* A query is a line or two; the paint layer is the one in flow, so the box
+     grows with what is typed rather than reserving a screenful for it. */
+  min-height: 4.5rem;
+  font-family: var(--font-family-code);
   font-size: .9rem;
   line-height: 1.65;
   tab-size: 2;
@@ -270,7 +47,7 @@ h1 {
   border: 0;
 }
 
-.paint { color: var(--code-ink); overflow: auto; }
+.paint { color: var(--color-text-primary); overflow: auto; }
 
 .input {
   position: absolute;
@@ -284,12 +61,12 @@ h1 {
   resize: none;
   background: transparent;
   color: transparent;
-  caret-color: var(--accent);
+  caret-color: var(--color-accent);
   outline: none;
   overflow: auto;
 }
 
-.input::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+.input::selection { background: color-mix(in srgb, var(--color-accent) 28%, transparent); }
 
 /* The schema is 150 lines of declarations and comments, so its editor starts
    tall and scrolls; a query is one or two lines. */
@@ -299,18 +76,18 @@ h1 {
 
 /* One class per `TokenClass` the view emits — the page styles what the
    language says a token *is*, and never re-decides it. */
-.tok-keyword { color: var(--kw); font-weight: 600; }
-.tok-predicate { color: var(--fn); }
-.tok-variable { color: var(--accent-ink); }
-.tok-field { color: var(--code-ink); }
-.tok-number { color: var(--num); }
-.tok-string { color: var(--str); }
-.tok-namespace { color: var(--fn); opacity: .85; }
-.tok-comment { color: var(--com); font-style: italic; }
-.tok-wildcard { color: var(--com); }
-.tok-punctuation { color: var(--pun); }
+.tok-keyword { color: var(--color-syntax-keyword); font-weight: 600; }
+.tok-predicate { color: var(--color-syntax-function); }
+.tok-variable { color: var(--color-text-accent); }
+.tok-field { color: var(--color-text-primary); }
+.tok-number { color: var(--color-syntax-number); }
+.tok-string { color: var(--color-syntax-string); }
+.tok-namespace { color: var(--color-syntax-function); opacity: .85; }
+.tok-comment { color: var(--color-syntax-comment); font-style: italic; }
+.tok-wildcard { color: var(--color-syntax-comment); }
+.tok-punctuation { color: var(--color-syntax-punctuation); }
 .tok-whitespace { color: inherit; }
-.tok-error { color: var(--bad); background: var(--bad-soft); text-decoration: underline wavy var(--bad); }
+.tok-error { color: var(--color-error); background: var(--color-error-muted); text-decoration: underline wavy var(--color-error); }
 
 /* Strong enough to find without hunting: this is what says *these bytes* while
    the cursor is somewhere else entirely — in a tree, in a table, in a plan. */
@@ -318,13 +95,13 @@ h1 {
    round each one would rule lines through the middle of a highlighted phrase.
    A tint plus one underline joins up instead. */
 .tok.on {
-  background: color-mix(in srgb, var(--accent) 30%, transparent);
-  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--color-accent) 70%, transparent);
 }
 
 /* The greys are the first thing the tint swallows. */
 .tok-wildcard.on,
-.tok-comment.on { color: var(--ink-soft); }
+.tok-comment.on { color: var(--color-text-secondary); }
 
 /* ---- diagnostics ---- */
 
@@ -336,22 +113,22 @@ h1 {
   gap: .5rem;
   align-items: baseline;
   padding: .5rem .75rem;
-  border-left: 3px solid var(--bad);
-  background: var(--bad-soft);
+  border-left: 3px solid var(--color-error);
+  background: var(--color-error-muted);
   border-radius: 0 .35rem .35rem 0;
   font-size: .88rem;
 }
 
-.diagnostics .code { font-family: var(--mono); color: var(--bad); font-size: .8rem; }
-.diagnostics .at { color: var(--ink-soft); font-size: .8rem; }
+.diagnostics .code { font-family: var(--font-family-code); color: var(--color-error); font-size: .8rem; }
+.diagnostics .at { color: var(--color-text-secondary); font-size: .8rem; }
 
 /* ---- the panes that scroll: the token table and the tree ---- */
 
 .scroller {
-  border: 1px solid var(--rule);
+  border: 1px solid var(--color-border);
   border-radius: .6rem;
-  background: var(--bg-raised);
-  box-shadow: var(--shadow);
+  background: var(--color-background-surface);
+  box-shadow: var(--shadow-med);
   max-height: 34rem;
   overflow: auto;
 }
@@ -361,23 +138,23 @@ h1 {
 .scroller th {
   position: sticky;
   top: 0;
-  background: var(--bg-sunken);
+  background: var(--color-background-muted);
   text-align: left;
   font-weight: 600;
   font-size: .72rem;
   text-transform: uppercase;
   letter-spacing: .06em;
-  color: var(--ink-faint);
+  color: var(--color-text-disabled);
   padding: .5rem .75rem;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--color-border);
 }
 
-.scroller td { padding: .3rem .75rem; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+.scroller td { padding: .3rem .75rem; border-bottom: 1px solid var(--color-border); vertical-align: baseline; }
 .scroller tr:last-child td { border-bottom: 0; }
-.scroller tr.on td { background: var(--accent-soft); }
-.scroller .num { font-family: var(--mono); color: var(--ink-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.scroller .kind { font-family: var(--mono); color: var(--ink); }
-.scroller .text { font-family: var(--mono); color: var(--code-ink); word-break: break-all; }
+.scroller tr.on td { background: var(--color-accent-muted); }
+.scroller .num { font-family: var(--font-family-code); color: var(--color-text-disabled); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.scroller .kind { font-family: var(--font-family-code); color: var(--color-text-primary); }
+.scroller .text { font-family: var(--font-family-code); color: var(--color-text-primary); word-break: break-all; }
 
 /* ---- the tree ---- */
 
@@ -388,10 +165,10 @@ h1 {
   gap: .4rem;
   align-items: center;
   padding: .45rem .75rem;
-  background: var(--bg-sunken);
-  border-bottom: 1px solid var(--rule);
+  background: var(--color-background-muted);
+  border-bottom: 1px solid var(--color-border);
   font-size: .75rem;
-  color: var(--ink-faint);
+  color: var(--color-text-disabled);
   cursor: pointer;
 }
 
@@ -406,22 +183,22 @@ h1 {
   border-left: 2px solid transparent;
 }
 
-.tree li.on, .lowered li.on { background: var(--accent-soft); border-left-color: var(--accent); }
-.tree .kind, .lowered .kind { font-family: var(--mono); color: var(--fn); }
-.tree .kind.leaf, .lowered .kind.leaf { color: var(--ink-soft); font-weight: 400; }
-.tree .text, .lowered .text { font-family: var(--mono); color: var(--code-ink); }
+.tree li.on, .lowered li.on { background: var(--color-accent-muted); border-left-color: var(--color-accent); }
+.tree .kind, .lowered .kind { font-family: var(--font-family-code); color: var(--color-syntax-function); }
+.tree .kind.leaf, .lowered .kind.leaf { color: var(--color-text-secondary); font-weight: 400; }
+.tree .text, .lowered .text { font-family: var(--font-family-code); color: var(--color-text-primary); }
 .tree .num, .lowered .num { margin-left: auto; font-size: .75rem; }
 
 .pill {
   display: inline-block;
   padding: 0 .45rem;
   border-radius: 999px;
-  background: var(--bg-sunken);
+  background: var(--color-background-muted);
   font-size: .75rem;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--color-border);
 }
 
-.empty { margin: 0; padding: 1rem; color: var(--ink-faint); font-size: .88rem; }
+.empty { margin: 0; padding: 1rem; color: var(--color-text-disabled); font-size: .88rem; }
 
 /* ---- the schema pane ---- */
 
@@ -433,22 +210,22 @@ h1 {
   gap: .5rem;
   width: 100%;
   padding: .45rem .6rem;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--color-border);
   border-radius: .5rem;
-  background: var(--bg-raised);
+  background: var(--color-background-surface);
   font: inherit;
   font-size: .82rem;
-  color: var(--ink-soft);
+  color: var(--color-text-secondary);
   cursor: pointer;
   text-align: left;
 }
 
-.disclosure:hover { border-color: var(--rule-strong); }
-.disclosure .arrow { transition: transform .12s ease; color: var(--ink-faint); }
+.disclosure:hover { border-color: var(--color-border-emphasized); }
+.disclosure .arrow { transition: transform .12s ease; color: var(--color-text-disabled); }
 .disclosure .arrow.open { transform: rotate(90deg); }
-.disclosure .what { font-weight: 600; color: var(--ink); }
-.disclosure .summary { margin-left: auto; font-family: var(--mono); font-size: .78rem; color: var(--ink-faint); }
-.disclosure .summary.bad { color: var(--bad); }
+.disclosure .what { font-weight: 600; color: var(--color-text-primary); }
+.disclosure .summary { margin-left: auto; font-family: var(--font-family-code); font-size: .78rem; color: var(--color-text-disabled); }
+.disclosure .summary.bad { color: var(--color-error); }
 
 .predicates {
   list-style: none;
@@ -456,7 +233,7 @@ h1 {
   padding: 0;
   max-height: 14rem;
   overflow: auto;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--color-border);
   border-radius: .5rem;
 }
 
@@ -465,13 +242,13 @@ h1 {
   gap: .75rem;
   align-items: baseline;
   padding: .25rem .7rem;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--color-border);
   font-size: .8rem;
 }
 
 .predicates li:last-child { border-bottom: 0; }
-.predicates .name { font-family: var(--mono); color: var(--fn); white-space: nowrap; }
-.predicates .ty { font-family: var(--mono); color: var(--ink-soft); word-break: break-word; }
+.predicates .name { font-family: var(--font-family-code); color: var(--color-syntax-function); white-space: nowrap; }
+.predicates .ty { font-family: var(--font-family-code); color: var(--color-text-secondary); word-break: break-word; }
 
 /* ---- the lowered tree ---- */
 
@@ -485,27 +262,27 @@ h1 {
   align-items: baseline;
   margin-top: .35rem;
   padding: .3rem .75rem;
-  background: var(--bg-sunken);
-  border-top: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule);
+  background: var(--color-background-muted);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .lowered .part .label {
   font-size: .72rem;
   text-transform: uppercase;
   letter-spacing: .07em;
-  color: var(--ink-faint);
+  color: var(--color-text-disabled);
   font-weight: 600;
 }
 
-.lowered .part .op { font-family: var(--mono); color: var(--accent-ink); margin-left: .4rem; }
+.lowered .part .op { font-family: var(--font-family-code); color: var(--color-text-accent); margin-left: .4rem; }
 .lowered .part .ty { margin-left: auto; }
 
 .lowered .ty {
-  font-family: var(--mono);
+  font-family: var(--font-family-code);
   font-size: .75rem;
-  color: var(--str);
-  background: color-mix(in srgb, var(--str) 12%, transparent);
+  color: var(--color-syntax-string);
+  background: color-mix(in srgb, var(--color-syntax-string) 12%, transparent);
   border-radius: .3rem;
   padding: 0 .35rem;
 }
@@ -519,44 +296,44 @@ h1 {
   gap: 1.5rem;
   margin: 0;
   padding: .5rem .75rem;
-  background: var(--bg-sunken);
-  border-bottom: 1px solid var(--rule);
+  background: var(--color-background-muted);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .plan .shape dt {
   font-size: .68rem;
   text-transform: uppercase;
   letter-spacing: .06em;
-  color: var(--ink-faint);
+  color: var(--color-text-disabled);
 }
 
 .plan .shape dd {
   margin: .1rem 0 0;
-  font-family: var(--mono);
+  font-family: var(--font-family-code);
   font-size: .85rem;
-  color: var(--ink);
+  color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
 }
 
-.plan .shape .fingerprint { font-size: .78rem; color: var(--ink-soft); }
+.plan .shape .fingerprint { font-size: .78rem; color: var(--color-text-secondary); }
 
 .plan .steps { list-style: none; margin: 0; padding: .5rem 0; }
 
-.plan .steps li { padding: .3rem .75rem .5rem; border-bottom: 1px solid var(--rule); }
+.plan .steps li { padding: .3rem .75rem .5rem; border-bottom: 1px solid var(--color-border); }
 .plan .steps li:last-child { border-bottom: 0; }
-.plan .steps li.head-row { background: var(--bg-sunken); }
+.plan .steps li.head-row { background: var(--color-background-muted); }
 
 /* Where the machine is standing, while a run is being stepped. */
-.plan .steps li.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
-.plan .badge.examined { color: var(--ink-soft); border-style: dashed; }
+.plan .steps li.on { background: var(--color-accent-muted); box-shadow: inset 3px 0 0 var(--color-accent); }
+.plan .badge.examined { color: var(--color-text-secondary); border-style: dashed; }
 
 .plan .head { display: flex; gap: .4rem; align-items: center; margin-bottom: .25rem; }
 
 .plan .index {
   width: 1.2rem;
-  font-family: var(--mono);
+  font-family: var(--font-family-code);
   font-size: .78rem;
-  color: var(--ink-faint);
+  color: var(--color-text-disabled);
   text-align: right;
 }
 
@@ -566,82 +343,33 @@ h1 {
   letter-spacing: .05em;
   padding: .05rem .4rem;
   border-radius: .3rem;
-  border: 1px solid var(--rule-strong);
-  color: var(--ink-soft);
+  border: 1px solid var(--color-border-emphasized);
+  color: var(--color-text-secondary);
 }
 
 /* A scan reads every row of a predicate and a seek starts where the key says —
    the difference is the whole cost model, so it is the difference a reader sees
    first. */
-.plan .badge.scan { color: var(--num); border-color: color-mix(in srgb, var(--num) 45%, transparent); }
+.plan .badge.scan { color: var(--color-syntax-number); border-color: color-mix(in srgb, var(--color-syntax-number) 45%, transparent); }
 .plan .badge.seek,
-.plan .badge.fetch { color: var(--str); border-color: color-mix(in srgb, var(--str) 45%, transparent); }
-.plan .badge.residual { color: var(--num); border-style: dashed; }
-.plan .badge.level { color: var(--fn); border-color: color-mix(in srgb, var(--fn) 45%, transparent); }
+.plan .badge.fetch { color: var(--color-syntax-string); border-color: color-mix(in srgb, var(--color-syntax-string) 45%, transparent); }
+.plan .badge.residual { color: var(--color-syntax-number); border-style: dashed; }
+.plan .badge.level { color: var(--color-syntax-function); border-color: color-mix(in srgb, var(--color-syntax-function) 45%, transparent); }
 .plan .badge.derive,
-.plan .badge.test { color: var(--kw); border-color: color-mix(in srgb, var(--kw) 45%, transparent); }
-.plan .badge.head-badge { color: var(--accent-ink); border-color: var(--accent); }
+.plan .badge.test { color: var(--color-syntax-keyword); border-color: color-mix(in srgb, var(--color-syntax-keyword) 45%, transparent); }
+.plan .badge.head-badge { color: var(--color-text-accent); border-color: var(--color-accent); }
 
 .plan pre {
   margin: 0 0 0 1.6rem;
-  font-family: var(--mono);
+  font-family: var(--font-family-code);
   font-size: .84rem;
   line-height: 1.5;
-  color: var(--code-ink);
+  color: var(--color-text-primary);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 /* ---- the debugger ---- */
-
-.transport {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  gap: .25rem;
-  align-items: center;
-  padding: .45rem .6rem;
-  background: var(--bg-sunken);
-  border-bottom: 1px solid var(--rule);
-}
-
-/* Bordered before they are hovered: buttons that appear out of the background
-   under the pointer make a row of words look like it is jumping. Hover changes
-   the tone, never the size. */
-.transport button {
-  border: 1px solid var(--rule);
-  border-radius: .3rem;
-  background: var(--bg-raised);
-  padding: .1rem .45rem;
-  font: inherit;
-  font-size: .78rem;
-  line-height: 1.5;
-  white-space: nowrap;
-  color: var(--ink-soft);
-  cursor: pointer;
-}
-
-.transport button:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
-.transport button:active:not(:disabled) { background: var(--bg-sunken); }
-.transport button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.transport button:disabled { opacity: .35; background: none; border-color: transparent; cursor: default; }
-
-/* "play" and "pause" are different widths, and the row must not move between
-   them — the button being clicked is the one under the pointer. */
-.transport button.play { min-width: 3.4rem; }
-.transport button.playing { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
-
-.transport input[type="range"] { flex: 1; margin: 0 .4rem; accent-color: var(--accent); cursor: pointer; }
-.transport .count {
-  font-family: var(--mono);
-  font-size: .75rem;
-  color: var(--ink-faint);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-  min-width: 3.4rem;
-  text-align: right;
-}
 
 .run .event {
   display: flex;
@@ -649,7 +377,7 @@ h1 {
   align-items: baseline;
   margin: 0;
   padding: .55rem .75rem;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--color-border);
   font-size: .85rem;
 }
 
@@ -659,23 +387,23 @@ h1 {
   letter-spacing: .05em;
   padding: .05rem .4rem;
   border-radius: .3rem;
-  border: 1px solid var(--rule-strong);
-  color: var(--ink-soft);
+  border: 1px solid var(--color-border-emphasized);
+  color: var(--color-text-secondary);
 }
 
 /* The three things worth telling apart at a glance: a row answered, a row read
    and dropped, and the machine simply moving. */
-.run .event.yield .badge { color: var(--str); border-color: color-mix(in srgb, var(--str) 50%, transparent); }
-.run .event.reject .badge { color: var(--num); border-color: color-mix(in srgb, var(--num) 50%, transparent); }
-.run .event.done .badge { color: var(--accent-ink); border-color: var(--accent); }
-.run .event .said { color: var(--ink-soft); }
-.run .event .said code { font-family: var(--mono); color: var(--ink); font-size: .8rem; }
+.run .event.yield .badge { color: var(--color-syntax-string); border-color: color-mix(in srgb, var(--color-syntax-string) 50%, transparent); }
+.run .event.reject .badge { color: var(--color-syntax-number); border-color: color-mix(in srgb, var(--color-syntax-number) 50%, transparent); }
+.run .event.done .badge { color: var(--color-text-accent); border-color: var(--color-accent); }
+.run .event .said { color: var(--color-text-secondary); }
+.run .event .said code { font-family: var(--font-family-code); color: var(--color-text-primary); font-size: .8rem; }
 
-.run .shape { display: flex; gap: 1.5rem; margin: 0; padding: .5rem .75rem; border-bottom: 1px solid var(--rule); }
-.run .shape dt { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); }
-.run .shape dd { margin: .1rem 0 0; font-family: var(--mono); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.run .shape { display: flex; gap: 1.5rem; margin: 0; padding: .5rem .75rem; border-bottom: 1px solid var(--color-border); }
+.run .shape dt { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-disabled); }
+.run .shape dd { margin: .1rem 0 0; font-family: var(--font-family-code); font-size: .85rem; font-variant-numeric: tabular-nums; }
 
-.run section { padding: .5rem .75rem; border-bottom: 1px solid var(--rule); }
+.run section { padding: .5rem .75rem; border-bottom: 1px solid var(--color-border); }
 .run section:last-child { border-bottom: 0; }
 
 .run h3 {
@@ -686,7 +414,7 @@ h1 {
   font-size: .7rem;
   text-transform: uppercase;
   letter-spacing: .07em;
-  color: var(--ink-faint);
+  color: var(--color-text-disabled);
   font-weight: 600;
 }
 
@@ -702,20 +430,20 @@ h1 {
 }
 
 /* The register this transition wrote — the one thing a reader is looking for. */
-.run .registers li.written { background: var(--accent-soft); }
-.run .registers .address { font-family: var(--mono); color: var(--ink-faint); }
-.run .registers .fact { font-family: var(--mono); color: var(--fn); }
-.run .registers .value { font-family: var(--mono); color: var(--code-ink); word-break: break-all; }
+.run .registers li.written { background: var(--color-accent-muted); }
+.run .registers .address { font-family: var(--font-family-code); color: var(--color-text-disabled); }
+.run .registers .fact { font-family: var(--font-family-code); color: var(--color-syntax-function); }
+.run .registers .value { font-family: var(--font-family-code); color: var(--color-text-primary); word-break: break-all; }
 
-.run .yielded li { padding: .15rem .35rem; border-radius: .3rem; font-family: var(--mono); font-size: .82rem; }
-.run .yielded li.fresh { background: color-mix(in srgb, var(--str) 16%, transparent); }
+.run .yielded li { padding: .15rem .35rem; border-radius: .3rem; font-family: var(--font-family-code); font-size: .82rem; }
+.run .yielded li.fresh { background: color-mix(in srgb, var(--color-syntax-string) 16%, transparent); }
 
 .run .capped {
   margin: 0;
   padding: .5rem .75rem;
-  background: var(--bad-soft);
-  border-top: 1px solid var(--rule);
-  color: var(--bad);
+  background: var(--color-error-muted);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-error);
   font-size: .82rem;
 }
 
@@ -732,18 +460,19 @@ h1 {
 
 .data h2 {
   display: flex;
+  flex-wrap: wrap;
   gap: .75rem;
   align-items: baseline;
   margin: 0 0 .6rem;
   font-size: .78rem;
   text-transform: uppercase;
   letter-spacing: .08em;
-  color: var(--ink-faint);
+  color: var(--color-text-disabled);
   font-weight: 600;
 }
 
-.data h2 .range { margin-left: auto; text-transform: none; letter-spacing: 0; color: var(--ink-soft); font-size: .8rem; }
-.data h2 .range code { font-family: var(--mono); color: var(--accent-ink); }
+.data h2 .range { margin-left: 0; text-transform: none; letter-spacing: 0; color: var(--color-text-secondary); font-size: .8rem; }
+.data h2 .range code { font-family: var(--font-family-code); color: var(--color-text-accent); }
 
 /* The pane scrolls, not the page: the table is the tall thing here, and a
    reader stepping a run should not lose the transport off the top. */
@@ -751,10 +480,10 @@ h1 {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--color-border);
   border-radius: .6rem;
-  background: var(--bg-raised);
-  box-shadow: var(--shadow);
+  background: var(--color-background-surface);
+  box-shadow: var(--shadow-med);
 }
 
 /* The table is the pane: resizing a column divides what there is rather than
@@ -771,10 +500,10 @@ h1 {
   font-size: .68rem;
   text-transform: uppercase;
   letter-spacing: .06em;
-  color: var(--ink-faint);
-  background: var(--bg-sunken);
+  color: var(--color-text-disabled);
+  background: var(--color-background-muted);
   padding: .4rem .7rem;
-  border-bottom: 1px solid var(--rule-strong);
+  border-bottom: 1px solid var(--color-border-emphasized);
 }
 
 /* **A visible divider, with a wide grab area.** The line is the affordance —
@@ -803,14 +532,14 @@ h1 {
   width: 2px;
   transform: translateX(-50%);
   border-radius: 999px;
-  background: var(--rule-strong);
+  background: var(--color-border-emphasized);
   transition: background .12s ease, top .12s ease, bottom .12s ease;
 }
 
 .data thead th .handle:hover::after {
   top: 0;
   bottom: 0;
-  background: var(--accent);
+  background: var(--color-accent);
 }
 
 .data tr.section th {
@@ -818,9 +547,9 @@ h1 {
   top: 1.7rem;
   z-index: 1;
   padding: 0;
-  background: var(--bg-sunken);
-  border-top: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule);
+  background: var(--color-background-muted);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .data tr.section button {
@@ -837,52 +566,52 @@ h1 {
   text-align: left;
 }
 
-.data tr.section .arrow { color: var(--ink-faint); font-size: .7rem; transition: transform .12s ease; }
+.data tr.section .arrow { color: var(--color-text-disabled); font-size: .7rem; transition: transform .12s ease; }
 .data tr.section .arrow.open { transform: rotate(90deg); }
-.data tr.section .name { font-family: var(--mono); color: var(--fn); white-space: nowrap; }
-.data tr.section .ty { font-family: var(--mono); color: var(--ink-faint); font-size: .74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.data tr.section .count { margin-left: auto; font-family: var(--mono); color: var(--ink-faint); font-size: .74rem; }
+.data tr.section .name { font-family: var(--font-family-code); color: var(--color-syntax-function); white-space: nowrap; }
+.data tr.section .ty { font-family: var(--font-family-code); color: var(--color-text-disabled); font-size: .74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data tr.section .count { margin-left: auto; font-family: var(--font-family-code); color: var(--color-text-disabled); font-size: .74rem; }
 
 /* The predicate the machine is reading right now. */
-.data tbody.scanning tr.section .name { color: var(--accent-ink); font-weight: 600; }
+.data tbody.scanning tr.section .name { color: var(--color-text-accent); font-weight: 600; }
 
 /* **Truncate, never wrap.** A cell that grows to three lines moves every row
    under it, which is what a reader watching one row cannot afford. The whole
    value is a hover away, in the `title`. */
 .data td {
   padding: .25rem .7rem;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--color-border);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: var(--mono);
+  font-family: var(--font-family-code);
   vertical-align: baseline;
 }
 
-.data .fact { color: var(--fn); }
-.data .bytes { color: var(--ink-faint); }
-.data .value { color: var(--str); }
+.data .fact { color: var(--color-syntax-function); }
+.data .bytes { color: var(--color-text-disabled); }
+.data .value { color: var(--color-syntax-string); }
 
 /* The four states a row can be in, which are the whole story of a query. */
-.data tr.within td { background: color-mix(in srgb, var(--accent) 9%, transparent); }
-.data tr.held td { background: var(--accent-soft); }
-.data tr.held .fact { color: var(--accent-ink); font-weight: 600; }
+.data tr.within td { background: color-mix(in srgb, var(--color-accent) 9%, transparent); }
+.data tr.held td { background: var(--color-accent-muted); }
+.data tr.held .fact { color: var(--color-text-accent); font-weight: 600; }
 .data tr.seen td { opacity: .5; }
-.data tr.dropped td { background: var(--bad-soft); opacity: 1; }
-.data tr.dropped .fact { color: var(--bad); }
+.data tr.dropped td { background: var(--color-error-muted); opacity: 1; }
+.data tr.dropped .fact { color: var(--color-error); }
 
 /* The bytes the seek pinned, against the ones the scan walks. */
 .data .pinned {
-  color: var(--accent-ink);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--color-text-accent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
   border-radius: .2rem;
 }
 
 /* ---- decoded values, painted in the same vocabulary as the source ---- */
 
-.j-key { color: var(--fn); }
-.j-str { color: var(--str); }
-.j-num { color: var(--num); }
-.j-ref { color: var(--accent-ink); }
-.j-pun { color: var(--pun); }
-.j-null { color: var(--ink-faint); }
+.j-key { color: var(--color-syntax-function); }
+.j-str { color: var(--color-syntax-string); }
+.j-num { color: var(--color-syntax-number); }
+.j-ref { color: var(--color-text-accent); }
+.j-pun { color: var(--color-syntax-punctuation); }
+.j-null { color: var(--color-text-disabled); }

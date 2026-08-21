@@ -18,7 +18,14 @@ import { RunPane } from './RunPane'
 import { DataTable } from './DataTable'
 import { Section } from './Accordion'
 import { Drawer } from './Drawer'
-import { Split } from './Split'
+import { Toolbar } from '@astryxdesign/core/Toolbar'
+import { Button } from '@astryxdesign/core/Button'
+import { ToggleButton } from '@astryxdesign/core/ToggleButton'
+import { Text } from '@astryxdesign/core/Text'
+import { Spinner } from '@astryxdesign/core/Spinner'
+import { VStack, HStack } from '@astryxdesign/core/Stack'
+import { Layout as Panes, LayoutContent, LayoutPanel } from '@astryxdesign/core/Layout'
+import { useResizable } from '@astryxdesign/core/Resizable'
 import { fold } from './run'
 import { usePlayback } from './playback'
 import { SchemaPane } from './SchemaPane'
@@ -86,7 +93,14 @@ export function Playground() {
   const { engine, failure } = useEngine(true)
   const [highlight, setHighlight] = useState<Highlight | null>(null)
   const [at, setAt] = useState(0)
-  const [split, setSplit] = useState(0.52)
+  // Which side deserves the width depends on what a reader is doing, so it is
+  // theirs to decide — and it is remembered, because they decided it once.
+  const database = useResizable({
+    defaultSize: 620,
+    minSizePx: 380,
+    maxSizePx: 1100,
+    autoSaveId: 'fjord-database',
+  })
   const [drawer, setDrawer] = useState(false)
   // Open by default: the run, and the plan it is executing. The rest are there
   // when a reader goes looking rather than in the way while they are not.
@@ -159,42 +173,48 @@ export function Playground() {
   const diagnostics = view ? view.lowered.diagnostics : []
 
   return (
-    <div className="page">
-      {/* One row, and no taller than what is in it: a title, the schema, and the
-          three numbers worth watching. Everything the prose used to say is
+    <VStack height="100%" gap={0} className="page">
+      {/* One row, and no taller than what is in it: the schema, and the three
+          numbers worth watching. Everything the prose used to say is
           demonstrated by the panels underneath it. */}
-      <header className="top">
-        <h1>Playground</h1>
-        <div className="tools">
-          <button type="button" className="chip schema-open" onClick={() => setDrawer(true)}>
-            schema
-            {schemaView && !schemaView.view.ok && <span className="bad"> ✕</span>}
-          </button>
-          <Status engine={engine} failure={failure} micros={view?.micros} />
-        </div>
-      </header>
+      <Toolbar
+        label="Playground"
+        size="sm"
+        startContent={
+          <HStack gap={1} wrap="wrap">
+            {(engine?.samples ?? []).map((sample) => (
+              <ToggleButton
+                key={sample.label}
+                size="sm"
+                label={sample.label}
+                isPressed={sample.source === source}
+                onPressedChange={() => show(schema, sample.source)}
+              />
+            ))}
+          </HStack>
+        }
+        endContent={
+          <HStack gap={4} align="center">
+            <Button
+              variant="secondary"
+              size="sm"
+              label="schema"
+              onClick={() => setDrawer(true)}
+              data-testid="schema"
+              endContent={schemaView && !schemaView.view.ok ? <Text color="accent">✕</Text> : undefined}
+            />
+            <Status engine={engine} failure={failure} micros={view?.micros} />
+          </HStack>
+        }
+      />
 
-      <div className="samples">
-        {(engine?.samples ?? []).map((sample) => (
-          <button
-            key={sample.label}
-            type="button"
-            className={source === sample.source ? 'chip on' : 'chip'}
-            onClick={() => show(schema, sample.source)}
-          >
-            {sample.label}
-          </button>
-        ))}
-      </div>
-
-      {/* A split: the views on the left, the database on the right, and a grip
-          between them — which side deserves the width depends on what a reader
-          is doing, so it is theirs to decide. */}
-      <Split
-        fraction={split}
-        onFraction={setSplit}
-        left={
-          <div className="stack">
+      {/* The views on the left, the database on the right, and a grip between
+          them — which side deserves the width depends on what a reader is
+          doing, so it is theirs to decide. */}
+      <Panes
+        content={
+          <LayoutContent isScrollable padding={0}>
+            <div className="stack">
             <div className="pane">
               <h2>source</h2>
               <Editor
@@ -282,23 +302,27 @@ export function Playground() {
               />
             </Section>
           </div>
+          </LayoutContent>
         }
-        right={<DataTable database={schemaView?.database ?? null} moment={moment} at={at} />}
+        end={
+          <LayoutPanel
+            label="Database"
+            hasDivider
+            isScrollable
+            padding={0}
+            resizable={database.props}
+          >
+            <DataTable database={schemaView?.database ?? null} moment={moment} at={at} />
+          </LayoutPanel>
+        }
       />
 
       <Drawer
         open={drawer}
-        title={
-          <>
-            <span className="what">schema</span>
-            {schemaView && (
-              <span className={schemaView.view.ok ? 'summary' : 'summary bad'}>
-                {schemaView.view.ok
-                  ? `${schemaView.view.predicates.length} predicates`
-                  : `${schemaView.view.diagnostics.length} problem(s)`}
-              </span>
-            )}
-          </>
+        summary={
+          schemaView?.view.ok
+            ? `${schemaView.view.predicates.length} predicates`
+            : `${schemaView?.view.diagnostics.length ?? 0} problem(s)`
         }
         onClose={() => setDrawer(false)}
       >
@@ -309,7 +333,7 @@ export function Playground() {
           onChange={(next) => show(next, source)}
         />
       </Drawer>
-    </div>
+    </VStack>
   )
 }
 
@@ -324,28 +348,40 @@ function Status({
 }) {
   if (failure) {
     return (
-      <p className="status bad">
-        the engine did not load — run <code>scripts/build-wasm.sh</code>
-        <br />
-        <span className="detail">{failure}</span>
-      </p>
+      <Text type="supporting" color="accent">
+        the engine did not load — run scripts/build-wasm.sh
+      </Text>
     )
   }
-  if (!engine) return <p className="status">loading the engine…</p>
+  if (!engine)
+    return (
+      <HStack gap={2} align="center">
+        <Spinner size="sm" />
+        <Text type="supporting">loading the engine…</Text>
+      </HStack>
+    )
   return (
-    <dl className="status">
-      <div>
-        <dt>fjord</dt>
-        <dd>{engine.version}</dd>
-      </div>
-      <div>
-        <dt>module</dt>
-        <dd>{(engine.bytes / 1024).toFixed(1)} KiB</dd>
-      </div>
-      <div>
-        <dt>round trip</dt>
-        <dd>{micros === undefined ? '—' : `${micros.toFixed(0)} µs`}</dd>
-      </div>
-    </dl>
+    <HStack gap={4} align="center" wrap="nowrap">
+      <Number label="fjord" value={engine.version} />
+      <Number label="module" value={`${(engine.bytes / 1024).toFixed(1)} KiB`} />
+      <Number
+        label="round trip"
+        value={micros === undefined ? '—' : `${micros.toFixed(0)} µs`}
+      />
+    </HStack>
+  )
+}
+
+/** One of the three numbers worth watching, and what it is. */
+function Number({ label, value }: { label: string; value: string }) {
+  return (
+    <HStack gap={1} align="center" wrap="nowrap">
+      <Text type="supporting" textWrap="nowrap">
+        {label}
+      </Text>
+      <Text type="label" hasTabularNumbers textWrap="nowrap">
+        {value}
+      </Text>
+    </HStack>
   )
 }

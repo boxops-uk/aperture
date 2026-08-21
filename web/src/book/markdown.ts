@@ -7,19 +7,37 @@
  * — headings, paragraphs, fenced code, one level of list nesting, pipe tables,
  * blockquotes, callouts, rules, raw HTML blocks, and the usual inline marks.
  *
- * Two things come out as *blocks* rather than HTML, because they are React: a
- * fenced code block, which paints itself with the engine's own lexer once the
- * module has loaded, and a `:::demo`, which is a running engine. Everything
- * else is a string of HTML, which is what it was in the first place.
+ * What comes out is a **tree, not HTML**. The generator's job ends at a string;
+ * this one hands the blocks to components, so a table is a `Table`, a callout is
+ * a `Banner`, and a `:::demo` is a running engine. The one exception is a raw
+ * HTML block, which the dialect allows and the book uses for the home page's
+ * card grid — that arrives as the string it was written as.
  */
 
 /** A live demo: a query, and the schema it is written against. */
 export type Demo = { kind: string; schema: string; query: string }
 
+export type Inline =
+  | { kind: 'text'; text: string }
+  | { kind: 'code'; text: string }
+  | { kind: 'strong'; children: Inline[] }
+  | { kind: 'em'; children: Inline[] }
+  | { kind: 'del'; children: Inline[] }
+  | { kind: 'link'; href: string; children: Inline[] }
+
+export type Item = { children: Inline[]; nested: Inline[][] }
+
 export type Block =
-  | { kind: 'html'; html: string }
+  | { kind: 'heading'; level: number; anchor: string; children: Inline[] }
+  | { kind: 'para'; children: Inline[] }
+  | { kind: 'list'; ordered: boolean; items: Item[] }
+  | { kind: 'table'; head: Inline[][]; rows: Inline[][][] }
+  | { kind: 'quote'; blocks: Block[] }
+  | { kind: 'callout'; tone: string; label: Inline[]; blocks: Block[] }
+  | { kind: 'rule' }
   | { kind: 'code'; lang: string; source: string }
   | { kind: 'demo'; demo: Demo }
+  | { kind: 'html'; html: string }
 
 export type Heading = { level: number; anchor: string; text: string }
 
@@ -28,15 +46,11 @@ export type Entry = { title: string; page: string; slug: string; anchor: string;
 
 export type Rendered = { blocks: Block[]; toc: Heading[]; search: Entry[] }
 
-const CODE_SPAN = /`([^`]+)`/g
-const LINK = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const BOLD = /\*\*(.+?)\*\*/g
-const ITALIC = /(?<![*\w])\*([^*\n]+)\*(?!\*)/g
-const STRIKE = /~~(.+?)~~/g
-
-export function escapeHtml(text: string): string {
-  return text.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'))
-}
+const CODE_SPAN = /`([^`]+)`/
+const LINK = /\[([^\]]+)\]\(([^)\s]+)\)/
+const BOLD = /\*\*(.+?)\*\*/
+const ITALIC = /(?<![*\w])\*([^*\n]+)\*(?!\*)/
+const STRIKE = /~~(.+?)~~/
 
 /** Where a link in the content points once the site is one application. */
 export function href(target: string): string {
@@ -57,36 +71,60 @@ export function route(slug: string): string {
   return slug === 'index' ? base : `${base}${slug}`
 }
 
-export function inline(text: string): string {
-  // Code spans are lifted out before escaping, so a `<` inside one is escaped
-  // exactly once and a mark inside one is not a mark.
-  const spans: string[] = []
-  let out = text.replace(CODE_SPAN, (_, code: string) => {
-    spans.push(escapeHtml(code))
-    // A private-use codepoint: prose cannot contain one, and a bare number
-    // between two spaces is text that occurs constantly.
-    return `\uE000${spans.length - 1}\uE000`
-  })
-  out = escapeHtml(out)
-  out = out.replace(LINK, (_, label: string, target: string) => {
-    const to = href(target)
-    const external = /^https?:/.test(to)
-    return `<a href="${to.replace(/"/g, '&quot;')}"${external ? ' rel="noreferrer"' : ''}>${label}</a>`
-  })
-  out = out.replace(BOLD, '<strong>$1</strong>')
-  out = out.replace(ITALIC, '<em>$1</em>')
-  out = out.replace(STRIKE, '<del>$1</del>')
-  return out.replace(/\uE000(\d+)\uE000/g, (_, index: string) => `<code>${spans[Number(index)]}</code>`)
+const MARKS: {
+  pattern: RegExp
+  make: (match: RegExpExecArray, depth: number) => Inline
+}[] = [
+  { pattern: CODE_SPAN, make: (match) => ({ kind: 'code', text: match[1] }) },
+  {
+    pattern: LINK,
+    make: (match, depth) => ({
+      kind: 'link',
+      href: href(match[2]),
+      children: level(match[1], depth + 1),
+    }),
+  },
+  { pattern: BOLD, make: (match, depth) => ({ kind: 'strong', children: level(match[1], depth + 1) }) },
+  { pattern: ITALIC, make: (match, depth) => ({ kind: 'em', children: level(match[1], depth + 1) }) },
+  { pattern: STRIKE, make: (match, depth) => ({ kind: 'del', children: level(match[1], depth + 1) }) },
+]
+
+/**
+ * The inline marks, in the order the generator applies them.
+ *
+ * Code spans come first and are opaque: a mark inside one is not a mark, which
+ * is the whole reason the generator lifts them out before it escapes anything.
+ * The rest nest, so each level parses the text around its own match with the
+ * levels below it.
+ */
+export function inlines(text: string): Inline[] {
+  return level(text, 0)
+}
+
+function level(text: string, depth: number): Inline[] {
+  if (depth >= MARKS.length) return text ? [{ kind: 'text', text }] : []
+  const { pattern, make } = MARKS[depth]
+  const out: Inline[] = []
+  let rest = text
+  for (;;) {
+    const match = pattern.exec(rest)
+    if (!match) break
+    out.push(...level(rest.slice(0, match.index), depth + 1))
+    out.push(make(match, depth))
+    rest = rest.slice(match.index + match[0].length)
+  }
+  out.push(...level(rest, depth + 1))
+  return out
 }
 
 /** The same text with every mark removed — for the search index and the TOC. */
 export function plain(text: string): string {
   return text
-    .replace(CODE_SPAN, '$1')
-    .replace(LINK, '$1')
-    .replace(BOLD, '$1')
-    .replace(ITALIC, '$1')
-    .replace(STRIKE, '$1')
+    .replace(new RegExp(CODE_SPAN.source, 'g'), '$1')
+    .replace(new RegExp(LINK.source, 'g'), '$1')
+    .replace(new RegExp(BOLD.source, 'g'), '$1')
+    .replace(new RegExp(ITALIC.source, 'g'), '$1')
+    .replace(new RegExp(STRIKE.source, 'g'), '$1')
     .trim()
 }
 
@@ -135,17 +173,9 @@ function isBlockStart(line: string): boolean {
   )
 }
 
-type Sink = { blocks: Block[]; html: string[] }
-
-function flushHtml(sink: Sink): void {
-  if (sink.html.length === 0) return
-  sink.blocks.push({ kind: 'html', html: sink.html.join('\n') })
-  sink.html = []
-}
-
 export function render(source: string, page: { slug: string; title: string }): Rendered {
   const lines = source.split('\n')
-  const sink: Sink = { blocks: [], html: [] }
+  const blocks: Block[] = []
   const toc: Heading[] = []
   const search: Entry[] = []
   const seen = new Map<string, number>()
@@ -156,7 +186,14 @@ export function render(source: string, page: { slug: string; title: string }): R
 
   const flushSearch = () => {
     const text = prose.join(' ').trim()
-    if (heading) search.push({ title: heading, page: page.title, slug: page.slug, anchor, text: text.slice(0, 600) })
+    if (heading)
+      search.push({
+        title: heading,
+        page: page.title,
+        slug: page.slug,
+        anchor,
+        text: text.slice(0, 600),
+      })
     prose = []
   }
 
@@ -182,8 +219,7 @@ export function render(source: string, page: { slug: string; title: string }): R
       const block: string[] = []
       while (index < lines.length && !lines[index].trim().startsWith('```')) block.push(lines[index++])
       index++
-      flushHtml(sink)
-      sink.blocks.push({ kind: 'code', lang, source: block.join('\n') })
+      blocks.push({ kind: 'code', lang, source: block.join('\n') })
       continue
     }
 
@@ -196,8 +232,7 @@ export function render(source: string, page: { slug: string; title: string }): R
       while (index < lines.length && !lines[index].trim().startsWith(':::')) block.push(lines[index++])
       index++
       const { schema, query } = splitDemo(block.join('\n'))
-      flushHtml(sink)
-      sink.blocks.push({ kind: 'demo', demo: { kind, schema, query } })
+      blocks.push({ kind: 'demo', demo: { kind, schema, query } })
       prose.push(plain(query))
       continue
     }
@@ -205,15 +240,13 @@ export function render(source: string, page: { slug: string; title: string }): R
     // callouts
     if (stripped.startsWith(':::')) {
       const head = stripped.slice(3).trim().split(/\s+(.*)/)
-      const kind = head[0] || 'note'
-      const label = head[1] ?? kind.charAt(0).toUpperCase() + kind.slice(1)
+      const tone = head[0] || 'note'
+      const label = head[1] ?? tone.charAt(0).toUpperCase() + tone.slice(1)
       index++
       const block: string[] = []
       while (index < lines.length && !lines[index].trim().startsWith(':::')) block.push(lines[index++])
       index++
-      sink.html.push(
-        `<aside class="callout ${escapeHtml(kind)}"><p class="callout-label">${inline(label)}</p>${fragment(block.join('\n'))}</aside>`,
-      )
+      blocks.push({ kind: 'callout', tone, label: inlines(label), blocks: fragment(block.join('\n')) })
       prose.push(`${plain(label)} ${plain(block.join(' '))}`)
       continue
     }
@@ -233,10 +266,7 @@ export function render(source: string, page: { slug: string; title: string }): R
       heading = plain(text)
       anchor = explicit ? explicit[1] : anchorFor(text)
       if (level === 2 || level === 3) toc.push({ level, anchor, text: heading })
-      sink.html.push(
-        `<h${level} id="${anchor}">${inline(text)}` +
-          `<a class="anchor" href="#${anchor}" aria-label="Link to this section">#</a></h${level}>`,
-      )
+      blocks.push({ kind: 'heading', level, anchor, children: inlines(text) })
       index++
       continue
     }
@@ -245,7 +275,7 @@ export function render(source: string, page: { slug: string; title: string }): R
     if (stripped.startsWith('<') && !stripped.startsWith('<=')) {
       const block: string[] = []
       while (index < lines.length && lines[index].trim()) block.push(lines[index++])
-      sink.html.push(rewriteLinks(block.join('\n')))
+      blocks.push({ kind: 'html', html: rewriteLinks(block.join('\n')) })
       continue
     }
 
@@ -253,7 +283,8 @@ export function render(source: string, page: { slug: string; title: string }): R
     if (stripped.startsWith('|')) {
       const table: string[] = []
       while (index < lines.length && lines[index].trim().startsWith('|')) table.push(lines[index++].trim())
-      sink.html.push(renderTable(table))
+      const parsed = renderTable(table)
+      if (parsed) blocks.push(parsed)
       prose.push(table.map(plain).join(' '))
       continue
     }
@@ -263,7 +294,7 @@ export function render(source: string, page: { slug: string; title: string }): R
       const quote: string[] = []
       while (index < lines.length && lines[index].trim().startsWith('>'))
         quote.push(lines[index++].replace(/^\s*>\s?/, ''))
-      sink.html.push(`<blockquote>${fragment(quote.join('\n'))}</blockquote>`)
+      blocks.push({ kind: 'quote', blocks: fragment(quote.join('\n')) })
       prose.push(plain(quote.join(' ')))
       continue
     }
@@ -272,14 +303,14 @@ export function render(source: string, page: { slug: string; title: string }): R
     if (LIST_ITEM.test(stripped)) {
       const block: string[] = []
       while (index < lines.length && lines[index].trim()) block.push(lines[index++])
-      sink.html.push(renderList(block))
+      blocks.push(renderList(block))
       prose.push(plain(block.join(' ')))
       continue
     }
 
     // rule
     if (stripped === '---' || stripped === '***') {
-      sink.html.push('<hr>')
+      blocks.push({ kind: 'rule' })
       index++
       continue
     }
@@ -294,27 +325,17 @@ export function render(source: string, page: { slug: string; title: string }): R
     while (index < lines.length && lines[index].trim() && !isBlockStart(lines[index]))
       para.push(lines[index++].trim())
     const text = para.join(' ')
-    sink.html.push(`<p>${inline(text)}</p>`)
+    blocks.push({ kind: 'para', children: inlines(text) })
     prose.push(plain(text))
   }
 
   flushSearch()
-  flushHtml(sink)
-  return { blocks: sink.blocks, toc, search }
+  return { blocks, toc, search }
 }
 
 /** Nested content — inside a callout or a quote — without touching the TOC. */
-function fragment(source: string): string {
-  const { blocks } = render(source, { slug: '', title: '' })
-  return blocks
-    .map((block) =>
-      block.kind === 'html'
-        ? block.html
-        : block.kind === 'code'
-          ? `<figure class="code"><figcaption><span class="lang">${escapeHtml(block.lang)}</span></figcaption><pre><code class="lang-${escapeHtml(block.lang)}">${escapeHtml(block.source)}</code></pre></figure>`
-          : '',
-    )
-    .join('\n')
+function fragment(source: string): Block[] {
+  return render(source, { slug: '', title: '' }).blocks
 }
 
 /** `href="x.html"` inside a raw HTML block is a link between pages too. */
@@ -322,29 +343,21 @@ function rewriteLinks(html: string): string {
   return html.replace(/href="([^"]+)"/g, (_, target: string) => `href="${href(target)}"`)
 }
 
-function renderTable(rows: string[]): string {
-  const cells = (row: string): string[] => {
+function renderTable(rows: string[]): Block | null {
+  const cells = (row: string): Inline[][] => {
     let text = row.trim()
     if (text.startsWith('|')) text = text.slice(1)
     if (text.endsWith('|')) text = text.slice(0, -1)
     // `\|` is a literal pipe inside a cell (union types are written with one).
-    return text.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, '|'))
+    return text.split(/(?<!\\)\|/).map((cell) => inlines(cell.trim().replace(/\\\|/g, '|')))
   }
 
-  if (rows.length < 2) return ''
-  const head = cells(rows[0])
-    .map((cell) => `<th>${inline(cell)}</th>`)
-    .join('')
-  const body = rows
-    .slice(2)
-    .map((row) => `<tr>${cells(row).map((cell) => `<td>${inline(cell)}</td>`).join('')}</tr>`)
-    .join('')
-  return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`
+  if (rows.length < 2) return null
+  return { kind: 'table', head: cells(rows[0]), rows: rows.slice(2).map(cells) }
 }
 
-function renderList(block: string[]): string {
+function renderList(block: string[]): Block {
   const ordered = /^\s*\d+[.)]\s+/.test(block[0])
-  const tag = ordered ? 'ol' : 'ul'
   const items: string[][] = []
   const nested: (string[] | null)[] = []
 
@@ -363,13 +376,12 @@ function renderList(block: string[]): string {
     }
   }
 
-  const out = [`<${tag}>`]
-  items.forEach((item, at) => {
-    out.push(`<li>${inline(item.join(' '))}`)
-    const sub = nested[at]
-    if (sub) out.push(`<ul>${sub.map((entry) => `<li>${inline(entry)}</li>`).join('')}</ul>`)
-    out.push('</li>')
-  })
-  out.push(`</${tag}>`)
-  return out.join('')
+  return {
+    kind: 'list',
+    ordered,
+    items: items.map((item, at) => ({
+      children: inlines(item.join(' ')),
+      nested: (nested[at] ?? []).map(inlines),
+    })),
+  }
 }

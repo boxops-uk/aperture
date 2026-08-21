@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
+import { CommandPalette } from '@astryxdesign/core/CommandPalette'
+import { Text } from '@astryxdesign/core/Text'
+import { VStack } from '@astryxdesign/core/Stack'
+import type { SearchSource, SearchableItem } from '@astryxdesign/core/Typeahead'
 import { searchIndex } from './content'
-import { escapeHtml, route, type Entry } from './markdown'
+import { route, type Entry } from './markdown'
 import { navigate } from './router'
 
 /**
@@ -12,94 +16,64 @@ import { navigate } from './router'
  * entry outright. Twenty pages do not need a ranking model; they need the
  * heading you were thinking of to be first.
  */
-export function Search({ onClose }: { onClose: () => void }) {
-  const [needle, setNeedle] = useState('')
-  const [selected, setSelected] = useState(0)
-  const input = useRef<HTMLInputElement>(null)
-  const index = useMemo(() => searchIndex(), [])
+type Hit = SearchableItem<{ group: string; entry: Entry; needle: string }>
 
-  useEffect(() => {
-    input.current?.focus()
+export function Search({
+  isOpen,
+  onOpenChange,
+}: {
+  isOpen: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const source: SearchSource<Hit> = useMemo(() => {
+    const index = searchIndex()
+    const hit = (entry: Entry, needle: string): Hit => ({
+      id: `${entry.slug}#${entry.anchor}`,
+      label: entry.title,
+      auxiliaryData: { group: entry.page, entry, needle },
+    })
+    return {
+      search: (query: string) => {
+        const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+        if (words.length === 0) return []
+        return index
+          .map((entry) => ({ entry, score: score(entry, words) }))
+          .filter((scored) => scored.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 24)
+          .map((scored) => hit(scored.entry, words[0]))
+      },
+      // What the palette shows before a key is pressed: where each page starts.
+      bootstrap: () => index.filter((entry) => entry.anchor === '').map((entry) => hit(entry, '')),
+    }
   }, [])
 
-  const words = useMemo(
-    () => needle.trim().toLowerCase().split(/\s+/).filter(Boolean),
-    [needle],
-  )
-
-  const hits = useMemo(() => {
-    if (words.length === 0) return []
-    return index
-      .map((entry) => ({ entry, score: score(entry, words) }))
-      .filter((hit) => hit.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 24)
-  }, [index, words])
-
-  const open = (entry: Entry) => {
-    navigate(route(entry.slug) + (entry.anchor ? `#${entry.anchor}` : ''))
-    onClose()
-  }
-
   return (
-    <div
-      className="search-modal"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose()
+    <CommandPalette
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
+      searchSource={source}
+      label="Search the documentation"
+      emptySearchText="Nothing matched."
+      emptyBootstrapText="Type to search titles and body text."
+      onValueChange={(value) => {
+        const [slug, anchor] = value.split('#')
+        navigate(route(slug) + (anchor ? `#${anchor}` : ''))
+        onOpenChange(false)
       }}
-    >
-      <div className="search-panel" role="dialog" aria-modal="true" aria-label="Search the documentation">
-        <input
-          ref={input}
-          type="search"
-          placeholder="Search the documentation…"
-          autoComplete="off"
-          spellCheck={false}
-          value={needle}
-          onChange={(event) => {
-            setNeedle(event.target.value)
-            setSelected(0)
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') return onClose()
-            if (event.key === 'ArrowDown') {
-              event.preventDefault()
-              setSelected((at) => Math.min(at + 1, hits.length - 1))
-            }
-            if (event.key === 'ArrowUp') {
-              event.preventDefault()
-              setSelected((at) => Math.max(at - 1, 0))
-            }
-            if (event.key === 'Enter' && hits[selected]) {
-              event.preventDefault()
-              open(hits[selected].entry)
-            }
-          }}
-        />
-        <ul className="results">
-          {words.length === 0 && <li className="empty">Type to search titles and body text.</li>}
-          {words.length > 0 && hits.length === 0 && <li className="empty">Nothing matched.</li>}
-          {hits.map(({ entry }, position) => (
-            <li key={`${entry.slug}#${entry.anchor}`} className={position === selected ? 'sel' : undefined}>
-              <a
-                href={route(entry.slug) + (entry.anchor ? `#${entry.anchor}` : '')}
-                onMouseEnter={() => setSelected(position)}
-                onClick={(event) => {
-                  event.preventDefault()
-                  open(entry)
-                }}
-                dangerouslySetInnerHTML={{
-                  __html:
-                    mark(entry.title, words[0]) +
-                    `<small>${escapeHtml(entry.page)} · ${mark(snippet(entry.text, words[0]), words[0])}</small>`,
-                }}
-              />
-            </li>
-          ))}
-        </ul>
-        <p className="search-hint">Enter opens · Esc closes · ↑↓ moves</p>
-      </div>
-    </div>
+      renderItem={(item) => {
+        const { entry, needle } = item.auxiliaryData ?? { entry: null, needle: '' }
+        if (!entry) return item.label
+        return (
+          <VStack gap={0}>
+            <Text>{item.label}</Text>
+            <Text type="supporting" maxLines={1}>
+              {snippet(entry.text, needle)}
+            </Text>
+          </VStack>
+        )
+      }}
+    />
   )
 }
 
@@ -118,16 +92,7 @@ function score(entry: Entry, words: string[]): number {
   return total
 }
 
-function mark(text: string, needle: string): string {
-  const at = text.toLowerCase().indexOf(needle)
-  if (at < 0 || !needle) return escapeHtml(text)
-  return (
-    escapeHtml(text.slice(0, at)) +
-    `<em>${escapeHtml(text.slice(at, at + needle.length))}</em>` +
-    escapeHtml(text.slice(at + needle.length))
-  )
-}
-
+/** The line the word was found on, rather than the first line of the section. */
 function snippet(text: string, needle: string): string {
   if (!needle) return text.slice(0, 120)
   const at = text.toLowerCase().indexOf(needle)

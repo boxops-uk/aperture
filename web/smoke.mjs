@@ -54,6 +54,10 @@ async function launch(attempts = 3) {
 
 const browser = await launch()
 const page = await browser.newPage()
+// A desktop viewport, deliberately: the shell collapses the side nav into a
+// drawer and overlays the workbench's panel below 1024px, so the default
+// 800×600 window would be checking the phone layout by accident.
+await page.setViewport({ width: 1440, height: 900 })
 
 const problems = []
 page.on('console', (m) => m.type() === 'error' && problems.push(`console: ${m.text()}`))
@@ -76,8 +80,8 @@ const texts = (selector) => page.$$eval(selector, (els) => els.map((el) => el.te
 /** Open one section of the left-hand accordion, by its name. */
 const openSection = async (name) => {
   const opened = await page.evaluate((name) => {
-    const head = [...document.querySelectorAll('.section-head')].find(
-      (head) => head.querySelector('.what')?.textContent === name,
+    const head = [...document.querySelectorAll('.astryx-collapsible-trigger')].find((head) =>
+      head.textContent?.startsWith(name),
     )
     if (!head) return false
     if (head.getAttribute('aria-expanded') !== 'true') head.click()
@@ -86,6 +90,18 @@ const openSection = async (name) => {
   if (!opened) throw new Error(`no section called ${name}`)
   await settle()
 }
+
+/** Press one of the transport's buttons, by the word on it. */
+const transport = (label) =>
+  page.evaluate((label) => {
+    const button = [...document.querySelectorAll('.transport button')].find(
+      (button) => button.textContent?.trim() === label,
+    )
+    if (!button) throw new Error(`no transport button called ${label}`)
+    if (button.disabled) return 'disabled'
+    button.click()
+    return 'clicked'
+  }, label)
 
 /** Unfold every predicate in the database table, whatever the run folded. */
 const openEveryPredicate = async () => {
@@ -118,7 +134,7 @@ const nodeRow = async (kind) =>
 await page.goto(`${url}playground`, { waitUntil: 'networkidle0' })
 // The page opens on the run, which is the last thing there is — so its presence
 // says every phase before it ran too.
-await page.waitForSelector('.run .transport', { timeout: 15_000 })
+await page.waitForSelector('.transport', { timeout: 15_000 })
 
 // **Plan and run at once.** The three columns are the point of the layout: what
 // was typed, what the compiler made of it, and what the machine is doing.
@@ -128,17 +144,17 @@ await page.waitForSelector('.run .transport', { timeout: 15_000 })
 await page.waitForSelector('.data tr.section')
 check(
   'the plan, the run and the database are on screen together',
-  (await page.$$('.split .side')).length === 2 &&
+  (await page.$$('.astryx-layout-panel')).length >= 2 &&
     (await page.$$('.plan .steps li')).length > 0 &&
-    (await page.$$('.run .transport')).length === 1 &&
+    (await page.$$('.transport')).length === 1 &&
     (await page.$$('.data tr.section')).length === 6,
 )
-check(
-  'the split can be resized',
-  (await page.$$('.grip[role="separator"]')).length === 1,
-)
+check('the split can be resized', (await page.$$('.astryx-resize-handle')).length >= 1)
 
-check('the engine reports a version', /\d+\.\d+\.\d+/.test(await page.$eval('.status', (el) => el.textContent)))
+check(
+  'the engine reports a version',
+  /\d+\.\d+\.\d+/.test(await page.$eval('.astryx-toolbar', (el) => el.textContent)),
+)
 
 // ---- the database, and the range a scan walks across it ----
 
@@ -161,7 +177,7 @@ check(
 // A join: the inner level seeks, so its range covers exactly the rows of one
 // file — a band across the table rather than the whole predicate.
 await type('.input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
-for (let i = 0; i < 3; i++) await page.click('.run .transport button:nth-child(4)')
+for (let i = 0; i < 3; i++) await transport('▶')
 await settle()
 
 check(
@@ -182,6 +198,7 @@ const open = await unfolded()
 check(
   'stepping folds the predicates the step is not about',
   open.length === 2 && open.includes('code.File') && open.includes('code.Decl'),
+  open.join(' '),
 )
 
 // Folded by the run, not locked by it.
@@ -196,7 +213,7 @@ check('a predicate opened by hand stays open', (await unfolded()).includes('code
 
 // A scan with a residual: the rows it reads and drops go red.
 await type('.input', 'N where code.Decl {file = _, name = N, line = L}; L > 15')
-await page.click('.run .transport button:nth-child(4)')
+await transport('▶')
 await settle()
 check('a row read and dropped is marked as dropped', (await page.$$('.data tr.dropped')).length === 1)
 
@@ -205,14 +222,14 @@ check('a row read and dropped is marked as dropped', (await page.$$('.data tr.dr
 // A query whose scan reads rows and drops them, which is the thing that is
 // invisible everywhere except here.
 await type('.input', 'N where code.Decl {file = _, name = N, line = L}; L > 15')
-await page.waitForSelector('.run .transport')
+await page.waitForSelector('.transport')
 
 const events = async () => {
   const seen = []
-  const total = Number((await page.$eval('.run .count', (el) => el.textContent)).split('/')[1])
+  const total = Number((await page.$eval('.transport .count', (el) => el.textContent)).split('/')[1])
   for (let i = 0; i < total; i++) {
     seen.push(await page.$eval('.run .event .badge', (el) => el.textContent))
-    if (i < total - 1) await page.click('.run .transport button:nth-child(4)')
+    if (i < total - 1) await transport('▶')
   }
   return seen
 }
@@ -224,14 +241,14 @@ check('a row answered is shown as one', seen.includes('yield'))
 check('the run ends by saying so', seen.at(-1) === 'done')
 
 // Stepping back is free, because the whole trace is already here.
-await page.click('.run .transport button:nth-child(1)')
+await transport('|◀ start')
 check(
   'stepping back to the start empties the registers',
   (await page.$$('.run .registers li')).length === 0,
 )
 
 // Step over: to the next row rather than the next transition.
-await page.click('.run .transport button:nth-child(5)')
+await transport('row ▶')
 check(
   'step over lands on a row',
   (await page.$eval('.run .event .badge', (el) => el.textContent)) === 'yield',
@@ -249,17 +266,16 @@ check(
 // someone who just stepped back is fighting them for the play head, so any
 // navigation stops it — and the end of the run stops it too, rather than leaving
 // a button that says "pause" and takes two clicks to start again.
-const transport = (label) =>
-  page.evaluate((label) => {
-    const button = [...document.querySelectorAll('.run .transport button')].find(
-      (button) => button.textContent.trim() === label,
-    )
-    button.click()
-  }, label)
-const playLabel = () => page.$eval('.run .transport .play', (el) => el.textContent.trim())
-const stepNow = async () => Number((await page.$eval('.run .count', (el) => el.textContent)).split('/')[0])
+const playLabel = () =>
+  page.evaluate(() =>
+    [...document.querySelectorAll('.transport button')]
+      .map((button) => button.textContent.trim())
+      .find((label) => label === 'play' || label === 'pause'),
+  )
+const stepNow = async () =>
+  Number((await page.$eval('.transport .count', (el) => el.textContent)).split('/')[0])
 
-await page.click('.run .transport button:nth-child(1)')
+await transport('|◀ start')
 await transport('play')
 await new Promise((resolve) => setTimeout(resolve, 700))
 const playedTo = await stepNow()
@@ -383,7 +399,7 @@ check(
 )
 check(
   'a seek is told apart from a scan',
-  (await texts('.plan .badge.seek')).length > 0,
+  (await texts('.plan .steps .astryx-token')).some((badge) => badge.trim() === 'seek'),
 )
 check(
   'the plan carries the fingerprint a cursor would',
@@ -393,7 +409,7 @@ check(
 // The plan is not a description while a run is stepping: it is the thing being
 // executed, and the step the machine is standing at says so.
 await type('.input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
-for (let i = 0; i < 2; i++) await page.click('.run .transport button:nth-child(4)')
+for (let i = 0; i < 2; i++) await transport('▶')
 await settle()
 check('the plan lights the step the machine is standing at', (await page.$$('.plan .steps li.on')).length === 1)
 check(
@@ -411,20 +427,20 @@ check(
   'a refused query shows no plan and no run',
   (await page.$$('.plan .steps li')).length === 0 &&
     (await texts('.empty')).some((said) => said.includes('refused')) &&
-    (await page.$$('.run .transport')).length === 0,
+    (await page.$$('.transport')).length === 0,
 )
 
 // The schema is a drawer: context rather than work, and the width it would
 // take is the width the database table needs.
-await page.click('.schema-open')
-await page.waitForSelector('.drawer .editor.tall .input')
+await page.click('[data-testid="schema"]')
+await page.waitForSelector('dialog .editor.tall .input')
 check('the schema lists what it declares', (await page.$$('.predicates li')).length === 6)
 
 // The schema pane is painted by the *schema* lexer, which has comments where
 // sigla has none — and `schemas/code.sigla` is more comment than declaration.
 check(
   'the schema is painted by its own lexer',
-  await page.$$eval('.drawer .editor.tall .paint .tok', (ts) => {
+  await page.$$eval('dialog .editor.tall .paint .tok', (ts) => {
     const classes = new Set(ts.map((t) => t.className))
     return (
       classes.has('tok tok-comment') &&
@@ -436,7 +452,7 @@ check(
 
 // Editing the schema recompiles the query, which is the whole point of the page
 // holding one: the same schema the engine resolves names against.
-await type('.drawer .editor.tall .input', 'schema code { predicate Nothing : string }')
+await type('dialog .editor.tall .input', 'schema code { predicate Nothing : string }')
 check(
   'a query stops typechecking when its schema stops declaring it',
   (await texts('.diagnostics li')).some((text) => text.includes('reject/unknown-predicate')),
@@ -445,7 +461,7 @@ check(
 // The drawer closes on Escape, because one that traps you is worse than a panel.
 await page.keyboard.press('Escape')
 await settle()
-check('the drawer closes on escape', (await page.$$('.drawer')).length === 0)
+check('the drawer closes on escape', (await page.$$('dialog[open]')).length === 0)
 
 
 // ---------------------------------------------------------------- the book --
@@ -456,7 +472,9 @@ check('the drawer closes on escape', (await page.$$('.drawer')).length === 0)
 
 const openPage = async (title) => {
   const found = await page.evaluate((title) => {
-    const link = [...document.querySelectorAll('.nav a')].find((a) => a.textContent === title)
+    const link = [...document.querySelectorAll('.astryx-side-nav-item')].find(
+      (a) => a.textContent?.trim() === title,
+    )
     if (!link) return false
     link.click()
     return true
@@ -466,12 +484,15 @@ const openPage = async (title) => {
 }
 
 await page.goto(url, { waitUntil: 'networkidle0' })
-await page.waitForSelector('.prose h1')
+await page.waitForSelector('[data-testid="prose"] h1')
 
-check('the site opens on the book', (await page.$eval('.prose h1', (el) => el.textContent)) === 'Fjord DB')
+check(
+  'the site opens on the book',
+  (await page.$eval('[data-testid="prose"] h1', (el) => el.textContent)) === 'Fjord DB',
+)
 check(
   'the reading order is the one the generator publishes',
-  (await page.$$('.nav a')).length === 21,
+  (await page.$$('.astryx-side-nav-item')).length === 21,
 )
 
 // A page is a route. If any of these were a document load the marker would be
@@ -480,12 +501,20 @@ await page.evaluate(() => {
   window.__oneApplication = true
 })
 
-const titles = await page.$$eval('.nav a', (links) => links.map((link) => link.textContent))
+const titles = await page.$$eval('.astryx-side-nav-item', (links) =>
+  links.map((link) => link.textContent?.trim()),
+)
 const broken = []
 for (const title of titles) {
   await openPage(title)
-  const heading = await page.$eval('.prose h1, .page h1', (el) => el.textContent?.trim() ?? '')
-  if (!heading) broken.push(title)
+  // A page of the book renders its title; the workbench renders its transport,
+  // because it is an application and has no page heading.
+  const alive = await page.evaluate(
+    () =>
+      Boolean(document.querySelector('[data-testid="prose"] h1')?.textContent?.trim()) ||
+      Boolean(document.querySelector('.transport')),
+  )
+  if (!alive) broken.push(title)
 }
 check('every page in the reading order renders', broken.length === 0, broken.join(', '))
 check('a page is a route, not a page load', await page.evaluate(() => window.__oneApplication === true))
@@ -495,10 +524,13 @@ check(
   'the page a reader is on is the page the tab says',
   (await page.title()) === 'Storage model · Fjord DB',
 )
-check('the table of contents is the page\'s own headings', (await page.$$('.toc li a')).length > 5)
+check(
+  "the table of contents is the page's own headings",
+  (await page.$$('.astryx-outline a')).length > 5,
+)
 check(
   'the pager follows the reading order',
-  (await page.$eval('.pager .next', (el) => el.textContent)).includes('Executor'),
+  (await page.$eval('[data-testid="pager-next"]', (el) => el.textContent)).includes('Executor'),
 )
 
 // The demo on this page is the database, and it is the real one: 36 facts,
@@ -507,7 +539,9 @@ await page.waitForSelector('.demo .data table', { timeout: 20_000 })
 check('a demo runs the engine in the page', (await page.$$('.demo .data tbody tr')).length > 6)
 check(
   'the demo carries its query to the workbench',
-  (await page.$eval('.demo-open', (el) => el.getAttribute('href'))).includes('q=P+where+code.File'),
+  (await page.$eval('[data-testid="demo-open"]', (el) => el.getAttribute('href'))).includes(
+    'q=P+where+code.File',
+  ),
 )
 
 // Editing a demo recompiles it, because there is nothing else it could do.
@@ -522,9 +556,11 @@ check(
 // compiles them — token kinds the fallback rules do not have.
 await openPage('sigla query language')
 await page.waitForSelector('.demo .scroller tbody tr', { timeout: 20_000 })
+// The highlights are CSS ranges rather than elements, so the block says which
+// painter it got: `engine` once the module a demo pulled in has landed.
 check(
   "a sigla block is painted by the engine's own lexer",
-  (await page.$$('.prose figure.code code .tok.tok-predicate')).length > 0,
+  (await page.$$('[data-painted="engine"]')).length > 0,
 )
 check(
   'a demo of the lexer is the lexer',
@@ -533,11 +569,17 @@ check(
 
 // Search is over every heading of every page, built from the same pages.
 await page.keyboard.press('Escape')
-await page.click('.search-open')
-await page.waitForSelector('.search-panel input')
+await page.click('[data-testid="search"]')
+await page.waitForSelector('dialog input')
 await page.keyboard.type('marker table')
 await settle()
-check('search finds a heading', (await texts('.results li a')).some((hit) => hit.includes('marker table')))
+check(
+  'search finds a heading',
+  (await texts('.astryx-command-palette-item')).some((hit) => hit.includes('marker table')),
+)
+// Down first: the palette highlights nothing until a key or a pointer says so,
+// and Enter on nothing is nothing.
+await page.keyboard.press('ArrowDown')
 await page.keyboard.press('Enter')
 await settle()
 check(
@@ -545,14 +587,27 @@ check(
   await page.evaluate(() => window.location.hash === '#the-marker-table'),
 )
 
-// The theme is a choice, and a choice that is not remembered is not one.
-await page.click('.theme')
-const chosen = await page.evaluate(() => document.documentElement.getAttribute('data-theme'))
-check('the theme toggle chooses a theme', chosen === 'dark' || chosen === 'light')
+// The theme is a choice, and a choice that is not remembered is not one. The
+// design system paints through tokens rather than a root attribute, so what is
+// checked is the paint and the memory of the choice.
+// The shell paints the page, not the body: the body is transparent and the
+// design system's surfaces are what a reader actually sees change.
+const paper = () =>
+  page.evaluate(() => getComputedStyle(document.querySelector('.astryx-app-shell')).backgroundColor)
+const before = await paper()
+await page.click('[data-testid="mode"]')
+await settle()
+const chosen = await page.evaluate(() => localStorage.getItem('fjord-theme'))
+check(
+  'the theme toggle chooses a theme',
+  (chosen === 'dark' || chosen === 'light') && (await paper()) !== before,
+)
 await page.reload({ waitUntil: 'networkidle0' })
+await settle()
 check(
   'the theme sticks across a reload',
-  (await page.evaluate(() => document.documentElement.getAttribute('data-theme'))) === chosen,
+  (await page.evaluate(() => localStorage.getItem('fjord-theme'))) === chosen &&
+    (await paper()) !== before,
 )
 
 // **One book, two renderers.** The generated site parses these pages in Python
@@ -570,19 +625,21 @@ if (existsSync(new URL('index.html', generated))) {
   for (const slug of order) {
     const html = readFileSync(new URL(`${slug}.html`, generated), 'utf8')
     await page.goto(`${url}${slug === 'index' ? '' : slug}`, { waitUntil: 'networkidle0' })
-    await page.waitForSelector('.prose h1')
+    await page.waitForSelector('[data-testid="prose"] h1')
     const here = await page.evaluate(() => {
-      // A demo has headings of its own — a table header, a register list — and
-      // they are the workbench's, not the page's.
+      // A demo has elements of its own — a table of rows, a schema in a code
+      // block — and they are the workbench's, not the page's.
       const prose = (selector) =>
-        [...document.querySelectorAll(`.prose ${selector}`)].filter((el) => !el.closest('.demo')).length
+        [...document.querySelectorAll(`[data-testid="prose"] ${selector}`)].filter(
+          (el) => !el.closest('.demo'),
+        ).length
       return {
         h2: prose('h2'),
         h3: prose('h3'),
-        tables: prose('.table-wrap'),
-        code: prose('figure.code'),
-        demos: document.querySelectorAll('.prose .demo').length,
-        callouts: prose('.callout'),
+        tables: prose('table.astryx-table'),
+        code: prose('pre.astryx-codeblock'),
+        demos: document.querySelectorAll('[data-testid="prose"] .demo').length,
+        callouts: prose('.astryx-banner'),
       }
     })
     const there = {
@@ -607,7 +664,7 @@ if (existsSync(new URL('index.html', generated))) {
 await page.goto(`${url}nonesuch`, { waitUntil: 'networkidle0' })
 check(
   'an unknown page says so rather than breaking',
-  (await page.$eval('.prose h1', (el) => el.textContent)) === 'Not a page',
+  (await page.$eval('h1', (el) => el.textContent)) === 'Not a page',
 )
 
 await browser.close()

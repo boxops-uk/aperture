@@ -627,6 +627,42 @@ Three things fell out of doing it this way:
 What remains is switching the publish over: `website/` still builds and still
 deploys, untouched.
 
+### Movement 6 — a design system under it ✅
+
+The site was hand-rolled CSS: a stylesheet ported from the generated book, a
+split pane, an accordion, a drawer, a search modal and a transport, all written
+here. It worked and it looked like it — so the components are now **Astryx**
+(`@astryxdesign/core`), Meta's design system, and what is left hand-written is
+only what is about *this engine*.
+
+The shell is `AppShell` + `TopNav` + `SideNav`; the on-page contents is
+`Outline`, search is a `CommandPalette` over the same index, and a page's blocks
+are components: `Heading`, `Text`, `Table`, `Banner`, `Blockquote`, `Divider`,
+`CodeBlock`. The workbench is `Layout` + `LayoutPanel` with `useResizable`, its
+sections are `Collapsible`, its transport is a `Toolbar` of `Button`s and a
+`Slider`, and the schema is a `Dialog`. The markdown renderer stopped emitting
+HTML strings and emits a **tree**, because every block on a page is now a
+component rather than a string.
+
+The palette did not change: `src/theme.ts` seeds `defineTheme` with the book's
+warm paper and rust accent, and a syntax theme whose colours are the ones
+`fjord_inspect::tokens` already decides. `CodeBlock`'s `tokenizer` prop is where
+the two systems meet — a `sigla` block on a page that has the module is
+tokenized by the engine's own lexer, and the block says which painter it got.
+
+Three things this turned up:
+
+- **A class name is a shared namespace.** The book's authored HTML uses `card`
+  and `pill`; the design system's `CodeBlock` carries a `card` variant class. An
+  unscoped rule restyled every code block on the site until the book's names went
+  under `.authored`.
+- **The database table folded around the wrong query.** Re-folding was keyed on
+  the step number, and a new query starts at step 0 like the last one did. It is
+  keyed on *which predicates matter* now, as well as on the step.
+- **The smoke check was testing a phone.** Puppeteer's default window is 800×600,
+  and the shell overlays its panels below 1024px — which had been invisible while
+  the layout was hand-rolled and unresponsive.
+
 ### What is left
 
 - **The `WireView`** — frames, blocks and a hex dump annotated by offset — which

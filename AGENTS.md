@@ -56,7 +56,9 @@ It is built by `scripts/build-wasm.sh` and consumed by `web/`, the interactive
 site — both consumers of the tree, in the way `clients/dotnet` is. `web/` renders
 **the same pages** `website/` publishes, parsed from `website/content/` rather
 than copied, with `:::demo` blocks that run the engine; its smoke check compares
-the two renderers page for page.
+the two renderers page for page. Its components are Astryx
+(`@astryxdesign/core`) — the contract for using them is `web/ASTRYX.md`, and the
+book's palette is an Astryx theme in `web/src/theme.ts`.
 
 **A non-Rust client is part of the test surface.** `clients/dotnet` implements the protocol
 from outside — no shared constants, no shared enums — and is a checked-in golden:

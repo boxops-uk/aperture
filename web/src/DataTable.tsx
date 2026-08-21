@@ -43,7 +43,7 @@ export function DataTable({
 }: {
   database: Database | null
   moment: Moment | null
-  /** The step being shown, so a *move* can fold what the move left behind. */
+  /** The step being shown: a move is a step *or* a different query. */
   at: number
 }) {
   // The key is the long one and the reason the pane is wide; the fact and the
@@ -68,15 +68,19 @@ export function DataTable({
   }, [moment])
 
   // On a move, and only on a move: fold what this step is not about. Whatever
-  // the reader opened by hand survives until they step again.
+  // the reader opened by hand survives until the machine moves somewhere else.
+  //
+  // Keyed on *which* predicates matter rather than on the step number: a new
+  // query starts at step 0 like the last one did, and a table that only
+  // re-folds when the number changes would still be folded around the query
+  // before it.
   const predicates = database?.predicates
+  const matters = [...relevant].sort((a, b) => a - b).join(',')
   useEffect(() => {
     if (!predicates || relevant.size === 0) return
     setClosed(new Set(predicates.map((it) => it.id).filter((id) => !relevant.has(id))))
-    // Keyed on the step, not on `relevant`: a re-render that arrives at the
-    // same step must not undo a hand-opened section.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [at, predicates])
+  }, [at, matters, predicates])
 
   if (!database) return null
 

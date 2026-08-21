@@ -1,418 +1,50 @@
-/* **The book**: the design site's stylesheet, for the site that runs.
+/* **What the design system does not own.**
 
-   Deliberately the same design as the generated copy in `website/assets/` —
-   the two publish the same pages, and a reader who follows a link from one to
-   the other should not be able to tell which one they are on. The palette is
-   `index.css`, shared with the workbench. */
+   Two class names, and they come from the book rather than from here: the home
+   page's card grid and the status page's pills are authored HTML, which the
+   dialect allows and both renderers pass through. Everything else on a page is
+   a component now, so this file is the whole of the site's custom CSS —
+   written in design tokens, because a hex code here is a colour that stops
+   following the theme.
 
-:root {
-  --sidebar: 17.5rem;
-  --toc: 15rem;
-  --measure: 47rem;
-}
+   Every rule is scoped under `.authored`. The names are the book's and they are
+   ordinary words: an unscoped `.card` here restyled the design system's own
+   `card` variant, and a code block came out looking like a note. */
 
-html {
-  scroll-behavior: smooth;
-  /* A heading linked to from the TOC has to clear the sticky bar above it. */
-  scroll-padding-top: 5rem;
-}
+.authored { display: contents; }
 
-a { text-decoration: none; }
-a:hover { text-decoration: underline; text-underline-offset: 2px; }
-
-.skip {
-  position: absolute; left: -999px; top: 0; z-index: 60;
-  background: var(--accent); color: #fff; padding: .6rem 1rem; border-radius: 0 0 6px 0;
-}
-.skip:focus { left: 0; }
-
-/* ---------------------------------------------------------------- topbar -- */
-
-.topbar {
-  position: sticky; top: 0; z-index: 40;
-  display: flex; align-items: center; gap: .75rem;
-  height: 3.5rem; padding: 0 1rem;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--rule);
-}
-
-.brand { display: flex; align-items: center; gap: .6rem; color: var(--ink); margin-right: auto; }
-.brand:hover { text-decoration: none; }
-.brand .mark {
-  width: 1.35rem; height: 1.35rem; border-radius: 50%;
-  border: 2px solid var(--accent);
-  background:
-    radial-gradient(circle at 50% 50%, var(--accent) 0 26%, transparent 27%),
-    conic-gradient(from 20deg, var(--accent) 0 12%, transparent 12% 25%, var(--accent) 25% 37%,
-                   transparent 37% 50%, var(--accent) 50% 62%, transparent 62% 75%,
-                   var(--accent) 75% 87%, transparent 87%);
-}
-.brand-text { display: flex; flex-direction: column; line-height: 1.15; }
-.brand-text b { font-size: .98rem; letter-spacing: -.01em; }
-.brand-text i { font-style: normal; font-size: .72rem; color: var(--ink-faint); }
-
-.topbar button {
-  font: inherit; color: var(--ink-soft); background: var(--bg-raised);
-  border: 1px solid var(--rule); border-radius: 7px; cursor: pointer;
-  padding: .3rem .6rem;
-}
-.topbar button:hover { border-color: var(--rule-strong); color: var(--ink); }
-.search-open { display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
-.search-open kbd {
-  font: 600 .7rem/1 var(--mono); color: var(--ink-faint);
-  border: 1px solid var(--rule); border-radius: 4px; padding: .15rem .3rem;
-  background: var(--bg-sunken);
-}
-.menu { display: none; }
-.theme { width: 2rem; }
-
-/* --------------------------------------------------------------- layout --- */
-
-.layout {
+.authored .cards {
   display: grid;
-  grid-template-columns: var(--sidebar) minmax(0, 1fr) var(--toc);
-  gap: 0 2.5rem;
-  max-width: 96rem;
-  margin: 0 auto;
-  padding: 0 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--spacing-4);
+  margin: var(--spacing-2) 0 var(--spacing-4);
 }
 
-.sidebar {
-  position: sticky; top: 3.5rem; align-self: start;
-  height: calc(100vh - 3.5rem); overflow-y: auto;
-  padding: 1.75rem .5rem 3rem 0;
-  border-right: 1px solid var(--rule);
-  scrollbar-width: thin;
+.authored .card {
+  display: block;
+  padding: var(--spacing-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+  color: var(--color-text-primary);
+  text-decoration: none;
 }
 
-.nav-group {
-  margin: 1.4rem 0 .4rem; font-size: .7rem; font-weight: 700;
-  letter-spacing: .09em; text-transform: uppercase; color: var(--ink-faint);
-}
-.nav > div:first-child .nav-group { margin-top: 0; }
-.nav ul { list-style: none; margin: 0 0 .2rem; padding: 0; }
-.nav a {
-  display: block; padding: .3rem .7rem; margin-left: -.7rem;
-  border-radius: 6px; color: var(--ink-soft); font-size: .9rem;
-}
-.nav a:hover { background: var(--bg-sunken); color: var(--ink); text-decoration: none; }
-.nav a.current {
-  background: var(--accent-soft); color: var(--accent-ink); font-weight: 600;
-  box-shadow: inset 2px 0 0 var(--accent);
+.authored .card:hover { border-color: var(--color-accent); }
+.authored .card b { display: block; margin-bottom: var(--spacing-1); font-weight: var(--font-weight-semibold); }
+.authored .card span { color: var(--color-text-secondary); font-size: var(--font-size-sm); }
+
+.authored .pill {
+  display: inline-block;
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-sm);
+  padding: var(--spacing-1) var(--spacing-2);
+  border-radius: var(--radius-full);
+  border: var(--border-width) solid var(--color-border);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  margin: 0 var(--spacing-1) var(--spacing-1) 0;
 }
 
-main { min-width: 0; padding: 2.5rem 0 5rem; }
-
-/* The workbench is an application: it owns the viewport and scrolls its own
-   panes, so the page around it must not scroll and must not add a sidebar it
-   would have to give width to. The reading order is a click away on the menu. */
-.layout.fills {
-  display: block; max-width: none; padding: 0;
-  height: calc(100vh - 3.5rem);
-}
-.layout.fills main { height: 100%; padding: 0; }
-.layout.fills .sidebar { display: none; }
-.layout.fills .sidebar.open {
-  display: block; position: fixed; top: 3.5rem; left: 0; bottom: 0; width: 19rem;
-  z-index: 45; background: var(--bg-raised); padding: 1.25rem 1rem;
-  border-right: 1px solid var(--rule-strong); box-shadow: var(--shadow);
-}
-/* The workbench has no sidebar, so the menu is how the reading order is
-   reached — at every width, not just a narrow one. */
-.menu.always { display: block; }
-
-.toc {
-  position: sticky; top: 3.5rem; align-self: start;
-  max-height: calc(100vh - 3.5rem); overflow-y: auto;
-  padding: 2.75rem 0 3rem; font-size: .84rem;
-}
-.toc-label {
-  margin: 0 0 .5rem; font-size: .7rem; font-weight: 700;
-  letter-spacing: .09em; text-transform: uppercase; color: var(--ink-faint);
-}
-.toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--rule); }
-.toc li a {
-  display: block; padding: .2rem .75rem; color: var(--ink-faint);
-  border-left: 2px solid transparent; margin-left: -1px;
-}
-.toc li.lvl3 a { padding-left: 1.5rem; font-size: .8rem; }
-.toc a:hover { color: var(--ink); text-decoration: none; }
-.toc a.active { color: var(--accent-ink); border-left-color: var(--accent); }
-
-/* ---------------------------------------------------------------- prose ---
-
-   Every rule below is written to stop at the edge of a demo. A demo is the
-   workbench's own panels dropped into the middle of the measure, and a prose
-   rule landing on one turns a table header into a chapter heading — so the
-   selectors carry `:not(:where(.demo *))` rather than trusting source order
-   against `app.css`. */
-
-.prose { max-width: var(--measure); }
-.prose .flow { display: contents; }
-.eyebrow {
-  margin: 0 0 .35rem; font-size: .72rem; font-weight: 700; letter-spacing: .1em;
-  text-transform: uppercase; color: var(--accent);
-}
-.prose h1 {
-  margin: 0 0 .6rem; font-size: 2.3rem; line-height: 1.15;
-  letter-spacing: -.022em; font-weight: 750;
-}
-.prose .lede { font-size: 1.13rem; color: var(--ink-soft); margin: 0 0 2rem; }
-.prose h2:not(:where(.demo *)) {
-  margin: 3rem 0 .9rem; font-size: 1.45rem; letter-spacing: -.015em;
-  padding-bottom: .35rem; border-bottom: 1px solid var(--rule);
-}
-.prose h3:not(:where(.demo *)) { margin: 2.2rem 0 .7rem; font-size: 1.13rem; letter-spacing: -.01em; }
-.prose h4:not(:where(.demo *)) { margin: 1.7rem 0 .5rem; font-size: 1rem; color: var(--ink-soft); }
-.prose p:not(:where(.demo *)), .prose li:not(:where(.demo *)) { overflow-wrap: break-word; }
-.prose p:not(:where(.demo *)) { margin: 0 0 1.05rem; }
-.prose ul:not(:where(.demo *)), .prose ol:not(:where(.demo *)) { margin: 0 0 1.1rem; padding-left: 1.35rem; }
-.prose li:not(:where(.demo *)) { margin: .3rem 0; }
-.prose li:not(:where(.demo *)) > ul { margin: .3rem 0 .4rem; }
-.prose hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
-.prose strong { font-weight: 660; color: var(--ink); }
-
-.prose h2 .anchor, .prose h3 .anchor, .prose h4 .anchor {
-  margin-left: .4rem; color: var(--rule-strong); font-weight: 400;
-  opacity: 0; transition: opacity .12s;
-}
-.prose h2:hover .anchor, .prose h3:hover .anchor, .prose h4:hover .anchor { opacity: 1; }
-
-.prose :not(pre):not(:where(.demo *)) > code {
-  font: .875em/1.5 var(--mono);
-  background: var(--code-bg); color: var(--code-ink);
-  border: 1px solid var(--rule); border-radius: 5px; padding: .07em .32em;
-  white-space: nowrap;
-}
-
-.prose blockquote {
-  margin: 0 0 1.2rem; padding: .1rem 0 .1rem 1.1rem;
-  border-left: 3px solid var(--rule-strong); color: var(--ink-soft);
-}
-.prose blockquote p:last-child { margin-bottom: 0; }
-
-/* -------------------------------------------------------------- callouts -- */
-
-.callout {
-  margin: 1.4rem 0; padding: 1rem 1.1rem; border-radius: 9px;
-  background: var(--bg-raised); border: 1px solid var(--rule);
-  border-left: 3px solid var(--rule-strong);
-}
-.callout p:last-child { margin-bottom: 0; }
-.callout-label {
-  font-size: .74rem; font-weight: 700; letter-spacing: .07em;
-  text-transform: uppercase; color: var(--ink-faint); margin-bottom: .4rem !important;
-}
-.callout.note { border-left-color: var(--fn); }
-.callout.note .callout-label { color: var(--fn); }
-.callout.warn { border-left-color: #c9761f; }
-.callout.warn .callout-label { color: #c9761f; }
-.callout.invariant { border-left-color: var(--accent); background: var(--accent-soft); }
-.callout.invariant .callout-label { color: var(--accent-ink); }
-.callout.gap { border-left-color: var(--ink-faint); }
-
-/* ----------------------------------------------------------------- code --- */
-
-.prose figure.code {
-  margin: 1.4rem 0; border: 1px solid var(--rule); border-radius: 9px;
-  background: var(--code-bg); overflow: hidden;
-}
-.prose figure.code figcaption {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: .35rem .5rem .35rem .85rem;
-  border-bottom: 1px solid var(--rule); background: var(--bg-sunken);
-}
-.prose figure.code .lang {
-  font: 600 .68rem/1 var(--mono); letter-spacing: .08em;
-  text-transform: uppercase; color: var(--ink-faint);
-}
-.prose figure.code .copy {
-  font: 600 .7rem/1 var(--sans); color: var(--ink-faint);
-  background: transparent; border: 1px solid var(--rule); border-radius: 5px;
-  padding: .25rem .5rem; cursor: pointer;
-}
-.prose figure.code .copy:hover { color: var(--ink); border-color: var(--rule-strong); }
-.prose figure.code .copy.done { color: var(--str); border-color: var(--str); }
-.prose figure.code pre { margin: 0; padding: .9rem 1rem; overflow-x: auto; }
-.prose figure.code code {
-  font: .845rem/1.6 var(--mono); color: var(--code-ink);
-  display: block; white-space: pre;
-}
-
-.tok-kw { color: var(--kw); }
-.tok-str { color: var(--str); }
-.tok-num { color: var(--num); }
-.tok-com { color: var(--com); font-style: italic; }
-.tok-fn { color: var(--fn); }
-.tok-pun { color: var(--pun); }
-.tok-var { color: var(--accent-ink); }
-
-/* --------------------------------------------------------------- tables --- */
-
-.table-wrap { overflow-x: auto; margin: 1.4rem 0; border: 1px solid var(--rule); border-radius: 9px; }
-.prose table:not(:where(.demo *)) { border-collapse: collapse; width: 100%; font-size: .9rem; }
-.prose th:not(:where(.demo *)), .prose td:not(:where(.demo *)) {
-  text-align: left; padding: .55rem .8rem;
-  border-bottom: 1px solid var(--rule); vertical-align: top;
-}
-.prose thead th:not(:where(.demo *)) {
-  background: var(--bg-sunken); font-size: .76rem; letter-spacing: .05em;
-  text-transform: uppercase; color: var(--ink-faint); white-space: nowrap;
-}
-.prose tbody tr:last-child td:not(:where(.demo *)) { border-bottom: 0; }
-.prose tbody tr:hover:not(:where(.demo *)) { background: var(--bg-sunken); }
-.prose td code:not(:where(.demo *)) { white-space: nowrap; }
-
-/* ---------------------------------------------------------------- pager --- */
-
-.pager {
-  display: flex; justify-content: space-between; gap: 1rem;
-  margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule);
-}
-.pager a {
-  flex: 1 1 0; display: flex; flex-direction: column; gap: .15rem;
-  padding: .8rem 1rem; border: 1px solid var(--rule); border-radius: 9px;
-  background: var(--bg-raised); color: var(--ink); font-weight: 600;
-}
-.pager a:hover { border-color: var(--accent); text-decoration: none; }
-.pager a span {
-  font-size: .72rem; font-weight: 700; letter-spacing: .08em;
-  text-transform: uppercase; color: var(--ink-faint);
-}
-.pager .next { text-align: right; }
-
-/* ------------------------------------------------------------ home cards -- */
-
-.cards {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: 1rem; margin: 1.6rem 0 2rem;
-}
-.card {
-  display: block; padding: 1.1rem; border: 1px solid var(--rule); border-radius: 11px;
-  background: var(--bg-raised); color: var(--ink); box-shadow: var(--shadow);
-}
-.card:hover { border-color: var(--accent); text-decoration: none; transform: translateY(-1px); }
-.card b { display: block; margin-bottom: .3rem; font-size: 1rem; }
-.card span { color: var(--ink-soft); font-size: .89rem; }
-
-.pill {
-  display: inline-block; font: 600 .72rem/1 var(--mono); letter-spacing: .04em;
-  padding: .3rem .5rem; border-radius: 999px; border: 1px solid var(--rule);
-  background: var(--bg-sunken); color: var(--ink-soft); margin: 0 .3rem .4rem 0;
-}
-.pill.ok { color: var(--str); border-color: color-mix(in srgb, var(--str) 40%, var(--rule)); }
-.pill.todo { color: var(--ink-faint); }
-
-/* --------------------------------------------------------------- search --- */
-
-.search-modal {
-  position: fixed; inset: 0; z-index: 50;
-  background: rgba(20, 18, 15, .45); backdrop-filter: blur(2px);
-  display: flex; align-items: flex-start; justify-content: center; padding: 6vh 1rem;
-}
-.search-panel {
-  width: min(40rem, 100%); background: var(--bg-raised);
-  border: 1px solid var(--rule-strong); border-radius: 13px; box-shadow: var(--shadow);
-  overflow: hidden;
-}
-.search-panel input {
-  width: 100%; border: 0; border-bottom: 1px solid var(--rule);
-  padding: 1rem 1.1rem; font: 1.02rem var(--sans); background: transparent; color: var(--ink);
-}
-.search-panel input:focus { outline: none; }
-.results { list-style: none; margin: 0; padding: .4rem; max-height: 58vh; overflow-y: auto; }
-.results li a { display: block; padding: .55rem .7rem; border-radius: 7px; color: var(--ink); }
-.results li a small { display: block; color: var(--ink-faint); font-size: .78rem; }
-.results li a em { color: var(--accent-ink); font-style: normal; font-weight: 700; }
-.results li.sel a, .results li a:hover { background: var(--bg-sunken); text-decoration: none; }
-.results .empty { padding: 1rem; color: var(--ink-faint); font-size: .9rem; }
-.search-hint {
-  margin: 0; padding: .5rem .9rem; border-top: 1px solid var(--rule);
-  background: var(--bg-sunken); color: var(--ink-faint); font-size: .74rem;
-}
-
-/* ----------------------------------------------------------------- demos -- */
-
-/* A demo is a paragraph of the argument, so it sits in the measure like one —
-   and it is the engine, so it says which part of the engine it is. */
-.demo {
-  margin: 1.6rem 0;
-  border: 1px solid var(--rule-strong);
-  border-radius: 11px;
-  background: var(--bg-raised);
-  overflow: hidden;
-}
-
-.demo-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-  padding: .4rem .5rem .4rem .85rem;
-  background: var(--bg-sunken);
-  border-bottom: 1px solid var(--rule);
-}
-.demo-what {
-  font: 600 .68rem/1 var(--mono); letter-spacing: .08em;
-  text-transform: uppercase; color: var(--ink-faint);
-}
-.demo-open { font-size: .78rem; color: var(--accent-ink); white-space: nowrap; }
-
-.demo .editor { border: 0; border-bottom: 1px solid var(--rule); border-radius: 0; }
-.demo .editor textarea, .demo .editor .paint { min-height: 3.2rem; }
-.demo .scroller { max-height: 22rem; }
-.demo .diagnostics { margin: 0; border-top: 1px solid var(--rule); }
-.demo .schema { border: 0; }
-
-/* The database is the tallest thing here, and a demo is not a workbench: it
-   shows the rows around the range and lets the reader open the rest. */
-.demo .data { border: 0; }
-/* The range is two long hex strings and the card is narrower than the pane it
-   was designed in: it wraps rather than sliding under the border. */
-.demo .data h2 { flex-wrap: wrap; padding-right: .85rem; }
-.demo .data h2 .range { margin-left: 0; }
-.demo .data .scroll { max-height: 24rem; }
-.demo .transport { border-bottom: 1px solid var(--rule); }
-
-.demo-schema { border-top: 1px solid var(--rule); background: var(--bg-sunken); }
-.demo-schema summary {
-  padding: .35rem .85rem; font-size: .78rem; color: var(--ink-faint); cursor: pointer;
-}
-.demo-schema summary:hover { color: var(--ink); }
-.demo-schema pre {
-  margin: 0; padding: 0 .85rem .7rem; overflow-x: auto;
-  font: .8rem/1.55 var(--mono); color: var(--code-ink);
-}
-
-.demo-note, .demo-waiting, .demo-broken {
-  margin: 0; padding: .5rem .85rem; font-size: .82rem; color: var(--ink-faint);
-  border-top: 1px solid var(--rule);
-}
-.demo-broken { color: var(--bad); }
-.demo-waiting { border-top: 0; }
-
-/* -------------------------------------------------------------- responsive */
-
-@media (max-width: 1180px) {
-  .layout { grid-template-columns: var(--sidebar) minmax(0, 1fr); }
-  .toc { display: none; }
-}
-
-@media (max-width: 860px) {
-  .layout { grid-template-columns: minmax(0, 1fr); padding: 0 1rem; }
-  .menu { display: block; }
-  .sidebar {
-    display: none; position: fixed; top: 3.5rem; left: 0; bottom: 0; width: 19rem;
-    z-index: 45; background: var(--bg-raised); padding: 1.25rem 1rem;
-    border-right: 1px solid var(--rule-strong); box-shadow: var(--shadow);
-  }
-  .sidebar.open { display: block; }
-  .prose h1 { font-size: 1.85rem; }
-  .search-open span { display: none; }
-  .pager { flex-direction: column; }
-  .pager .next { text-align: left; }
-}
-
-@media print {
-  .topbar, .sidebar, .toc, .pager, .search-modal { display: none !important; }
-  .layout { display: block; }
-  a { color: inherit; }
-}
+.authored .pill.ok { color: var(--color-success); border-color: var(--color-success-muted); }
+.authored .pill.todo { color: var(--color-text-disabled); }

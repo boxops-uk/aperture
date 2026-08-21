@@ -1,8 +1,11 @@
+import { Theme } from '@astryxdesign/core/theme'
 import { Layout } from './book/Layout'
 import { PageView } from './book/PageView'
 import { rendered } from './book/content'
+import { useMode } from './book/mode'
 import { slugOf, useLocation } from './book/router'
 import { Playground } from './Playground'
+import { fjordTheme } from './theme'
 import './book.css'
 
 /**
@@ -17,19 +20,20 @@ export default function App() {
   const location = useLocation()
   const [pathname, hash = ''] = splitHash(location)
   const slug = slugOf(pathname)
-
-  if (slug === 'playground') {
-    return (
-      <Layout slug={slug} toc={[]} fills>
-        <Playground />
-      </Layout>
-    )
-  }
+  const { mode, toggle } = useMode()
 
   return (
-    <Layout slug={slug} toc={rendered(slug)?.toc ?? []}>
-      <PageView slug={slug} hash={hash} />
-    </Layout>
+    <Theme theme={fjordTheme} mode={mode}>
+      {slug === 'playground' ? (
+        <Layout slug={slug} toc={[]} onToggleMode={toggle} fills>
+          <Playground />
+        </Layout>
+      ) : (
+        <Layout slug={slug} toc={rendered(slug)?.toc ?? []} onToggleMode={toggle}>
+          <PageView slug={slug} hash={hash} />
+        </Layout>
+      )}
+    </Theme>
   )
 }
 

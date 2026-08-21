@@ -1,4 +1,12 @@
 import { useMemo, useState } from 'react'
+import { Card } from '@astryxdesign/core/Card'
+import { Toolbar } from '@astryxdesign/core/Toolbar'
+import { Collapsible } from '@astryxdesign/core/Collapsible'
+import { Link } from '@astryxdesign/core/Link'
+import { Text } from '@astryxdesign/core/Text'
+import { Spinner } from '@astryxdesign/core/Spinner'
+import { HStack } from '@astryxdesign/core/Stack'
+import { CodeBlock } from '@astryxdesign/core/CodeBlock'
 import { useEngine } from '../engine'
 import { fold } from '../run'
 import { usePlayback } from '../playback'
@@ -100,21 +108,35 @@ export function Demo({ demo }: { demo: Spec }) {
   const step = trace?.steps[here]
 
   return (
-    <section className={`demo demo-${demo.kind}`}>
-      <header className="demo-head">
-        <span className="demo-what">{WHAT[demo.kind] ?? 'the engine, live'}</span>
-        <a className="demo-open" href={playgroundLink(schemaDemo ? '' : query, demo.schema)}>
-          open in the playground
-        </a>
-      </header>
+    <Card padding={0} className={`demo demo-${demo.kind}`}>
+      <Toolbar
+        label="Demo"
+        size="sm"
+        variant="muted"
+        startContent={
+          <Text type="label" color="secondary">
+            {WHAT[demo.kind] ?? 'the engine, live'}
+          </Text>
+        }
+        endContent={
+          <Link href={playgroundLink(schemaDemo ? '' : query, demo.schema)} data-testid="demo-open">
+            open in the playground
+          </Link>
+        }
+      />
 
       {failure && (
-        <p className="demo-broken">
-          the engine did not load — <code>{failure}</code>
-        </p>
+        <HStack gap={2} padding={3}>
+          <Text color="accent">the engine did not load — {failure}</Text>
+        </HStack>
       )}
 
-      {!engine && !failure && <p className="demo-waiting">loading the engine…</p>}
+      {!engine && !failure && (
+        <HStack gap={2} padding={3} align="center">
+          <Spinner size="sm" />
+          <Text type="supporting">loading the engine…</Text>
+        </HStack>
+      )}
 
       {engine && analysis && (
         <>
@@ -139,18 +161,18 @@ export function Demo({ demo }: { demo: Spec }) {
               query resolves its names against it, and a reader cannot check a
               plan without knowing the key order it was planned for. */}
           {demo.schema && !schemaDemo && (
-            <details className="demo-schema">
-              <summary>against this schema</summary>
-              <pre>
-                <code>{demo.schema}</code>
-              </pre>
-            </details>
+            <Collapsible
+              defaultIsOpen={false}
+              trigger={<Text type="supporting">against this schema</Text>}
+            >
+              <CodeBlock code={demo.schema} language="plaintext" width="100%" size="sm" />
+            </Collapsible>
           )}
 
           {analysis.broke && (
-            <p className="demo-broken">
-              the engine refused this outright — <code>{analysis.broke}</code>
-            </p>
+            <HStack padding={3}>
+              <Text color="accent">the engine refused this outright — {analysis.broke}</Text>
+            </HStack>
           )}
 
           {demo.kind === 'lex' && analysis.tokens && (
@@ -215,20 +237,22 @@ export function Demo({ demo }: { demo: Spec }) {
               )}
               <DataTable database={analysis.database} moment={moment} at={at} />
               {step && (
-                <p className="demo-note">
-                  {step.scanning
-                    ? step.scanning.fetch
-                      ? `one row, by reference — ${step.scanning.fetch}`
-                      : 'the shaded band is the range this level walks'
-                    : 'step the run to watch the ranges move'}
-                </p>
+                <HStack padding={2} paddingInline={3}>
+                  <Text type="supporting">
+                    {step.scanning
+                      ? step.scanning.fetch
+                        ? `one row, by reference — ${step.scanning.fetch}`
+                        : 'the shaded band is the range this level walks'
+                      : 'step the run to watch the ranges move'}
+                  </Text>
+                </HStack>
               )}
               <Diagnostics diagnostics={analysis.lowered?.diagnostics ?? []} source={query} />
             </>
           )}
         </>
       )}
-    </section>
+    </Card>
   )
 }
 

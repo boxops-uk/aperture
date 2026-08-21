@@ -16,6 +16,33 @@ There is also a **workbench** at `/playground`: every view of one query at once,
 which is the thing a paragraph cannot hold. A demo hands its query to it through
 the URL.
 
+## The design system
+
+The components are [Astryx](https://github.com/facebook/astryx)
+(`@astryxdesign/core`): the shell, the navigation, the outline, the command
+palette, the code blocks, the tables, the callouts, the dialogs, the toolbars and
+the controls. It ships pre-built CSS, so there is no build plugin — `main.tsx`
+imports `reset.css` and `astryx.css`, and `<Theme>` at the root of the
+application injects the theme.
+
+**The palette is still the book's.** `src/theme.ts` seeds `defineTheme` with the
+warm paper and rust accent the generated site publishes, and a syntax theme whose
+colours are the ones `fjord_inspect::tokens` has been deciding all along — so a
+block painted by the real lexer and a block painted by the fallback rules are the
+same colours. The rules the design system asks of a consumer are in
+[`ASTRYX.md`](ASTRYX.md); the short version is *components first, tokens second,
+raw CSS never*.
+
+What stays custom is what the design system has no opinion about, because it is
+about this engine: the editor that paints a textarea with the lexer's own tokens,
+the parse and lowered trees, the plan, the register file, and the database table
+with a scan's range shaded across its bytes. Those keep their CSS in `app.css`,
+written in design tokens rather than hex.
+
+`CodeBlock` takes a `tokenizer`, which is where the two meet: a `sigla` or
+`schema` block on a page that has the module is tokenized by **the engine's
+lexer**, and falls back to the rules from `website/assets/app.js` until it does.
+
 ```bash
 ../scripts/build-wasm.sh   # or: npm run wasm
 npm install
@@ -62,12 +89,14 @@ answer that would go stale.
 | Path | Holds |
 |---|---|
 | `src/App.tsx` | the router: a path is a page, and `/playground` is the workbench |
-| `src/book/markdown.ts` | the book's dialect, as `website/build.py` renders it — prose out as HTML, code and demos out as components |
+| `src/book/markdown.ts` | the book's dialect, as `website/build.py` renders it — a tree of blocks, because every one of them is a component |
+| `src/book/PageView.tsx` | that tree, rendered: a heading is a `Heading`, a table is a `Table`, a callout is a `Banner`, a fence is a `CodeBlock`, a demo is the engine |
 | `src/book/content.ts` | the pages, globbed raw from `website/content/`, parsed once each; the search index is every page's headings, built when somebody first searches |
 | `src/book/Layout.tsx` | the shell: the bar, the reading order, the page, and one click listener so a link in the prose is a navigation |
-| `src/book/Code.tsx` | a fenced block — painted by the engine's own lexer once a demo on the page has brought the module in, and by the fallback rules until then |
-| `src/book/highlight.ts` | those fallback rules, ported from `website/assets/app.js`, for the languages the engine has no opinion about |
-| `src/book/Search.tsx`, `Toc.tsx`, `router.ts`, `theme.ts` | search over the headings, the on-page contents, routing, and the light/dark choice |
+| `src/book/Code.tsx` | a fenced block — a `CodeBlock` whose tokenizer is the engine's own lexer once a demo on the page has brought the module in, and the fallback rules until then |
+| `src/book/highlight.ts` | those fallback rules, ported from `website/assets/app.js`, for the languages neither the engine nor the design system knows |
+| `src/book/Search.tsx`, `router.ts`, `mode.ts` | the command palette over every heading, routing, and the light/dark choice |
+| `src/theme.ts` | the book's palette as an Astryx theme, and the syntax theme the lexer's token classes map onto |
 | `src/demo/Demo.tsx` | a demo: the engine, the view the block asked for, and an editor over the query |
 | `src/engine.ts` | the module, loaded once and shared — *demanded* by a demo, merely *observed* by everything else, so a page of prose does not fetch a compiler |
 | `src/wasm.ts` | loading the module, and the TypeScript shape of the JSON it answers |
@@ -83,7 +112,8 @@ answer that would go stale.
 | `src/Editor.tsx` | a textarea with the real tokens painted underneath it — used for the query and the schema, since the only difference is which lexer produced the tokens |
 | `src/TokenTable.tsx`, `src/TreeView.tsx` | the two views — the second walks the arena from its root, which is already in reading order |
 | `src/span.ts` | what the cursor is on, and the rule every view highlights by: a node lights up **its subtree** and the bytes it covers, never the path above it — that is what the indentation already shows |
-| `src/book.css`, `src/app.css`, `src/index.css` | the book, the workbench, and the palette they share |
+| `src/book.css` | the only custom CSS on a page: the two class names the *book* uses in its own authored HTML, scoped so they cannot collide with a component's |
+| `src/app.css` | the workbench's panels — the parts the design system has no component for — in design tokens |
 | `smoke.mjs` | the end-to-end check — it drives the built bundle in Chrome, over both halves |
 
 The token colours are keyed on `TokenClass`, which the Rust side decides
