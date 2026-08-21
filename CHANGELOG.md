@@ -27,10 +27,16 @@ gh attestation verify ./fjord --repo boxops-uk/fjord
 ./fjord --help
 ```
 
-**Linux x86_64**, built on Ubuntu 24.04 (glibc 2.39), dynamically linked. The store root's
-lock is POSIX `flock` and the default transport is a Unix socket, so Windows is out of scope
-rather than untested; other Unix targets are expected to work and are not built or tested by
-CI.
+Each release also carries `fjord-x86_64-linux-musl` and `fjord-viewer-x86_64-linux-musl`: the
+same code linked statically, with no glibc floor at all, for an older distro, Alpine or a
+`scratch` container. Take those only if the one above will not run — musl's allocator is
+slower under the load a server puts on it.
+
+**Linux x86_64**, dynamically linked, needing **glibc 2.34 or newer** — Ubuntu 22.04, Debian
+12, RHEL 9 and anything later. That is measured on the binary CI produces rather than inferred
+from the runner it is built on. The store root's lock is POSIX `flock` and the default
+transport is a Unix socket, so Windows is out of scope rather than untested; other Unix targets
+are expected to work and are not built or tested by CI.
 
 ### The engine runs in a browser, and the design book runs it
 

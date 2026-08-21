@@ -50,7 +50,10 @@
 #           registry upload cannot be undone and a Release can, so that step stays a
 #           person's.
 #
-#   attest  builds and signs SLSA provenance naming the binaries. It needs an
+#   attest  builds the binaries a release carries — dynamically linked, and a static
+#           musl pair for a distro older than glibc 2.34 — stages them under the names
+#           the release uses, checksums them, and signs SLSA provenance naming those
+#           exact files. It needs an
 #           OIDC token, which GitHub never issues to a fork's pull request, so
 #           it is skipped there — a required check that cannot run would block a
 #           branch forever rather than protect it. It runs on every push to
@@ -409,6 +412,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -419,28 +424,53 @@ jobs:
           key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
       - name: Build release binaries
         run: cargo build --release --locked -p fjord-cli -p fjord-viewer --bins
+      # **The build that has no floor.** The one above is dynamically linked and needs
+      # glibc 2.34 — Ubuntu 22.04, Debian 12, RHEL 9 — so on anything older, on Alpine,
+      # or in a `scratch` container it does not start at all, and "it is a binary
+      # download" stops being true for the reader who needed it most. musl links the C
+      # library in.
+      #
+      # It is the *second* download rather than the first because musl's allocator is
+      # slower under the load a server puts on it, and this is a database. Same code,
+      # same commit, same provenance — the choice is portability against throughput.
+      - name: Build the static binaries
+        run: >-
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          -p fjord-cli -p fjord-viewer --bins
+      # **One directory, named as the release names them.** The provenance and the
+      # checksums have to be over the bytes somebody actually downloads: an attestation
+      # says *this workflow built this file* and a checksum says *this is that file*, and
+      # a consumer who took a file off the Release page needs both to mean the same file.
+      - name: Stage what the release carries
+        run: |
+          mkdir -p dist
+          cp target/release/fjord dist/fjord
+          cp target/release/fjord-viewer dist/fjord-viewer
+          cp target/x86_64-unknown-linux-musl/release/fjord dist/fjord-x86_64-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/fjord-viewer dist/fjord-viewer-x86_64-linux-musl
+          cd dist
+          # Named rather than globbed: the redirect creates SHA256SUMS before sha256sum
+          # runs, so `*` would hash the empty file it is writing into.
+          sha256sum fjord fjord-viewer fjord-x86_64-linux-musl fjord-viewer-x86_64-linux-musl >SHA256SUMS
+          cat SHA256SUMS
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            target/release/fjord
-            target/release/fjord-viewer
-      # Checksums beside the binaries, because an attestation says *this workflow built
-      # this file* and a checksum says *this is that file* — a consumer who downloaded
-      # from the Release page needs both, and only one of them is generated for them.
-      - name: Checksums
-        run: |
-          cd target/release
-          sha256sum fjord fjord-viewer > SHA256SUMS
-          cat SHA256SUMS
+            dist/fjord
+            dist/fjord-viewer
+            dist/fjord-x86_64-linux-musl
+            dist/fjord-viewer-x86_64-linux-musl
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
           name: fjord-linux-x86_64
           path: |
-            target/release/fjord
-            target/release/fjord-viewer
-            target/release/SHA256SUMS
+            dist/fjord
+            dist/fjord-viewer
+            dist/fjord-x86_64-linux-musl
+            dist/fjord-viewer-x86_64-linux-musl
+            dist/SHA256SUMS
           if-no-files-found: error
 
   # **Cutting the release**, which happens only for a `v*` tag.
@@ -476,15 +506,37 @@ jobs:
             --title "Fjord DB $version" \
             --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md).
 
-          Binaries below are Linux x86_64 and carry SLSA provenance:
+          ## The binary
+
+          \`fjord\` is the tool and \`fjord-viewer\` is the code-search site. Linux
+          x86_64, and **\`fjord\` is the one to take** — it needs glibc 2.34 or newer
+          (Ubuntu 22.04, Debian 12, RHEL 9 and later):
+
+          \`\`\`
+          curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/fjord
+          chmod +x fjord
+          ./fjord --help
+          \`\`\`
+
+          The \`-x86_64-linux-musl\` builds are the same code linked statically, for an
+          older distro, Alpine, or a \`scratch\` container — no glibc floor, and musl's
+          allocator is slower under a server's load, so take them only if the one above
+          will not run.
+
+          Every binary carries SLSA provenance, and \`SHA256SUMS\` covers all four:
 
           \`\`\`
           gh attestation verify ./fjord --repo ${GITHUB_REPOSITORY}
+          sha256sum --check --ignore-missing SHA256SUMS
           \`\`\`
+
+          ## The book
 
           \`fjord-docs-site.tar.gz\` is the design book as built at this tag — the
           interactive site, with the engine compiled into the page, attested the same
           way. Serve it from a root: every page in it is a file, and \`404.html\` is
           there for a path nothing knows about." \
-            dist/fjord dist/fjord-viewer dist/SHA256SUMS \
+            dist/fjord dist/fjord-viewer \
+            dist/fjord-x86_64-linux-musl dist/fjord-viewer-x86_64-linux-musl \
+            dist/SHA256SUMS \
             dist/fjord-docs-site.tar.gz dist/fjord-docs-site.tar.gz.sha256
