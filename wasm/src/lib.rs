@@ -97,6 +97,18 @@ pub fn trace(schema: &str, query: &str) -> String {
     fjord_inspect::trace_json(schema, query)
 }
 
+/// **Every stored row of the demo database**, as bytes and as a fact, in the
+/// order a scan meets them.
+///
+/// The bytes are the point: a seek is a byte prefix and a scan is a range over
+/// the same order, so a scan's bounds mean nothing against decoded values and
+/// everything against these.
+#[wasm_bindgen]
+#[must_use]
+pub fn database(schema: &str) -> String {
+    fjord_inspect::database_json(schema)
+}
+
 /// The schema the site opens with — the repository's own `schemas/code.sigla`.
 #[wasm_bindgen]
 #[must_use]

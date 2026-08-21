@@ -54,9 +54,9 @@ export function LoweredView({
   }
 
   return (
-    <div className="scroller tree lowered">
+    <div className="scroller lowered">
       <ol>
-        <li className="section">
+        <li className="part">
           <span className="label">head</span>
           {lowered.head_ty && <span className="ty">{lowered.head_ty}</span>}
         </li>
@@ -67,7 +67,7 @@ export function LoweredView({
         {lowered.statements.map((statement, index) => (
           <li key={`s${index}`} className="contents">
             <ol>
-              <li className="section">
+              <li className="part">
                 <span className="label">
                   {statement.kind.toLowerCase()}
                   {statement.op && <code className="op">{statement.op}</code>}

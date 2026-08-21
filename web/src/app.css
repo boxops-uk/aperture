@@ -1,90 +1,141 @@
+/* **An app, not a document.** The page is exactly the viewport and never
+   scrolls: the two sides of the split scroll independently, so a tall database
+   does not push the transport controls off the top and a long parse tree does
+   not push the database off the bottom. */
 .page {
-  max-width: 78rem;
+  max-width: 120rem;
+  height: 100%;
   margin: 0 auto;
-  padding: 2.5rem 1.5rem 4rem;
+  padding: .75rem 1rem .5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
+
+.top, .samples { flex: none; }
 
 /* ---- header ---- */
 
 .top {
   display: flex;
   flex-wrap: wrap;
-  gap: 1.5rem 2rem;
-  align-items: flex-start;
+  gap: .75rem 1.5rem;
+  align-items: center;
   justify-content: space-between;
-  padding-bottom: 1.25rem;
+  padding-bottom: .5rem;
   border-bottom: 1px solid var(--rule);
-}
-
-.brand { display: flex; gap: 1rem; align-items: flex-start; max-width: 42rem; }
-
-.mark {
-  flex: none;
-  width: 2rem;
-  height: 2rem;
-  margin-top: .35rem;
-  border-radius: .5rem;
-  background: var(--ink);
-  position: relative;
-}
-
-.mark::after {
-  content: "";
-  position: absolute;
-  inset: .55rem;
-  border-radius: 50%;
-  background: var(--accent);
 }
 
 h1 {
   margin: 0;
-  font-size: 1.4rem;
-  line-height: 1.25;
+  font-size: 1.05rem;
+  font-weight: 600;
   letter-spacing: -0.01em;
 }
 
-.brand p { margin: .4rem 0 0; color: var(--ink-soft); font-size: .95rem; }
+.tools { display: flex; gap: 1.25rem; align-items: center; }
+.schema-open .bad { color: var(--bad); }
 
 .status {
   display: flex;
-  gap: 1.5rem;
+  gap: 1.25rem;
   margin: 0;
-  font-size: .85rem;
+  font-size: .8rem;
   color: var(--ink-soft);
 }
 
-.status dt { color: var(--ink-faint); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; }
-.status dd { margin: .15rem 0 0; font-family: var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
-.status.bad { display: block; color: var(--bad); max-width: 24rem; }
-.status .detail { font-family: var(--mono); font-size: .75rem; color: var(--ink-faint); }
+.status dt { color: var(--ink-faint); font-size: .64rem; text-transform: uppercase; letter-spacing: .06em; }
+.status dd { margin: 0; font-family: var(--mono); font-size: .8rem; color: var(--ink); font-variant-numeric: tabular-nums; }
+.status.bad { display: block; color: var(--bad); max-width: 24rem; font-size: .75rem; }
+.status .detail { font-family: var(--mono); font-size: .7rem; color: var(--ink-faint); }
 
 /* ---- samples ---- */
 
-.samples { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1.25rem 0 1.5rem; }
+.samples { display: flex; flex-wrap: wrap; gap: .35rem; margin: .6rem 0 .75rem; }
 
 .chip {
   border: 1px solid var(--rule-strong);
   background: var(--bg-raised);
   color: var(--ink-soft);
   border-radius: 999px;
-  padding: .25rem .8rem;
+  padding: .15rem .7rem;
   font: inherit;
-  font-size: .85rem;
+  font-size: .8rem;
   cursor: pointer;
 }
 
 .chip:hover { border-color: var(--accent); color: var(--ink); }
 .chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 
-/* ---- panes ---- */
+/* ---- the split: views on the left, the database on the right ---- */
 
-.panes { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; }
-
-@media (max-width: 60rem) {
-  .panes { grid-template-columns: 1fr; }
+.split {
+  display: grid;
+  gap: 0;
+  /* Fills what the header left, and `min-height: 0` is what lets its children
+     shrink instead of growing the page — the grid default is `auto`, which is
+     "as tall as the content", which is the whole problem. */
+  flex: 1;
+  min-height: 0;
 }
 
+.split .side {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* A wide hit area with a thin line down the middle: easy to grab, quiet to
+   look at, and with room either side so it never touches the table. */
+.grip {
+  align-self: stretch;
+  position: relative;
+  cursor: col-resize;
+}
+
+.grip::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--rule);
+  transition: background .12s ease;
+}
+
+.grip:hover::after, .grip:focus-visible::after, .split.dragging .grip::after { background: var(--accent); }
+.grip:focus-visible { outline: none; }
+/* While dragging, the pointer belongs to the grip and nothing else. */
+.split.dragging { user-select: none; cursor: col-resize; }
+
+/* The left side scrolls on its own, so opening every section does not move the
+   database. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-right: .75rem;
+  padding-bottom: 1rem;
+  overflow: auto;
+  min-height: 0;
+}
+
+/* **`flex: none`, and the reason is worth writing down.** A section clips its
+   own corners with `overflow: hidden`, which zeroes its automatic minimum size
+   — so in a height-constrained column the layout is free to squash it to
+   nothing, and a panel showing three of its eight rows looks like a bug in the
+   panel. Sections are their content's height; the column scrolls. */
+.stack > * { flex: none; }
+
+.stack > .pane { margin-bottom: .6rem; }
+
 .pane h2 {
+  display: flex;
+  gap: .5rem;
+  align-items: baseline;
   margin: 0 0 .6rem;
   font-size: .78rem;
   text-transform: uppercase;
@@ -93,35 +144,105 @@ h1 {
   font-weight: 600;
 }
 
-/* ---- pane tabs ---- */
+/* ---- the accordion ---- */
 
-.tabs { display: flex; gap: .35rem; margin-bottom: .6rem; }
+/* One column, not a stack of cards: sections share their edges, so the eye
+   reads a list of panels rather than six floating boxes. */
+.stack > .section {
+  border: 1px solid var(--rule);
+  border-bottom: 0;
+  border-radius: 0;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
 
-.tab {
+.stack > .section:first-of-type { border-top-left-radius: .5rem; border-top-right-radius: .5rem; }
+
+.stack > .section:last-of-type {
+  border-bottom: 1px solid var(--rule);
+  border-bottom-left-radius: .5rem;
+  border-bottom-right-radius: .5rem;
+}
+
+.section-head {
+  display: flex;
+  gap: .5rem;
+  align-items: baseline;
+  width: 100%;
+  padding: .45rem .7rem;
   border: 0;
-  border-bottom: 2px solid transparent;
-  background: none;
-  padding: .1rem .1rem .35rem;
-  margin-right: .9rem;
+  background: var(--bg-sunken);
   font: inherit;
   font-size: .78rem;
   text-transform: uppercase;
-  letter-spacing: .08em;
+  letter-spacing: .07em;
   font-weight: 600;
   color: var(--ink-faint);
   cursor: pointer;
+  text-align: left;
 }
 
-.tab:hover { color: var(--ink-soft); }
-.tab.on { color: var(--ink); border-bottom-color: var(--accent); }
+.section-head:hover { color: var(--ink-soft); }
+.section.open .section-head { color: var(--ink); }
+.section-head .arrow { transition: transform .12s ease; font-size: .7rem; }
+.section-head .arrow.open { transform: rotate(90deg); }
+.section-head .count { margin-left: auto; font-family: var(--mono); text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--ink-faint); }
 
-.count {
-  margin-left: .5rem;
-  font-family: var(--mono);
-  letter-spacing: 0;
-  font-weight: 400;
-  color: var(--ink-faint);
+/* A list view caps, so one open parse tree cannot fill the column and hide
+   every section under it — but the run and the plan are the *work*, and a
+   panel that clips its own registers is a panel nobody can use. Those two are
+   as tall as they are; the column scrolls. */
+.section-body > .scroller { border: 0; border-radius: 0; box-shadow: none; max-height: 24rem; }
+.section-body > .run,
+.section-body > .plan { max-height: none; }
+
+/* ---- the schema drawer ---- */
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+  display: flex;
+  justify-content: flex-end;
 }
+
+.drawer {
+  width: min(46rem, 92vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--rule-strong);
+  box-shadow: var(--shadow);
+}
+
+.drawer header {
+  display: flex;
+  gap: .6rem;
+  align-items: baseline;
+  padding: .8rem 1rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.drawer header .what { font-weight: 600; font-size: .95rem; }
+.drawer header .summary { font-family: var(--mono); font-size: .8rem; color: var(--ink-faint); }
+.drawer header .summary.bad { color: var(--bad); }
+
+.drawer .close {
+  margin-left: auto;
+  border: 1px solid var(--rule);
+  border-radius: .35rem;
+  background: var(--bg-raised);
+  padding: .1rem .45rem;
+  font: inherit;
+  font-size: .8rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.drawer .close:hover { border-color: var(--accent); color: var(--ink); }
+.drawer-body { padding: 1rem; overflow: auto; }
 
 /* ---- the editor: a textarea over its own tokens ---- */
 
@@ -174,7 +295,7 @@ h1 {
    tall and scrolls; a query is one or two lines. */
 .editor.tall { margin-top: .6rem; }
 .editor.tall .paint,
-.editor.tall .input { min-height: 20rem; max-height: 26rem; font-size: .82rem; }
+.editor.tall .input { min-height: 26rem; max-height: 34rem; font-size: .82rem; }
 
 /* One class per `TokenClass` the view emits — the page styles what the
    language says a token *is*, and never re-decides it. */
@@ -191,7 +312,19 @@ h1 {
 .tok-whitespace { color: inherit; }
 .tok-error { color: var(--bad); background: var(--bad-soft); text-decoration: underline wavy var(--bad); }
 
-.tok.on { background: color-mix(in srgb, var(--accent) 22%, transparent); border-radius: .15rem; }
+/* Strong enough to find without hunting: this is what says *these bytes* while
+   the cursor is somewhere else entirely — in a tree, in a table, in a plan. */
+/* A band, not a box: consecutive tokens are separate spans, so anything drawn
+   round each one would rule lines through the middle of a highlighted phrase.
+   A tint plus one underline joins up instead. */
+.tok.on {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* The greys are the first thing the tint swallows. */
+.tok-wildcard.on,
+.tok-comment.on { color: var(--ink-soft); }
 
 /* ---- diagnostics ---- */
 
@@ -219,7 +352,7 @@ h1 {
   border-radius: .6rem;
   background: var(--bg-raised);
   box-shadow: var(--shadow);
-  max-height: 32rem;
+  max-height: 34rem;
   overflow: auto;
 }
 
@@ -262,9 +395,9 @@ h1 {
   cursor: pointer;
 }
 
-.tree ol { list-style: none; margin: 0; padding: .35rem 0; font-size: .85rem; }
+.tree ol, .lowered ol { list-style: none; margin: 0; padding: .35rem 0; font-size: .85rem; }
 
-.tree li {
+.tree li, .lowered li {
   display: flex;
   gap: .6rem;
   align-items: baseline;
@@ -273,11 +406,11 @@ h1 {
   border-left: 2px solid transparent;
 }
 
-.tree li.on { background: var(--accent-soft); border-left-color: var(--accent); }
-.tree .kind { font-family: var(--mono); color: var(--fn); }
-.tree .kind.leaf { color: var(--ink-soft); font-weight: 400; }
-.tree .text { font-family: var(--mono); color: var(--code-ink); }
-.tree .num { margin-left: auto; font-size: .75rem; }
+.tree li.on, .lowered li.on { background: var(--accent-soft); border-left-color: var(--accent); }
+.tree .kind, .lowered .kind { font-family: var(--mono); color: var(--fn); }
+.tree .kind.leaf, .lowered .kind.leaf { color: var(--ink-soft); font-weight: 400; }
+.tree .text, .lowered .text { font-family: var(--mono); color: var(--code-ink); }
+.tree .num, .lowered .num { margin-left: auto; font-size: .75rem; }
 
 .pill {
   display: inline-block;
@@ -292,7 +425,7 @@ h1 {
 
 /* ---- the schema pane ---- */
 
-.schema { margin-top: 1rem; }
+.schema { margin-top: 0; }
 
 .disclosure {
   display: flex;
@@ -346,7 +479,7 @@ h1 {
 .lowered > ol { padding: .35rem 0; }
 .lowered li.contents { display: block; }
 
-.lowered .section {
+.lowered .part {
   display: flex;
   gap: .5rem;
   align-items: baseline;
@@ -357,7 +490,7 @@ h1 {
   border-bottom: 1px solid var(--rule);
 }
 
-.lowered .section .label {
+.lowered .part .label {
   font-size: .72rem;
   text-transform: uppercase;
   letter-spacing: .07em;
@@ -365,8 +498,8 @@ h1 {
   font-weight: 600;
 }
 
-.lowered .section .op { font-family: var(--mono); color: var(--accent-ink); margin-left: .4rem; }
-.lowered .section .ty { margin-left: auto; }
+.lowered .part .op { font-family: var(--mono); color: var(--accent-ink); margin-left: .4rem; }
+.lowered .part .ty { margin-left: auto; }
 
 .lowered .ty {
   font-family: var(--mono);
@@ -412,6 +545,10 @@ h1 {
 .plan .steps li { padding: .3rem .75rem .5rem; border-bottom: 1px solid var(--rule); }
 .plan .steps li:last-child { border-bottom: 0; }
 .plan .steps li.head-row { background: var(--bg-sunken); }
+
+/* Where the machine is standing, while a run is being stepped. */
+.plan .steps li.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.plan .badge.examined { color: var(--ink-soft); border-style: dashed; }
 
 .plan .head { display: flex; gap: .4rem; align-items: center; margin-bottom: .25rem; }
 
@@ -469,11 +606,14 @@ h1 {
   border-bottom: 1px solid var(--rule);
 }
 
+/* Bordered before they are hovered: buttons that appear out of the background
+   under the pointer make a row of words look like it is jumping. Hover changes
+   the tone, never the size. */
 .run .transport button {
-  border: 1px solid transparent;
+  border: 1px solid var(--rule);
   border-radius: .3rem;
-  background: none;
-  padding: .1rem .4rem;
+  background: var(--bg-raised);
+  padding: .1rem .45rem;
   font: inherit;
   font-size: .78rem;
   line-height: 1.5;
@@ -482,11 +622,26 @@ h1 {
   cursor: pointer;
 }
 
-.run .transport button:hover:not(:disabled) { background: var(--bg-raised); border-color: var(--rule); color: var(--ink); }
-.run .transport button:disabled { opacity: .3; cursor: default; }
-.run .transport button.playing { color: var(--accent-ink); border-color: var(--accent); }
-.run .transport input[type="range"] { flex: 1; margin: 0 .4rem; accent-color: var(--accent); }
-.run .transport .count { font-family: var(--mono); font-size: .75rem; color: var(--ink-faint); white-space: nowrap; }
+.run .transport button:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
+.run .transport button:active:not(:disabled) { background: var(--bg-sunken); }
+.run .transport button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.run .transport button:disabled { opacity: .35; background: none; border-color: transparent; cursor: default; }
+
+/* "play" and "pause" are different widths, and the row must not move between
+   them — the button being clicked is the one under the pointer. */
+.run .transport button.play { min-width: 3.4rem; }
+.run .transport button.playing { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
+
+.run .transport input[type="range"] { flex: 1; margin: 0 .4rem; accent-color: var(--accent); cursor: pointer; }
+.run .transport .count {
+  font-family: var(--mono);
+  font-size: .75rem;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  min-width: 3.4rem;
+  text-align: right;
+}
 
 .run .event {
   display: flex;
@@ -524,6 +679,9 @@ h1 {
 .run section:last-child { border-bottom: 0; }
 
 .run h3 {
+  display: flex;
+  gap: .5rem;
+  align-items: baseline;
   margin: 0 0 .4rem;
   font-size: .7rem;
   text-transform: uppercase;
@@ -560,3 +718,171 @@ h1 {
   color: var(--bad);
   font-size: .82rem;
 }
+
+/* ---- the database: one sectioned table ---- */
+
+.data {
+  padding-left: .75rem;
+  padding-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.data h2 {
+  display: flex;
+  gap: .75rem;
+  align-items: baseline;
+  margin: 0 0 .6rem;
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.data h2 .range { margin-left: auto; text-transform: none; letter-spacing: 0; color: var(--ink-soft); font-size: .8rem; }
+.data h2 .range code { font-family: var(--mono); color: var(--accent-ink); }
+
+/* The pane scrolls, not the page: the table is the tall thing here, and a
+   reader stepping a run should not lose the transport off the top. */
+.data .scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: .6rem;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+}
+
+/* The table is the pane: resizing a column divides what there is rather than
+   growing the table off the side. */
+.data table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .78rem; }
+
+.data thead th {
+  position: relative;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  text-align: left;
+  font-weight: 600;
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--ink-faint);
+  background: var(--bg-sunken);
+  padding: .4rem .7rem;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+/* **A visible divider, with a wide grab area.** The line is the affordance —
+   a handle nobody can see is a feature nobody finds — and the padding around it
+   is what makes it catchable without aiming. */
+.data thead th .handle {
+  position: absolute;
+  top: 0;
+  right: -9px;
+  width: 19px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  /* Wide enough to hit without aiming — a resize handle is chased, not
+     targeted, and a two-pixel line is a two-pixel line to look at rather than
+     to grab at. The line inside stays thin. */
+  touch-action: none;
+}
+
+.data thead th .handle::after {
+  content: "";
+  position: absolute;
+  top: 20%;
+  bottom: 20%;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--rule-strong);
+  transition: background .12s ease, top .12s ease, bottom .12s ease;
+}
+
+.data thead th .handle:hover::after {
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+}
+
+.data tr.section th {
+  position: sticky;
+  top: 1.7rem;
+  z-index: 1;
+  padding: 0;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.data tr.section button {
+  display: flex;
+  gap: .6rem;
+  align-items: baseline;
+  width: 100%;
+  padding: .35rem .7rem;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: .78rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.data tr.section .arrow { color: var(--ink-faint); font-size: .7rem; transition: transform .12s ease; }
+.data tr.section .arrow.open { transform: rotate(90deg); }
+.data tr.section .name { font-family: var(--mono); color: var(--fn); white-space: nowrap; }
+.data tr.section .ty { font-family: var(--mono); color: var(--ink-faint); font-size: .74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data tr.section .count { margin-left: auto; font-family: var(--mono); color: var(--ink-faint); font-size: .74rem; }
+
+/* The predicate the machine is reading right now. */
+.data tbody.scanning tr.section .name { color: var(--accent-ink); font-weight: 600; }
+
+/* **Truncate, never wrap.** A cell that grows to three lines moves every row
+   under it, which is what a reader watching one row cannot afford. The whole
+   value is a hover away, in the `title`. */
+.data td {
+  padding: .25rem .7rem;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  vertical-align: baseline;
+}
+
+.data .fact { color: var(--fn); }
+.data .bytes { color: var(--ink-faint); }
+.data .value { color: var(--str); }
+
+/* The four states a row can be in, which are the whole story of a query. */
+.data tr.within td { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.data tr.held td { background: var(--accent-soft); }
+.data tr.held .fact { color: var(--accent-ink); font-weight: 600; }
+.data tr.seen td { opacity: .5; }
+.data tr.dropped td { background: var(--bad-soft); opacity: 1; }
+.data tr.dropped .fact { color: var(--bad); }
+
+/* The bytes the seek pinned, against the ones the scan walks. */
+.data .pinned {
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: .2rem;
+}
+
+/* ---- decoded values, painted in the same vocabulary as the source ---- */
+
+.j-key { color: var(--fn); }
+.j-str { color: var(--str); }
+.j-num { color: var(--num); }
+.j-ref { color: var(--accent-ink); }
+.j-pun { color: var(--pun); }
+.j-null { color: var(--ink-faint); }

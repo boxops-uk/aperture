@@ -516,6 +516,15 @@ impl Profile {
 /// registers between [`Executor::step`] calls.
 #[cfg(feature = "trace")]
 pub trait Trace {
+    /// A scan opened over `[lo, hi)` — the range the seek key came to, which is
+    /// the whole of what a seek *is*: a byte prefix, and the rows that share it.
+    /// `hi` is absent only for a prefix of all `0xFF`, which has no successor.
+    fn scanning(&mut self, depth: usize, lo: &[u8], hi: Option<&[u8]>);
+
+    /// A point read of the fact a reference names — a level that reads one row
+    /// rather than a range.
+    fn fetching(&mut self, depth: usize, id: FactId);
+
     /// A row this step pulled and dropped, and which of the step's residuals
     /// dropped it.
     fn rejected(&mut self, depth: usize, register: &Register, residual: usize);
@@ -559,6 +568,22 @@ impl<'a> Deadline<'a> {
     #[cfg(not(feature = "trace"))]
     #[inline]
     fn rejected(&mut self, _depth: usize, _register: &Register, _residual: usize) {}
+
+    /// The range a level just opened over.
+    #[cfg(feature = "trace")]
+    fn scanning(&mut self, depth: usize, lo: &[u8], hi: Option<&[u8]>) {
+        if let Some(trace) = self.trace.as_deref_mut() {
+            trace.scanning(depth, lo, hi);
+        }
+    }
+
+    /// The one row a reference names.
+    #[cfg(feature = "trace")]
+    fn fetching(&mut self, depth: usize, id: FactId) {
+        if let Some(trace) = self.trace.as_deref_mut() {
+            trace.fetching(depth, id);
+        }
+    }
 
     fn tick(&mut self, depth: usize) -> Result<(), FjordError> {
         self.since_poll += 1;
@@ -628,6 +653,24 @@ struct StackFrame<S: FactStore> {
     /// things, and `enumerate` carries no direction. One bit for both kinds because
     /// a frame is one step, and a step is one kind.
     produced: bool,
+    /// What the last [`open`](Self::open) scanned over, for a watcher to be told
+    /// about.
+    ///
+    /// Recorded here rather than reported from `open`, which has no deadline to
+    /// report through: threading one in would change three signatures for a
+    /// feature that is off by default. Allocates only in a build carrying the
+    /// hook, and only per *level entry* — never per row.
+    #[cfg(feature = "trace")]
+    opened: Option<Opening>,
+}
+
+/// What a level's last opening looked like — a range, or one fact.
+///
+/// Only in a build carrying the trace hook: nothing else has a use for it.
+#[cfg(feature = "trace")]
+enum Opening {
+    Scan { lo: Vec<u8>, hi: Option<Vec<u8>> },
+    Fetch(FactId),
 }
 
 impl<S: FactStore> StackFrame<S> {
@@ -638,8 +681,27 @@ impl<S: FactStore> StackFrame<S> {
             current: None,
             field_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
             produced: false,
+            #[cfg(feature = "trace")]
+            opened: None,
         }
     }
+
+    /// Tell a watcher what the last opening scanned over.
+    ///
+    /// Called by whoever holds the deadline, right after `open`. Two bodies,
+    /// like [`FieldOffsets::witness_row`]: the untraced build compiles nothing.
+    #[cfg(feature = "trace")]
+    fn report_opening(&mut self, deadline: &mut Deadline<'_>, depth: usize) {
+        match self.opened.take() {
+            Some(Opening::Scan { lo, hi }) => deadline.scanning(depth, &lo, hi.as_deref()),
+            Some(Opening::Fetch(id)) => deadline.fetching(depth, id),
+            None => {}
+        }
+    }
+
+    #[cfg(not(feature = "trace"))]
+    #[inline]
+    fn report_opening(&mut self, _deadline: &mut Deadline<'_>, _depth: usize) {}
 
     /// Close the level: no live scan, no row, and back to its first source.
     ///
@@ -687,6 +749,14 @@ impl<S: FactStore> StackFrame<S> {
                     return Err(FjordError::BadResumeKey);
                 }
 
+                #[cfg(feature = "trace")]
+                {
+                    self.opened = Some(Opening::Scan {
+                        lo: lo.to_vec(),
+                        hi: hi.clone(),
+                    });
+                }
+
                 Rows::Scan(store.scan(lo, hi.as_deref())?)
             }
 
@@ -700,7 +770,19 @@ impl<S: FactStore> StackFrame<S> {
                 path,
                 predicate_id,
                 ..
-            } => Rows::Fetched(self.follow(store, state, *reference, path, *predicate_id)?),
+            } => {
+                let fetched = self.follow(store, state, *reference, path, *predicate_id)?;
+
+                #[cfg(feature = "trace")]
+                {
+                    self.opened = fetched
+                        .as_ref()
+                        .map(|(_, id)| Opening::Fetch(*id))
+                        .or(self.opened.take());
+                }
+
+                Rows::Fetched(fetched)
+            }
         });
 
         self.current = None;
@@ -873,6 +955,7 @@ impl<S: FactStore> StackFrame<S> {
     ) -> Result<bool, FjordError> {
         for source in sources {
             self.open(store, source, state, None)?;
+            self.report_opening(deadline, depth);
             let witness = self.next(state, source, deadline, depth)?;
             self.close();
 
@@ -1684,6 +1767,7 @@ impl<S: FactStore> Executor<S> {
 
                 if frame.rows.is_none() {
                     frame.open(&self.store, source, &self.state, None)?;
+                    frame.report_opening(deadline, self.depth);
                 }
 
                 match frame.next(&self.state, source, deadline, self.depth)? {

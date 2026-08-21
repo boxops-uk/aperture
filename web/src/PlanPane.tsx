@@ -10,8 +10,24 @@ import type { PlanView } from './wasm'
  *
  * **Levels are not steps**, and the header says both. A resume cursor holds one
  * row per *level*; a derive and a test bind nothing and take no cursor entry.
+ *
+ * While a run is being stepped the step the machine is standing at is lit, and
+ * each step carries what it has read *so far* — so the plan stops being a
+ * description and becomes the thing being executed in front of you.
  */
-export function PlanPane({ plan, refused }: { plan: PlanView | null; refused: boolean }) {
+export function PlanPane({
+  plan,
+  refused,
+  active,
+  examined,
+}: {
+  plan: PlanView | null
+  refused: boolean
+  /** The step the machine is standing at, while a run is being stepped. */
+  active: number | null
+  /** Rows examined per step, as they stand at that moment. */
+  examined: number[]
+}) {
   if (!plan) {
     return (
       <div className="scroller">
@@ -47,7 +63,7 @@ export function PlanPane({ plan, refused }: { plan: PlanView | null; refused: bo
 
       <ol className="steps">
         {plan.steps.map((step) => (
-          <li key={step.index}>
+          <li key={step.index} className={step.index === active ? 'on' : undefined}>
             <div className="head">
               <span className="index">{step.level === null ? '·' : step.level}</span>
               <span className={`badge ${step.kind.toLowerCase()}`}>{step.kind}</span>
@@ -62,6 +78,13 @@ export function PlanPane({ plan, refused }: { plan: PlanView | null; refused: bo
                   title="rows this step reads and then drops"
                 >
                   {step.residuals} residual{step.residuals === 1 ? '' : 's'}
+                </span>
+              )}
+              {/* What this step has actually read, so far — the outcome beside
+                  the intent, which is the pair worth reading together. */}
+              {(examined[step.index] ?? 0) > 0 && (
+                <span className="badge examined" title="rows read here so far">
+                  {examined[step.index]} read
                 </span>
               )}
             </div>

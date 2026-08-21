@@ -73,6 +73,37 @@ const type = async (selector, text) => {
   await settle()
 }
 const texts = (selector) => page.$$eval(selector, (els) => els.map((el) => el.textContent))
+/** Open one section of the left-hand accordion, by its name. */
+const openSection = async (name) => {
+  const opened = await page.evaluate((name) => {
+    const head = [...document.querySelectorAll('.section-head')].find(
+      (head) => head.querySelector('.what')?.textContent === name,
+    )
+    if (!head) return false
+    if (head.getAttribute('aria-expanded') !== 'true') head.click()
+    return true
+  }, name)
+  if (!opened) throw new Error(`no section called ${name}`)
+  await settle()
+}
+
+/** Unfold every predicate in the database table, whatever the run folded. */
+const openEveryPredicate = async () => {
+  await page.evaluate(() => {
+    for (const head of document.querySelectorAll('.data tr.section button'))
+      if (head.getAttribute('aria-expanded') !== 'true') head.click()
+  })
+  await settle()
+}
+
+/** Which predicates the database table is showing rows for, in order. */
+const unfolded = () =>
+  page.$$eval('.data tr.section button', (heads) =>
+    heads
+      .filter((head) => head.getAttribute('aria-expanded') === 'true')
+      .map((head) => head.querySelector('.name').textContent),
+  )
+
 const nodeRow = async (kind) =>
   (
     await page.evaluateHandle(
@@ -89,7 +120,85 @@ await page.goto(url, { waitUntil: 'networkidle0' })
 // says every phase before it ran too.
 await page.waitForSelector('.run .transport', { timeout: 15_000 })
 
+// **Plan and run at once.** The three columns are the point of the layout: what
+// was typed, what the compiler made of it, and what the machine is doing.
+// **Plan and run at once**, either side of a table of the database — which is
+// the whole shape of the page: what the compiler decided, what the machine is
+// doing about it, and the bytes both are about.
+await page.waitForSelector('.data tr.section')
+check(
+  'the plan, the run and the database are on screen together',
+  (await page.$$('.split .side')).length === 2 &&
+    (await page.$$('.plan .steps li')).length > 0 &&
+    (await page.$$('.run .transport')).length === 1 &&
+    (await page.$$('.data tr.section')).length === 6,
+)
+check(
+  'the split can be resized',
+  (await page.$$('.grip[role="separator"]')).length === 1,
+)
+
 check('the engine reports a version', /\d+\.\d+\.\d+/.test(await page.$eval('.status', (el) => el.textContent)))
+
+// ---- the database, and the range a scan walks across it ----
+
+await openEveryPredicate()
+check(
+  'the database shows every stored row',
+  (await page.$$('.data tbody tr')).length >= 36 + (await page.$$('.data tr.section')).length,
+)
+check(
+  'a stored key is shown as bytes and as a fact',
+  await page.$$eval('.data tbody tr', (rows) =>
+    rows.some((row) => {
+      const bytes = row.querySelector('.bytes')?.textContent ?? ''
+      const decoded = row.querySelector('.decoded')?.textContent ?? ''
+      return /^[0-9a-f]{8,}$/.test(bytes) && decoded.includes('{')
+    }),
+  ),
+)
+
+// A join: the inner level seeks, so its range covers exactly the rows of one
+// file — a band across the table rather than the whole predicate.
+await type('.input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
+for (let i = 0; i < 3; i++) await page.click('.run .transport button:nth-child(4)')
+await settle()
+
+check(
+  'the range being scanned is shown as bytes',
+  /^[0-9a-f]+$/.test((await texts('.data h2 .range code'))[0] ?? ''),
+)
+const within = (await page.$$('.data tr.within')).length
+check('the range shades the rows inside it', within >= 2 && within <= 4)
+check('the row the machine holds is marked', (await page.$$('.data tr.held')).length >= 1)
+check(
+  'the bytes the seek pinned are marked off from the ones it walks',
+  (await page.$$('.data .pinned')).length >= 2,
+)
+
+// A join stands in two predicates at once, and they are not neighbours: the
+// table folds the four it is not about and leaves *both* of the two it is.
+const open = await unfolded()
+check(
+  'stepping folds the predicates the step is not about',
+  open.length === 2 && open.includes('code.File') && open.includes('code.Decl'),
+)
+
+// Folded by the run, not locked by it.
+await page.evaluate(() => {
+  const head = [...document.querySelectorAll('.data tr.section button')].find(
+    (head) => head.querySelector('.name').textContent === 'code.Span',
+  )
+  head.click()
+})
+await settle()
+check('a predicate opened by hand stays open', (await unfolded()).includes('code.Span'))
+
+// A scan with a residual: the rows it reads and drops go red.
+await type('.input', 'N where code.Decl {file = _, name = N, line = L}; L > 15')
+await page.click('.run .transport button:nth-child(4)')
+await settle()
+check('a row read and dropped is marked as dropped', (await page.$$('.data tr.dropped')).length === 1)
 
 // ---- the debugger: the machine, one transition at a time ----
 
@@ -136,9 +245,44 @@ check(
   (await page.$$('.run .yielded li')).length === 1,
 )
 
+// **Play, and then a hand on the controls.** A run that keeps advancing under
+// someone who just stepped back is fighting them for the play head, so any
+// navigation stops it — and the end of the run stops it too, rather than leaving
+// a button that says "pause" and takes two clicks to start again.
+const transport = (label) =>
+  page.evaluate((label) => {
+    const button = [...document.querySelectorAll('.run .transport button')].find(
+      (button) => button.textContent.trim() === label,
+    )
+    button.click()
+  }, label)
+const playLabel = () => page.$eval('.run .transport .play', (el) => el.textContent.trim())
+const stepNow = async () => Number((await page.$eval('.run .count', (el) => el.textContent)).split('/')[0])
+
+await page.click('.run .transport button:nth-child(1)')
+await transport('play')
+await new Promise((resolve) => setTimeout(resolve, 700))
+const playedTo = await stepNow()
+check('play advances the run on its own', playedTo > 1 && (await playLabel()) === 'pause')
+
+await transport('◀')
+await new Promise((resolve) => setTimeout(resolve, 600))
+check(
+  'navigating while playing stops the run',
+  (await playLabel()) === 'play' && (await stepNow()) === playedTo - 1,
+)
+
+await transport('end ▶|')
+await settle()
+check('the end of the run stops the run', (await playLabel()) === 'play')
+await transport('play')
+await settle()
+check('play from the end starts again from the start', (await stepNow()) < 3)
+await transport('pause')
+
 // ---- the lowered view: the phase that needs a schema ----
 
-await page.click('.tab:nth-child(3)')
+await openSection('lowered')
 await page.waitForSelector('.lowered li')
 check(
   'the query is typed against the schema',
@@ -151,7 +295,7 @@ check(
 
 // ---- the tokens: what the lexer says, on every keystroke ----
 
-await page.click('.tab:nth-child(1)')
+await openSection('tokens')
 await page.waitForSelector('.scroller tbody tr')
 await type('.input', 'P where code.File P; P = 7 ~')
 
@@ -185,7 +329,7 @@ check(
 
 // ---- the parse tree: the shape, and how it is highlighted ----
 
-await page.click('.tab:nth-child(2)')
+await openSection('parse tree')
 await page.waitForSelector('.tree li')
 const kinds = await texts('.tree li .kind')
 check("the tree is the parser's, rule for rule", ['Root', 'Query', 'StmtList'].every((k) => kinds.includes(k)))
@@ -220,7 +364,7 @@ check(
 await type('.input', 'P where code.File P')
 check('a supported query compiles clean', (await page.$$('.diagnostics li')).length === 0)
 
-await page.click('.tab:nth-child(4)')
+await openSection('plan')
 await page.waitForSelector('.plan .steps li')
 check(
   'the plan is what the engine printed',
@@ -246,22 +390,41 @@ check(
   /^[0-9a-f]{16}$/.test(await page.$eval('.plan .fingerprint', (el) => el.textContent)),
 )
 
-// A refused query has no plan at all, which is the rule the server runs under.
-await type('.input', 'X where code.Nonesuch X')
+// The plan is not a description while a run is stepping: it is the thing being
+// executed, and the step the machine is standing at says so.
+await type('.input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
+for (let i = 0; i < 2; i++) await page.click('.run .transport button:nth-child(4)')
+await settle()
+check('the plan lights the step the machine is standing at', (await page.$$('.plan .steps li.on')).length === 1)
 check(
-  'a refused query shows no plan',
-  (await page.$$('.plan .steps li')).length === 0 && (await page.$$('.empty')).length === 1,
+  'the plan says what each step has read so far',
+  (await texts('.plan .badge.examined')).some((badge) => /\d+ read/.test(badge)),
 )
 
-await page.click('.disclosure')
-await page.waitForSelector('.editor.tall .input')
+// A refused query has no plan *and* no run, and both say so in their own words
+// rather than showing an empty panel that reads like an answer of no rows.
+await type('.input', 'X where code.Nonesuch X')
+await page.waitForFunction(() =>
+  [...document.querySelectorAll('.empty')].some((said) => said.textContent.includes('refused')),
+)
+check(
+  'a refused query shows no plan and no run',
+  (await page.$$('.plan .steps li')).length === 0 &&
+    (await texts('.empty')).some((said) => said.includes('refused')) &&
+    (await page.$$('.run .transport')).length === 0,
+)
+
+// The schema is a drawer: context rather than work, and the width it would
+// take is the width the database table needs.
+await page.click('.schema-open')
+await page.waitForSelector('.drawer .editor.tall .input')
 check('the schema lists what it declares', (await page.$$('.predicates li')).length === 6)
 
 // The schema pane is painted by the *schema* lexer, which has comments where
 // sigla has none — and `schemas/code.sigla` is more comment than declaration.
 check(
   'the schema is painted by its own lexer',
-  await page.$$eval('.editor.tall .paint .tok', (ts) => {
+  await page.$$eval('.drawer .editor.tall .paint .tok', (ts) => {
     const classes = new Set(ts.map((t) => t.className))
     return (
       classes.has('tok tok-comment') &&
@@ -273,11 +436,16 @@ check(
 
 // Editing the schema recompiles the query, which is the whole point of the page
 // holding one: the same schema the engine resolves names against.
-await type('.editor.tall .input', 'schema code { predicate Nothing : string }')
+await type('.drawer .editor.tall .input', 'schema code { predicate Nothing : string }')
 check(
   'a query stops typechecking when its schema stops declaring it',
   (await texts('.diagnostics li')).some((text) => text.includes('reject/unknown-predicate')),
 )
+
+// The drawer closes on Escape, because one that traps you is worse than a panel.
+await page.keyboard.press('Escape')
+await settle()
+check('the drawer closes on escape', (await page.$$('.drawer')).length === 0)
 
 await browser.close()
 await server.close()

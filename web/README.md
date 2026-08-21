@@ -16,7 +16,10 @@ keep true.
 The run is a **debugger**: the whole trace arrives in one call, so stepping is
 an index into an array — forwards, backwards, on to the next row, or scrubbed —
 showing the registers as they fill, the rows answered, and the rows a residual
-read and dropped.
+read and dropped. Under it is the **database as a table**: every stored row as
+bytes and as a fact, in key order, with the range the current scan is walking
+shaded across it and the bytes the seek pinned marked off from the ones it
+walks.
 
 ```bash
 ../scripts/build-wasm.sh   # or: npm run wasm
@@ -40,6 +43,8 @@ written in JavaScript, because that is the thing being replaced.
 | `src/LoweredView.tsx` | the lowered tree as the query's own shape: a head, then one section per statement |
 | `src/PlanPane.tsx` | the plan: each step's text is the engine's own (`print::steps`), with the structure a reader counts around it |
 | `src/RunPane.tsx` | the debugger: transport controls over a local array, and the machine's state folded from the changes each step carries |
+| `src/DataTable.tsx` | the database, with the scan's range shaded across it — the panel the plan's numbers are about |
+| `src/run.ts` | one fold, read by both panels, so they cannot disagree about which row the machine is on |
 | `src/playback.ts` | play — one transition every fifth of a second, which is about as fast as a register can be read |
 | `src/Editor.tsx` | a textarea with the real tokens painted underneath it — used for the query and the schema, since the only difference is which lexer produced the tokens |
 | `src/TokenTable.tsx`, `src/TreeView.tsx` | the two views — the second walks the arena from its root, which is already in reading order |

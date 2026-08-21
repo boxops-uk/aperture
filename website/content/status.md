@@ -30,7 +30,7 @@ built rather than described as if it were.
 | **Viewer** | A code-search site: browse, file view with cross-references, prefix search, symbol pages |
 | **Measurement** | Six instruments across seven rungs, and a findings register |
 | **Documentation** | This site, deployed on every push to main after the tests and the drift gate; each release carries it as an attested bundle beside the binaries |
-| **The engine in a browser** | `fjord-engine` compiles to `wasm32-unknown-unknown`, and the whole of it runs there: the lexer's tokens, the parser's tree, the lowered tree with its inferred types, the plan the executor would run, and **the run itself, stepped one transition at a time** — registers filling, rows answered, and the rows a residual read and dropped. Against a schema you can edit in the page. CI checks the browser build, and both configurations of the trace hook, on every push |
+| **The engine in a browser** | `fjord-engine` compiles to `wasm32-unknown-unknown`, and the whole of it runs there: the lexer's tokens, the parser's tree, the lowered tree with its inferred types, the plan the executor would run, and **the run itself, stepped one transition at a time** — registers filling, rows answered, the rows a residual read and dropped, and the whole database as a table with the range each scan walks shaded across it in bytes. Against a schema you can edit in the page. CI checks the browser build, and both configurations of the trace hook, on every push |
 
 ## Not built
 

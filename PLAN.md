@@ -556,6 +556,27 @@ transition, on to the next row, play, end), a scrub bar over the whole run, the
 register panel, and the rows yielded so far. Stepping back is free, because the
 trace is already in hand.
 
+**Under it, the database as a table** — every stored row, in key order, as bytes
+*and* as a fact, with the range the current scan is walking **shaded across
+it**. That is the panel the plan's numbers are about: a seek is a byte prefix
+and a scan is a range over the same order, so `[lo, hi)` means nothing against
+decoded values and everything against stored keys. The pinned bytes are marked
+off from the ones the scan walks, which is the cost model in one place —
+everything left of the boundary the seek jumped to, everything right of it the
+scan reads.
+
+Four states a row can be in, and between them they are the whole story of a
+query: outside the range and never read; inside it and not yet reached; **read
+and dropped** by a residual; and **held**, which is where a register is
+standing.
+
+The bounds come from `open`, which is where they are computed — recorded on the
+frame under the feature and reported by the caller that holds the deadline, so
+no signature changes for a feature that is off. `Trace` grew `scanning` and
+`fetching` beside `rejected` for it. The hex is unseparated because the page
+compares it as a string: `"0000000104"` starts with `"00000001"` and
+`"00 00 00 01 04"` does not.
+
 #### What building it found
 
 **A silently wrong answer, in `flatten`.** A constraint written inside a

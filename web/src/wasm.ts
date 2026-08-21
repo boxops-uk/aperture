@@ -7,6 +7,7 @@
 // is the thing this replaces.
 import init, {
   compile,
+  database,
   run,
   sample_schema,
   samples,
@@ -144,12 +145,36 @@ export type RegisterView = {
   address: number
   /** `fact`, `value`, or `empty`. */
   kind: string
+  /** The stored key this row is, in hex — what the database table matches on. */
+  key: string | null
   /** `code.Decl#4`, for a register holding a row. */
   fact: string | null
   value: unknown
 }
 
 export type Rejection = { step: number; residual: number; row: RegisterView }
+
+/** The range a level opened over — bytes, because that is what a bound is. */
+export type Scanning = {
+  step: number
+  lo: string
+  hi: string | null
+  /** The fact a point read named, for a level that fetches rather than scans. */
+  fetch: string | null
+}
+
+export type RowBytes = {
+  fact: string
+  /** The whole stored key, with the predicate prefix, in hex. */
+  key: string
+  decoded: unknown
+  value: string | null
+  value_decoded: unknown
+}
+
+export type PredicateRows = { id: number; name: string; ty: string; rows: RowBytes[] }
+
+export type Database = { predicates: PredicateRows[]; facts: number }
 
 export type TraceStep = {
   at: number
@@ -160,6 +185,7 @@ export type TraceStep = {
   registers: RegisterView[]
   row: unknown
   rejected: Rejection | null
+  scanning: Scanning | null
   examined: number[]
 }
 
@@ -188,6 +214,8 @@ export type Engine = {
   run: (schema: string, query: string) => Rows
   /** The whole run, one transition at a time. */
   trace: (schema: string, query: string) => Trace
+  /** Every stored row, as bytes and as a fact, in the order a scan meets them. */
+  database: (schema: string) => Database
   /** What the site opens with — both tested in the Rust suite, not invented here. */
   sampleSchema: string
   samples: Sample[]
@@ -214,6 +242,7 @@ export function load(): Promise<Engine> {
         JSON.parse(run(schemaSource, query)) as Rows,
       trace: (schemaSource: string, query: string) =>
         JSON.parse(trace(schemaSource, query)) as Trace,
+      database: (schemaSource: string) => JSON.parse(database(schemaSource)) as Database,
       sampleSchema: sample_schema(),
       samples: JSON.parse(samples()) as Sample[],
     }

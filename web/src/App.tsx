@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   load,
+  type Database,
   type Engine,
   type Lowered,
   type SchemaView,
@@ -15,6 +16,11 @@ import { TreeView } from './TreeView'
 import { LoweredView } from './LoweredView'
 import { PlanPane } from './PlanPane'
 import { RunPane } from './RunPane'
+import { DataTable } from './DataTable'
+import { Section } from './Accordion'
+import { Drawer } from './Drawer'
+import { Split } from './Split'
+import { fold } from './run'
 import { usePlayback } from './playback'
 import { SchemaPane } from './SchemaPane'
 import { Diagnostics } from './Diagnostics'
@@ -24,7 +30,7 @@ import './app.css'
 type Analysis = { tokens: Tokens; tree: Tree; lowered: Lowered; trace: Trace; micros: number }
 
 /** What the schema says about itself — recomputed only when the schema changes. */
-type SchemaAnalysis = { view: SchemaView; tokens: Tokens }
+type SchemaAnalysis = { view: SchemaView; tokens: Tokens; database: Database }
 
 /**
  * Everything the front end says about a query, and what the whole round trip
@@ -58,15 +64,32 @@ function analyse(engine: Engine, schemaSource: string, source: string): Analysis
  * schema on every keystroke of a *query* is work whose input did not change.
  */
 function analyseSchema(engine: Engine, schemaSource: string): SchemaAnalysis {
-  return { view: engine.schema(schemaSource), tokens: engine.lexSchema(schemaSource) }
+  return {
+    view: engine.schema(schemaSource),
+    tokens: engine.lexSchema(schemaSource),
+    // The database depends on the schema and nothing else, so it is read here
+    // rather than per keystroke of a query.
+    database: engine.database(schemaSource),
+  }
 }
 
 export default function App() {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [highlight, setHighlight] = useState<Highlight | null>(null)
-  const [tab, setTab] = useState<'tokens' | 'tree' | 'lowered' | 'plan' | 'run'>('run')
   const [at, setAt] = useState(0)
+  const [split, setSplit] = useState(0.52)
+  const [drawer, setDrawer] = useState(false)
+  // Open by default: the run, and the plan it is executing. The rest are there
+  // when a reader goes looking rather than in the way while they are not.
+  const [opened, setOpened] = useState(new Set(['run', 'plan']))
+
+  const toggle = (name: string) =>
+    setOpened((current) => {
+      const next = new Set(current)
+      if (!next.delete(name)) next.add(name)
+      return next
+    })
 
   // Schema, query and analysis move together, updated by whatever changed
   // either text — a keystroke, a sample, or the engine finishing loading. The
@@ -78,8 +101,14 @@ export default function App() {
     schemaView: SchemaAnalysis | null
   }>({ schema: '', source: '', view: null, schemaView: null })
 
+  const { schema, source, view, schemaView } = state
+  const playback = usePlayback(view?.trace.steps.length ?? 0, at, setAt)
+
+  // Every change of either text comes through here, so this is where a run in
+  // progress ends: whatever was playing was playing something else.
   const show = (schema: string, source: string, engine: Engine | null) => {
     setAt(0)
+    playback.setPlaying(false)
     setState((current) => ({
       schema,
       source,
@@ -108,8 +137,16 @@ export default function App() {
     )
   }, [])
 
-  const { schema, source, view, schemaView } = state
-  const playback = usePlayback(view?.trace.steps.length ?? 0, at, setAt)
+  // One fold, three panels: the transport, the plan and the table all show the
+  // same moment.
+  const moment = useMemo(() => (view ? fold(view.trace, at) : null), [view, at])
+
+  const here = view?.trace.steps[Math.min(at, Math.max(view.trace.steps.length - 1, 0))]
+  const examined = here?.examined ?? []
+  // Which plan step the machine is standing at — `null` on the head, where it
+  // is standing on no step at all.
+  const standing =
+    here && here.depth < (view?.lowered.plan?.steps_count ?? 0) ? here.depth : null
   // One list, from the compilation: it carries the lexer's and the parser's
   // faults as well as its own, in the order `Diagnostics::in_source_order` puts
   // them — so showing the parse's separately would print every one twice.
@@ -117,20 +154,18 @@ export default function App() {
 
   return (
     <div className="page">
+      {/* One row, and no taller than what is in it: a title, the schema, and the
+          three numbers worth watching. Everything the prose used to say is
+          demonstrated by the panels underneath it. */}
       <header className="top">
-        <div className="brand">
-          <span className="mark" aria-hidden="true" />
-          <div>
-            <h1>sigla, in your browser</h1>
-            <p>
-              Everything below comes from <code>fjord_engine</code> compiled to
-              WebAssembly — the same lexer, parser, and typechecker the server and the
-              shell run. Edit the schema and the query stops typechecking, because it is
-              the same schema the query is resolved against.
-            </p>
-          </div>
+        <h1>Fjord Playground</h1>
+        <div className="tools">
+          <button type="button" className="chip schema-open" onClick={() => setDrawer(true)}>
+            schema
+            {schemaView && !schemaView.view.ok && <span className="bad"> ✕</span>}
+          </button>
+          <Status engine={engine} failure={failure} micros={view?.micros} />
         </div>
-        <Status engine={engine} failure={failure} micros={view?.micros} />
       </header>
 
       <div className="samples">
@@ -146,98 +181,128 @@ export default function App() {
         ))}
       </div>
 
-      <main className="panes">
-        <section className="pane">
-          <h2>source</h2>
-          <Editor
-            source={source}
-            tokens={view?.tokens.tokens ?? []}
-            highlight={highlight}
-            onChange={(next) => show(schema, next, engine)}
-            onHighlight={setHighlight}
-          />
-          <Diagnostics diagnostics={diagnostics} source={source} />
-          <SchemaPane
-            source={schema}
-            view={schemaView?.view ?? null}
-            tokens={schemaView?.tokens ?? null}
-            onChange={(next) => show(next, source, engine)}
-          />
-        </section>
+      {/* A split: the views on the left, the database on the right, and a grip
+          between them — which side deserves the width depends on what a reader
+          is doing, so it is theirs to decide. */}
+      <Split
+        fraction={split}
+        onFraction={setSplit}
+        left={
+          <div className="stack">
+            <div className="pane">
+              <h2>source</h2>
+              <Editor
+                source={source}
+                tokens={view?.tokens.tokens ?? []}
+                highlight={highlight}
+                onChange={(next) => show(schema, next, engine)}
+                onHighlight={setHighlight}
+              />
+              <Diagnostics diagnostics={diagnostics} source={source} />
+            </div>
 
-        <section className="pane">
-          <div className="tabs">
-            <button
-              type="button"
-              className={tab === 'tokens' ? 'tab on' : 'tab'}
-              onClick={() => setTab('tokens')}
+            {/* An accordion, not tabs: the plan is meant to be read *against*
+                the run that is executing it. */}
+            <Section
+              name="run"
+              count={`${view?.trace.rows ?? 0} rows`}
+              open={opened.has('run')}
+              onToggle={() => toggle('run')}
             >
-              tokens<span className="count">{view?.tokens.tokens.length ?? 0}</span>
-            </button>
-            <button
-              type="button"
-              className={tab === 'tree' ? 'tab on' : 'tab'}
-              onClick={() => setTab('tree')}
+              {moment && (
+                <RunPane
+                  trace={view?.trace ?? null}
+                  plan={view?.lowered.plan ?? null}
+                  at={at}
+                  moment={moment}
+                  onSeek={setAt}
+                  playback={playback}
+                />
+              )}
+            </Section>
+
+            <Section
+              name="plan"
+              count={`${view?.lowered.plan?.levels ?? 0} levels`}
+              open={opened.has('plan')}
+              onToggle={() => toggle('plan')}
             >
-              parse tree<span className="count">{view?.tree.nodes.length ?? 0}</span>
-            </button>
-            <button
-              type="button"
-              className={tab === 'lowered' ? 'tab on' : 'tab'}
-              onClick={() => setTab('lowered')}
+              <PlanPane
+                plan={view?.lowered.plan ?? null}
+                refused={(view?.lowered.diagnostics.length ?? 0) > 0}
+                active={standing}
+                examined={examined}
+              />
+            </Section>
+
+            <Section
+              name="lowered"
+              count={view?.lowered.nodes.length ?? 0}
+              open={opened.has('lowered')}
+              onToggle={() => toggle('lowered')}
             >
-              lowered<span className="count">{view?.lowered.nodes.length ?? 0}</span>
-            </button>
-            <button
-              type="button"
-              className={tab === 'plan' ? 'tab on' : 'tab'}
-              onClick={() => setTab('plan')}
+              {view && (
+                <LoweredView
+                  lowered={view.lowered}
+                  highlight={highlight}
+                  onHighlight={setHighlight}
+                />
+              )}
+            </Section>
+
+            <Section
+              name="parse tree"
+              count={view?.tree.nodes.length ?? 0}
+              open={opened.has('tree')}
+              onToggle={() => toggle('tree')}
             >
-              plan<span className="count">{view?.lowered.plan?.levels ?? 0}</span>
-            </button>
-            <button
-              type="button"
-              className={tab === 'run' ? 'tab on' : 'tab'}
-              onClick={() => setTab('run')}
+              <TreeView
+                tree={view?.tree ?? { root: null, nodes: [], diagnostics: [] }}
+                highlight={highlight}
+                onHighlight={setHighlight}
+              />
+            </Section>
+
+            <Section
+              name="tokens"
+              count={view?.tokens.tokens.length ?? 0}
+              open={opened.has('tokens')}
+              onToggle={() => toggle('tokens')}
             >
-              run<span className="count">{view?.trace.rows ?? 0}</span>
-            </button>
+              <TokenTable
+                tokens={view?.tokens.tokens ?? []}
+                highlight={highlight}
+                onHighlight={setHighlight}
+              />
+            </Section>
           </div>
+        }
+        right={<DataTable database={schemaView?.database ?? null} moment={moment} at={at} />}
+      />
 
-          {tab === 'tokens' && (
-            <TokenTable
-              tokens={view?.tokens.tokens ?? []}
-              highlight={highlight}
-              onHighlight={setHighlight}
-            />
-          )}
-          {tab === 'tree' && (
-            <TreeView
-              tree={view?.tree ?? { root: null, nodes: [], diagnostics: [] }}
-              highlight={highlight}
-              onHighlight={setHighlight}
-            />
-          )}
-          {tab === 'lowered' && view && (
-            <LoweredView lowered={view.lowered} highlight={highlight} onHighlight={setHighlight} />
-          )}
-          {tab === 'plan' && (
-            <PlanPane
-              plan={view?.lowered.plan ?? null}
-              refused={(view?.lowered.diagnostics.length ?? 0) > 0}
-            />
-          )}
-          {tab === 'run' && (
-            <RunPane
-              trace={view?.trace ?? null}
-              plan={view?.lowered.plan ?? null}
-              at={at}
-              onSeek={setAt}
-              playback={playback}
-            />
-          )}
-        </section>
-      </main>
+      <Drawer
+        open={drawer}
+        title={
+          <>
+            <span className="what">schema</span>
+            {schemaView && (
+              <span className={schemaView.view.ok ? 'summary' : 'summary bad'}>
+                {schemaView.view.ok
+                  ? `${schemaView.view.predicates.length} predicates`
+                  : `${schemaView.view.diagnostics.length} problem(s)`}
+              </span>
+            )}
+          </>
+        }
+        onClose={() => setDrawer(false)}
+      >
+        <SchemaPane
+          source={schema}
+          view={schemaView?.view ?? null}
+          tokens={schemaView?.tokens ?? null}
+          onChange={(next) => show(next, source, engine)}
+        />
+      </Drawer>
     </div>
   )
 }

@@ -7,19 +7,21 @@ import { useEffect, useState } from 'react'
  * enough to read* — a machine transition every fifth of a second, which is
  * about as fast as a person can follow a register changing.
  *
- * Stopping at the end is the timer's business rather than an effect's: the
- * effect schedules a tick only while there is somewhere left to go, so the run
- * simply stops being scheduled.
+ * Playing is **derived**, not stored: at the last step there is nowhere to go,
+ * so the transport says "play" again without anyone having to switch it back.
+ * A stored flag would have to be cleared from inside the effect that noticed,
+ * and a reader would pay for it with a "pause" button that takes two clicks —
+ * one to undo the state nothing had told them about.
  */
 export function usePlayback(steps: number, at: number, onSeek: (at: number) => void) {
-  const [playing, setPlaying] = useState(false)
-  const more = at < steps - 1
+  const [wanted, setWanted] = useState(false)
+  const playing = wanted && at < steps - 1
 
   useEffect(() => {
-    if (!playing || !more) return
+    if (!playing) return
     const timer = setTimeout(() => onSeek(at + 1), 220)
     return () => clearTimeout(timer)
-  }, [playing, more, at, onSeek])
+  }, [playing, at, onSeek])
 
-  return { playing: playing && more, setPlaying }
+  return { playing, setPlaying: setWanted }
 }

@@ -47,6 +47,9 @@ pub struct RegisterView {
     pub address: usize,
     /// `fact`, `value`, or `empty`.
     pub kind: &'static str,
+    /// The stored key this row is, in hex — what a page matches against the
+    /// database table to find the row the machine is standing on.
+    pub key: Option<String>,
     /// The row's identity — `code.Decl#4` — for a register holding a row.
     ///
     /// **Decoded against the predicate of the id actually bound**, not against
@@ -69,6 +72,23 @@ pub struct Rejection {
     pub row: RegisterView,
 }
 
+/// The range a level opened over, or the one fact it fetched.
+///
+/// **The bytes, because that is what a scan bound is.** A seek is a prefix of
+/// the stored key order, so `[lo, hi)` is a band across the database table and
+/// nothing at all against decoded values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Scanning {
+    pub step: usize,
+    /// Where the scan starts, in hex, with the predicate prefix.
+    pub lo: String,
+    /// Where it stops — absent for a prefix of all `0xFF`, which has no
+    /// successor and so runs to the end of the predicate.
+    pub hi: Option<String>,
+    /// The fact a point read named, for a level that fetches rather than scans.
+    pub fetch: Option<String>,
+}
+
 /// One transition, and what it changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TraceStep {
@@ -85,6 +105,8 @@ pub struct TraceStep {
     pub row: Option<serde_json::Value>,
     /// The row dropped, on a `reject`.
     pub rejected: Option<Rejection>,
+    /// The range a level opened over, on a `scan`.
+    pub scanning: Option<Scanning>,
     /// Rows examined per plan step, as they stand after this transition.
     pub examined: Vec<u64>,
 }
@@ -137,9 +159,28 @@ fn empty(diagnostics: Vec<DiagnosticView>) -> Trace {
 #[derive(Default)]
 struct Watcher {
     rejected: Vec<(usize, Register, usize)>,
+    opened: Vec<Scanning>,
 }
 
 impl Watch for Watcher {
+    fn scanning(&mut self, depth: usize, lo: &[u8], hi: Option<&[u8]>) {
+        self.opened.push(Scanning {
+            step: depth,
+            lo: crate::database::hex(lo),
+            hi: hi.map(crate::database::hex),
+            fetch: None,
+        });
+    }
+
+    fn fetching(&mut self, depth: usize, id: fjord_schema::id::FactId) {
+        self.opened.push(Scanning {
+            step: depth,
+            lo: String::new(),
+            hi: None,
+            fetch: Some(format!("#{}", id.sequence())),
+        });
+    }
+
     fn rejected(&mut self, depth: usize, register: &Register, residual: usize) {
         self.rejected.push((depth, register.clone(), residual));
     }
@@ -189,6 +230,7 @@ fn run(schema: &Schema, query: &str) -> Trace {
                 registers: Vec::new(),
                 row: value,
                 rejected: None,
+                scanning: None,
                 examined: profile.examined.clone(),
             });
 
@@ -200,8 +242,23 @@ fn run(schema: &Schema, query: &str) -> Trace {
 
         let moved = executor.step_watched(&token, &mut profile, &mut watcher);
 
-        // The rows this transition read and dropped, in the order it read them —
-        // before the transition itself, because that is when they happened.
+        // A level opened: the range it will walk, before any row comes out of
+        // it — which is the order they happened in, and the order a reader
+        // watching the table needs.
+        for opening in watcher.opened.drain(..) {
+            steps.push(TraceStep {
+                at: steps.len(),
+                event: "scan",
+                depth: opening.step,
+                registers: Vec::new(),
+                row: None,
+                rejected: None,
+                scanning: Some(opening),
+                examined: profile.examined.clone(),
+            });
+        }
+
+        // The rows this transition read and dropped, in the order it read them.
         for (depth, register, residual) in watcher.rejected.drain(..) {
             steps.push(TraceStep {
                 at: steps.len(),
@@ -214,6 +271,7 @@ fn run(schema: &Schema, query: &str) -> Trace {
                     residual,
                     row: register_view(usize::MAX, &Slot::Fact(register), schema, interner),
                 }),
+                scanning: None,
                 examined: profile.examined.clone(),
             });
         }
@@ -239,6 +297,7 @@ fn run(schema: &Schema, query: &str) -> Trace {
             registers: changed,
             row: None,
             rejected: None,
+            scanning: None,
             examined: profile.examined.clone(),
         });
 
@@ -290,6 +349,7 @@ fn changes(before: &[Option<RegisterView>], after: &[Option<RegisterView>]) -> V
             now.clone().unwrap_or(RegisterView {
                 address,
                 kind: "empty",
+                key: None,
                 fact: None,
                 value: None,
             })
@@ -316,6 +376,7 @@ fn register_view(
             RegisterView {
                 address,
                 kind: "fact",
+                key: Some(crate::database::hex(&register.bytes)),
                 fact: Some(crate::value::fact(&register.fact_id, schema)),
                 value,
             }
@@ -323,6 +384,7 @@ fn register_view(
         Slot::Value(value) => RegisterView {
             address,
             kind: "value",
+            key: None,
             fact: None,
             value: Some(crate::value::json(value, schema)),
         },

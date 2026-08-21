@@ -22,6 +22,8 @@
 //! `fjord-schema`, and **never** `fjord-store-fjall` — checked by
 //! `dependency_closure` in `fjord-store`.
 
+/// The database as a table: every row, as bytes and as a fact.
+pub mod database;
 /// The database the site queries: its schema, and its facts.
 pub mod demo;
 /// The lowered tree, and the types typecheck gave it.
@@ -45,6 +47,7 @@ pub mod value;
 /// What every view says the same way — a span, and a diagnostic.
 pub mod view;
 
+pub use database::{Database, PredicateRows, RowBytes, database, database_json};
 pub use demo::SCHEMA;
 pub use lowered::{Lowered, LoweredNode, StatementView, lowered, lowered_json};
 pub use plan::{PlanView, StepView};

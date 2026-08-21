@@ -1,4 +1,5 @@
-import type { PlanView, RegisterView, Trace } from './wasm'
+import type { PlanView, Trace } from './wasm'
+import type { Moment } from './run'
 
 /**
  * **The debugger** — the run, one transition at a time.
@@ -17,12 +18,14 @@ export function RunPane({
   trace,
   plan,
   at,
+  moment,
   onSeek,
   playback,
 }: {
   trace: Trace | null
   plan: PlanView | null
   at: number
+  moment: Moment
   onSeek: (at: number) => void
   playback: { playing: boolean; setPlaying: (playing: boolean) => void }
 }) {
@@ -39,8 +42,15 @@ export function RunPane({
   }
 
   const here = Math.min(at, trace.steps.length - 1)
+  const end = trace.steps.length - 1
+  // Every control except play goes through this: a run that keeps advancing
+  // under a reader who just stepped back is fighting them for the play head.
+  const seek = (to: number) => {
+    playback.setPlaying(false)
+    onSeek(to)
+  }
   const step = trace.steps[here]
-  const state = fold(trace, here)
+  const state = moment
   const nextYield = trace.steps.findIndex((s, i) => i > here && s.event === 'yield')
   const previousYield = findLast(trace.steps, here - 1, (s) => s.event === 'yield')
 
@@ -50,12 +60,12 @@ export function RunPane({
           monospace font, and a control that renders as a box is worse than a
           word. */}
       <div className="transport">
-        <button type="button" onClick={() => onSeek(0)} disabled={here === 0} title="to the start">
+        <button type="button" onClick={() => seek(0)} disabled={here === 0} title="to the start">
           |◀ start
         </button>
         <button
           type="button"
-          onClick={() => onSeek(previousYield)}
+          onClick={() => seek(previousYield)}
           disabled={previousYield < 0}
           title="back to the previous row"
         >
@@ -63,7 +73,7 @@ export function RunPane({
         </button>
         <button
           type="button"
-          onClick={() => onSeek(here - 1)}
+          onClick={() => seek(here - 1)}
           disabled={here === 0}
           title="back one transition"
         >
@@ -71,15 +81,15 @@ export function RunPane({
         </button>
         <button
           type="button"
-          onClick={() => onSeek(here + 1)}
-          disabled={here >= trace.steps.length - 1}
+          onClick={() => seek(here + 1)}
+          disabled={here >= end}
           title="one transition"
         >
           ▶
         </button>
         <button
           type="button"
-          onClick={() => onSeek(nextYield)}
+          onClick={() => seek(nextYield)}
           disabled={nextYield < 0}
           title="on to the next row — step over"
         >
@@ -87,16 +97,22 @@ export function RunPane({
         </button>
         <button
           type="button"
-          className={playback.playing ? 'playing' : undefined}
-          onClick={() => playback.setPlaying(!playback.playing)}
-          title={playback.playing ? 'stop' : 'play'}
+          className={playback.playing ? 'play playing' : 'play'}
+          onClick={() => {
+            if (playback.playing) return playback.setPlaying(false)
+            // Play from the end is play from the start: there is nowhere else
+            // for it to mean.
+            if (here >= end) onSeek(0)
+            playback.setPlaying(true)
+          }}
+          title={playback.playing ? 'pause' : here >= end ? 'play again from the start' : 'play'}
         >
           {playback.playing ? 'pause' : 'play'}
         </button>
         <button
           type="button"
-          onClick={() => onSeek(trace.steps.length - 1)}
-          disabled={here >= trace.steps.length - 1}
+          onClick={() => seek(end)}
+          disabled={here >= end}
           title="to the end"
         >
           end ▶|
@@ -105,9 +121,9 @@ export function RunPane({
         <input
           type="range"
           min={0}
-          max={trace.steps.length - 1}
+          max={end}
           value={here}
-          onChange={(event) => onSeek(Number(event.target.value))}
+          onChange={(event) => seek(Number(event.target.value))}
           aria-label="step"
         />
         <span className="count">
@@ -118,6 +134,13 @@ export function RunPane({
       <p className={`event ${step.event}`}>
         <span className="badge">{step.event}</span>
         {step.event === 'yield' && <span className="said">answered {show(step.row)}</span>}
+        {step.event === 'scan' && step.scanning && (
+          <span className="said">
+            {step.scanning.fetch
+              ? `one row, by reference — ${step.scanning.fetch}`
+              : `over ${step.scanning.lo}…${step.scanning.hi ?? 'the end'}`}
+          </span>
+        )}
         {step.event === 'reject' && step.rejected && (
           <span className="said">
             read {step.rejected.row.fact} and dropped it —{' '}
@@ -184,24 +207,6 @@ export function RunPane({
       )}
     </div>
   )
-}
-
-/** The machine's state at `at`, folded from the changes up to it. */
-function fold(trace: Trace, at: number) {
-  const registers = new Map<number, RegisterView & { written: boolean }>()
-  const rows: unknown[] = []
-
-  for (let i = 0; i <= at; i++) {
-    const step = trace.steps[i]
-    for (const [, held] of registers) held.written = false
-    for (const register of step.registers) {
-      if (register.kind === 'empty') registers.delete(register.address)
-      else registers.set(register.address, { ...register, written: i === at })
-    }
-    if (step.event === 'yield') rows.push(step.row)
-  }
-
-  return { registers: [...registers.values()].sort((a, b) => a.address - b.address), rows }
 }
 
 /** Which filter dropped a row, in the plan's own words. */
