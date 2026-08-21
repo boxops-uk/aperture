@@ -21,7 +21,7 @@ default-members = ["crates/*"]
 # and `license`, so those are per-crate — a description is the one field that has to
 # differ — and everything a release stamps identically is stated once.
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/boxops-uk/fjord"

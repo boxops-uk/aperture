@@ -22,7 +22,7 @@
     <IsPackable>false</IsPackable>
 
     <!-- One version for the whole repository, matching the Rust workspace's. -->
-    <Version>0.0.1</Version>
+    <Version>0.1.0</Version>
     <Company>Boxops</Company>
     <Authors>Boxops</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
