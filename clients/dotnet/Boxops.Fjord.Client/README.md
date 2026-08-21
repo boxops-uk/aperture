@@ -82,7 +82,7 @@ self-delimiting and frozen on disk; none of that is on the wire, and a client ne
 
 ## Status
 
-`0.0.1`. No authentication — the transport is the trust boundary. See
+`0.1.0`. No authentication — the transport is the trust boundary. See
 [the repository](https://github.com/boxops-uk/fjord) for the full inventory of what is and is
 not built.
 

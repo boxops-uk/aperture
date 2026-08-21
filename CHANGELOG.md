@@ -1,34 +1,11 @@
 # Changelog
 
-Fjord DB. Dates are the release date; `0.0.x` is a pre-release series and the on-disk format
-is not yet promised to be stable across it.
+Fjord DB. Dates are the release date; `0.x` is a pre-release series and the on-disk format is
+not promised to be stable across its minor versions — a database written by one is read by the
+version that wrote it. What *is* promised inside a series is the append-only discipline the
+format stamp and the marker table enforce: nothing already written is renumbered.
 
-## Unreleased
-
-**The documentation is one body now, and it is tested.** The design book is the website
-(`website/` — `python3 website/serve.py`), verified claim by claim against the tree; its
-invariants page is the canonical registry. `AGENTS.md` is the working contract for
-contributors, `PLAN.md` is a roadmap rather than a phase tree (with the auth design and the
-settled-decisions record inside it), and the two Glean documents merged into `docs/glean.md`.
-CI builds the site strictly and runs `scripts/check-docs.py`, which fails on a broken link, an
-invariant citation the registry does not declare, a reference to a retired document, or a
-build-plan phase number in code — each a way the documentation actually went stale once.
-
-**The design book is published, with the engine running inside it.** Every push to main
-deploys the interactive site — `web/`, the same pages with `fjord-engine` compiled to
-WebAssembly, so a demo of the lexer *is* the lexer — to <https://boxops-uk.github.io/fjord/>
-(after the tests, the drift gate, and the bundle being driven in a real browser), and every
-release carries that bundle as an attested `fjord-docs-site.tar.gz` beside the binaries; the
-site's getting-started page links the release downloads back. The generated copy
-(`python3 website/serve.py`) is what reads with no toolchain, and the second renderer the
-smoke check holds the first one to.
-
-**Every error state is demonstrated by a test** that provokes it and asserts it at its
-contract layer, fjall/OS bubbles excepted; the engine's corpus gate now covers every
-diagnostic code, not only the deferrals. Comments across the workspace state the risk they
-guard rather than the history of how the code got there.
-
-## 0.0.1 — unreleased
+## 0.1.0 — 2026-08-21
 
 The first published artifact. Everything below is *what is there*, and the
 [gaps](#what-is-not-in-it) are as much of the release as the features.
@@ -40,16 +17,64 @@ cargo add fjord-db                              # the Rust client
 dotnet add package Boxops.Fjord.Client          # the .NET client
 ```
 
-Binaries — `fjord` and `fjord-viewer` — are attached to the release and carry SLSA
-provenance:
+Or take the binary — `fjord`, the tool, and `fjord-viewer`, the code-search site — from the
+release, which carries SLSA provenance naming the workflow that built it:
 
 ```bash
+curl -LO https://github.com/boxops-uk/fjord/releases/latest/download/fjord
+chmod +x fjord
 gh attestation verify ./fjord --repo boxops-uk/fjord
+./fjord --help
 ```
 
-**Linux x86_64.** The store root's lock is POSIX `flock` and the default transport is a Unix
-socket, so Windows is out of scope rather than untested. Other Unix targets are expected to
-work and are not built or tested by CI.
+Each release also carries `fjord-x86_64-linux-musl` and `fjord-viewer-x86_64-linux-musl`: the
+same code linked statically, with no glibc floor at all, for an older distro, Alpine or a
+`scratch` container. Take those only if the one above will not run — musl's allocator is
+slower under the load a server puts on it.
+
+**Linux x86_64**, dynamically linked, needing **glibc 2.34 or newer** — Ubuntu 22.04, Debian
+12, RHEL 9 and anything later. That is measured on the binary CI produces rather than inferred
+from the runner it is built on. The store root's lock is POSIX `flock` and the default
+transport is a Unix socket, so Windows is out of scope rather than untested; other Unix targets
+are expected to work and are not built or tested by CI.
+
+### The engine runs in a browser, and the design book runs it
+
+The storage seam split from its backends — `fjord-store` is the `FactStore` trait and the
+shared fixtures, `fjord-store-mem` and `fjord-store-fjall` are the two implementations — which
+is what lets the engine compile to `wasm32-unknown-unknown` with no filesystem under it.
+`fjord-inspect` is the JSON view of every construct (tokens, the parse tree, the lowered tree,
+the plan, a run's steps, the stored rows), and `wasm/` is the module that carries them into a
+page: 366 KB, 151 KB over the wire.
+
+So [the design book](https://boxops-uk.github.io/fjord/) *is* the engine. A `:::demo` block in
+a page is a running lexer, parser, typechecker, planner, executor or database table, editable
+in place, and `/playground` is every view of one query at once with the executor steppable over
+real rows. The pages are `website/content/`, parsed by both renderers rather than copied, and
+the smoke check compares them page for page — a dialect that drifts is a page that reads
+differently depending on which copy you found. `python3 website/serve.py` is still the copy
+that reads with no toolchain.
+
+### The documentation is one body, and it is tested
+
+The design book is the website, verified claim by claim against the tree; its
+invariants page is the canonical registry. `AGENTS.md` is the working contract for
+contributors, `PLAN.md` is a roadmap rather than a phase tree (with the auth design and the
+settled-decisions record inside it), and the two Glean documents merged into `docs/glean.md`.
+CI builds the site strictly and runs `scripts/check-docs.py`, which fails on a broken link, an
+invariant citation the registry does not declare, a reference to a retired document, or a
+build-plan phase number in code — each a way the documentation actually went stale once.
+
+**And it is published by the same pipeline that ships the binaries.** Every push to main
+deploys the interactive site to <https://boxops-uk.github.io/fjord/> — after the suite, the
+drift gate, and the bundle being driven in a real browser — and every release carries that
+bundle as an attested `fjord-docs-site.tar.gz`. Every page in it is a file rather than a
+fallback, so a link into the middle of the book is a page and not a 404.
+
+**Every error state is demonstrated by a test** that provokes it and asserts it at its
+contract layer, fjall/OS bubbles excepted; the engine's corpus gate now covers every
+diagnostic code, not only the deferrals. Comments across the workspace state the risk they
+guard rather than the history of how the code got there.
 
 ### What is in it
 

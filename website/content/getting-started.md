@@ -25,9 +25,19 @@ directory.
 ## 1. Get the binaries
 
 :::note Prebuilt binaries
-Every [GitHub release](https://github.com/boxops-uk/fjord/releases/latest) carries `fjord`
-and `fjord-viewer` for Linux x86_64, with SLSA provenance — verify what you downloaded with
-`gh attestation verify ./fjord --repo boxops-uk/fjord`. Downloading skips this whole step.
+Every [GitHub release](https://github.com/boxops-uk/fjord/releases/latest) carries `fjord` and
+`fjord-viewer` for Linux x86_64, which skips this whole step:
+
+```bash
+curl -LO https://github.com/boxops-uk/fjord/releases/latest/download/fjord
+chmod +x fjord
+gh attestation verify ./fjord --repo boxops-uk/fjord   # what built it, and from what
+```
+
+That one needs glibc 2.34 or newer — Ubuntu 22.04, Debian 12, RHEL 9 and later. The
+`-x86_64-linux-musl` builds beside it are the same code linked statically, for an older
+distro, Alpine or a `scratch` container; musl's allocator is slower under a server's load, so
+they are the second choice rather than the first.
 :::
 
 ```bash

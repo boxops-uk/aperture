@@ -22,11 +22,11 @@ all-features = true
 [dependencies]
 # The schema, because a client must have one: the transport codec sends no names
 # and no types, so both ends supply them (see `fjord-wire`'s module docs).
-fjord-schema = { path = "../fjord-schema", version = "0.0.1" }
+fjord-schema = { path = "../fjord-schema", version = "0.1.0" }
 # The codec and the message vocabulary. **Not `fjord-server`** — operations §10
 # is explicit that nothing depends on the server, and a client that needed one to
 # talk to one would be a contradiction with a build time attached.
-fjord-wire = { path = "../fjord-wire", version = "0.0.1" }
+fjord-wire = { path = "../fjord-wire", version = "0.1.0" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
