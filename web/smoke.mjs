@@ -696,6 +696,24 @@ check(
   (await page.$eval('h1', (el) => el.textContent)) === 'Not a page',
 )
 
+// **A known route is a file, and that is not the same claim.** A fallback
+// document renders the right page and answers **404** — GitHub Pages serves
+// `404.html` for anything it does not have — so a site with no document per route
+// is live only to a reader who starts at the root, and a 404 to every link
+// preview, crawler and link checker. Checked on disk rather than over the preview
+// server, because `vite preview` has a fallback of its own and would pass either
+// way: it is the *files in the bundle* that decide what a host can answer.
+const dist = new URL('dist/', import.meta.url)
+const routes = JSON.parse(readFileSync(new URL('../website/nav.json', import.meta.url), 'utf8'))
+  .groups.flatMap((group) => group.pages.map((entry) => entry.slug))
+  .filter((slug) => slug !== 'index')
+  .concat('playground')
+const bodiless = routes.filter(
+  (slug) =>
+    !existsSync(new URL(`${slug}.html`, dist)) || !existsSync(new URL(`${slug}/index.html`, dist)),
+)
+check('every route in the bundle is a document, not a fallback', bodiless.length === 0, bodiless.join(', '))
+
 await browser.close()
 await server.close()
 

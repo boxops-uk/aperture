@@ -619,8 +619,10 @@ Three things fell out of doing it this way:
   re-paints its static `sigla` and `schema` blocks with the *lexer* once the
   module lands — which is the beginning of retiring `website/assets/app.js`.
 - **A page is a path**, not a fragment: the book is full of `#anchor` links and a
-  hash router would have had to own that character. The served copy needs a
-  fallback document, which `dist/404.html` is.
+  hash router would have had to own that character. The bundle carries a document
+  per route so a path is a file and answers 200, and `dist/404.html` for a path
+  nothing knows about — a fallback on its own renders the right page and returns
+  404, which is live only to a reader who starts at the root.
 - **The two renderers are compared.** The smoke check walks every page in both
   and compares headings, tables, code blocks, callouts and demos — a dialect that
   drifts between Python and TypeScript is a page that reads differently depending
