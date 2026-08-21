@@ -115,22 +115,15 @@
 
 /* ---- diagnostics ---- */
 
-.diagnostics { list-style: none; margin: .9rem 0 0; padding: 0; display: grid; gap: .4rem; }
-
-.diagnostics li {
-  display: flex;
-  flex-wrap: wrap;
-  gap: .5rem;
-  align-items: baseline;
-  padding: .5rem .75rem;
-  border-left: 3px solid var(--color-error);
-  background: var(--color-error-muted);
-  border-radius: 0 .35rem .35rem 0;
-  font-size: .88rem;
+/* The list is layout; every diagnostic in it is a `Banner`, which is what the
+   rest of the site says "something is wrong" with. */
+.diagnostics {
+  list-style: none;
+  margin: var(--spacing-3) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--spacing-2);
 }
-
-.diagnostics .code { font-family: var(--font-family-code); color: var(--color-error); font-size: .8rem; }
-.diagnostics .at { color: var(--color-text-secondary); font-size: .8rem; }
 
 /* ---- the panes that scroll: the token table and the tree ---- */
 
@@ -387,6 +380,7 @@
    pipeline has no hover state for this component to hang it on instead. */
 .astryx-collapsible-trigger:not(#\#):not(#\#):not(#\#) {
   border-radius: var(--radius-element);
+  padding: var(--spacing-2) var(--spacing-3);
 }
 
 @media (hover: hover) {
@@ -591,13 +585,16 @@
   border-bottom: 1px solid var(--color-border);
 }
 
+/* The same control as the accordion on the other side of the page: the same
+   padding, the same hover, and the indicator on the same edge. */
 .data tr.section button {
   display: flex;
-  gap: .6rem;
-  align-items: baseline;
+  gap: var(--spacing-2);
+  align-items: center;
   width: 100%;
-  padding: .35rem .7rem;
+  padding: var(--spacing-2) var(--spacing-3);
   border: 0;
+  border-radius: var(--radius-element);
   background: none;
   font: inherit;
   font-size: .78rem;
@@ -605,14 +602,24 @@
   text-align: left;
 }
 
-.data tr.section .arrow { color: var(--color-text-secondary); font-size: .7rem; transition: transform .12s ease; }
-.data tr.section .arrow.open { transform: rotate(90deg); }
+@media (hover: hover) {
+  .data tr.section button:hover { background: var(--color-background-muted); }
+}
+
+.data tr.section .arrow {
+  display: flex;
+  transform: rotate(-90deg);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.data tr.section .arrow.open { transform: none; }
 /* A predicate name is a heading, not a token: the ink, until the machine is in
    it. Six of them painted in the code palette read as six things happening at
    once, which is the opposite of what the fold is for. */
 .data tr.section .name { font-family: var(--font-family-code); color: var(--color-text-primary); white-space: nowrap; }
 .data tr.section .ty { font-family: var(--font-family-code); color: var(--color-text-secondary); font-size: .74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .data tr.section .count { margin-left: auto; display: flex; }
+.data tr.section .ty { flex: 0 1 auto; }
 
 /* The predicate the machine is reading right now. */
 .data tbody.scanning tr.section .name { color: var(--color-text-accent); font-weight: 600; }

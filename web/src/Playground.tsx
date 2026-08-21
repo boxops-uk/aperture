@@ -19,6 +19,7 @@ import { DataTable } from './DataTable'
 import { Section } from './Accordion'
 import { Drawer } from './Drawer'
 import { Toolbar } from '@astryxdesign/core/Toolbar'
+import { Banner } from '@astryxdesign/core/Banner'
 import { Button } from '@astryxdesign/core/Button'
 import { Selector } from '@astryxdesign/core/Selector'
 import { Text } from '@astryxdesign/core/Text'
@@ -368,9 +369,11 @@ function Status({
 }) {
   if (failure) {
     return (
-      <Text type="supporting" color="accent">
-        the engine did not load — run scripts/build-wasm.sh
-      </Text>
+      <Banner
+        status="error"
+        title="the engine did not load"
+        description="run scripts/build-wasm.sh"
+      />
     )
   }
   if (!engine)

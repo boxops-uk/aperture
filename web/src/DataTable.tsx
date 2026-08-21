@@ -5,6 +5,7 @@ import { Json } from './Json'
 import { plain } from './plain'
 import { useColumns } from './columns'
 import { Badge } from '@astryxdesign/core/Badge'
+import { Icon } from '@astryxdesign/core/Icon'
 
 /**
  * **The database, as the machine sees it** — every stored row, in key order, as
@@ -151,9 +152,6 @@ export function DataTable({
                       }
                       aria-expanded={open}
                     >
-                      <span className={open ? 'arrow open' : 'arrow'} aria-hidden="true">
-                        ▸
-                      </span>
                       <code className="name">{predicate.name}</code>
                       <code className="ty">{predicate.ty}</code>
                       {/* A badge, not a bare number: at the end of a row whose
@@ -163,6 +161,12 @@ export function DataTable({
                           label={`${predicate.rows.length} rows`}
                           variant={relevant.has(predicate.id) ? 'red' : 'neutral'}
                         />
+                      </span>
+                      {/* The same indicator, on the same side, as the accordion
+                          on the other half of the page: one page, one language
+                          for "this opens". */}
+                      <span className={open ? 'arrow open' : 'arrow'}>
+                        <Icon icon="chevronDown" size="sm" color="secondary" />
                       </span>
                     </button>
                   </th>

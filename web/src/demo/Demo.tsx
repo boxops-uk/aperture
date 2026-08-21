@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Banner } from '@astryxdesign/core/Banner'
 import { Card } from '@astryxdesign/core/Card'
 import { Toolbar } from '@astryxdesign/core/Toolbar'
 import { Collapsible } from '@astryxdesign/core/Collapsible'
@@ -126,9 +127,7 @@ export function Demo({ demo }: { demo: Spec }) {
       />
 
       {failure && (
-        <HStack gap={2} padding={3}>
-          <Text color="accent">the engine did not load — {failure}</Text>
-        </HStack>
+        <Banner status="error" title="the engine did not load" description={failure} />
       )}
 
       {!engine && !failure && (
@@ -170,9 +169,11 @@ export function Demo({ demo }: { demo: Spec }) {
           )}
 
           {analysis.broke && (
-            <HStack padding={3}>
-              <Text color="accent">the engine refused this outright — {analysis.broke}</Text>
-            </HStack>
+            <Banner
+              status="error"
+              title="the engine refused this outright"
+              description={analysis.broke}
+            />
           )}
 
           {demo.kind === 'lex' && analysis.tokens && (
