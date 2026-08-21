@@ -204,12 +204,13 @@
   display: flex;
   gap: var(--spacing-2);
   align-items: center;
-  padding: var(--spacing-1) var(--spacing-3) var(--spacing-1) 0;
+  padding: var(--spacing-1) var(--spacing-3);
   cursor: default;
-  border-left: 2px solid transparent;
 }
 
-.tree li.on, .lowered li.on { background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent); border-left-color: var(--color-accent); }
+/* The wash is the highlight. A bar down the left edge of a row inside a rounded
+   pane cuts across the corner it is nowhere near. */
+.tree li.on, .lowered li.on { background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
 .tree .kind, .lowered .kind { font-family: var(--font-family-code); color: var(--color-syntax-function); }
 .tree .kind.leaf, .lowered .kind.leaf { color: var(--color-text-secondary); font-weight: 400; }
 .tree .text, .lowered .text { font-family: var(--font-family-code); color: var(--color-text-primary); }
@@ -315,10 +316,7 @@
 .plan .steps li.head-row { background: var(--color-background-muted); }
 
 /* Where the machine is standing, while a run is being stepped. */
-.plan .steps li.on {
-  background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent);
-  box-shadow: inset 3px 0 0 var(--color-accent);
-}
+.plan .steps li.on { background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
 
 .plan .head { display: flex; gap: .4rem; align-items: center; margin-bottom: .25rem; }
 
@@ -353,9 +351,13 @@
   padding: var(--spacing-2) var(--spacing-3);
 }
 
+/* An ink wash rather than a surface token: the database's section headers sit on
+   the muted background already, so a muted hover on them is a no-op. A wash
+   composites over whatever is underneath and reads the same in both schemes. */
 @media (hover: hover) {
-  .astryx-collapsible-trigger:not(#\#):not(#\#):not(#\#):hover {
-    background: var(--color-background-muted);
+  .astryx-collapsible-trigger:not(#\#):not(#\#):not(#\#):hover,
+  .data tr.section button:hover {
+    background: color-mix(in srgb, var(--color-text-primary) 7%, transparent);
   }
 }
 
@@ -583,10 +585,6 @@
   text-align: left;
 }
 
-@media (hover: hover) {
-  .data tr.section button:hover { background: var(--color-background-muted); }
-}
-
 .data tr.section .arrow {
   display: flex;
   transform: rotate(-90deg);
@@ -621,8 +619,10 @@
 .data .value { color: var(--color-syntax-string); }
 
 /* The four states a row can be in, which are the whole story of a query. */
-.data tr.within td { background: color-mix(in srgb, var(--color-accent) 9%, transparent); }
-.data tr.held td { background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent); }
+/* Three intensities of one wash, and they have to be tellable apart across a
+   table of hex: the range a scan will walk, and the row it is standing on. */
+.data tr.within td { background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+.data tr.held td { background: color-mix(in srgb, var(--color-accent) 26%, transparent); }
 .data tr.held .fact { color: var(--color-text-accent); font-weight: 600; }
 .data tr.seen td { opacity: .5; }
 .data tr.dropped td { background: var(--color-error-muted); opacity: 1; }

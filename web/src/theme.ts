@@ -111,14 +111,23 @@ export const fjordTheme = defineTheme({
     // **The badges draw from the same three hues as the code.** A `seek` chip
     // and a string literal being different greens is the kind of thing nobody
     // reports and everybody feels.
+    //
+    // Their grounds are **opaque**. A translucent tint composites with whatever
+    // is behind it, and a pill lands on a row that is washed accent as often as
+    // on a plain one — where the two colours mix into mud. Light tints at 92%
+    // lightness, dark ones at 30%, both a step from the surface they sit on.
     '--color-text-blue': ['#00437f', '#afd5fe'],
-    '--color-background-blue': ['#0c60a333', '#8cc3fc26'],
+    '--color-background-blue': ['#cfe8ff', '#162f48'],
     '--color-border-blue': ['#0c60a3', '#8cc3fc'],
     '--color-text-green': ['#004b1e', '#ace0b6'],
-    '--color-background-green': ['#1d683533', '#95d7a226'],
+    '--color-background-green': ['#d0eed5', '#17351f'],
     '--color-border-green': ['#1d6835', '#95d7a2'],
     '--color-text-red': ['#7c1021', '#feb9b8'],
-    '--color-background-red': ['#a8344233', '#ff9d9e26'],
+    '--color-background-red': ['#ffd8d7', '#472021'],
     '--color-border-red': ['#a83442', '#ff9d9e'],
+
+    // The same again for the pill with no hue: `--color-neutral` ships as an
+    // alpha grey, which muddies for the same reason.
+    '--color-neutral': ['#e6e8ea', '#27292c'],
   },
 })
