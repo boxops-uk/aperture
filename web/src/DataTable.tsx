@@ -4,6 +4,7 @@ import { inRange, type Moment } from './run'
 import { Json } from './Json'
 import { plain } from './plain'
 import { useColumns } from './columns'
+import { Badge } from '@astryxdesign/core/Badge'
 
 /**
  * **The database, as the machine sees it** — every stored row, in key order, as
@@ -155,7 +156,11 @@ export function DataTable({
                       </span>
                       <code className="name">{predicate.name}</code>
                       <code className="ty">{predicate.ty}</code>
-                      <span className="count">{predicate.rows.length}</span>
+                      {/* A badge, not a bare number: at the end of a row whose
+                          last column is the value, a loose count reads as one. */}
+                      <span className="count">
+                        <Badge label={`${predicate.rows.length} rows`} />
+                      </span>
                     </button>
                   </th>
                 </tr>

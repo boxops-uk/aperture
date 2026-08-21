@@ -589,9 +589,12 @@
 
 .data tr.section .arrow { color: var(--color-text-secondary); font-size: .7rem; transition: transform .12s ease; }
 .data tr.section .arrow.open { transform: rotate(90deg); }
-.data tr.section .name { font-family: var(--font-family-code); color: var(--color-syntax-function); white-space: nowrap; }
+/* A predicate name is a heading, not a token: the ink, until the machine is in
+   it. Six of them painted in the code palette read as six things happening at
+   once, which is the opposite of what the fold is for. */
+.data tr.section .name { font-family: var(--font-family-code); color: var(--color-text-primary); white-space: nowrap; }
 .data tr.section .ty { font-family: var(--font-family-code); color: var(--color-text-secondary); font-size: .74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.data tr.section .count { margin-left: auto; font-family: var(--font-family-code); color: var(--color-text-secondary); font-size: .74rem; }
+.data tr.section .count { margin-left: auto; display: flex; }
 
 /* The predicate the machine is reading right now. */
 .data tbody.scanning tr.section .name { color: var(--color-text-accent); font-weight: 600; }
