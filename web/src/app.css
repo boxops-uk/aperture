@@ -88,8 +88,8 @@
    language says a token *is*, and never re-decides it. */
 .tok-keyword { color: var(--color-syntax-keyword); font-weight: 600; }
 .tok-predicate { color: var(--color-syntax-function); }
-.tok-variable { color: var(--color-text-accent); }
-.tok-field { color: var(--color-text-primary); }
+.tok-variable { color: var(--color-syntax-constant); }
+.tok-field { color: var(--color-syntax-property); }
 .tok-number { color: var(--color-syntax-number); }
 .tok-string { color: var(--color-syntax-string); }
 .tok-namespace { color: var(--color-syntax-function); opacity: .85; }
@@ -97,7 +97,7 @@
 .tok-wildcard { color: var(--color-syntax-comment); }
 .tok-punctuation { color: var(--color-syntax-punctuation); }
 .tok-whitespace { color: inherit; }
-.tok-error { color: var(--color-error); background: var(--color-error-muted); }
+.tok-error { color: var(--color-syntax-tag); background: var(--color-error-muted); }
 
 /* Under the bytes a phase complained about — whichever phase it was. */
 .editor .tok.faulty {

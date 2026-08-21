@@ -2,63 +2,70 @@ import { defineTheme } from '@astryxdesign/core/theme'
 import { defineSyntaxTheme } from '@astryxdesign/core/theme/syntax'
 
 /**
- * **Fjord, as a theme** — a pastel red, at every lightness it has to live at.
+ * **Fjord, as a theme** — neutral ground, one accent, three code colours.
  *
- * The design system is Astryx; the palette is this file, and it is one hue
- * family carried all the way through: the accent is a dusty rose-red, the
- * neutrals carry a whisper of the same hue (15°) so the page belongs to the
- * accent rather than sitting under it, and the code colours are chosen against
- * both.
+ * The page already carries a great deal of semantic colour: a badge per plan
+ * step, a wash for the row the machine is standing on, a band across the bytes a
+ * scan is walking, an error, a yield. So the *ground* stays out of it. Every
+ * surface, line and ink here is a neutral at one hue (250°) and a chroma small
+ * enough that nobody could name it — what a reader sees as colour is only ever
+ * something the engine said. The neutral hue is 250° — cool by a hair, which
+ * reads cleaner on a screen than a dead grey.
  *
- * **Designed in OKLCH, written as hex.** A ramp of hand-picked hexes drifts;
- * what is chosen here is the *distance* between the steps rather than the
- * values. Light: muted 96.4, page 98.4, card 100, so a card lifts off the page
- * and a toolbar sits into it; inks at 23, 47, 67. Dark: muted 16.5, page 19,
- * card 23; inks at 92, 74, 56 — the same ladder, upside down. Every syntax
- * colour sits at one lightness per scheme (46 light, 80–82 dark), so a keyword
- * and a string differ in *hue* rather than in weight.
+ * **Designed in OKLCH, written as hex,** and what is chosen is the distance
+ * between the steps rather than the values. Light surfaces at 96.5 / 98.5 / 100
+ * and dark at 13.5 / 16 / 20.5, so a card lifts off the page and a toolbar sits
+ * into it either way up; inks at 22 / 46 / 66 and 92 / 72 / 55; lines at 90 / 80
+ * and 28 / 38. Each value carries the OKLCH it came from, because that is the
+ * number worth editing.
  *
- * Each value carries the OKLCH it came from, because that is the number worth
- * editing. They are hex rather than `oklch()` for one reason: the accent is a
- * *seed* the theme reads to derive `--color-on-accent` and the accent inks, and
- * a form it cannot parse gives a magenta eyebrow and no warning.
+ * Hex rather than `oklch()` for one reason: the accent is a *seed* the theme
+ * reads to derive `--color-on-accent` and the accent inks, and a form it cannot
+ * parse gives a magenta eyebrow and no warning.
+ */
+
+/**
+ * **Three hues, and the rest is ink.**
  *
- * The one collision worth knowing about: error and accent are both red. They are
- * separated by saturation and by lightness — the accent carries chroma .165, an
- * error is darker and the most saturated red on the page at .22 — because in a
- * red theme a *quieter* error would be the thing nobody sees.
+ * A token palette drifts into a rainbow one hue at a time — violet keywords,
+ * teal numbers, amber constants — and then nothing in it means anything. These
+ * are the three distinctions sigla actually has: *the language* (its keywords
+ * and the variables they bind), *what is being read* (a predicate, a type), and
+ * *a literal*. Fields, punctuation and plain text are ink at three weights; a
+ * comment is the quietest of them.
+ *
+ * Both schemes hold one lightness per role — 46–52% light, 80–84% dark — so a
+ * keyword and a string differ in hue rather than in weight.
  */
 const syntax = defineSyntaxTheme({
   name: 'fjord-code',
   tokens: {
-    // The keys are Astryx's; the classes are `fjord_inspect::tokens`' decisions.
-    keyword: ['#663e9e', '#c7aff5'], // violet: 46% .15 300 / 80% .10 300
-    string: ['#1d6835', '#95d7a2'], // green: 46% .11 150 / 82% .10 150
-    number: ['#006768', '#83d5d4'], // teal: 46% .09 195 / 82% .08 195
-    comment: ['#8d8384', '#807878'], // 62% .012 15 / 58% .010 15
-    function: ['#005a9d', '#91c3f6'], // blue: 46% .13 250 / 80% .09 250
-    type: ['#005a9d', '#91c3f6'],
+    keyword: ['#a83442', '#ff9d9e'], // the language: 50% .15 18 / 80% .12 20
+    constant: ['#9e4c51', '#fbb6b5'], // a sigla variable: 52% .11 18 / 84% .08 20
+    function: ['#0c60a3', '#8cc3fc'], // a predicate: 48% .13 250 / 80% .10 250
+    type: ['#0c60a3', '#8cc3fc'],
+    string: ['#1d6835', '#95d7a2'], // a literal: 46% .11 150 / 82% .10 150
+    number: ['#1d6835', '#95d7a2'],
+    property: ['#3e4348', '#bbbec1'], // a field: 38% .010 250 / 80% .006 250
+    attribute: ['#3e4348', '#bbbec1'],
+    operator: ['#777b7f', '#83878b'], // 58% .008 250 / 62% .008 250
+    punctuation: ['#777b7f', '#83878b'],
+    comment: ['#83878b', '#777b7f'], // 62% / 58%
     // `variable` is the design system's *plain* code colour — what an
-    // unhighlighted block is painted with — so it is the ink, and a sigla
-    // variable takes `constant` below.
-    variable: ['#221b1b', '#eae2e3'],
-    constant: ['#a82037', '#fda0a3'], // a sigla variable: 48% .17 18 / 80% .11 18
-    property: ['#332c2c', '#ddd5d6'], // 30% .010 15 / 88% .008 15
-    operator: ['#786f6f', '#989090'], // 55% .012 15 / 66% .010 15
-    punctuation: ['#786f6f', '#989090'],
-    attribute: ['#332c2c', '#ddd5d6'],
-    // A byte the lexer refused. The most saturated red on the page, because it
-    // has to be found in a page whose accent is also red.
-    tag: ['#b30000', '#f97165'], // 46% .22 30 / 71% .17 27
-    background: ['#faf5f5', '#110c0c'], // 97.4% .006 15 / 16% .008 15
+    // unhighlighted block is painted with — so it is the ink.
+    variable: ['#191b1d', '#e3e5e7'],
+    // A byte the lexer refused: the one thing allowed to be redder than the
+    // accent, because in a page with a red accent a quieter error is invisible.
+    tag: ['#b30018', '#ff8179'], // 48% .20 25 / 75% .16 25
+    background: ['#f5f7f9', '#07080a'], // 97.5% .003 250 / 13.5% .006 250
   },
 })
 
 export const fjordTheme = defineTheme({
   name: 'fjord',
   color: {
-    accent: ['#c2404e', '#f49194'], // 56% .165 18 / 76% .12 18
-    neutralStyle: 'warm',
+    accent: ['#c2404e', '#ef7e80'], // 56% .165 18 / 72% .14 20
+    neutralStyle: 'cool',
   },
   typography: {
     // No webfont, here or anywhere: the site makes no external request, which is
@@ -83,24 +90,35 @@ export const fjordTheme = defineTheme({
   syntax,
   tokens: {
     // The ladder: a toolbar sits into the page, a card lifts off it.
-    '--color-background-body': ['#fdf8f9', '#171213'], // 98.4% .005 15 / 19% .008 15
-    '--color-background-surface': ['#ffffff', '#211b1b'], // 100 / 23% .010 15
-    '--color-background-card': ['#ffffff', '#211b1b'],
-    '--color-background-muted': ['#f8f1f1', '#120d0d'], // 96.4% .008 15 / 16.5% .008 15
-    '--color-background-popover': ['#ffffff', '#292222'], // 26% .010 15
+    '--color-background-body': ['#f9fafb', '#0b0d10'], // 98.5% / 16%
+    '--color-background-surface': ['#ffffff', '#15171a'], // 100% / 20.5%
+    '--color-background-card': ['#ffffff', '#15171a'],
+    '--color-background-muted': ['#f2f4f5', '#07080a'], // 96.5% / 13.5%
+    '--color-background-popover': ['#ffffff', '#1d2022'], // 100% / 24%
 
-    '--color-text-primary': ['#221b1b', '#eae2e3'], // 23% .012 15 / 92% .008 15
-    '--color-text-secondary': ['#625858', '#b1a8a9'], // 47% .014 15 / 74% .010 15
-    '--color-text-disabled': ['#9b9393', '#7a7272'], // 67% .010 15 / 56% .010 15
+    '--color-text-primary': ['#191b1d', '#e3e5e7'], // 22% / 92%
+    '--color-text-secondary': ['#55585c', '#a2a5a8'], // 46% / 72%
+    '--color-text-disabled': ['#8f9397', '#6e7276'], // 66% / 55%
 
-    // A hairline that is visible on white without drawing a box around itself,
-    // and a stronger one for the edges that separate regions.
-    '--color-border': ['#e3dcdc', '#332c2c'], // 90% .008 15 / 30% .010 15
-    '--color-border-emphasized': ['#c5bbbb', '#4e4546'], // 80% .012 15 / 40% .012 15
+    '--color-border': ['#dcdee0', '#26292d'], // 90% / 28%
+    '--color-border-emphasized': ['#bbbec1', '#3e4348'], // 80% / 38%
 
     // The wash every "this is the row the machine is on" highlight is made from.
-    // Alpha rather than a solid, because it lands on white, on the muted band
-    // and on a striped table, and has to be the same wash on all three.
-    '--color-accent-muted': ['#e45b6729', '#f4919433'], // 65% .17 18 at 16% / 20%
+    // Alpha, because it lands on white, on the muted band and on a striped
+    // table, and has to be the same wash on all three.
+    '--color-accent-muted': ['#e45b6729', '#ef7e8038'], // 16% / 22%
+
+    // **The badges draw from the same three hues as the code.** A `seek` chip
+    // and a string literal being different greens is the kind of thing nobody
+    // reports and everybody feels.
+    '--color-text-blue': ['#00437f', '#afd5fe'],
+    '--color-background-blue': ['#0c60a333', '#8cc3fc26'],
+    '--color-border-blue': ['#0c60a3', '#8cc3fc'],
+    '--color-text-green': ['#004b1e', '#ace0b6'],
+    '--color-background-green': ['#1d683533', '#95d7a226'],
+    '--color-border-green': ['#1d6835', '#95d7a2'],
+    '--color-text-red': ['#7c1021', '#feb9b8'],
+    '--color-background-red': ['#a8344233', '#ff9d9e26'],
+    '--color-border-red': ['#a83442', '#ff9d9e'],
   },
 })

@@ -25,24 +25,28 @@ the controls. It ships pre-built CSS, so there is no build plugin — `main.tsx`
 imports `reset.css` and `astryx.css`, and `<Theme>` at the root of the
 application injects the theme.
 
-**The palette is `src/theme.ts`**, and it is one hue family carried all the way
-through: a dusty rose-red accent, neutrals with a whisper of the same hue so the
-page belongs to the accent rather than sitting under it, and a syntax theme whose
-classes are the ones `fjord_inspect::tokens` has been deciding all along — so a
-block painted by the real lexer and a block painted by the fallback rules are the
-same colours.
+**The palette is `src/theme.ts`**, and it is deliberately quiet. The page
+already carries a great deal of semantic colour — a badge per plan step, a wash
+for the row the machine is on, a band across the bytes a scan is walking, an
+error, a yield — so every surface, line and ink is a neutral at one hue and a
+chroma nobody could name. What a reader sees as colour is only ever something
+the engine said.
+
+Code gets **three hues and the rest is ink**: the language (keywords, and the
+variables they bind), what is being read (a predicate, a type), and a literal.
+Fields, punctuation and plain text are ink at three weights, and a comment is
+the quietest of them. The badges draw from the same three, because a `seek` chip
+and a string literal being different greens is the kind of thing nobody reports
+and everybody feels.
 
 Both schemes are **designed in OKLCH and written as hex**, and what is chosen is
-the *distance* between the steps rather than the values: surfaces at 96.4 / 98.4
-/ 100 in light and 16.5 / 19 / 23 in dark, so a card lifts off the page and a
-toolbar sits into it either way round; inks at 23 / 47 / 67 and 92 / 74 / 56; and
-every syntax colour at one lightness per scheme, so a keyword and a string differ
-in hue rather than in weight. Hand-picked hexes drift; distances do not. (The
-method is the one `boxops`' own token set documents. The accent is a hex rather
-than an `oklch()` string because the theme *reads* it to derive the accent inks —
-a form it cannot parse gives a magenta eyebrow and no warning.) The rules the design system asks of a consumer are in
-[`ASTRYX.md`](ASTRYX.md); the short version is *components first, tokens second,
-raw CSS never*.
+the *distance* between the steps rather than the values: light surfaces at 96.5 /
+98.5 / 100 and dark at 13.5 / 16 / 20.5, so a card lifts off the page and a
+toolbar sits into it either way up; inks at 22 / 46 / 66 and 92 / 72 / 55. Each
+value carries the OKLCH it came from. (The method is the one `boxops`' token set
+documents. The accent is a hex rather than an `oklch()` string because the theme
+*reads* it to derive the accent inks — a form it cannot parse gives a magenta
+eyebrow and no warning.)
 
 The frame fills the viewport and the regions scroll independently, which is what
 keeps the reading order and the on-page outline in place while a page moves under
