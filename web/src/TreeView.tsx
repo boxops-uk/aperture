@@ -29,7 +29,9 @@ export function TreeView({
     return (
       <div className="scroller">
         <p className="empty">
-          no tree — the parse was refused rather than recovered
+          {tree.diagnostics.length === 0
+            ? 'nothing to parse yet'
+            : 'no tree — the parse was refused rather than recovered'}
         </p>
       </div>
     )

@@ -42,11 +42,15 @@ export function DataTable({
   database,
   moment,
   at,
+  collapsed,
 }: {
   database: Database | null
   moment: Moment | null
   /** The step being shown: a move is a step *or* a different query. */
   at: number
+  /** There is no query: fold the whole table rather than leaving it open on
+   *  the predicates the last one happened to be about. */
+  collapsed?: boolean
 }) {
   // The key is the long one and the reason the pane is wide; the fact and the
   // value are a name and a short string.
@@ -79,10 +83,15 @@ export function DataTable({
   const predicates = database?.predicates
   const matters = [...relevant].sort((a, b) => a - b).join(',')
   useEffect(() => {
-    if (!predicates || relevant.size === 0) return
+    if (!predicates) return
+    if (collapsed) {
+      setClosed(new Set(predicates.map((it) => it.id)))
+      return
+    }
+    if (relevant.size === 0) return
     setClosed(new Set(predicates.map((it) => it.id).filter((id) => !relevant.has(id))))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [at, matters, predicates])
+  }, [at, matters, predicates, collapsed])
 
   if (!database) return null
 

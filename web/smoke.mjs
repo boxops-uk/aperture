@@ -219,6 +219,21 @@ await transport('▶')
 await settle()
 check('a row read and dropped is marked as dropped', (await page.$$('.data tr.dropped')).length === 1)
 
+// **An empty box is not a mistake.** Every phase has something to say about the
+// empty string, and none of it is about anything the reader did.
+await type('.editor .input', ' ')
+await page.keyboard.press('Backspace')
+await settle()
+check('an empty query reports nothing', (await page.$$('.diagnostics li')).length === 0)
+check(
+  'an empty query folds the whole database',
+  (await unfolded()).length === 0 && (await page.$$('.data tr.section')).length === 6,
+)
+check(
+  'an empty query leaves every view saying so',
+  (await texts('.empty')).filter((said) => said.includes('yet')).length >= 3,
+)
+
 // ---- the debugger: the machine, one transition at a time ----
 
 // A query whose scan reads rows and drops them, which is the thing that is

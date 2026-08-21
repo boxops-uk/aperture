@@ -133,9 +133,16 @@ export function Playground() {
 
   const { schema, source } = edited ?? opening
 
+  // **An empty box is not a mistake.** Every phase has something to say about
+  // the empty string — the parser wants a head, the typechecker wants a
+  // statement — and none of it is about anything the reader did. Nothing is
+  // analysed until there is something to analyse, and the panes fall back to
+  // the "nothing yet" they already have for the moment before the module lands.
+  const blank = source.trim() === ''
+
   const view: Analysis | null = useMemo(
-    () => (engine ? analyse(engine, schema, source) : null),
-    [engine, schema, source],
+    () => (engine && !blank ? analyse(engine, schema, source) : null),
+    [engine, blank, schema, source],
   )
   // The schema's own views depend on the schema alone, so a keystroke in the
   // query does not lex 150 lines of schema again.
@@ -234,7 +241,11 @@ export function Playground() {
                 onChange={(next) => show(schema, next)}
                 onHighlight={setHighlight}
               />
-              <Diagnostics diagnostics={diagnostics} source={source} />
+              {blank ? (
+                <Text type="supporting">type a query, or pick a sample</Text>
+              ) : (
+                <Diagnostics diagnostics={diagnostics} source={source} />
+              )}
             </div>
 
             {/* An accordion, not tabs: the plan is meant to be read *against*
@@ -245,7 +256,7 @@ export function Playground() {
               open={opened.has('run')}
               onToggle={() => toggle('run')}
             >
-              {moment && (
+              {moment ? (
                 <RunPane
                   trace={view?.trace ?? null}
                   plan={view?.lowered.plan ?? null}
@@ -254,6 +265,8 @@ export function Playground() {
                   onSeek={setAt}
                   playback={playback}
                 />
+              ) : (
+                <p className="empty">nothing to run yet</p>
               )}
             </Section>
 
@@ -277,12 +290,14 @@ export function Playground() {
               open={opened.has('lowered')}
               onToggle={() => toggle('lowered')}
             >
-              {view && (
+              {view ? (
                 <LoweredView
                   lowered={view.lowered}
                   highlight={highlight}
                   onHighlight={setHighlight}
                 />
+              ) : (
+                <p className="empty">nothing to lower yet</p>
               )}
             </Section>
 
@@ -332,7 +347,12 @@ export function Playground() {
               isScrollable
               padding={0}
             >
-              <DataTable database={schemaView?.database ?? null} moment={moment} at={at} />
+              <DataTable
+              database={schemaView?.database ?? null}
+              moment={moment}
+              at={at}
+              collapsed={blank}
+            />
             </LayoutPanel>
           </>
         }

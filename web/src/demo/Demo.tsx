@@ -62,8 +62,12 @@ export function Demo({ demo }: { demo: Spec }) {
   // it.
   const schemaSource = schema || engine?.sampleSchema || ''
 
+  // An empty box is not a mistake — see the note in `Playground`. Nothing is
+  // analysed until there is something to analyse.
+  const blank = !schemaDemo && query.trim() === ''
+
   const analysis = useMemo(() => {
-    if (!engine) return null
+    if (!engine || blank) return null
     try {
       const stepping = demo.kind === 'run' || demo.kind === 'store'
       const compiled =
@@ -91,7 +95,7 @@ export function Demo({ demo }: { demo: Spec }) {
         broke: String(error),
       }
     }
-  }, [engine, query, schemaSource, demo.kind, schemaDemo])
+  }, [engine, blank, query, schemaSource, demo.kind, schemaDemo])
 
   const trace = analysis?.trace ?? null
   const playback = usePlayback(trace?.steps.length ?? 0, at, setAt)
@@ -135,6 +139,21 @@ export function Demo({ demo }: { demo: Spec }) {
           <Spinner size="sm" />
           <Text type="supporting">loading the engine…</Text>
         </HStack>
+      )}
+
+      {engine && blank && (
+        <>
+          <Editor
+            source={query}
+            tokens={[]}
+            highlight={highlight}
+            onChange={retype}
+            onHighlight={setHighlight}
+          />
+          <HStack padding={3}>
+            <Text type="supporting">type a query to see what the engine makes of it</Text>
+          </HStack>
+        </>
       )}
 
       {engine && analysis && (
