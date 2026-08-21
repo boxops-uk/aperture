@@ -1,5 +1,11 @@
 # Fjord
 
+[![release](https://github.com/boxops-uk/fjord/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/boxops-uk/fjord/actions/workflows/release.yml)
+[![crates.io](https://img.shields.io/crates/v/fjord-db.svg)](https://crates.io/crates/fjord-db)
+[![docs.rs](https://img.shields.io/docsrs/fjord-db)](https://docs.rs/fjord-db)
+[![NuGet](https://img.shields.io/nuget/v/Boxops.Fjord.Client.svg)](https://www.nuget.org/packages/Boxops.Fjord.Client)
+[![licence](https://img.shields.io/crates/l/fjord-db.svg)](LICENSE)
+
 **Fjord DB stores facts and answers questions about them.** A fact is a typed record — *this
 file declares this function at this line*; *this reference points at that declaration* — and a
 question is a sentence in **sigla**, its typed, Datalog-flavoured query language:
