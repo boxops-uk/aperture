@@ -170,8 +170,8 @@ Read it as two nested loops. The outer one scans `src.Decl` and filters on `name
 narrow the scan. The inner one **seeks**: `src.Ref`'s key leads with `to`, so the
 declaration's fact id is spliced into the seek key and only its references are read.
 
-The same compilation, over the demo schema, with the plan the engine actually emits — levels,
-registers, the access each one uses, and the fingerprint a resume cursor would carry:
+The same compilation, over the demo schema, with the plan the engine actually emits — its
+levels, its registers, and the access each step uses:
 
 :::demo plan
 N where code.Decl {file = F, name = N, line = _}; F = code.File P; P = "src/u"..

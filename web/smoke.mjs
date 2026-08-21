@@ -428,11 +428,6 @@ check(
   'a seek is told apart from a scan',
   (await texts('.plan .steps .astryx-badge')).some((badge) => badge.trim() === 'seek'),
 )
-check(
-  'the plan carries the fingerprint a cursor would',
-  /^[0-9a-f]{16}$/.test(await page.$eval('.plan .fingerprint', (el) => el.textContent)),
-)
-
 // The plan is not a description while a run is stepping: it is the thing being
 // executed, and the step the machine is standing at says so.
 await type('.editor .input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')

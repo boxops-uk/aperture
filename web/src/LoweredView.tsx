@@ -111,9 +111,11 @@ function Row({
       onMouseEnter={() => onHighlight({ span: node.span, node: node.id, view: 'lowered' })}
       onMouseLeave={() => onHighlight(null)}
     >
-      <span className="kind">{node.kind}</span>
-      {node.label !== null && <span className="text">{node.label}</span>}
-      {node.ty !== null && <Badge variant="neutral" label={node.ty} />}
+      <span className="lead">
+        <span className="kind">{node.kind}</span>
+        {node.label !== null && <span className="text">{node.label}</span>}
+        {node.ty !== null && <Badge variant="neutral" label={node.ty} />}
+      </span>
       <span className="num">
         {node.span.start}–{node.span.end}
       </span>

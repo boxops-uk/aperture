@@ -54,9 +54,11 @@ const syntax = defineSyntaxTheme({
     // `variable` is the design system's *plain* code colour — what an
     // unhighlighted block is painted with — so it is the ink.
     variable: ['#191b1d', '#e3e5e7'],
-    // A byte the lexer refused: the one thing allowed to be redder than the
-    // accent, because in a page with a red accent a quieter error is invisible.
-    tag: ['#b30018', '#ff8179'], // 48% .20 25 / 75% .16 25
+    // A byte the lexer refused. It used to be a redder red than the accent,
+    // because a quieter error is invisible on a page whose accent is already
+    // red — the accent *is* that red now, so this is the same pair as
+    // `--color-error` and `--color-accent` rather than a fourth one near them.
+    tag: ['#df202e', '#fc5855'], // 58% .22 25 / 68% .20 25
     background: ['#f5f7f9', '#07080a'], // 97.5% .003 250 / 13.5% .006 250
   },
 })
@@ -64,7 +66,11 @@ const syntax = defineSyntaxTheme({
 export const fjordTheme = defineTheme({
   name: 'fjord',
   color: {
-    accent: ['#c2404e', '#ef7e80'], // 56% .165 18 / 72% .14 20
+    // The seed. Astryx derives the accent inks from it and does not hand back
+    // what it was given — `#df202e` comes out as `#C4001C` — so the three inks
+    // are stated below rather than derived. The seed still feeds everything
+    // else it generates, so it is the same colour.
+    accent: ['#df202e', '#fc5855'],
     neutralStyle: 'cool',
   },
   typography: {
@@ -103,10 +109,30 @@ export const fjordTheme = defineTheme({
     '--color-border': ['#dcdee0', '#26292d'], // 90% / 28%
     '--color-border-emphasized': ['#bbbec1', '#3e4348'], // 80% / 38%
 
-    // The wash every "this is the row the machine is on" highlight is made from.
-    // Alpha, because it lands on white, on the muted band and on a striped
-    // table, and has to be the same wash on all three.
-    '--color-accent-muted': ['#e45b6729', '#ef7e8038'], // 16% / 22%
+    // **One red.** An accent ink and an error ink were two reds a few degrees
+    // and eight points of lightness apart — `#ae2d3f` against `#df202e` — which
+    // is not a distinction anybody reads as a distinction. It is one colour now,
+    // the more saturated of the two, and `--color-error` and the syntax theme's
+    // `tag` are the same pair: a note's icon, a diagnostic's icon, a refused
+    // byte, the caret, the scrub bar and the band under a hovered token are all
+    // the same red.
+    //
+    // Stated rather than derived because the seed above does not survive the
+    // derivation. `--color-on-accent` comes with them: it is what sits *on* a
+    // solid accent fill, and it flips, because the light accent is at 58% and
+    // the dark one at 68%.
+    '--color-accent': ['#df202e', '#fc5855'],
+    '--color-text-accent': ['#df202e', '#fc5855'],
+    '--color-icon-accent': ['#df202e', '#fc5855'],
+    '--color-on-accent': ['#ffffff', '#0b0d10'],
+
+    // The design system's own selection wash: a `:::note` banner's ground, a
+    // command-palette row under the cursor, a selected item. It is the page's
+    // wash, like every other ground here — it was a 16% tint of a lightened
+    // accent, which composited to almost exactly this on white and to something
+    // else on anything that was not white, so a note and a diagnostic were two
+    // pinks that only agreed by luck about what they were sitting on.
+    '--color-accent-muted': 'var(--fj-wash)',
 
     // **The badges draw from the same three hues as the code.** A `seek` chip
     // and a string literal being different greens is the kind of thing nobody
@@ -145,13 +171,18 @@ export const fjordTheme = defineTheme({
     // 54% .148 / 70% .19 for the success — which is the strength the shipped
     // values carried, in the hues this page uses.
     //
-    // The grounds are 88.5% .05 and 28% .07, and they are **opaque** for the
-    // reason the badges' are: a banner sits on the body, on a card and inside a
-    // demo, and a tint is a different colour on each of the three.
-    '--color-error': ['#df202e', '#ff7977'],
-    '--color-error-muted': ['#f9cdc9', '#451816'],
+    // **A status ground is the page's wash** — 94% .024 and 33% .034, which is
+    // `--fj-wash` in `app.css`, where every wash here is declared. So a banner
+    // sits at exactly the weight a highlighted row does, and only its hue says
+    // which kind it is. The error's *is* that value, by name rather than by a
+    // copied pair: its hue is the accent's, so two nearly-identical reds a few
+    // degrees apart would read as one colour done twice. Opaque for the same
+    // reason the rest are — a banner lands on the body, on a card and inside a
+    // demo.
+    '--color-error': ['#df202e', '#fc5855'],
+    '--color-error-muted': 'var(--fj-wash)',
     '--color-success': ['#02853c', '#0fbd59'],
-    '--color-success-muted': ['#c3e3c8', '#063215'],
+    '--color-success-muted': ['#e0f0e3', '#293a2c'],
 
     // A warning is the one thing the other two status hues cannot say: it must
     // read as neither an error nor a note, and both of those are already red. So
@@ -159,9 +190,8 @@ export const fjordTheme = defineTheme({
     // colour — and the one that cannot sit at the others' lightness. A yellow
     // has no chroma left at 58%, and the shipped one bought its chroma at 79%,
     // where the icon went pale against the ground it stands on. 66% .138 is
-    // where it is both amber and findable; its dark ground is .06 rather than
-    // .07 because that is the gamut edge at 28%.
+    // where it is both amber and findable.
     '--color-warning': ['#c38406', '#f3a504'],
-    '--color-warning-muted': ['#edd5b5', '#3a2400'],
+    '--color-warning-muted': ['#f5e9da', '#3f3321'],
   },
 })

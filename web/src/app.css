@@ -1,3 +1,63 @@
+/* **Every wash on this page, and there are five.**
+ *
+ * They are not design-system tokens, and they are here rather than in
+ * `theme.ts` because Astryx's token set is a fixed union — "the engine is here"
+ * is this page's colour, not the design system's. `theme.ts` points its status
+ * grounds back at `--fj-wash`, so each value is written once.
+ *
+ * They were `color-mix` of the accent with transparent, at eight different
+ * percentages. Two things were wrong with that. A mix with transparent is a mix
+ * with **whatever is underneath**, so one idea painted as three colours. And an
+ * alpha wash of an ink **cannot hold its chroma**: at 18% a 50%-lightness accent
+ * lands at .026, where the eye stops reading a tint and starts reading dirty
+ * grey — every calibrated ground here, a badge or a banner, sits at .045 or
+ * better. So each of these is designed at its own lightness with the chroma the
+ * gamut allows there, and each is **opaque** unless something structural stops
+ * it — one is, and it says why below.
+ *
+ *   --fj-wash         94%   .024 / 33% .034   the machine is here — and a
+ *                                              status banner's ground, which is
+ *                                              the same colour on purpose
+ *   --fj-wash-strong  85.5% .075 / 39% .079   ...and it is holding this row
+ *   --fj-wash-mark    82%   .090 / 44% .092   a mark drawn over a wash
+ *   --fj-select       78%   .105 / 48% .105, at 35% / 45% alpha
+ *                                             text is picked out in the editor
+ *   --fj-hover        the muted surface       a pointer is over this
+ *
+ * **One highlight, whatever its shape, and a banner is one too.** A hovered node
+ * lights its whole subtree, a plan step is two lines tall, a fact row is one, a
+ * callout is a block of prose — and all of them take `--fj-wash`, because a
+ * reader reads them as the same statement and a tint that changes with the size
+ * of the thing it is on is three statements.
+ * `--fj-wash-strong` exists for the one place that needs a second intensity: the
+ * fact table says both *the scan will walk this range* and *it is standing on
+ * this row*, and those have to be tellable apart across a table of hex.
+ * `--fj-wash-mark` is for what is neither a row nor a block: a mark drawn on top
+ * of a row that is already washed, which has to clear the strongest of them —
+ * `strong` is 85.5%, so this is 82%, close enough above it to read and far
+ * enough below the ink to stay a mark rather than a second highlight.
+ *
+ * `--fj-select` is a step darker than the mark and does not follow it: it is
+ * translucent, so it has to start further down to arrive in the same place, and
+ * the two are answering different questions.
+ *
+ * **One of them is not opaque, and it is not a matter of taste.** The selection
+ * is drawn *over* the glyphs rather than behind them: the
+ * editor paints its tokens in a layer under a textarea whose own text is
+ * transparent, so an opaque selection does not highlight the code, it erases it.
+ * 35% and 45% are where the tokens still read through the band, checked in both
+ * schemes against the real painted layer. The relevance band — the bytes a
+ * hovered node covers — takes the same value, and gets its translucency for
+ * free rather than by need: it is painted *behind* its glyphs, so what it
+ * composites over is the editor's own ground. */
+:root {
+  --fj-wash: light-dark(#fbe5e7, #452e30);
+  --fj-wash-strong: light-dark(#fcbcc3, #683139);
+  --fj-wash-mark: light-dark(#f8acb6, #7d3b44);
+  --fj-select: light-dark(#f29ba759, #8f414c73);
+  --fj-hover: var(--color-background-muted);
+}
+
 /* **An app, not a document.** The workbench is exactly the viewport and never
    scrolls: the two panes scroll independently, so a tall database does not push
    the transport off the top and a long parse tree does not push the database
@@ -76,7 +136,8 @@
   overflow: auto;
 }
 
-.editor .input::selection { background: color-mix(in srgb, var(--color-accent) 28%, transparent); }
+/* The one wash that must not be opaque — see `--fj-select`. */
+.editor .input::selection { background: var(--fj-select); }
 
 /* The schema is 150 lines of declarations and comments, so its editor starts
    tall and scrolls; a query is one or two lines. */
@@ -106,15 +167,16 @@
   text-underline-offset: .2em;
 }
 
-/* Strong enough to find without hunting: this is what says *these bytes* while
-   the cursor is somewhere else entirely — in a tree, in a table, in a plan. */
-/* A band, not a box: consecutive tokens are separate spans, so anything drawn
+/* This is what says *these bytes* while the cursor is somewhere else entirely —
+   in a tree, in a table, in a plan. **It is the selection band**, and the same
+   value: a reader dragging across the query and the page pointing at the bytes a
+   node covers are one idea, so a second treatment for the second one was a
+   distinction to decode rather than a thing to read.
+
+   A band, not a box: consecutive tokens are separate spans, so anything drawn
    round each one would rule lines through the middle of a highlighted phrase.
-   A tint plus one underline joins up instead. */
-.tok.on {
-  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
-  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--color-accent) 70%, transparent);
-}
+   The tint alone joins up, because adjacent spans' grounds touch. */
+.tok.on { background: var(--fj-select); }
 
 /* The greys are the first thing the tint swallows. */
 .tok-wildcard.on,
@@ -176,7 +238,7 @@
 
 .scroller td { padding: .3rem .75rem; border-bottom: 1px solid var(--color-border); vertical-align: baseline; }
 .scroller tr:last-child td { border-bottom: 0; }
-.scroller tr.on td { background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent); }
+.scroller tr.on td { background: var(--fj-wash); }
 .scroller .num { font-family: var(--font-family-code); color: var(--color-text-disabled); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .scroller .kind { font-family: var(--font-family-code); color: var(--color-text-primary); }
 .scroller .text { font-family: var(--font-family-code); color: var(--color-text-primary); word-break: break-all; }
@@ -208,9 +270,30 @@
   cursor: default;
 }
 
+/* **A row is one line, cut off where it runs out of pane.** These panes are
+   resizable, and a node's label sits beside a type badge that will not shrink —
+   so wrapping turns a label into a column of single characters and pushes every
+   row below it down the page. The `lead` is what gets cut: `min-width: 0`,
+   because a flex item's floor is its own content width until it is said
+   otherwise, and there is no ellipsis because the thing being cut is a group of
+   several fields rather than one string.
+
+   The span stays. It is the column a reader tracks down the tree, and a
+   truncation that ate it would cost more than it saved. */
+.tree li .lead, .lowered li .lead {
+  display: flex;
+  gap: var(--spacing-2);
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.tree li .num, .lowered li .num { flex: none; }
+
 /* The wash is the highlight. A bar down the left edge of a row inside a rounded
    pane cuts across the corner it is nowhere near. */
-.tree li.on, .lowered li.on { background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
+.tree li.on, .lowered li.on { background: var(--fj-wash); }
 .tree .kind, .lowered .kind { font-family: var(--font-family-code); color: var(--color-syntax-function); }
 .tree .kind.leaf, .lowered .kind.leaf { color: var(--color-text-secondary); font-weight: 400; }
 .tree .text, .lowered .text { font-family: var(--font-family-code); color: var(--color-text-primary); }
@@ -297,18 +380,6 @@
 
 /* ---- the plan ---- */
 
-/* The fingerprint sits under the plan it identifies. */
-.plan .fingerprint-line {
-  margin: var(--spacing-2) 0 0;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-}
-
-.plan .fingerprint-line .fingerprint {
-  font-family: var(--font-family-code);
-  color: var(--color-text-primary);
-}
-
 .plan .steps { list-style: none; margin: 0; padding: .5rem 0; }
 
 .plan .steps li { padding: .3rem .75rem .5rem; border-bottom: 1px solid var(--color-border); }
@@ -316,7 +387,7 @@
 .plan .steps li.head-row { background: var(--color-background-muted); }
 
 /* Where the machine is standing, while a run is being stepped. */
-.plan .steps li.on { background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
+.plan .steps li.on { background: var(--fj-wash); }
 
 .plan .head { display: flex; gap: .4rem; align-items: center; margin-bottom: .25rem; }
 
@@ -351,13 +422,21 @@
   padding: var(--spacing-2) var(--spacing-3);
 }
 
-/* An ink wash rather than a surface token: the database's section headers sit on
-   the muted background already, so a muted hover on them is a no-op. A wash
-   composites over whatever is underneath and reads the same in both schemes. */
+/* **The muted surface, which is the ground the transport's buttons sit on.**
+   A header carries pills, and a pill is `--color-neutral` — so a hover has to
+   land somewhere a pill can still be seen against. An ink wash at 7% took white
+   to 94.5% lightness, two and a half points off the pill's 92%, and the counts
+   vanished into the header the moment a pointer touched it. The muted surface is
+   96.5%: the same four-and-a-half-point gap the transport already holds between
+   its toolbar and its buttons.
+
+   This was a wash because the database's section headers used to sit on the
+   muted surface, where a muted hover would have been a no-op. They sit on the
+   surface now, so both of these hover from white and that reason is gone. */
 @media (hover: hover) {
   .astryx-collapsible-trigger:not(#\#):not(#\#):not(#\#):hover,
   .data tr.section button:hover {
-    background: color-mix(in srgb, var(--color-text-primary) 7%, transparent);
+    background: var(--fj-hover);
   }
 }
 
@@ -446,13 +525,16 @@
 }
 
 /* The register this transition wrote — the one thing a reader is looking for. */
-.run .registers li.written { background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent); }
+.run .registers li.written { background: var(--fj-wash); }
 .run .registers .address { font-family: var(--font-family-code); color: var(--color-text-secondary); }
 .run .registers .fact { font-family: var(--font-family-code); color: var(--color-syntax-function); }
 .run .registers .value { font-family: var(--font-family-code); color: var(--color-text-primary); word-break: break-all; }
 
 .run .yielded li { padding: .15rem .35rem; border-radius: var(--radius-inner); font-family: var(--font-family-code); font-size: .82rem; }
-.run .yielded li.fresh { background: color-mix(in srgb, var(--color-syntax-string) 16%, transparent); }
+/* A yield is the one wash that is not the accent's, because it is not "the
+   machine is here" — it is "this came out". The success ground carries the same
+   weight as the base step, so it sits in the ladder rather than beside it. */
+.run .yielded li.fresh { background: var(--color-success-muted); }
 
 .run .capped {
   margin: 0;
@@ -563,7 +645,10 @@
   top: 1.7rem;
   z-index: 1;
   padding: 0;
-  background: var(--color-background-muted);
+  /* The surface, because the accordion trigger this copies has no ground of its
+     own and shows the pane through. Opaque all the same: it is sticky, and rows
+     scroll under it. The two rules are the band. */
+  background: var(--color-background-surface);
   border-top: 1px solid var(--color-border);
   border-bottom: 1px solid var(--color-border);
 }
@@ -619,19 +704,19 @@
 .data .value { color: var(--color-syntax-string); }
 
 /* The four states a row can be in, which are the whole story of a query. */
-/* Three intensities of one wash, and they have to be tellable apart across a
-   table of hex: the range a scan will walk, and the row it is standing on. */
-.data tr.within td { background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
-.data tr.held td { background: color-mix(in srgb, var(--color-accent) 26%, transparent); }
+.data tr.within td { background: var(--fj-wash); }
+.data tr.held td { background: var(--fj-wash-strong); }
 .data tr.held .fact { color: var(--color-text-accent); font-weight: 600; }
 .data tr.seen td { opacity: .5; }
 .data tr.dropped td { background: var(--color-error-muted); opacity: 1; }
 .data tr.dropped .fact { color: var(--color-error); }
 
-/* The bytes the seek pinned, against the ones the scan walks. */
+/* The bytes the seek pinned, against the ones the scan walks. The mark step: it
+   is drawn on top of a row that is already washed, so it has to clear the
+   strongest of them. */
 .data .pinned {
   color: var(--color-text-accent);
-  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  background: var(--fj-wash-mark);
   border-radius: .2rem;
 }
 

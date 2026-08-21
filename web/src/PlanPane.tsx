@@ -80,12 +80,6 @@ export function PlanPane({
           <pre>{plan.head}</pre>
         </li>
       </ol>
-
-      {/* The identity a resume cursor carries. It belongs with the plan rather
-          than in the header above it: nobody scans for a fingerprint. */}
-      <p className="fingerprint-line">
-        fingerprint <code className="fingerprint">{plan.fingerprint}</code>
-      </p>
     </div>
   )
 }

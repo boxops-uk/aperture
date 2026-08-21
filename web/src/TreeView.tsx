@@ -61,8 +61,10 @@ export function TreeView({
             onMouseEnter={() => onHighlight({ span: node.span, node: node.id, view: 'tree' })}
             onMouseLeave={() => onHighlight(null)}
           >
-            <span className={node.token ? 'kind leaf' : 'kind'}>{node.kind}</span>
-            {node.label !== null && <span className="text">{display(node.label)}</span>}
+            <span className="lead">
+              <span className={node.token ? 'kind leaf' : 'kind'}>{node.kind}</span>
+              {node.label !== null && <span className="text">{display(node.label)}</span>}
+            </span>
             <span className="num">
               {node.span.start}–{node.span.end}
             </span>
