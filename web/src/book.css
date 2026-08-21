@@ -100,3 +100,13 @@
 .demo .data { padding: var(--spacing-3); }
 .demo .data .scroll { max-height: 26rem; }
 .demo .scroller { max-height: 22rem; }
+
+/* --------------------------------------------------------------- search ---
+
+   A flex item's automatic minimum size is its content, and a line of prose is
+   wider than the palette: without this the list scrolls sideways instead of the
+   hit wrapping inside it. */
+
+.astryx-command-palette-item,
+.astryx-command-palette-item > *,
+.astryx-command-palette-group { min-width: 0; }

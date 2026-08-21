@@ -183,23 +183,24 @@ export function Playground() {
         // A select rather than fourteen buttons: the samples are a list to pick
         // from, and a list that does not fit on two rows is a list.
         startContent={
-          <Selector
-            label="Sample query"
-            isLabelHidden
-            size="sm"
-            width={240}
-            variant="ghost"
-            placeholder="samples"
-            value={engine?.samples.find((sample) => sample.source === source)?.label}
-            options={(engine?.samples ?? []).map((sample) => ({
-              value: sample.label,
-              label: sample.label,
-            }))}
-            onChange={(label) => {
-              const sample = engine?.samples.find((entry) => entry.label === label)
-              if (sample) show(schema, sample.source)
-            }}
-          />
+          <HStack align="center">
+            <Selector
+              label="Sample query"
+              isLabelHidden
+              size="sm"
+              width={240}
+              placeholder="samples"
+              value={engine?.samples.find((sample) => sample.source === source)?.label}
+              options={(engine?.samples ?? []).map((sample) => ({
+                value: sample.label,
+                label: sample.label,
+              }))}
+              onChange={(label) => {
+                const sample = engine?.samples.find((entry) => entry.label === label)
+                if (sample) show(schema, sample.source)
+              }}
+            />
+          </HStack>
         }
         endContent={
           <HStack gap={4} align="center">
@@ -238,7 +239,7 @@ export function Playground() {
             {/* An accordion, not tabs: the plan is meant to be read *against*
                 the run that is executing it. */}
             <Section
-              name="run"
+              name="Run"
               count={`${view?.trace.rows ?? 0} rows`}
               open={opened.has('run')}
               onToggle={() => toggle('run')}
@@ -256,7 +257,7 @@ export function Playground() {
             </Section>
 
             <Section
-              name="plan"
+              name="Plan"
               count={`${view?.lowered.plan?.levels ?? 0} levels`}
               open={opened.has('plan')}
               onToggle={() => toggle('plan')}
@@ -270,7 +271,7 @@ export function Playground() {
             </Section>
 
             <Section
-              name="lowered"
+              name="Lowered"
               count={view?.lowered.nodes.length ?? 0}
               open={opened.has('lowered')}
               onToggle={() => toggle('lowered')}
@@ -285,7 +286,7 @@ export function Playground() {
             </Section>
 
             <Section
-              name="parse tree"
+              name="Parse tree"
               count={view?.tree.nodes.length ?? 0}
               open={opened.has('tree')}
               onToggle={() => toggle('tree')}
@@ -298,7 +299,7 @@ export function Playground() {
             </Section>
 
             <Section
-              name="tokens"
+              name="Tokens"
               count={view?.tokens.tokens.length ?? 0}
               open={opened.has('tokens')}
               onToggle={() => toggle('tokens')}

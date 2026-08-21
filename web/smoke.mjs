@@ -68,6 +68,8 @@ const check = (claim, ok, detail = '') => {
   if (!ok) problems.push(claim + (detail ? ` — ${detail}` : ''))
 }
 const settle = () => new Promise((resolve) => setTimeout(resolve, 250))
+// `.editor .input`, never a bare `.input`: the design system uses `input` as a
+// variant class, so the sample select answers a bare one first.
 const type = async (selector, text) => {
   await page.click(selector)
   await page.keyboard.down('Control')
@@ -81,7 +83,7 @@ const texts = (selector) => page.$$eval(selector, (els) => els.map((el) => el.te
 const openSection = async (name) => {
   const opened = await page.evaluate((name) => {
     const head = [...document.querySelectorAll('.astryx-collapsible-trigger')].find((head) =>
-      head.textContent?.startsWith(name),
+      head.textContent?.toLowerCase().startsWith(name.toLowerCase()),
     )
     if (!head) return false
     if (head.getAttribute('aria-expanded') !== 'true') head.click()
@@ -176,7 +178,7 @@ check(
 
 // A join: the inner level seeks, so its range covers exactly the rows of one
 // file — a band across the table rather than the whole predicate.
-await type('.input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
+await type('.editor .input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
 for (let i = 0; i < 3; i++) await transport('▶')
 await settle()
 
@@ -212,7 +214,7 @@ await settle()
 check('a predicate opened by hand stays open', (await unfolded()).includes('code.Span'))
 
 // A scan with a residual: the rows it reads and drops go red.
-await type('.input', 'N where code.Decl {file = _, name = N, line = L}; L > 15')
+await type('.editor .input', 'N where code.Decl {file = _, name = N, line = L}; L > 15')
 await transport('▶')
 await settle()
 check('a row read and dropped is marked as dropped', (await page.$$('.data tr.dropped')).length === 1)
@@ -221,7 +223,7 @@ check('a row read and dropped is marked as dropped', (await page.$$('.data tr.dr
 
 // A query whose scan reads rows and drops them, which is the thing that is
 // invisible everywhere except here.
-await type('.input', 'N where code.Decl {file = _, name = N, line = L}; L > 15')
+await type('.editor .input', 'N where code.Decl {file = _, name = N, line = L}; L > 15')
 await page.waitForSelector('.transport')
 
 const events = async () => {
@@ -313,7 +315,7 @@ check(
 
 await openSection('tokens')
 await page.waitForSelector('.scroller tbody tr')
-await type('.input', 'P where code.File P; P = 7 ~')
+await type('.editor .input', 'P where code.File P; P = 7 ~')
 
 const tokens = (await page.$$eval('.scroller tbody tr', (trs) =>
   trs.map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent)),
@@ -377,7 +379,7 @@ check(
 
 // ---- a clean query, and then the plan it compiles to ----
 
-await type('.input', 'P where code.File P')
+await type('.editor .input', 'P where code.File P')
 check('a supported query compiles clean', (await page.$$('.diagnostics li')).length === 0)
 
 await openSection('plan')
@@ -390,7 +392,7 @@ check(
 // **The reorderer is the thing worth seeing.** Written in this order the join
 // reads File second; the constraint on it makes it the cheaper place to start,
 // and the plan says so by putting it first.
-await type('.input', 'N where code.Decl {file = F, name = N, line = _}; F = code.File P; P = "src/u"..')
+await type('.editor .input', 'N where code.Decl {file = F, name = N, line = _}; F = code.File P; P = "src/u"..')
 await page.waitForSelector('.plan .steps li')
 const steps = await texts('.plan .steps pre')
 check(
@@ -408,7 +410,7 @@ check(
 
 // The plan is not a description while a run is stepping: it is the thing being
 // executed, and the step the machine is standing at says so.
-await type('.input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
+await type('.editor .input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
 for (let i = 0; i < 2; i++) await transport('▶')
 await settle()
 check('the plan lights the step the machine is standing at', (await page.$$('.plan .steps li.on')).length === 1)
@@ -419,7 +421,7 @@ check(
 
 // A refused query has no plan *and* no run, and both say so in their own words
 // rather than showing an empty panel that reads like an answer of no rows.
-await type('.input', 'X where code.Nonesuch X')
+await type('.editor .input', 'X where code.Nonesuch X')
 await page.waitForFunction(() =>
   [...document.querySelectorAll('.empty')].some((said) => said.textContent.includes('refused')),
 )

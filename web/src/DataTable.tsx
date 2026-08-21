@@ -159,7 +159,10 @@ export function DataTable({
                       {/* A badge, not a bare number: at the end of a row whose
                           last column is the value, a loose count reads as one. */}
                       <span className="count">
-                        <Badge label={`${predicate.rows.length} rows`} />
+                        <Badge
+                          label={`${predicate.rows.length} rows`}
+                          variant={relevant.has(predicate.id) ? 'red' : 'neutral'}
+                        />
                       </span>
                     </button>
                   </th>

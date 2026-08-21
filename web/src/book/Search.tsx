@@ -65,9 +65,11 @@ export function Search({
         const { entry, needle } = item.auxiliaryData ?? { entry: null, needle: '' }
         if (!entry) return item.label
         return (
-          <VStack gap={0}>
+          <VStack gap={0} width="100%">
             <Text>{item.label}</Text>
-            <Text type="supporting" maxLines={1}>
+            {/* Two lines, wrapped: a single line of prose is wider than the
+                palette, and a hit that scrolls sideways is a hit nobody reads. */}
+            <Text type="supporting" maxLines={2} wordBreak="break-word">
               {snippet(entry.text, needle)}
             </Text>
           </VStack>

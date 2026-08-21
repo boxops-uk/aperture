@@ -36,8 +36,12 @@
   overflow: hidden;
 }
 
-.paint,
-.input {
+/* Scoped to the editor, always. `input` and `paint` are ordinary words, and a
+   design system uses ordinary words for its variants: an unscoped `.input` here
+   absolutely positioned the Selector's own trigger and collapsed it to nothing.
+   The same lesson as `.card`, learned twice. */
+.editor .paint,
+.editor .input {
   margin: 0;
   padding: var(--spacing-3);
   /* A query is a line or two; the paint layer is the one in flow, so the box
@@ -53,9 +57,9 @@
   border: 0;
 }
 
-.paint { color: var(--color-text-primary); overflow: auto; }
+.editor .paint { color: var(--color-text-primary); overflow: auto; }
 
-.input {
+.editor .input {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -72,7 +76,7 @@
   overflow: auto;
 }
 
-.input::selection { background: color-mix(in srgb, var(--color-accent) 28%, transparent); }
+.editor .input::selection { background: color-mix(in srgb, var(--color-accent) 28%, transparent); }
 
 /* The schema is 150 lines of declarations and comments, so its editor starts
    tall and scrolls; a query is one or two lines. */
@@ -377,6 +381,20 @@
   word-break: break-word;
 }
 
+/* An accordion header is a control, and says so under a pointer.
+   The `:not(#\#)` chain matches the specificity the design system's own atomic
+   rules carry — without it a single class selector loses to them, and the theme
+   pipeline has no hover state for this component to hang it on instead. */
+.astryx-collapsible-trigger:not(#\#):not(#\#):not(#\#) {
+  border-radius: var(--radius-element);
+}
+
+@media (hover: hover) {
+  .astryx-collapsible-trigger:not(#\#):not(#\#):not(#\#):hover {
+    background: var(--color-background-muted);
+  }
+}
+
 /* ---- the debugger ---- */
 
 /* The glyphs are the labels here, so the size of the control is the size of the
@@ -492,8 +510,8 @@
   font-weight: 600;
 }
 
-.data h2 .range { margin-left: 0; text-transform: none; letter-spacing: 0; color: var(--color-text-secondary); font-size: .8rem; }
-.data h2 .range code { font-family: var(--font-family-code); color: var(--color-text-accent); }
+.data h2 .range { margin-left: 0; text-transform: none; letter-spacing: 0; color: var(--color-text-secondary); }
+.data h2 .range code { font-family: var(--font-family-code); font-size: inherit; color: var(--color-text-accent); }
 
 /* The pane scrolls, not the page: the table is the tall thing here, and a
    reader stepping a run should not lose the transport off the top. */
