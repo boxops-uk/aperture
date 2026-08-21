@@ -29,7 +29,7 @@ built rather than described as if it were.
 | **Second implementation** | A C# client, its demo producer, a real Roslyn/MSBuild indexer, and a byte-for-byte golden against the Rust encoder |
 | **Viewer** | A code-search site: browse, file view with cross-references, prefix search, symbol pages |
 | **Measurement** | Six instruments across seven rungs, and a findings register |
-| **Documentation** | This site, deployed on every push to main after the tests and the drift gate; each release carries it as an attested bundle beside the binaries |
+| **Documentation** | This site, deployed on every push to main after the tests and the drift gate; each release carries it as an attested bundle beside the binaries. The same pages are also rendered by the interactive site, which parses them from the same files and runs the engine inside them |
 | **The engine in a browser** | `fjord-engine` compiles to `wasm32-unknown-unknown`, and the whole of it runs there: the lexer's tokens, the parser's tree, the lowered tree with its inferred types, the plan the executor would run, and **the run itself, stepped one transition at a time** — registers filling, rows answered, the rows a residual read and dropped, and the whole database as a table with the range each scan walks shaded across it in bytes. Against a schema you can edit in the page. CI checks the browser build, and both configurations of the trace hook, on every push |
 
 ## Not built
@@ -42,7 +42,7 @@ built rather than described as if it were.
 | **`fjord write`, `db backup/restore/verify`, `completions`** | Named in the CLI design, absent from the binary. A Complete database is a directory, so `tar` is the backup | — |
 | **Per-predicate statistics** | Nothing feeds a selectivity heuristic, which is why the reorderer does not have one | `finish` is the natural place to record them |
 | **Per-stream flow control** | Bounded queues and per-connection backpressure in the meantime | — |
-| **The rest of the interactive site** | Compilation is real, all the way to a plan; **running** the plan is not, and the published book still highlights its code samples with a hand-written JavaScript lexer | Rows need a store in the browser — `MemStore` is wasm-clean and the shared fixture's facts are backend-agnostic data, so what is missing is a schema and facts that agree |
+| **Publishing the interactive site** | The published copy of this book is the generated one, and it still highlights its code samples with a hand-written JavaScript lexer. The interactive copy — same pages, same reading order, with the lexer, parser, typechecker, planner, executor and database running in them — is built and checked, and not yet what the domain serves | GitHub Pages takes one artifact per run, so the switch-over is a deployment decision, not a missing feature |
 | **A resumable deadline** | A timeout unwinds terminally instead of handing back a cursor | The token cannot represent a mid-descent position |
 | **Authentication** | None, by design. The transport is the trust boundary | — |
 

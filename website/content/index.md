@@ -111,6 +111,18 @@ a producer writes:
 {"a": "ada", "b": "grace"}
 ```
 
+The engine that answers a query like that is **on this page**. The whole front end and the
+executor are compiled to WebAssembly and run in the browser, over a small code index: four
+files, seven declarations, and the references between them.
+
+:::demo run
+N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
+:::
+
+Every demo in this book is that engine — not a recording of it, and not a JavaScript
+imitation of it. Edit the query and everything below it is recomputed by the same code the
+server runs.
+
 ## Where to go next
 
 - **New here?** [Getting started](getting-started.html), then the

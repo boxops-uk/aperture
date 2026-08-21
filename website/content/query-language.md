@@ -14,6 +14,13 @@ The head says what a row looks like. The statements say which rows there are. Th
 `select`, no `from`, no `join` keyword: a join is two statements sharing a variable, and the
 compiler decides the order.
 
+The lexer is the first thing that sees a query, and it is lossless: every byte of the source
+is in exactly one token, including the whitespace and the ones it rejects.
+
+:::demo lex
+N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
+:::
+
 ## Grammar
 
 ```text
@@ -133,6 +140,18 @@ P where P = test.Foo {id = 1}; test.Ref {of = P}             → test.Foo#1
 
 Both spellings are the **same plan**. `reorder` emits the *runnable frontier*: a statement
 that reads a variable the next statement binds is moved rather than refused.
+
+Both spellings, compiled: the plan below is the same whichever way round the two statements
+are typed, and swapping them in the box is the fastest way to see that.
+
+:::demo plan
+schema test {
+  predicate Foo : { id : int, name : string } -> string
+  predicate Ref : { of : Foo }
+}
+---
+P where test.Ref {of = P}; P = test.Foo {id = 1}
+:::
 
 ### A bind means one of four things
 
@@ -464,6 +483,13 @@ If a question you ask often reads far more rows than it produces, the answer is 
 **schema**, not the query: declare the same data keyed for that question. See
 [Schema language](schema-language.html#field-order-is-the-index-design).
 
+Live, against the demo schema — the leading field is a reference, so a constant `file`
+seeks and a constant `name` behind it filters:
+
+:::demo plan
+N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
+:::
+
 ## Errors and refusals
 
 Diagnostics carry a **code**, and the code is what tests assert on, so wording can improve
@@ -501,6 +527,14 @@ error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
 | `reject/not-a-union` | `X.alt? where X = test.Foo _` | A select on something that is not a union at all |
 | `reject/unknown-alternative` | `X where test.Tagged {what = {nosuch = X}, id = _}` | A name the union does not declare — the same class of mistake as an unknown field |
 | `reject/union-arity` | `X where test.Tagged {what = {num = X, text = _}, id = _}` | Two alternatives at once is what a *record* of two fields means, and a union cannot |
+
+Each of those is a code, and each is reachable from here. `code.Nonesuch`, a field the
+predicate does not declare, a comparison between a string and a number — the diagnostic
+comes back with its code and the span it is about:
+
+:::demo types
+N where code.Decl {file = _, name = N, line = L}; L > 15
+:::
 
 ### Not implemented yet
 

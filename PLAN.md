@@ -595,12 +595,42 @@ language surface is specified, and nothing had written these down.
 panel, so the view renders one as `code.File#2`. Not a second codec: nothing
 there decodes bytes.
 
+### Movement 5 — the book itself, with the engine in it ✅
+
+`web/` renders **the design book**, not a demo beside it. The pages are
+`website/content/`, imported raw and parsed by a TypeScript port of the same
+dialect `build.py` renders; the reading order moved to `website/nav.json`, which
+both read. Nothing was copied, because two copies of a page is one page that goes
+stale.
+
+**The demos are the argument.** A `:::demo <kind>` block in the content is the
+engine running where the paragraph that needs it is — `lex`, `parse`, `types`,
+`plan`, `run`, `store`, `schema` — editable, so the reader's next question is
+answerable by typing it. `build.py` understands the same block and renders the
+source with a pointer rather than a typed-out answer, so the generated site stays
+true while it is still the published one.
+
+Three things fell out of doing it this way:
+
+- **The module is demanded, not assumed.** A demo triggers the load; everything
+  else observes. A page of prose costs no WebAssembly, and a page with a demo
+  re-paints its static `sigla` and `schema` blocks with the *lexer* once the
+  module lands — which is the beginning of retiring `website/assets/app.js`.
+- **A page is a path**, not a fragment: the book is full of `#anchor` links and a
+  hash router would have had to own that character. The served copy needs a
+  fallback document, which `dist/404.html` is.
+- **The two renderers are compared.** The smoke check walks every page in both
+  and compares headings, tables, code blocks, callouts and demos — a dialect that
+  drifts between Python and TypeScript is a page that reads differently depending
+  on which copy you found.
+
+What remains is switching the publish over: `website/` still builds and still
+deploys, untouched.
+
 ### What is left
 
 - **The `WireView`** — frames, blocks and a hex dump annotated by offset — which
   is the one view in the original list nothing has needed yet.
-- **Retiring the hand-written highlighter** in `website/assets/app.js`, which
-  waits on the new site carrying the book's code samples.
 - **A schema handle, if a bigger schema ever makes it hurt.** `compile` re-reads
   the schema on every keystroke, because the module holds no state — two strings
   in, JSON out, and no handle a page has to free. Measured on
@@ -610,16 +640,17 @@ there decodes bytes.
   -Oz` takes 34 KB off it and `web/`'s dev-dependencies now carry binaryen so
   the build script finds one. If it matters more later, the lever is splitting
   the module per segment rather than shrinking this one.
-- **Retire the hand-written highlighter** in `website/assets/app.js` once the
-  new site carries the book's code samples. Until then two highlighters exist,
-  which is the state this work is meant to end.
-- **CI.** Nothing in `.github/workflows/release.yml` builds `wasm/` or `web/`
-  yet, and Pages accepts one artifact per run — so publishing the interactive
-  site means either building it into a subdirectory of `website/site/` after
-  `build.py` (which `rmtree`s that directory first, so order is load-bearing) or
-  staging both. The cheap first step is a `test`-job step running
-  `cargo check -p fjord-engine --target wasm32-unknown-unknown`, which is what
-  `dependency_closure` cannot prove on its own.
+- **Retire the hand-written highlighter** in `website/assets/app.js`. `web/`
+  paints `sigla` and `schema` blocks with the real lexer once a demo has brought
+  the module in, and carries the fallback rules for the languages the engine has
+  no opinion about; the generated site still carries its own copy, and that copy
+  goes when the publish switches over.
+- **Publishing.** `website/` is still what CI deploys. Pages accepts one
+  artifact per run, so switching over means building `web/` with
+  `SITE_BASE=/fjord/` and publishing `dist/` — including the `404.html` a path
+  router needs — either instead of `website/site/` or beside it during a
+  changeover. The wasm build has to run in CI first, and the engine's browser
+  build is already checked there.
 - **A virtual import resolver**, so browser schemas are not single-file:
   `syntax::resolve` reads files, and everything else in `fjord-schema` is clean.
 - **`ts-rs` behind a feature**, so `web/src/wasm.ts`'s types are generated from

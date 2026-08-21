@@ -109,7 +109,8 @@ pub fn database(schema: &str) -> String {
     fjord_inspect::database_json(schema)
 }
 
-/// The schema the site opens with — the repository's own `schemas/code.sigla`.
+/// The schema the site opens with — `schemas/demo.sigla`, the database in the
+/// page rather than the code index `schemas/code.sigla` describes.
 #[wasm_bindgen]
 #[must_use]
 pub fn sample_schema() -> String {

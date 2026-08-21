@@ -81,6 +81,13 @@ piece:
 Splicing is how a join narrows the inner scan to rows matching the outer row. There is no join
 operator; there is a seek key with someone else's bytes in it.
 
+A seek and a scan side by side: the outer level here seeks, because the leading key field is
+a constant, and the inner one filters what it reads. The badges on each step say which.
+
+:::demo plan
+N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
+:::
+
 ### A test is not a level
 
 ```rust
@@ -210,6 +217,14 @@ folded has no steps at all, so there is nothing to iterate. Two consequences are
 the loop: backing out of the head cannot decrement past zero, and a *suspend request* there
 reports `Done` rather than handing back a cursor — an empty cursor means "start from the
 beginning", so resuming would re-emit the row.
+
+One transition per click. `depth` moves down as a level opens and up as one drains, the
+registers hold the rows the machine is standing on, and a yield is a row leaving the machine
+— the same loop, driven by hand:
+
+:::demo run
+N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
+:::
 
 ### Why a state machine and not recursion
 

@@ -594,7 +594,7 @@ h1 {
 
 /* ---- the debugger ---- */
 
-.run .transport {
+.transport {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -609,7 +609,7 @@ h1 {
 /* Bordered before they are hovered: buttons that appear out of the background
    under the pointer make a row of words look like it is jumping. Hover changes
    the tone, never the size. */
-.run .transport button {
+.transport button {
   border: 1px solid var(--rule);
   border-radius: .3rem;
   background: var(--bg-raised);
@@ -622,18 +622,18 @@ h1 {
   cursor: pointer;
 }
 
-.run .transport button:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
-.run .transport button:active:not(:disabled) { background: var(--bg-sunken); }
-.run .transport button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.run .transport button:disabled { opacity: .35; background: none; border-color: transparent; cursor: default; }
+.transport button:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
+.transport button:active:not(:disabled) { background: var(--bg-sunken); }
+.transport button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.transport button:disabled { opacity: .35; background: none; border-color: transparent; cursor: default; }
 
 /* "play" and "pause" are different widths, and the row must not move between
    them — the button being clicked is the one under the pointer. */
-.run .transport button.play { min-width: 3.4rem; }
-.run .transport button.playing { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
+.transport button.play { min-width: 3.4rem; }
+.transport button.playing { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
 
-.run .transport input[type="range"] { flex: 1; margin: 0 .4rem; accent-color: var(--accent); cursor: pointer; }
-.run .transport .count {
+.transport input[type="range"] { flex: 1; margin: 0 .4rem; accent-color: var(--accent); cursor: pointer; }
+.transport .count {
   font-family: var(--mono);
   font-size: .75rem;
   color: var(--ink-faint);

@@ -1,0 +1,50 @@
+{
+  "//": "The reading order, and the only copy of it: website/build.py renders the sidebar from this, and web/ imports it. A slug here with no content/<slug>.md is a build warning, and so is a page with no entry.",
+  "groups": [
+    {
+      "label": "Start here",
+      "pages": [
+        { "slug": "index", "title": "Overview" },
+        { "slug": "getting-started", "title": "Getting started" },
+        { "slug": "building", "title": "Building from source" },
+        { "slug": "walkthrough", "title": "Walkthrough" }
+      ]
+    },
+    {
+      "label": "The model",
+      "pages": [
+        { "slug": "concepts", "title": "Concepts" },
+        { "slug": "schema-language", "title": "Schema language" },
+        { "slug": "query-language", "title": "sigla query language" }
+      ]
+    },
+    {
+      "label": "How it works",
+      "pages": [
+        { "slug": "query-lifecycle", "title": "A query, step by step" },
+        { "slug": "storage", "title": "Storage model" },
+        { "slug": "executor", "title": "Executor & resume" },
+        { "slug": "wire-protocol", "title": "Wire protocol" }
+      ]
+    },
+    {
+      "label": "Using it",
+      "pages": [
+        { "slug": "cli", "title": "CLI reference" },
+        { "slug": "shell", "title": "Shell reference" },
+        { "slug": "clients", "title": "Clients & the viewer" },
+        { "slug": "operations", "title": "Operations" }
+      ]
+    },
+    {
+      "label": "Reference",
+      "pages": [
+        { "slug": "invariants", "title": "Invariants" },
+        { "slug": "performance", "title": "Performance" },
+        { "slug": "testing", "title": "Testing method" },
+        { "slug": "status", "title": "Status & roadmap" },
+        { "slug": "glossary", "title": "Glossary" }
+      ]
+    }
+  ]
+}

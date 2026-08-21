@@ -10,7 +10,7 @@ book, not here.
 
 | What | Where |
 |---|---|
-| **The design book** (for humans — architecture, rationale, reference) | [`website/content/`](website/README.md) — published at <https://boxops-uk.github.io/fjord/> on every push to main; browse locally with `python3 website/serve.py`. The reading order is `NAV` in `build.py` |
+| **The design book** (for humans — architecture, rationale, reference) | [`website/content/`](website/README.md) — published at <https://boxops-uk.github.io/fjord/> on every push to main; browse locally with `python3 website/serve.py`. The reading order is [`website/nav.json`](website/nav.json), read by the generator and by `web/` |
 | **The invariant registry** (statement · why · guard · status) | [`website/content/invariants.md`](website/content/invariants.md) — know these by number |
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
 | Where we stand against Glean — read **before proposing a feature Glean has** | [`docs/glean.md`](docs/glean.md) |
@@ -53,7 +53,10 @@ of its own crate.
 a `cdylib` that only builds for `wasm32-unknown-unknown`; as a workspace member
 it would break `cargo build` on the host and quietly narrow the coverage ledger.
 It is built by `scripts/build-wasm.sh` and consumed by `web/`, the interactive
-site — both consumers of the tree, in the way `clients/dotnet` is.
+site — both consumers of the tree, in the way `clients/dotnet` is. `web/` renders
+**the same pages** `website/` publishes, parsed from `website/content/` rather
+than copied, with `:::demo` blocks that run the engine; its smoke check compares
+the two renderers page for page.
 
 **A non-Rust client is part of the test surface.** `clients/dotnet` implements the protocol
 from outside — no shared constants, no shared enums — and is a checked-in golden:

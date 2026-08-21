@@ -105,6 +105,18 @@ stated over encodings, and it holds only if one value has exactly one legal byte
 A string prefix becomes a **range** by encoding the prefix and dropping its terminator, which
 is what makes `"al"..` a byte range rather than a filter.
 
+Every stored key of a whole database, in the order a scan meets them, as bytes and decoded.
+The claim above is checkable here: read down the hex column and it ascends, and read down the
+decoded column beside it and the values ascend in the same order.
+
+:::demo store
+P where code.File P; P = "src/"..
+:::
+
+Step it and the range being walked is shaded across the rows. `"src/"..` is a prefix, so the
+band starts inside the predicate rather than at its first row — the range is bytes, and the
+bytes are these.
+
 ### 2. Self-delimiting ([I2](invariants.html#i2))
 
 The **marker byte** alone says how to advance past a value. `skip` needs no schema: a scan

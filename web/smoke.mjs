@@ -8,7 +8,7 @@
 //
 // It needs a Chrome to drive, from `$CHROME` or puppeteer's cache, and says so
 // rather than passing vacuously when there is none.
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { preview, build } from 'vite'
 import puppeteer from 'puppeteer-core'
 
@@ -59,9 +59,9 @@ const problems = []
 page.on('console', (m) => m.type() === 'error' && problems.push(`console: ${m.text()}`))
 page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`))
 
-const check = (claim, ok) => {
-  console.log(`${ok ? '  ok  ' : ' FAIL '} ${claim}`)
-  if (!ok) problems.push(claim)
+const check = (claim, ok, detail = '') => {
+  console.log(`${ok ? '  ok  ' : ' FAIL '} ${claim}${ok || !detail ? '' : ` — ${detail}`}`)
+  if (!ok) problems.push(claim + (detail ? ` — ${detail}` : ''))
 }
 const settle = () => new Promise((resolve) => setTimeout(resolve, 250))
 const type = async (selector, text) => {
@@ -115,7 +115,7 @@ const nodeRow = async (kind) =>
     )
   ).asElement()
 
-await page.goto(url, { waitUntil: 'networkidle0' })
+await page.goto(`${url}playground`, { waitUntil: 'networkidle0' })
 // The page opens on the run, which is the last thing there is — so its presence
 // says every phase before it ran too.
 await page.waitForSelector('.run .transport', { timeout: 15_000 })
@@ -446,6 +446,169 @@ check(
 await page.keyboard.press('Escape')
 await settle()
 check('the drawer closes on escape', (await page.$$('.drawer')).length === 0)
+
+
+// ---------------------------------------------------------------- the book --
+//
+// The pages are `website/content/`, parsed here rather than copied, and the
+// demos in them are this same engine. Both halves are checked: that every page
+// in the reading order renders, and that a demo on one of them runs.
+
+const openPage = async (title) => {
+  const found = await page.evaluate((title) => {
+    const link = [...document.querySelectorAll('.nav a')].find((a) => a.textContent === title)
+    if (!link) return false
+    link.click()
+    return true
+  }, title)
+  if (!found) throw new Error(`no page called ${title} in the nav`)
+  await settle()
+}
+
+await page.goto(url, { waitUntil: 'networkidle0' })
+await page.waitForSelector('.prose h1')
+
+check('the site opens on the book', (await page.$eval('.prose h1', (el) => el.textContent)) === 'Fjord DB')
+check(
+  'the reading order is the one the generator publishes',
+  (await page.$$('.nav a')).length === 21,
+)
+
+// A page is a route. If any of these were a document load the marker would be
+// gone — and with it the engine, which is the whole reason this is one page.
+await page.evaluate(() => {
+  window.__oneApplication = true
+})
+
+const titles = await page.$$eval('.nav a', (links) => links.map((link) => link.textContent))
+const broken = []
+for (const title of titles) {
+  await openPage(title)
+  const heading = await page.$eval('.prose h1, .page h1', (el) => el.textContent?.trim() ?? '')
+  if (!heading) broken.push(title)
+}
+check('every page in the reading order renders', broken.length === 0, broken.join(', '))
+check('a page is a route, not a page load', await page.evaluate(() => window.__oneApplication === true))
+
+await openPage('Storage model')
+check(
+  'the page a reader is on is the page the tab says',
+  (await page.title()) === 'Storage model · Fjord DB',
+)
+check('the table of contents is the page\'s own headings', (await page.$$('.toc li a')).length > 5)
+check(
+  'the pager follows the reading order',
+  (await page.$eval('.pager .next', (el) => el.textContent)).includes('Executor'),
+)
+
+// The demo on this page is the database, and it is the real one: 36 facts,
+// written through the same encoder a client writes with.
+await page.waitForSelector('.demo .data table', { timeout: 20_000 })
+check('a demo runs the engine in the page', (await page.$$('.demo .data tbody tr')).length > 6)
+check(
+  'the demo carries its query to the workbench',
+  (await page.$eval('.demo-open', (el) => el.getAttribute('href'))).includes('q=P+where+code.File'),
+)
+
+// Editing a demo recompiles it, because there is nothing else it could do.
+await type('.demo .editor .input', 'P where code.Nonesuch P')
+check(
+  'editing a demo recompiles it',
+  (await texts('.demo .diagnostics li')).some((said) => said.includes('reject/unknown-predicate')),
+)
+
+// A page with a demo on it has the module, and then the static blocks stop
+// being painted by regular expressions and are painted by the lexer that
+// compiles them — token kinds the fallback rules do not have.
+await openPage('sigla query language')
+await page.waitForSelector('.demo .scroller tbody tr', { timeout: 20_000 })
+check(
+  "a sigla block is painted by the engine's own lexer",
+  (await page.$$('.prose figure.code code .tok.tok-predicate')).length > 0,
+)
+check(
+  'a demo of the lexer is the lexer',
+  (await texts('.demo .scroller tbody tr td')).includes('Where'),
+)
+
+// Search is over every heading of every page, built from the same pages.
+await page.keyboard.press('Escape')
+await page.click('.search-open')
+await page.waitForSelector('.search-panel input')
+await page.keyboard.type('marker table')
+await settle()
+check('search finds a heading', (await texts('.results li a')).some((hit) => hit.includes('marker table')))
+await page.keyboard.press('Enter')
+await settle()
+check(
+  'a search hit lands on the heading it named',
+  await page.evaluate(() => window.location.hash === '#the-marker-table'),
+)
+
+// The theme is a choice, and a choice that is not remembered is not one.
+await page.click('.theme')
+const chosen = await page.evaluate(() => document.documentElement.getAttribute('data-theme'))
+check('the theme toggle chooses a theme', chosen === 'dark' || chosen === 'light')
+await page.reload({ waitUntil: 'networkidle0' })
+check(
+  'the theme sticks across a reload',
+  (await page.evaluate(() => document.documentElement.getAttribute('data-theme'))) === chosen,
+)
+
+// **One book, two renderers.** The generated site parses these pages in Python
+// and this one parses them in TypeScript, and a dialect that drifts between them
+// is a page that reads differently depending on which copy you found. Compared
+// per page, and only when `website/site/` has been built — the comparison is
+// worth having and is not worth failing the check for being absent.
+const generated = new URL('../website/site/', import.meta.url)
+if (existsSync(new URL('index.html', generated))) {
+  const order = JSON.parse(readFileSync(new URL('../website/nav.json', import.meta.url), 'utf8'))
+    .groups.flatMap((group) => group.pages.map((entry) => entry.slug))
+  const count = (text, needle) => text.split(needle).length - 1
+  const drift = []
+
+  for (const slug of order) {
+    const html = readFileSync(new URL(`${slug}.html`, generated), 'utf8')
+    await page.goto(`${url}${slug === 'index' ? '' : slug}`, { waitUntil: 'networkidle0' })
+    await page.waitForSelector('.prose h1')
+    const here = await page.evaluate(() => {
+      // A demo has headings of its own — a table header, a register list — and
+      // they are the workbench's, not the page's.
+      const prose = (selector) =>
+        [...document.querySelectorAll(`.prose ${selector}`)].filter((el) => !el.closest('.demo')).length
+      return {
+        h2: prose('h2'),
+        h3: prose('h3'),
+        tables: prose('.table-wrap'),
+        code: prose('figure.code'),
+        demos: document.querySelectorAll('.prose .demo').length,
+        callouts: prose('.callout'),
+      }
+    })
+    const there = {
+      h2: count(html, '<h2 id='),
+      h3: count(html, '<h3 id='),
+      tables: count(html, '<div class="table-wrap">'),
+      code: count(html, '<figure class="code">'),
+      demos: count(html, '<figure class="code demo">'),
+      callouts: count(html, '<aside class="callout'),
+    }
+    for (const key of Object.keys(there)) {
+      if (here[key] !== there[key]) drift.push(`${slug}: ${key} ${here[key]} vs ${there[key]}`)
+    }
+  }
+
+  check('the two renderers agree, page for page', drift.length === 0, drift.slice(0, 6).join('; '))
+} else {
+  console.log('  ..   website/site/ is not built — skipping the two-renderer comparison')
+}
+
+// A path this site has never heard of is still this site.
+await page.goto(`${url}nonesuch`, { waitUntil: 'networkidle0' })
+check(
+  'an unknown page says so rather than breaking',
+  (await page.$eval('.prose h1', (el) => el.textContent)) === 'Not a page',
+)
 
 await browser.close()
 await server.close()

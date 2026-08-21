@@ -147,6 +147,17 @@ Two sorted key–value maps:
 The two are halves of one fact and are always written together, atomically
 ([I12](invariants.html#i12)). Detail: [Storage model](storage.html).
 
+Both halves of every fact, for a whole database, are worth seeing at once — the stored key
+as bytes, the same key decoded, and the value beside it:
+
+:::demo store
+N where code.Decl {file = _, name = N, line = _}
+:::
+
+Step the run and the shaded band is the range the scan is walking. It is a band because the
+keys are sorted and the encoding is order-preserving: the same reason a prefix is a range
+rather than a filter.
+
 ## Two codecs, and they are not the same
 
 | | Storage codec | Transport codec |
