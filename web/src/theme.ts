@@ -130,31 +130,38 @@ export const fjordTheme = defineTheme({
     // alpha grey, which muddies for the same reason.
     '--color-neutral': ['#e6e8ea', '#27292c'],
 
-    // **A status is the palette's, not the design system's.** A callout, a
-    // diagnostic banner, a refused byte, a dropped row and a status pill all
-    // draw from `--color-{status}`, and shipped those are a crimson, an amber
-    // and a bright green that appear nowhere else here — so a warning in the
-    // book and an error in the workbench belonged to different palettes. Each
-    // is now the hue this page already uses for that idea, over the badge
-    // ground at the same lightness, and the grounds are **opaque** for the
-    // reason the badges' are: a banner sits on the body, on a card and inside
-    // a demo, and a tint is a different colour on each.
-    '--color-error': ['#b30018', '#ff8179'], // `tag` — what the lexer refused
-    '--color-error-muted': ['#ffd8d7', '#472021'],
-    '--color-success': ['#1d6835', '#95d7a2'], // the literal green
-    '--color-success-muted': ['#d0eed5', '#17351f'],
+    // **A status is the palette's hue at the design system's strength.** A
+    // callout, a diagnostic banner, a refused byte, a dropped row and a status
+    // pill all draw from `--color-{status}`, and shipped those are a crimson, an
+    // amber and a bright green that appear nowhere else here — so a warning in
+    // the book and an error in the workbench belonged to different palettes.
+    //
+    // The hues are this page's: red at 25° (the one a refused byte is painted
+    // in), green at 150° (a literal), and one that is no code colour at all. The
+    // **chroma is not the code inks'**, and that is the point: a code ink is
+    // read as a string of glyphs and stays muted so a page of it is calm, while
+    // a status ink is one icon that has to be found at a glance. So these sit at
+    // or near the gamut edge for their hue — 58% .22 / 68% .20 for the error,
+    // 54% .148 / 70% .19 for the success — which is the strength the shipped
+    // values carried, in the hues this page uses.
+    //
+    // The grounds are 88.5% .05 and 28% .07, and they are **opaque** for the
+    // reason the badges' are: a banner sits on the body, on a card and inside a
+    // demo, and a tint is a different colour on each of the three.
+    '--color-error': ['#df202e', '#ff7977'],
+    '--color-error-muted': ['#f9cdc9', '#451816'],
+    '--color-success': ['#02853c', '#0fbd59'],
+    '--color-success-muted': ['#c3e3c8', '#063215'],
 
-    // A warning is the one thing the three code hues cannot say: it must read
-    // as neither an error nor a note, and both of those are already the
-    // accent's red. So it is a fourth hue and the only one on the page that is
-    // not a code colour — built on the same ladder as the rest, 50% .11 75 and
-    // 80% .12 75, over grounds at 92% and 30%. The ink is a deep bronze rather
-    // than a yellow because 50% lightness is where the other inks are, and a
-    // yellow at that lightness does not exist.
-    '--color-warning': ['#865900', '#ebb25f'],
-    '--color-warning-muted': ['#f7e1c4', '#3e2909'],
-    // Ships dark for both, which was legible on a yellow fill and is not on a
-    // bronze one.
-    '--color-on-warning': ['#ffffff', '#0b0d10'],
+    // A warning is the one thing the other two status hues cannot say: it must
+    // read as neither an error nor a note, and both of those are already red. So
+    // it is a fourth hue — 75°, the only colour on the page that is no code
+    // colour — and the one that cannot sit at the others' lightness. A yellow
+    // has no chroma left at 58%, and the shipped one bought its chroma at 79%,
+    // where the icon went pale against the ground it stands on. 66% .138 is
+    // where it is both amber and findable; its dark ground is .06 rather than
+    // .07 because that is the gamut edge at 28%.
+    '--color-warning': ['#c38406', '#f3a504'],
+    '--color-warning-muted': ['#edd5b5', '#3a2400'],
   },
 })
