@@ -97,7 +97,14 @@
 .tok-wildcard { color: var(--color-syntax-comment); }
 .tok-punctuation { color: var(--color-syntax-punctuation); }
 .tok-whitespace { color: inherit; }
-.tok-error { color: var(--color-error); background: var(--color-error-muted); text-decoration: underline wavy var(--color-error); }
+.tok-error { color: var(--color-error); background: var(--color-error-muted); }
+
+/* Under the bytes a phase complained about — whichever phase it was. */
+.editor .tok.faulty {
+  text-decoration: underline wavy var(--color-error);
+  text-decoration-skip-ink: none;
+  text-underline-offset: .2em;
+}
 
 /* Strong enough to find without hunting: this is what says *these bytes* while
    the cursor is somewhere else entirely — in a tree, in a table, in a plan. */
@@ -128,6 +135,7 @@
 .demo .astryx-banner:not(#\#):not(#\#):not(#\#),
 .page .astryx-banner:not(#\#):not(#\#):not(#\#) {
   align-items: center;
+  padding-block: var(--spacing-2);
 }
 
 /* The list is layout; every diagnostic in it is a `Banner`, which is what the
@@ -191,11 +199,12 @@
 
 .tree ol, .lowered ol { list-style: none; margin: 0; padding: .35rem 0; font-size: .85rem; }
 
+/* A row with a pill in it is as tall as the pill plus the room a pill needs. */
 .tree li, .lowered li {
   display: flex;
-  gap: .6rem;
-  align-items: baseline;
-  padding: .1rem .75rem .1rem 0;
+  gap: var(--spacing-2);
+  align-items: center;
+  padding: var(--spacing-1) var(--spacing-3) var(--spacing-1) 0;
   cursor: default;
   border-left: 2px solid transparent;
 }
@@ -287,33 +296,17 @@
 
 /* ---- the plan ---- */
 
-.plan .shape {
-  position: sticky;
-  top: 0;
-  display: flex;
-  gap: 1.5rem;
-  margin: 0;
-  padding: .5rem .75rem;
-  background: var(--color-background-muted);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.plan .shape dt {
-  font-size: .68rem;
-  text-transform: uppercase;
-  letter-spacing: .06em;
+/* The fingerprint sits under the plan it identifies. */
+.plan .fingerprint-line {
+  margin: var(--spacing-2) 0 0;
+  font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
 }
 
-.plan .shape dd {
-  margin: .1rem 0 0;
+.plan .fingerprint-line .fingerprint {
   font-family: var(--font-family-code);
-  font-size: .85rem;
   color: var(--color-text-primary);
-  font-variant-numeric: tabular-nums;
 }
-
-.plan .shape .fingerprint { font-size: .78rem; color: var(--color-text-secondary); }
 
 .plan .steps { list-style: none; margin: 0; padding: .5rem 0; }
 
@@ -371,7 +364,29 @@
   padding-block-start: var(--spacing-2);
 }
 
+/* The handle draws a 1px line and ships its own wider grab region as a child —
+   so the region is widened *there*. A pseudo-element over the gutter looks like
+   the same thing and is not: it sits on top of that child and swallows the
+   pointer events the drag needs. */
+.astryx-resize-handle > div:first-child {
+  inline-size: var(--spacing-6);
+  /* Centred on the line: the region ships pinned to the line's leading edge, so
+     half of it lands on one side and none on the other. */
+  margin-inline-start: calc(var(--spacing-6) / -2);
+}
+
 /* ---- the debugger ---- */
+
+/* The transport's buttons are the controls; the scrub bar is a luxury. In a
+   pane narrow enough that they compete, the bar goes. A container query rather
+   than a media query, because what is narrow here is the pane a reader dragged,
+   not the window. */
+.run,
+.demo { container-type: inline-size; }
+
+@container (max-width: 32rem) {
+  .transport .astryx-slider { display: none; }
+}
 
 /* The glyphs are the labels here, so the size of the control is the size of the
    type in it: a step forward should not be as loud as the query it steps. */
@@ -475,13 +490,12 @@
 
 /* The pane scrolls, not the page: the table is the tall thing here, and a
    reader stepping a run should not lose the transport off the top. */
-/* The panel around it is the frame — a card inside a card is a box a reader has
-   to look past to read the bytes. */
 .data .scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  border-block-start: var(--border-width) solid var(--color-border);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-element);
   background: var(--color-background-surface);
 }
 
@@ -490,6 +504,7 @@
 .data table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .78rem; }
 
 .data thead th {
+  white-space: nowrap;
   position: relative;
   position: sticky;
   top: 0;

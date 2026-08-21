@@ -228,6 +228,10 @@ fn a_schema_comment_is_a_token_of_its_own() {
 
 /// The census, for the schema language: the shipped schema is what the site
 /// opens with, so every class the pane paints has to occur in it.
+///
+/// Except `Comment`, which the shipped schema deliberately has none of — the
+/// site shows it verbatim in a drawer and the rationale for its shape belongs to
+/// the book. The class above covers how a comment is painted.
 #[test]
 fn the_shipped_schema_reaches_every_class_the_pane_paints() {
     let mut seen = std::collections::BTreeSet::new();
@@ -237,7 +241,6 @@ fn the_shipped_schema_reaches_every_class_the_pane_paints() {
 
     for wanted in [
         TokenClass::Keyword,
-        TokenClass::Comment,
         TokenClass::Variable,
         TokenClass::Field,
         TokenClass::Punctuation,
@@ -245,7 +248,7 @@ fn the_shipped_schema_reaches_every_class_the_pane_paints() {
     ] {
         assert!(
             seen.contains(&wanted),
-            "`schemas/code.sigla` never produces {wanted:?}, so nothing tests how it is painted"
+            "`schemas/demo.sigla` never produces {wanted:?}, so nothing tests how it is painted"
         );
     }
     assert!(

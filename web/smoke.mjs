@@ -355,6 +355,16 @@ check(
   'an unreadable byte is reported where it is',
   (await texts('.diagnostics li')).some((text) => text.includes('invalid token')),
 )
+
+// The squiggle is drawn from the diagnostics rather than from the token class,
+// so it appears under a fault no lexer could have found. Typed and then put
+// back, because the checks below are about the query above.
+await type('.editor .input', 'N where code.Nonesuch N')
+check(
+  'the source is underlined at every phase, not just the lexer',
+  (await page.$$('.editor .tok.faulty')).length > 0,
+)
+await type('.editor .input', 'P where code.File P; P = 7 ~')
 check(
   'every class the page styles reaches the paint layer',
   new Set(await page.$$eval('.paint .tok', (ts) => ts.map((t) => t.className))).size >= 5,
@@ -451,18 +461,25 @@ check(
 // take is the width the database table needs.
 await page.click('[data-testid="schema"]')
 await page.waitForSelector('dialog .editor.tall .input')
-check('the schema lists what it declares', (await page.$$('.predicates li')).length === 6)
+// One view of the schema, and the count in its header: the text *is* the list
+// of predicates, and a second computed copy of it beside the first said nothing
+// the first did not.
+check(
+  'the schema says what it declares',
+  (await page.$eval('dialog', (el) => el.textContent)).includes('6 predicates'),
+)
 
-// The schema pane is painted by the *schema* lexer, which has comments where
-// sigla has none — and `schemas/code.sigla` is more comment than declaration.
+// The schema pane is painted by the *schema* lexer, which has keywords sigla
+// does not — `predicate` and `type` are the two the shipped schema leans on.
 check(
   'the schema is painted by its own lexer',
   await page.$$eval('dialog .editor.tall .paint .tok', (ts) => {
     const classes = new Set(ts.map((t) => t.className))
+    const text = ts.map((t) => t.textContent).join('')
     return (
-      classes.has('tok tok-comment') &&
       classes.has('tok tok-keyword') &&
-      ts.map((t) => t.textContent).join('').includes('predicate File : string')
+      classes.has('tok tok-variable') &&
+      text.includes('predicate File : string')
     )
   }),
 )

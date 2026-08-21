@@ -1,60 +1,15 @@
-# The interactive site's database — small enough to read, wide enough to show the
-# whole language.
-#
-# `code.sigla` is the real one, and this is not a smaller copy of it: it is chosen
-# so that **every shape sigla has appears exactly once**. `code.sigla` has no union
-# and no nested record, so a select, a union pattern and a discriminant residual
-# have nothing to bind against there — and a union that *leads* a key is a seek
-# where the same union behind a field is a residual, which is the sharpest thing a
-# plan can be asked to show.
-#
-# It is a real file rather than a string in a crate, so the same database can be
-# built outside the browser and the queries a reader tried in the page can be run
-# against a real one:
-#
-#     fjord create demo --schema schemas/demo.sigla
-#
-# **Field order is the key order, and the key order is the index design** — the same
-# rule `code.sigla` opens with. Read each record as "what is this predicate fast
-# at".
-
 schema code {
-
-  # What a declaration *is*. Two alternatives, and the discriminants are
-  # deliberately awkward: neither contiguous, nor starting at zero, nor in
-  # declaration order, so nothing that read a tag as a position could pass
-  # (I10). The payloads differ in type as well as in name — a function's arity,
-  # a data type's flavour ("struct", "enum") — because a union whose
-  # alternatives agree on type is a union nothing can be got wrong about.
   type What = { data : string = 5 | func : int = 2 }
 
-  # A path, relative to the index root. A **scalar** key: one field, no record
-  # wrapper, and the only predicate here a string prefix can narrow directly.
   predicate File : string
 
-  # A declaration, keyed by where it is. The **leading field is a reference**, so
-  # "the declarations in this file" is a seek and not a scan; `name` before `line`
-  # because a query narrows by name far more often than by line. The value side is
-  # the text a reader would recognise it by, which is what makes `.value` worth
-  # asking for.
   predicate Decl : { file : File, name : string, line : int } -> string
 
-  # One declaration mentioning another. **The reference is not leading here** —
-  # `from` seeks and `to` filters — which is the same fact-typed field in the two
-  # positions that cost differently.
   predicate Ref : { from : Decl, to : Decl }
 
-  # Where a declaration sits, to the column. A **nested record** inside a key: the
-  # wrapper stays, unlike the top-level record above, which is flat.
   predicate Span : { decl : Decl, at : { line : int, col : int } }
 
-  # What kind a declaration is — the union **behind** a reference, so matching an
-  # alternative is a residual over rows the scan already read.
   predicate Kind : { decl : Decl, what : What }
 
-  # The same fact in the other key order, so the union **leads** and matching an
-  # alternative is a seek. Not redundancy: `code.sigla` ships `Attribute` and
-  # `AttributeOf` for exactly this reason, because the leading run is what a query
-  # narrows on and the two directions are two different questions.
   predicate KindOf : { what : What, decl : Decl }
 }

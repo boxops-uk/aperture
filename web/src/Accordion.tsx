@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Badge } from '@astryxdesign/core/Badge'
 import { Collapsible } from '@astryxdesign/core/Collapsible'
 import { Text } from '@astryxdesign/core/Text'
 import { HStack } from '@astryxdesign/core/Stack'
@@ -12,13 +13,14 @@ import { HStack } from '@astryxdesign/core/Stack'
  */
 export function Section({
   name,
-  count,
+  counts = [],
   open,
   onToggle,
   children,
 }: {
   name: string
-  count?: ReactNode
+  /** The numbers worth seeing while the section is shut, as pills. */
+  counts?: (string | number)[]
   open: boolean
   onToggle: () => void
   children: ReactNode
@@ -32,10 +34,12 @@ export function Section({
           <Text type="label" weight="semibold">
             {name}
           </Text>
-          {count !== undefined && (
-            <Text type="supporting" hasTabularNumbers>
-              {count}
-            </Text>
+          {counts.length > 0 && (
+            <HStack gap={1} align="center">
+              {counts.map((count) => (
+                <Badge key={String(count)} variant="neutral" label={String(count)} />
+              ))}
+            </HStack>
           )}
         </HStack>
       }

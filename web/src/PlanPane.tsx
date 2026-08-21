@@ -43,25 +43,6 @@ export function PlanPane({
 
   return (
     <div className="scroller plan">
-      <dl className="shape">
-        <div>
-          <dt>levels</dt>
-          <dd>{plan.levels}</dd>
-        </div>
-        <div>
-          <dt>steps</dt>
-          <dd>{plan.steps_count}</dd>
-        </div>
-        <div>
-          <dt>registers</dt>
-          <dd>{plan.registers}</dd>
-        </div>
-        <div>
-          <dt>fingerprint</dt>
-          <dd className="fingerprint">{plan.fingerprint}</dd>
-        </div>
-      </dl>
-
       <ol className="steps">
         {plan.steps.map((step) => (
           <li key={step.index} className={step.index === active ? 'on' : undefined}>
@@ -99,6 +80,12 @@ export function PlanPane({
           <pre>{plan.head}</pre>
         </li>
       </ol>
+
+      {/* The identity a resume cursor carries. It belongs with the plan rather
+          than in the header above it: nobody scans for a fingerprint. */}
+      <p className="fingerprint-line">
+        fingerprint <code className="fingerprint">{plan.fingerprint}</code>
+      </p>
     </div>
   )
 }

@@ -32,16 +32,6 @@ export function SchemaPane({
         rows="schema"
       />
       {view && <Diagnostics diagnostics={view.diagnostics} source={source} />}
-      {view?.ok && (
-        <ul className="predicates">
-          {view.predicates.map((predicate) => (
-            <li key={predicate.id}>
-              <code className="name">{predicate.name}</code>
-              <code className="ty">{predicate.ty}</code>
-            </li>
-          ))}
-        </ul>
-      )}
     </section>
   )
 }

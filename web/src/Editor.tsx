@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import type { TokenView } from './wasm'
+import type { Span, TokenView } from './wasm'
 import { type Highlight, within } from './span'
 
 /**
@@ -14,6 +14,12 @@ import { type Highlight, within } from './span'
  *
  * Used for the query and for the schema, because the difference between them is
  * *which lexer produced the tokens* and nothing else a page can see.
+ *
+ * The wavy underline is drawn from the **diagnostics**, not from the token
+ * classes. A byte the lexer refused is one kind of fault and gets a class of its
+ * own; an unknown predicate, a type mismatch and a range restriction are the
+ * others, and they are perfectly good tokens — so a squiggle that came from the
+ * class only ever appeared under a bad string.
  */
 export function Editor({
   source,
@@ -22,6 +28,7 @@ export function Editor({
   onChange,
   onHighlight,
   rows,
+  flaws = [],
 }: {
   source: string
   tokens: TokenView[]
@@ -30,8 +37,12 @@ export function Editor({
   onHighlight?: (highlight: Highlight | null) => void
   /** How tall to start. The schema is long; a query is not. */
   rows?: 'query' | 'schema'
+  /** The spans every phase reported a fault at, underlined where they are. */
+  flaws?: Span[]
 }) {
   const painted = useRef<HTMLPreElement>(null)
+  const faulty = (span: Span) =>
+    flaws.some((flaw) => span.start < Math.max(flaw.end, flaw.start + 1) && flaw.start < span.end)
 
   return (
     <div className={rows === 'schema' ? 'editor tall' : 'editor'}>
@@ -39,9 +50,13 @@ export function Editor({
         {tokens.map((token, index) => (
           <span
             key={index}
-            className={
-              within(token.span, highlight) ? `tok tok-${token.class} on` : `tok tok-${token.class}`
-            }
+            className={[
+              `tok tok-${token.class}`,
+              within(token.span, highlight) ? 'on' : '',
+              faulty(token.span) ? 'faulty' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
             onMouseEnter={() => onHighlight?.({ span: token.span, node: null, view: null })}
             onMouseLeave={() => onHighlight?.(null)}
           >

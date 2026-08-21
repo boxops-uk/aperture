@@ -172,6 +172,10 @@ export function Demo({ demo }: { demo: Spec }) {
               highlight={highlight}
               onChange={retype}
               onHighlight={setHighlight}
+              flaws={(analysis.lowered?.diagnostics ?? analysis.tokens?.diagnostics ?? []).flatMap(
+                (diagnostic) =>
+                  diagnostic.labels.filter((label) => label.primary).map((label) => label.span),
+              )}
             />
           )}
 

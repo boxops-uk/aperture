@@ -100,7 +100,10 @@ export function DataTable({
   return (
     <section className="data">
       <h2>
-        database<span className="count">{database.facts} facts</span>
+        database
+        <span className="count">
+          <Badge variant="neutral" label={`${database.facts} facts`} />
+        </span>
         {moment?.scanning && !moment.scanning.fetch && (
           <span className="range">
             scanning <code>{moment.scanning.lo}</code> …{' '}

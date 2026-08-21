@@ -46,24 +46,29 @@ export function Transport({
         // monospace font, and a control that renders as a box is worse than a
         // word.
         <ButtonGroup label="Move the run">
-          <Button variant="secondary" label="|◀ start" onClick={() => seek(0)} isDisabled={here === 0} />
+          <Button variant="secondary" label="|◀ start" tooltip="to the start" onClick={() => seek(0)} isDisabled={here === 0} />
           <Button
             variant="secondary"
             label="◀ row"
+            tooltip="back to the previous row"
             onClick={() => seek(previousYield)}
             isDisabled={previousYield < 0}
           />
-          <Button variant="secondary" label="◀" onClick={() => seek(here - 1)} isDisabled={here === 0} />
-          <Button variant="secondary" label="▶" onClick={() => seek(here + 1)} isDisabled={here >= end} />
+          <Button variant="secondary" label="◀" tooltip="back one transition" onClick={() => seek(here - 1)} isDisabled={here === 0} />
+          <Button variant="secondary" label="▶" tooltip="one transition" onClick={() => seek(here + 1)} isDisabled={here >= end} />
           <Button
             variant="secondary"
             label="row ▶"
+            tooltip="on to the next row — step over"
             onClick={() => seek(nextYield)}
             isDisabled={nextYield < 0}
           />
           <Button
             variant={playback.playing ? 'primary' : 'secondary'}
             label={playback.playing ? 'pause' : 'play'}
+            tooltip={
+              playback.playing ? 'pause' : here >= end ? 'play again from the start' : 'play'
+            }
             onClick={() => {
               if (playback.playing) return playback.setPlaying(false)
               // Play from the end is play from the start: there is nowhere else
@@ -72,7 +77,7 @@ export function Transport({
               playback.setPlaying(true)
             }}
           />
-          <Button variant="secondary" label="end ▶|" onClick={() => seek(end)} isDisabled={here >= end} />
+          <Button variant="secondary" label="end ▶|" tooltip="to the end" onClick={() => seek(end)} isDisabled={here >= end} />
         </ButtonGroup>
       }
       endContent={
