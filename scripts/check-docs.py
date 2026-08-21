@@ -32,8 +32,14 @@ def site_anchors(text: str) -> set[str]:
     anchors = set(re.findall(r'<a id="([A-Za-z0-9_-]+)"></a>', text))
     anchors |= set(re.findall(r"\{#([A-Za-z0-9_-]+)\}", text))
     for heading in re.findall(r"^#{1,6} +(.+?)(?:\{#[A-Za-z0-9_-]+\})?$", text, re.M):
-        slug = re.sub(r"[^a-z0-9 -]", "", heading.strip().lower())
-        anchors.add(re.sub(r" +", "-", slug).strip("-"))
+        # **The marks come off first**, as `build.py` and `web/`'s parser both do
+        # (`plain`, then `slugify`). A heading that cites an invariant carries a
+        # link, and slugifying the raw text mangles the target into the anchor —
+        # which reads as a missing anchor for a link that resolves perfectly.
+        stripped = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", heading.strip())
+        stripped = re.sub(r"[`*~]", "", stripped)
+        slug = re.sub(r"[^a-z0-9 -]", "", stripped.lower())
+        anchors.add(re.sub(r"[ -]+", "-", slug).strip("-"))
     return anchors
 
 

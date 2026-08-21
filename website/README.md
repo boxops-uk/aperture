@@ -3,9 +3,12 @@
 A static documentation site for Fjord DB, plus a small server to preview it. Standard
 library Python only — no toolchain, no dependencies, no network access at build time.
 
-The published copy lives at <https://boxops-uk.github.io/fjord/> — deployed by CI on every
-push to main, after the tests and the docs drift gate. Each GitHub release also carries the
-site as `fjord-docs-site.tar.gz`, attested, for serving anywhere else.
+**This is not what publishes.** <https://boxops-uk.github.io/fjord/> is the interactive site
+in [`web/`](../web/README.md) — the same pages, with the engine running in them — and
+`fjord-docs-site.tar.gz` on a release is that bundle. What this generator is: the copy that
+reads with **no toolchain and no network**, and the second renderer the interactive site's
+smoke check compares itself against page for page. A dialect that drifts is a page that reads
+differently depending on which copy you found, so it still builds strictly in CI.
 
 ```bash
 python3 serve.py            # build, then serve on http://127.0.0.1:8000

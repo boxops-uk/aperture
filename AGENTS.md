@@ -10,7 +10,7 @@ book, not here.
 
 | What | Where |
 |---|---|
-| **The design book** (for humans — architecture, rationale, reference) | [`website/content/`](website/README.md) — published at <https://boxops-uk.github.io/fjord/> on every push to main; browse locally with `python3 website/serve.py`. The reading order is [`website/nav.json`](website/nav.json), read by the generator and by `web/` |
+| **The design book** (for humans — architecture, rationale, reference) | [`website/content/`](website/README.md) — the pages. What **publishes** at <https://boxops-uk.github.io/fjord/> on every push to main is the interactive site, [`web/`](web/README.md); `python3 website/serve.py` browses the generated copy, which needs no toolchain. The reading order is [`website/nav.json`](website/nav.json), read by both |
 | **The invariant registry** (statement · why · guard · status) | [`website/content/invariants.md`](website/content/invariants.md) — know these by number |
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
 | Where we stand against Glean — read **before proposing a feature Glean has** | [`docs/glean.md`](docs/glean.md) |
@@ -54,9 +54,12 @@ a `cdylib` that only builds for `wasm32-unknown-unknown`; as a workspace member
 it would break `cargo build` on the host and quietly narrow the coverage ledger.
 It is built by `scripts/build-wasm.sh` and consumed by `web/`, the interactive
 site — both consumers of the tree, in the way `clients/dotnet` is. `web/` renders
-**the same pages** `website/` publishes, parsed from `website/content/` rather
+**the same pages** `website/` generates, parsed from `website/content/` rather
 than copied, with `:::demo` blocks that run the engine; its smoke check compares
-the two renderers page for page. Its components are Astryx
+the two renderers page for page. It is the bundle CI publishes, and a page here
+is a *path*, so the base it is served from is compiled in — `SITE_BASE`, which
+the `site` job sets from the repository's name for the Pages copy and leaves at
+`/` for the tarball a release carries. Its components are Astryx
 (`@astryxdesign/core`) — the contract for using them is `web/ASTRYX.md`, and the
 book's palette is an Astryx theme in `web/src/theme.ts`.
 

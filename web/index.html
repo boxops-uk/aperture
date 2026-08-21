@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <!-- `%BASE_URL%`, not a relative path: a page here is a path, so a relative
+         icon on `/storage` is fetched from `/storage/favicon.svg` — which the SPA
+         fallback answers with this document, and the tab silently loses its icon. -->
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"

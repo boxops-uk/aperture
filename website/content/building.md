@@ -166,12 +166,21 @@ fjord/
 ├── PLAN.md              the roadmap, and the record of settled decisions
 ├── wasm/                the WebAssembly shell — its own workspace, built by
 │                       scripts/build-wasm.sh, never by a cargo build at the root
-├── web/                 the interactive site: the book with the engine running in it
-└── website/             this site — which is the design book
+├── web/                 the interactive site: the book with the engine running in it,
+│                       and the copy that publishes
+└── website/             the book's pages, and the generator that needs no toolchain
 ```
 
-**This site is the design book and the source of record.** The pages are ordinary Markdown
-under `website/content/`, built by `website/build.py`; CI builds it with `--strict`, so a
-page falling out of the nav is a failed check rather than a silent loss. Every push to main
-deploys it to <https://boxops-uk.github.io/fjord/>, and every release carries it as
-`fjord-docs-site.tar.gz` — attested like the binaries, servable by any static file server.
+**This book is the design of record.** The pages are ordinary Markdown under
+`website/content/`, and two renderers read them: `website/build.py`, whose output needs no
+toolchain to read, and `web/`, which parses the same files and runs the engine inside them.
+CI builds both, the generated one with `--strict`, so a page falling out of the nav is a
+failed check rather than a silent loss — and the two are compared page for page, because a
+dialect that drifts is a page that reads differently depending on which copy you found.
+
+**What publishes is `web/`.** Every push to main deploys that bundle to
+<https://boxops-uk.github.io/fjord/> — after the suite, the drift gate, and the bundle being
+driven in a real browser — and every release carries it as `fjord-docs-site.tar.gz`, attested
+like the binaries. A page in it is a path rather than a file, so a host serving the tarball
+has to answer an unknown path with `index.html`; the `404.html` beside it is that answer
+where a host uses one.

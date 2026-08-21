@@ -5,8 +5,10 @@ The design book with the engine itself running in it. React and Vite, with
 does is *asking the lexer*, not paraphrasing it.
 
 **The pages are `website/content/`**, imported raw and parsed here rather than
-copied: one book, two renderers. The generated site in
-[`website/`](../website/README.md) still builds and still publishes, and its
+copied: one book, two renderers. **This is the one CI publishes** — to
+<https://boxops-uk.github.io/fjord/>, and as the docs bundle a release carries.
+The generated site in [`website/`](../website/README.md) still builds, as the
+copy that needs no toolchain and as the renderer this one is held to, and its
 reading order — `website/nav.json` — is the one this sidebar renders. What this
 site adds is that the demos are the engine: a `:::demo` block in the content is a
 running lexer, parser, typechecker, planner, executor or database table, editable
@@ -168,3 +170,10 @@ A page is a path, so a host has to answer every path with the application:
 `npm run build` writes `dist/404.html` as a copy of `dist/index.html`, which is
 how GitHub Pages does that. `SITE_BASE=/fjord/ npm run build` sets the base for a
 site served from a subdirectory.
+
+**The base is compiled in**, which is why CI builds the bundle twice and the two
+are not interchangeable: `SITE_BASE` taken from the repository's name for the
+copy GitHub Pages serves, and the default `/` for the tarball a release carries,
+which is for a server with the site at a root. The `site` job builds the module,
+runs the smoke check against a real Chrome, and only then bundles — so what
+deploys is what was driven.

@@ -2,11 +2,13 @@
 
 What is not built, what building each piece requires, and the record of decisions already
 taken so they are not re-litigated. The design of record is the
-[design book](website/README.md) — **published** at <https://boxops-uk.github.io/fjord/> on
-every push to main, and shipped with each release as an attested `fjord-docs-site.tar.gz`
-beside the binaries; the working contract is [`AGENTS.md`](AGENTS.md); what has been
-measured is [`bench/FINDINGS.md`](bench/FINDINGS.md). The history of how the system was
-built lives in git, where it can be cited by commit.
+[design book](website/README.md) — **published** as the interactive site
+([`web/`](web/README.md), the pages with the engine running in them) at
+<https://boxops-uk.github.io/fjord/> on every push to main, and shipped with each release as
+an attested `fjord-docs-site.tar.gz` beside the binaries; the working contract is
+[`AGENTS.md`](AGENTS.md); what has been measured is
+[`bench/FINDINGS.md`](bench/FINDINGS.md). The history of how the system was built lives in
+git, where it can be cited by commit.
 
 **Definition of done, everywhere:** a task ends in a green test (prefer a property), and
 every invariant a piece of work touches has its guard un-ignored and passing before the work
@@ -624,8 +626,12 @@ Three things fell out of doing it this way:
   drifts between Python and TypeScript is a page that reads differently depending
   on which copy you found.
 
-What remains is switching the publish over: `website/` still builds and still
-deploys, untouched.
+**The publish is switched over.** CI's `site` job builds the module, drives the
+bundle in a real Chrome, and then builds it twice — base `/` for the tarball a
+release carries, and the repository's own name for the copy Pages serves, since
+`SITE_BASE` is compiled into every asset URL and every route. `website/` still
+builds strictly: it is the copy that reads with no toolchain, and the renderer
+this one is held to.
 
 ### Movement 6 — a design system under it ✅
 
@@ -682,14 +688,9 @@ Three things this turned up:
 - **Retire the hand-written highlighter** in `website/assets/app.js`. `web/`
   paints `sigla` and `schema` blocks with the real lexer once a demo has brought
   the module in, and carries the fallback rules for the languages the engine has
-  no opinion about; the generated site still carries its own copy, and that copy
-  goes when the publish switches over.
-- **Publishing.** `website/` is still what CI deploys. Pages accepts one
-  artifact per run, so switching over means building `web/` with
-  `SITE_BASE=/fjord/` and publishing `dist/` — including the `404.html` a path
-  router needs — either instead of `website/site/` or beside it during a
-  changeover. The wasm build has to run in CI first, and the engine's browser
-  build is already checked there.
+  no opinion about. The generated site keeps its own copy for as long as it is
+  the copy that reads with no toolchain — which is what publishing the bundle
+  changed about this item, rather than closing it.
 - **A virtual import resolver**, so browser schemas are not single-file:
   `syntax::resolve` reads files, and everything else in `fjord-schema` is clean.
 - **`ts-rs` behind a feature**, so `web/src/wasm.ts`'s types are generated from

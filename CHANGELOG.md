@@ -14,10 +14,14 @@ CI builds the site strictly and runs `scripts/check-docs.py`, which fails on a b
 invariant citation the registry does not declare, a reference to a retired document, or a
 build-plan phase number in code — each a way the documentation actually went stale once.
 
-**The design book is published.** Every push to main deploys the site to
-<https://boxops-uk.github.io/fjord/> (after the tests and the drift gate), and every release
-carries it as an attested `fjord-docs-site.tar.gz` beside the binaries; the site's
-getting-started page links the release downloads back.
+**The design book is published, with the engine running inside it.** Every push to main
+deploys the interactive site — `web/`, the same pages with `fjord-engine` compiled to
+WebAssembly, so a demo of the lexer *is* the lexer — to <https://boxops-uk.github.io/fjord/>
+(after the tests, the drift gate, and the bundle being driven in a real browser), and every
+release carries that bundle as an attested `fjord-docs-site.tar.gz` beside the binaries; the
+site's getting-started page links the release downloads back. The generated copy
+(`python3 website/serve.py`) is what reads with no toolchain, and the second renderer the
+smoke check holds the first one to.
 
 **Every error state is demonstrated by a test** that provokes it and asserts it at its
 contract layer, fjall/OS bubbles excepted; the engine's corpus gate now covers every
