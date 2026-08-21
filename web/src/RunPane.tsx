@@ -1,3 +1,4 @@
+import { Badge } from '@astryxdesign/core/Badge'
 import { Transport } from './Transport'
 import type { PlanView, Trace } from './wasm'
 import type { Moment } from './run'
@@ -51,7 +52,18 @@ export function RunPane({
       <Transport trace={trace} at={at} onSeek={onSeek} playback={playback} />
 
       <p className={`event ${step.event}`}>
-        <span className="badge">{step.event}</span>
+        <Badge
+          variant={
+            step.event === 'yield'
+              ? 'green'
+              : step.event === 'reject'
+                ? 'red'
+                : step.event === 'done'
+                  ? 'blue'
+                  : 'neutral'
+          }
+          label={step.event}
+        />
         {step.event === 'yield' && <span className="said">answered {show(step.row)}</span>}
         {step.event === 'scan' && step.scanning && (
           <span className="said">

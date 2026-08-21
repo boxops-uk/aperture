@@ -206,15 +206,6 @@
 .tree .text, .lowered .text { font-family: var(--font-family-code); color: var(--color-text-primary); }
 .tree .num, .lowered .num { margin-left: auto; font-size: .75rem; }
 
-.pill {
-  display: inline-block;
-  padding: 0 .45rem;
-  border-radius: 999px;
-  background: var(--color-background-muted);
-  font-size: .75rem;
-  border: var(--border-width) solid var(--color-border);
-}
-
 .empty { margin: 0; padding: 1rem; color: var(--color-text-disabled); font-size: .88rem; }
 
 /* ---- the schema pane ---- */
@@ -293,16 +284,6 @@
 }
 
 .lowered .part .op { font-family: var(--font-family-code); color: var(--color-text-accent); margin-left: .4rem; }
-.lowered .part .ty { margin-left: auto; }
-
-.lowered .ty {
-  font-family: var(--font-family-code);
-  font-size: .75rem;
-  color: var(--color-syntax-string);
-  background: color-mix(in srgb, var(--color-syntax-string) 12%, transparent);
-  border-radius: var(--radius-inner);
-  padding: 0 .35rem;
-}
 
 /* ---- the plan ---- */
 
@@ -345,7 +326,6 @@
   background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent);
   box-shadow: inset 3px 0 0 var(--color-accent);
 }
-.plan .badge.examined { color: var(--color-text-secondary); border-style: dashed; }
 
 .plan .head { display: flex; gap: .4rem; align-items: center; margin-bottom: .25rem; }
 
@@ -357,27 +337,9 @@
   text-align: right;
 }
 
-.plan .badge {
-  font-size: .68rem;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  padding: .05rem .4rem;
-  border-radius: var(--radius-inner);
-  border: 1px solid var(--color-border-emphasized);
-  color: var(--color-text-secondary);
-}
-
 /* A scan reads every row of a predicate and a seek starts where the key says —
    the difference is the whole cost model, so it is the difference a reader sees
    first. */
-.plan .badge.scan { color: var(--color-syntax-number); border-color: color-mix(in srgb, var(--color-syntax-number) 45%, transparent); }
-.plan .badge.seek,
-.plan .badge.fetch { color: var(--color-syntax-string); border-color: color-mix(in srgb, var(--color-syntax-string) 45%, transparent); }
-.plan .badge.residual { color: var(--color-syntax-number); border-style: dashed; }
-.plan .badge.level { color: var(--color-syntax-function); border-color: color-mix(in srgb, var(--color-syntax-function) 45%, transparent); }
-.plan .badge.derive,
-.plan .badge.test { color: var(--color-syntax-keyword); border-color: color-mix(in srgb, var(--color-syntax-keyword) 45%, transparent); }
-.plan .badge.head-badge { color: var(--color-text-accent); border-color: var(--color-accent); }
 
 .plan pre {
   margin: 0 0 0 1.6rem;
@@ -404,6 +366,11 @@
   }
 }
 
+/* What the header opened is not the header: it needs the gap that says so. */
+.astryx-collapsible-content:not(#\#):not(#\#):not(#\#) {
+  padding-block-start: var(--spacing-2);
+}
+
 /* ---- the debugger ---- */
 
 /* The glyphs are the labels here, so the size of the control is the size of the
@@ -418,7 +385,6 @@
   height: var(--spacing-4);
 }
 
-
 .run .event {
   display: flex;
   gap: .5rem;
@@ -429,21 +395,6 @@
   font-size: .85rem;
 }
 
-.run .event .badge {
-  font-size: .68rem;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  padding: .05rem .4rem;
-  border-radius: var(--radius-inner);
-  border: 1px solid var(--color-border-emphasized);
-  color: var(--color-text-secondary);
-}
-
-/* The three things worth telling apart at a glance: a row answered, a row read
-   and dropped, and the machine simply moving. */
-.run .event.yield .badge { color: var(--color-syntax-string); border-color: color-mix(in srgb, var(--color-syntax-string) 50%, transparent); }
-.run .event.reject .badge { color: var(--color-syntax-number); border-color: color-mix(in srgb, var(--color-syntax-number) 50%, transparent); }
-.run .event.done .badge { color: var(--color-text-accent); border-color: var(--color-accent); }
 .run .event .said { color: var(--color-text-secondary); }
 .run .event .said code { font-family: var(--font-family-code); color: var(--color-text-primary); font-size: .8rem; }
 
@@ -632,9 +583,7 @@
    it. Six of them painted in the code palette read as six things happening at
    once, which is the opposite of what the fold is for. */
 .data tr.section .name { font-family: var(--font-family-code); color: var(--color-text-primary); white-space: nowrap; }
-.data tr.section .ty { font-family: var(--font-family-code); color: var(--color-text-secondary); font-size: .74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .data tr.section .count { margin-left: auto; display: flex; }
-.data tr.section .ty { flex: 0 1 auto; }
 
 /* The predicate the machine is reading right now. */
 .data tbody.scanning tr.section .name { color: var(--color-text-accent); font-weight: 600; }

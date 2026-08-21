@@ -162,7 +162,6 @@ export function DataTable({
                       aria-expanded={open}
                     >
                       <code className="name">{predicate.name}</code>
-                      <code className="ty">{predicate.ty}</code>
                       {/* A badge, not a bare number: at the end of a row whose
                           last column is the value, a loose count reads as one. */}
                       <span className="count">

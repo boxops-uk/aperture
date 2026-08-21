@@ -245,7 +245,7 @@ const events = async () => {
   const seen = []
   const total = Number((await page.$eval('.transport .count', (el) => el.textContent)).split('/')[1])
   for (let i = 0; i < total; i++) {
-    seen.push(await page.$eval('.run .event .badge', (el) => el.textContent))
+    seen.push(await page.$eval('.run .event .astryx-badge', (el) => el.textContent))
     if (i < total - 1) await transport('▶')
   }
   return seen
@@ -268,7 +268,7 @@ check(
 await transport('row ▶')
 check(
   'step over lands on a row',
-  (await page.$eval('.run .event .badge', (el) => el.textContent)) === 'yield',
+  (await page.$eval('.run .event .astryx-badge', (el) => el.textContent)) === 'yield',
 )
 check(
   'a register holds the row the answer came from',
@@ -319,7 +319,7 @@ await openSection('lowered')
 await page.waitForSelector('.lowered li')
 check(
   'the query is typed against the schema',
-  (await texts('.lowered .ty')).some((ty) => ty === 'string'),
+  (await texts('.lowered .astryx-badge')).some((ty) => ty.trim() === 'string'),
 )
 check(
   'every name in the view resolved',
@@ -416,7 +416,7 @@ check(
 )
 check(
   'a seek is told apart from a scan',
-  (await texts('.plan .steps .astryx-token')).some((badge) => badge.trim() === 'seek'),
+  (await texts('.plan .steps .astryx-badge')).some((badge) => badge.trim() === 'seek'),
 )
 check(
   'the plan carries the fingerprint a cursor would',
@@ -431,7 +431,7 @@ await settle()
 check('the plan lights the step the machine is standing at', (await page.$$('.plan .steps li.on')).length === 1)
 check(
   'the plan says what each step has read so far',
-  (await texts('.plan .badge.examined')).some((badge) => /\d+ read/.test(badge)),
+  (await texts('.plan .steps .astryx-badge')).some((badge) => /\d+ read/.test(badge)),
 )
 
 // A refused query has no plan *and* no run, and both say so in their own words

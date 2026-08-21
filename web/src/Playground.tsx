@@ -185,13 +185,13 @@ export function Playground() {
       {/* One row, and no taller than what is in it: the schema, and the three
           numbers worth watching. Everything the prose used to say is
           demonstrated by the panels underneath it. */}
+      {/* One row, left to right, in the order a reader uses it: pick a query,
+          read the schema it is written against, watch the three numbers. */}
       <Toolbar
         label="Playground"
         size="sm"
-        // A select rather than fourteen buttons: the samples are a list to pick
-        // from, and a list that does not fit on two rows is a list.
         startContent={
-          <HStack align="center">
+          <HStack gap={4} align="center" wrap="wrap">
             <Selector
               label="Sample query"
               isLabelHidden
@@ -208,18 +208,22 @@ export function Playground() {
                 if (sample) show(schema, sample.source)
               }}
             />
-          </HStack>
-        }
-        endContent={
-          <HStack gap={4} align="center">
+
+            {/* Where the diagnostics would be if there were a query to have any
+                — beside the control that fixes it, rather than under the box. */}
+            {blank && <Text type="supporting">type a query, or pick a sample</Text>}
+
             <Button
               variant="secondary"
               size="sm"
               label="schema"
               onClick={() => setDrawer(true)}
               data-testid="schema"
-              endContent={schemaView && !schemaView.view.ok ? <Text color="accent">✕</Text> : undefined}
+              endContent={
+                schemaView && !schemaView.view.ok ? <Text color="accent">✕</Text> : undefined
+              }
             />
+
             <Status engine={engine} failure={failure} micros={view?.micros} />
           </HStack>
         }
@@ -241,11 +245,7 @@ export function Playground() {
                 onChange={(next) => show(schema, next)}
                 onHighlight={setHighlight}
               />
-              {blank ? (
-                <Text type="supporting">type a query, or pick a sample</Text>
-              ) : (
-                <Diagnostics diagnostics={diagnostics} source={source} />
-              )}
+              {!blank && <Diagnostics diagnostics={diagnostics} source={source} />}
             </div>
 
             {/* An accordion, not tabs: the plan is meant to be read *against*

@@ -1,4 +1,4 @@
-import { Token } from '@astryxdesign/core/Token'
+import { Badge } from '@astryxdesign/core/Badge'
 import type { PlanView } from './wasm'
 
 /**
@@ -67,24 +67,22 @@ export function PlanPane({
           <li key={step.index} className={step.index === active ? 'on' : undefined}>
             <div className="head">
               <span className="index">{step.level === null ? '·' : step.level}</span>
-              <Token size="sm" color={step.kind === 'Level' ? 'blue' : 'gray'} label={step.kind} />
+              {/* Every chip on this page is the same pill: what varies is the
+                  colour, and colour is the only thing that should. */}
+              <Badge variant={step.kind === 'Level' ? 'blue' : 'neutral'} label={step.kind} />
               {step.access.map((access, at) => (
-                <Token key={at} size="sm" color={access === 'seek' ? 'green' : 'gray'} label={access} />
+                <Badge key={at} variant={access === 'seek' ? 'green' : 'neutral'} label={access} />
               ))}
               {step.residuals > 0 && (
-                <span
-                  className="badge residual"
-                  title="rows this step reads and then drops"
-                >
-                  {step.residuals} residual{step.residuals === 1 ? '' : 's'}
-                </span>
+                <Badge
+                  variant="red"
+                  label={`${step.residuals} residual${step.residuals === 1 ? '' : 's'}`}
+                />
               )}
               {/* What this step has actually read, so far — the outcome beside
                   the intent, which is the pair worth reading together. */}
               {(examined[step.index] ?? 0) > 0 && (
-                <span className="badge examined" title="rows read here so far">
-                  {examined[step.index]} read
-                </span>
+                <Badge variant="neutral" label={`${examined[step.index]} read`} />
               )}
             </div>
             {/* The printer indents its whole block by two spaces, which is
@@ -96,7 +94,7 @@ export function PlanPane({
         <li className="head-row">
           <div className="head">
             <span className="index">→</span>
-            <span className="badge head-badge">head</span>
+            <Badge variant="neutral" label="head" />
           </div>
           <pre>{plan.head}</pre>
         </li>

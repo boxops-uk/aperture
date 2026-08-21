@@ -1,3 +1,4 @@
+import { Badge } from '@astryxdesign/core/Badge'
 import type { TokenView } from './wasm'
 import { type Highlight, within } from './span'
 import { display } from './display'
@@ -35,7 +36,7 @@ export function TokenTable({
               </td>
               <td className="kind">{token.kind}</td>
               <td>
-                <span className={`pill tok-${token.class}`}>{token.class}</span>
+                <Badge variant="neutral" label={token.class} />
               </td>
               <td className="text">{display(token.text)}</td>
             </tr>

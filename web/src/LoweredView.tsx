@@ -1,3 +1,4 @@
+import { Badge } from '@astryxdesign/core/Badge'
 import { useMemo } from 'react'
 import type { Lowered, LoweredNode } from './wasm'
 import { type Highlight, litNodes } from './span'
@@ -58,7 +59,7 @@ export function LoweredView({
       <ol>
         <li className="part">
           <span className="label">head</span>
-          {lowered.head_ty && <span className="ty">{lowered.head_ty}</span>}
+          {lowered.head_ty && <Badge variant="neutral" label={lowered.head_ty} />}
         </li>
         {rows(lowered.head, 0).map(({ node, depth }) => (
           <Row key={`h${node.id}`} node={node} depth={depth} lit={lit} onHighlight={onHighlight} />
@@ -112,7 +113,7 @@ function Row({
     >
       <span className="kind">{node.kind}</span>
       {node.label !== null && <span className="text">{node.label}</span>}
-      {node.ty !== null && <span className="ty">{node.ty}</span>}
+      {node.ty !== null && <Badge variant="neutral" label={node.ty} />}
       <span className="num">
         {node.span.start}–{node.span.end}
       </span>
