@@ -1,24 +1,28 @@
 ---
 title: Getting started
-description: Build the binaries, create a database, start a server, write some facts, and ask it a question — in about five minutes.
+description: Get the binaries, create a database, start a server, write some facts, and ask it a question — in about five minutes.
 ---
 
-Everything below was run against the repository as it stands. Output is quoted as it was
-printed.
+By the end of this page you will have a real code index on disk — files, declarations and
+the references between them — a server in front of it, and answers to a few questions
+about it.
+
+Everything below was run against the repository as it stands, and every block of output is
+what it actually printed.
 
 ## Prerequisites
 
 | You need | Why | Optional? |
 |---|---|---|
 | A Rust toolchain (edition 2024, stable) | Builds `fjord`, the server and the viewer | no |
-| .NET SDK 10 | Runs the indexer that seeds the tour's corpus (step 4) | for the corpus |
+| .NET SDK 10 | Runs the indexer that fills the database with facts | only for step 4 |
 | `python3` | Serves these docs locally | yes |
 
 There is nothing else — no database to install, no daemon to configure. The storage engine
 ([fjall](https://github.com/fjall-rs/fjall)) is a Rust dependency, and a database is a
 directory.
 
-## 1. Build — or download
+## 1. Get the binaries
 
 :::note Prebuilt binaries
 Every [GitHub release](https://github.com/boxops-uk/fjord/releases/latest) carries `fjord`
@@ -30,21 +34,22 @@ and `fjord-viewer` for Linux x86_64, with SLSA provenance — verify what you do
 cargo build --release --bin fjord
 ```
 
-That gives you `target/release/fjord`, the one command-line tool. Two other binaries
-are worth knowing about:
+That gives you `target/release/fjord`, the one command-line tool. There is a second
+binary worth knowing about — the code-search site, which step 8 uses:
 
 ```bash
-cargo build --release --bin fjord-viewer        # the code-search site
+cargo build --release --bin fjord-viewer
 ```
 
-For a first run, `--release` matters more than usual: a debug build of the executor is
-several times slower and is not the thing you want a first impression of.
+Use `--release`. A debug build of the executor is several times slower, and is not the
+thing you want a first impression of. [Building from source](building.html) has the rest
+of the workspace, if you want it.
 
 ## 2. Create a database
 
-A database is created **against a schema**, and that schema is frozen and embedded in it for
-its lifetime. There is no default: the schema decides what every stored row means, so a
-database whose schema nobody chose is one nobody can describe.
+A database is created **against a schema**, which is then frozen and embedded in it for
+life. There is no default, and that is deliberate: the schema is what says what every row
+in the database means.
 
 `schemas/code.sigla` in the repository is a worked example — twenty-seven predicates
 describing files, declarations, references, a build graph and a declaration graph. It is what
@@ -76,8 +81,8 @@ holds every database under the root.
 
 ## 3. Start a server
 
-Every client talks to a server — there is no "open the directory directly" path for
-readers. Locally that is a Unix socket.
+Readers do not open the directory themselves; they talk to a server. Locally that means a
+Unix socket, and starting one is a single command.
 
 ```bash
 fjord --data-dir ./db serve --ready-file ./ready &
@@ -105,12 +110,11 @@ pass `--socket /tmp/fjord.sock` explicitly and name it in the address —
 
 ## 4. Put some facts in it
 
-There is no `fjord write` command yet — [file ingestion](status.html) is unbuilt. Facts
-arrive over the wire, from a producer. The one this tour uses is the repository's own:
-`Boxops.Fjord.Indexer` runs a real design-time build per project, asks Roslyn what every
-name in the result means, and writes the answers down the socket — pointed, here, at the
-.NET code it is itself part of. Three projects: the client library, the demo producer, and
-the indexer indexing itself.
+Facts arrive over the wire, from a producer — there is no `fjord write` command yet
+([file ingestion](status.html) is unbuilt). The producer here is the repository's own .NET
+indexer, pointed at the .NET code it is itself part of: it builds each project, asks
+Roslyn what every name in the result means, and writes the answers down the socket. Three
+projects go in — the client library, the demo producer, and the indexer indexing itself.
 
 ```bash
 dotnet run --project clients/dotnet/Boxops.Fjord.Indexer --configuration Release -- \
@@ -137,14 +141,15 @@ indexed 20 file(s) in 4.0s
 references: 2,672 resolved, 1,718 to declarations outside the index, 1 unresolved
 ```
 
-`40,382 deduped` is the interesting number. The indexer holds **no fact ids**: it sends
-each declaration with its module nested inside it, and the module with its file nested
-inside that. The server interns each nested fact, so a file named a few thousand times is
-written once and deduplicated the rest — 55,421 facts touched, 15,039 rows exist.
+`40,382 deduped` is the number worth noticing. The indexer keeps track of **no ids at
+all**. It sends each declaration with its module nested inside it, and that module with
+its file nested inside that; the server writes each nested fact once and recognises it
+every time after. So 55,421 facts touched leaves 15,039 rows. The
+[guided tour](walkthrough.html#3-write-facts-holding-no-ids) shows what that looks like on
+the wire.
 
 To write facts from your own program, see
-[the client section](clients.html#writing-facts-from-rust); the .NET demo producer is the
-same idea at fixture size.
+[the client section](clients.html#writing-facts-from-rust).
 
 ## 5. Ask it something
 
@@ -161,8 +166,8 @@ Boxops.Fjord.Client/Crc32.cs
 fjord: stopped at 3 rows; raise or drop --limit to see the rest
 ```
 
-A query is a **head pattern**, the word `where`, and statements. Capture fields by name
-and shape the output with a record head:
+A query is the shape you want back, the word `where`, and what to match. Name the fields
+you care about, and the shape at the front decides the columns:
 
 ```bash
 fjord --data-dir ./db query code \
@@ -270,7 +275,7 @@ symbol pages — built entirely out of ordinary queries through the ordinary cli
 
 ## What to read next
 
-- [Walkthrough](walkthrough.html) — the same path with more of the interesting corners.
+- [A guided tour](walkthrough.html) — the same path, with more of the interesting corners.
 - [Concepts](concepts.html) — facts, predicates, keys, values, lifecycle.
 - [sigla query language](query-language.html) — the whole language, construct by construct.
 - [CLI reference](cli.html) — every command, flag, address form and config key.

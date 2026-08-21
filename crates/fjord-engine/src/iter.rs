@@ -445,6 +445,15 @@ struct Deadline<'a> {
     since_poll: usize,
     /// Where the tally goes. See [`Profile`].
     profile: &'a mut Profile,
+    /// Who is watching, if anybody is — see [`Trace`].
+    ///
+    /// Present only in a build that carries the hook, and `None` even there
+    /// unless a caller attached one: that second gate is what keeps
+    /// [I9](../../../website/content/invariants.md#i9)'s allocation guard
+    /// measuring the code that ships, since the guard runs on the traced build
+    /// with nothing attached.
+    #[cfg(feature = "trace")]
+    trace: Option<&'a mut dyn Trace>,
 }
 
 /// **What a run examined**, step by step.
@@ -491,12 +500,44 @@ impl Profile {
     }
 }
 
+/// Something watching a run — the seam a debugger attaches to.
+///
+/// **Compiled only under the `trace` feature**, which is off by default and on
+/// for the WebAssembly build: the hook sits inside the scan loop, where
+/// [I6](../../../website/content/invariants.md#i6) and
+/// [I9](../../../website/content/invariants.md#i9) live, and the production
+/// build should not carry a branch there at all. It is the same shape
+/// [`FieldOffsets::witness_row`] uses for its debug-only check: a real
+/// implementation under a `cfg`, and an empty `#[inline]` one otherwise.
+///
+/// Rows a residual **rejects** are the only thing here, because they are the
+/// only thing a watcher cannot see from outside: every other move the machine
+/// makes is a transition, and every transition is visible in `depth` and the
+/// registers between [`Executor::step`] calls.
+#[cfg(feature = "trace")]
+pub trait Trace {
+    /// A scan opened over `[lo, hi)` — the range the seek key came to, which is
+    /// the whole of what a seek *is*: a byte prefix, and the rows that share it.
+    /// `hi` is absent only for a prefix of all `0xFF`, which has no successor.
+    fn scanning(&mut self, depth: usize, lo: &[u8], hi: Option<&[u8]>);
+
+    /// A point read of the fact a reference names — a level that reads one row
+    /// rather than a range.
+    fn fetching(&mut self, depth: usize, id: FactId);
+
+    /// A row this step pulled and dropped, and which of the step's residuals
+    /// dropped it.
+    fn rejected(&mut self, depth: usize, register: &Register, residual: usize);
+}
+
 impl<'a> Deadline<'a> {
     fn new(token: &'a CancellationToken, profile: &'a mut Profile) -> Self {
         Self {
             token,
             since_poll: 0,
             profile,
+            #[cfg(feature = "trace")]
+            trace: None,
         }
     }
 
@@ -506,6 +547,44 @@ impl<'a> Deadline<'a> {
     /// panic — which is what the resume replay wants, and what keeps this safe for a
     /// caller that did not ask for a profile at all.
     #[inline]
+    /// Attach a watcher for the run this deadline carries.
+    #[cfg(feature = "trace")]
+    fn watching(mut self, trace: &'a mut dyn Trace) -> Self {
+        self.trace = Some(trace);
+        self
+    }
+
+    /// A row read and dropped by a residual.
+    ///
+    /// Two bodies, as [`FieldOffsets::witness_row`] has two: the untraced build
+    /// compiles an empty inline function, so the scan loop is what it was.
+    #[cfg(feature = "trace")]
+    fn rejected(&mut self, depth: usize, register: &Register, residual: usize) {
+        if let Some(trace) = self.trace.as_deref_mut() {
+            trace.rejected(depth, register, residual);
+        }
+    }
+
+    #[cfg(not(feature = "trace"))]
+    #[inline]
+    fn rejected(&mut self, _depth: usize, _register: &Register, _residual: usize) {}
+
+    /// The range a level just opened over.
+    #[cfg(feature = "trace")]
+    fn scanning(&mut self, depth: usize, lo: &[u8], hi: Option<&[u8]>) {
+        if let Some(trace) = self.trace.as_deref_mut() {
+            trace.scanning(depth, lo, hi);
+        }
+    }
+
+    /// The one row a reference names.
+    #[cfg(feature = "trace")]
+    fn fetching(&mut self, depth: usize, id: FactId) {
+        if let Some(trace) = self.trace.as_deref_mut() {
+            trace.fetching(depth, id);
+        }
+    }
+
     fn tick(&mut self, depth: usize) -> Result<(), FjordError> {
         self.since_poll += 1;
 
@@ -574,6 +653,24 @@ struct StackFrame<S: FactStore> {
     /// things, and `enumerate` carries no direction. One bit for both kinds because
     /// a frame is one step, and a step is one kind.
     produced: bool,
+    /// What the last [`open`](Self::open) scanned over, for a watcher to be told
+    /// about.
+    ///
+    /// Recorded here rather than reported from `open`, which has no deadline to
+    /// report through: threading one in would change three signatures for a
+    /// feature that is off by default. Allocates only in a build carrying the
+    /// hook, and only per *level entry* — never per row.
+    #[cfg(feature = "trace")]
+    opened: Option<Opening>,
+}
+
+/// What a level's last opening looked like — a range, or one fact.
+///
+/// Only in a build carrying the trace hook: nothing else has a use for it.
+#[cfg(feature = "trace")]
+enum Opening {
+    Scan { lo: Vec<u8>, hi: Option<Vec<u8>> },
+    Fetch(FactId),
 }
 
 impl<S: FactStore> StackFrame<S> {
@@ -584,8 +681,27 @@ impl<S: FactStore> StackFrame<S> {
             current: None,
             field_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
             produced: false,
+            #[cfg(feature = "trace")]
+            opened: None,
         }
     }
+
+    /// Tell a watcher what the last opening scanned over.
+    ///
+    /// Called by whoever holds the deadline, right after `open`. Two bodies,
+    /// like [`FieldOffsets::witness_row`]: the untraced build compiles nothing.
+    #[cfg(feature = "trace")]
+    fn report_opening(&mut self, deadline: &mut Deadline<'_>, depth: usize) {
+        match self.opened.take() {
+            Some(Opening::Scan { lo, hi }) => deadline.scanning(depth, &lo, hi.as_deref()),
+            Some(Opening::Fetch(id)) => deadline.fetching(depth, id),
+            None => {}
+        }
+    }
+
+    #[cfg(not(feature = "trace"))]
+    #[inline]
+    fn report_opening(&mut self, _deadline: &mut Deadline<'_>, _depth: usize) {}
 
     /// Close the level: no live scan, no row, and back to its first source.
     ///
@@ -633,6 +749,14 @@ impl<S: FactStore> StackFrame<S> {
                     return Err(FjordError::BadResumeKey);
                 }
 
+                #[cfg(feature = "trace")]
+                {
+                    self.opened = Some(Opening::Scan {
+                        lo: lo.to_vec(),
+                        hi: hi.clone(),
+                    });
+                }
+
                 Rows::Scan(store.scan(lo, hi.as_deref())?)
             }
 
@@ -646,7 +770,19 @@ impl<S: FactStore> StackFrame<S> {
                 path,
                 predicate_id,
                 ..
-            } => Rows::Fetched(self.follow(store, state, *reference, path, *predicate_id)?),
+            } => {
+                let fetched = self.follow(store, state, *reference, path, *predicate_id)?;
+
+                #[cfg(feature = "trace")]
+                {
+                    self.opened = fetched
+                        .as_ref()
+                        .map(|(_, id)| Opening::Fetch(*id))
+                        .or(self.opened.take());
+                }
+
+                Rows::Fetched(fetched)
+            }
         });
 
         self.current = None;
@@ -775,10 +911,20 @@ impl<S: FactStore> StackFrame<S> {
                 bytes: key_bytes,
             };
 
-            if Self::check_residuals(&mut self.field_offsets, state, source.residuals(), &current)?
-            {
-                self.current = Some(current.clone());
-                return Ok(Some(current));
+            match Self::check_residuals(
+                &mut self.field_offsets,
+                state,
+                source.residuals(),
+                &current,
+            )? {
+                None => {
+                    self.current = Some(current.clone());
+                    return Ok(Some(current));
+                }
+                // **The rows a scan reads and drops** — invisible in the answer,
+                // and the whole difference between a seek and a scan that
+                // filters. Reported to a watcher and to nothing else.
+                Some(residual) => deadline.rejected(depth, &current, residual),
             }
         }
 
@@ -809,6 +955,7 @@ impl<S: FactStore> StackFrame<S> {
     ) -> Result<bool, FjordError> {
         for source in sources {
             self.open(store, source, state, None)?;
+            self.report_opening(deadline, depth);
             let witness = self.next(state, source, deadline, depth)?;
             self.close();
 
@@ -820,16 +967,22 @@ impl<S: FactStore> StackFrame<S> {
         Ok(true)
     }
 
+    /// Which residual dropped this row, or `None` if it survived them all.
+    ///
+    /// The index rather than a bare `false`, because it is the loop variable
+    /// either way and *which* filter dropped a row is the one thing a reader
+    /// watching a scan wants to know. Nothing on the hot path reads it: the
+    /// caller compares against `None`.
     fn check_residuals(
         frame_field_offsets: &mut [FieldOffsets],
         state: &MachineState,
         residuals: &[Residual],
         register: &Register,
-    ) -> Result<bool, FjordError> {
+    ) -> Result<Option<usize>, FjordError> {
         let key = register.key();
         let mut row_field_offsets = FieldOffsets::new();
 
-        for residual in residuals.iter() {
+        for (at, residual) in residuals.iter().enumerate() {
             let span = field_span(&mut row_field_offsets, &key, &residual.path)?;
             let field = &key[span];
 
@@ -919,10 +1072,10 @@ impl<S: FactStore> StackFrame<S> {
                 }
             };
             if !ok {
-                return Ok(false);
+                return Ok(Some(at));
             }
         }
-        Ok(true)
+        Ok(None)
     }
 }
 
@@ -1476,135 +1629,265 @@ impl<S: FactStore> Executor<S> {
                 }
             }
 
-            let frame = &mut self.stack[self.depth];
+            match self.advance(&mut deadline)? {
+                Transition::Stepped => continue,
+                Transition::Done => return Ok(Iteratee::Done(acc)),
+            }
+        }
+    }
 
-            // Descending or backtracking is not a variable the loop carries — it is
-            // read off the frame, which is what keeps this a defunctionalised state
-            // machine ([I7](../../../website/content/invariants.md#i7)). A scan reads it from
-            // whether its iterator is open; a derive step, having no iterator, needs
-            // the one bit below.
-            match &self.plan.body[self.depth] {
-                Step::Level(level) => {
-                    // No alternative left to open — which is both "every source
-                    // has been drained" and, for a level with no sources at all,
-                    // "the empty relation". One arm, because the machine's answer
-                    // to the two is the same: close and back up.
-                    let Some(source) = level.sources.get(frame.source) else {
-                        frame.close();
-                        if self.depth == 0 {
-                            return Ok(Iteratee::Done(acc));
-                        }
-                        self.depth -= 1;
-                        continue;
-                    };
+    /// Drive the machine one transition, for a caller that is *watching* rather
+    /// than consuming.
+    ///
+    /// The same call [`enumerate_profiled`](Self::enumerate_profiled) makes, so
+    /// a stepper and a run are the same machine — `stepping_yields_what_running_yields`
+    /// is what says so. A caller reads [`depth`](Self::depth),
+    /// [`state`](Self::state) and [`row`](Self::row) between calls, and takes the
+    /// row itself when `row` answers `Some`, which is the moment the run would
+    /// have yielded.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the machine reports: a dangling reference, a short row, a
+    /// malformed plan.
+    pub fn step(
+        &mut self,
+        cancellation_token: &CancellationToken,
+        profile: &mut Profile,
+    ) -> Result<Transition, FjordError> {
+        // A deadline per call rather than per run: the stride it carries is a
+        // cancellation optimisation, and a caller stepping by hand is not the
+        // hot path the stride exists for.
+        let mut deadline = Deadline::new(cancellation_token, profile);
+        self.advance(&mut deadline)
+    }
 
-                    if frame.rows.is_none() {
-                        frame.open(&self.store, source, &self.state, None)?;
+    /// [`step`](Self::step), with somebody watching the rows a residual drops.
+    ///
+    /// The rows a scan reads and throws away are invisible everywhere else — not
+    /// in the answer, not in the transitions, only in `Profile.examined`'s
+    /// count — and they are the whole difference between a seek and a scan that
+    /// filters. Available only in a build that carries the hook.
+    ///
+    /// # Errors
+    ///
+    /// As [`step`](Self::step).
+    #[cfg(feature = "trace")]
+    pub fn step_watched(
+        &mut self,
+        cancellation_token: &CancellationToken,
+        profile: &mut Profile,
+        trace: &mut dyn Trace,
+    ) -> Result<Transition, FjordError> {
+        let mut deadline = Deadline::new(cancellation_token, profile).watching(trace);
+        self.advance(&mut deadline)
+    }
+
+    /// How deep the machine is standing — an index into the plan's body, and
+    /// `body.len()` exactly when it is standing on the head with a row to yield.
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// The registers, as they stand.
+    #[must_use]
+    pub fn state(&self) -> &MachineState {
+        &self.state
+    }
+
+    /// The row the machine is standing on, or `None` if it is not on the head.
+    ///
+    /// `Some` is exactly the moment [`enumerate`](Self::enumerate) would call
+    /// its `step` — which is what makes a stepper's rows the same rows in the
+    /// same order.
+    pub fn row(&mut self) -> Option<Row<'_, S>> {
+        (self.depth == self.plan.body.len()).then_some(Row {
+            store: &self.store,
+            state: &self.state,
+            plan: &self.plan,
+            offsets: &mut self.projection_offsets,
+        })
+    }
+
+    /// Back off the head after a row has been taken.
+    ///
+    /// The half of the yield arm that is not policy: a caller that has consumed
+    /// the row has to put the machine back where a run would have left it, and
+    /// a plan with no body at all has nowhere to back into — which is not an
+    /// edge case but the whole of `X where X = 42`, one row and no levels.
+    ///
+    /// Answers whether the machine can carry on.
+    pub fn resume_after_row(&mut self) -> bool {
+        if self.plan.body.is_empty() {
+            return false;
+        }
+        self.depth -= 1;
+        true
+    }
+
+    /// **One transition of the machine**, and the whole of what a step is.
+    ///
+    /// The loop above is this called until it answers [`Transition::Done`], with
+    /// the *yield* arm kept out of it: what to do with a row — continue or
+    /// suspend, and back off the head afterwards — is the streaming caller's
+    /// policy rather than the machine's, and the machine has to be able to stand
+    /// on the head while a caller decides.
+    ///
+    /// Extracted so a debugger can drive the executor one transition at a time
+    /// and read [`state`](Self::state), [`depth`](Self::depth) and
+    /// [`row`](Self::row) between them. Extracted *only*: descending or
+    /// backtracking is still read off the frame rather than carried as a
+    /// variable, which is what keeps this a defunctionalised state machine
+    /// ([I7](../../../website/content/invariants.md#i7)), and a `Transition` that
+    /// grew arms saying which way the machine went would be the second source of
+    /// truth that invariant is about.
+    fn advance(&mut self, deadline: &mut Deadline<'_>) -> Result<Transition, FjordError> {
+        let frame = &mut self.stack[self.depth];
+
+        // Descending or backtracking is not a variable the loop carries — it is
+        // read off the frame, which is what keeps this a defunctionalised state
+        // machine ([I7](../../../website/content/invariants.md#i7)). A scan reads it from
+        // whether its iterator is open; a derive step, having no iterator, needs
+        // the one bit below.
+        match &self.plan.body[self.depth] {
+            Step::Level(level) => {
+                // No alternative left to open — which is both "every source
+                // has been drained" and, for a level with no sources at all,
+                // "the empty relation". One arm, because the machine's answer
+                // to the two is the same: close and back up.
+                let Some(source) = level.sources.get(frame.source) else {
+                    frame.close();
+                    if self.depth == 0 {
+                        return Ok(Transition::Done);
                     }
+                    self.depth -= 1;
+                    return Ok(Transition::Stepped);
+                };
 
-                    match frame.next(&self.state, source, &mut deadline, self.depth)? {
-                        Some(register) => {
-                            for var_address in level.binds.iter() {
-                                self.state
-                                    .bind(*var_address, Slot::Fact(register.clone()))?;
-                            }
-                            frame.current = Some(register);
-                            self.depth += 1;
-                        }
-                        // This alternative is drained; the next round of the loop
-                        // opens the one after it, or backs out above if there is
-                        // none. Backtracking lives in one place for both.
-                        None => {
-                            frame.rows = None;
-                            frame.source += 1;
-                        }
-                    }
+                if frame.rows.is_none() {
+                    frame.open(&self.store, source, &self.state, None)?;
+                    frame.report_opening(deadline, self.depth);
                 }
 
-                // A derived bind produces exactly one value, so as a step it is a
-                // one-row generator: compute and ascend the first time, report
-                // exhausted the second. That is the whole of "a derived bind is not
-                // a loop level" as the machine sees it — the difference from a scan
-                // is that it contributes nothing to the cursor and is recomputed on
-                // resume rather than replayed.
-                Step::Derive(derived) => {
-                    if frame.produced {
-                        frame.produced = false;
-                        if self.depth == 0 {
-                            return Ok(Iteratee::Done(acc));
+                match frame.next(&self.state, source, deadline, self.depth)? {
+                    Some(register) => {
+                        for var_address in level.binds.iter() {
+                            self.state
+                                .bind(*var_address, Slot::Fact(register.clone()))?;
                         }
-                        self.depth -= 1;
-                    } else {
-                        self.state.bind(
-                            derived.bind,
-                            Slot::Value(compute(&derived.value, &self.state)?),
-                        )?;
-                        frame.produced = true;
+                        frame.current = Some(register);
                         self.depth += 1;
                     }
-                }
-
-                // A test is a one-row generator too, and the row it produces is the
-                // one already standing: it binds nothing, so passing is ascending
-                // with the registers untouched. Failing is *not* a new kind of
-                // control flow either — it is the same backtrack an exhausted level
-                // does, which is why negation needed no new direction in the machine
-                // and no reshaping of this loop.
-                // The same one-row generator as a negation, over pure
-                // computations rather than over a probe of the store. Re-decided on
-                // restore rather than replayed, which costs nothing here: `compute`
-                // is pure, so a second evaluation of the same bindings is the same
-                // answer.
-                Step::Test(Test::Compare { left, op, right }) => {
-                    if frame.produced {
-                        frame.produced = false;
-                        if self.depth == 0 {
-                            return Ok(Iteratee::Done(acc));
-                        }
-                        self.depth -= 1;
-                    } else {
-                        let a = as_i64(&compute(left, &self.state)?)?;
-                        let b = as_i64(&compute(right, &self.state)?)?;
-
-                        if op.holds(a.cmp(&b)) {
-                            frame.produced = true;
-                            self.depth += 1;
-                        } else if self.depth == 0 {
-                            return Ok(Iteratee::Done(acc));
-                        } else {
-                            self.depth -= 1;
-                        }
+                    // This alternative is drained; the next round of the loop
+                    // opens the one after it, or backs out above if there is
+                    // none. Backtracking lives in one place for both.
+                    None => {
+                        frame.rows = None;
+                        frame.source += 1;
                     }
                 }
+            }
 
-                Step::Test(Test::Absent(sources)) => {
-                    if frame.produced {
-                        frame.produced = false;
-                        if self.depth == 0 {
-                            return Ok(Iteratee::Done(acc));
-                        }
-                        self.depth -= 1;
-                    } else if frame.absent(
-                        &self.store,
-                        &self.state,
-                        sources,
-                        &mut deadline,
-                        self.depth,
-                    )? {
+            // A derived bind produces exactly one value, so as a step it is a
+            // one-row generator: compute and ascend the first time, report
+            // exhausted the second. That is the whole of "a derived bind is not
+            // a loop level" as the machine sees it — the difference from a scan
+            // is that it contributes nothing to the cursor and is recomputed on
+            // resume rather than replayed.
+            Step::Derive(derived) => {
+                if frame.produced {
+                    frame.produced = false;
+                    if self.depth == 0 {
+                        return Ok(Transition::Done);
+                    }
+                    self.depth -= 1;
+                } else {
+                    self.state.bind(
+                        derived.bind,
+                        Slot::Value(compute(&derived.value, &self.state)?),
+                    )?;
+                    frame.produced = true;
+                    self.depth += 1;
+                }
+            }
+
+            // A test is a one-row generator too, and the row it produces is the
+            // one already standing: it binds nothing, so passing is ascending
+            // with the registers untouched. Failing is *not* a new kind of
+            // control flow either — it is the same backtrack an exhausted level
+            // does, which is why negation needed no new direction in the machine
+            // and no reshaping of this loop.
+            // The same one-row generator as a negation, over pure
+            // computations rather than over a probe of the store. Re-decided on
+            // restore rather than replayed, which costs nothing here: `compute`
+            // is pure, so a second evaluation of the same bindings is the same
+            // answer.
+            Step::Test(Test::Compare { left, op, right }) => {
+                if frame.produced {
+                    frame.produced = false;
+                    if self.depth == 0 {
+                        return Ok(Transition::Done);
+                    }
+                    self.depth -= 1;
+                } else {
+                    let a = as_i64(&compute(left, &self.state)?)?;
+                    let b = as_i64(&compute(right, &self.state)?)?;
+
+                    if op.holds(a.cmp(&b)) {
                         frame.produced = true;
                         self.depth += 1;
                     } else if self.depth == 0 {
-                        // A negation at the outermost position with nothing above it
-                        // to retry: `!test.Bar {id = 1}` alone is a whole query, and
-                        // a witness makes its answer no rows.
-                        return Ok(Iteratee::Done(acc));
+                        return Ok(Transition::Done);
                     } else {
                         self.depth -= 1;
                     }
                 }
             }
+
+            Step::Test(Test::Absent(sources)) => {
+                if frame.produced {
+                    frame.produced = false;
+                    if self.depth == 0 {
+                        return Ok(Transition::Done);
+                    }
+                    self.depth -= 1;
+                } else if frame.absent(&self.store, &self.state, sources, deadline, self.depth)? {
+                    frame.produced = true;
+                    self.depth += 1;
+                } else if self.depth == 0 {
+                    // A negation at the outermost position with nothing above it
+                    // to retry: `!test.Bar {id = 1}` alone is a whole query, and
+                    // a witness makes its answer no rows.
+                    return Ok(Transition::Done);
+                } else {
+                    self.depth -= 1;
+                }
+            }
         }
+
+        // Fell out of the match rather than returning: the machine moved, and
+        // where it moved to is written in `depth` and in the frame.
+        Ok(Transition::Stepped)
     }
+}
+
+/// What one call to [`Executor::advance`] did.
+///
+/// Two arms, not nine. The machine's *transitions* — a level opened, a row
+/// bound, an alternative drained, a test failed — are what a debugger wants, and
+/// they are read off the machine's own state between calls rather than reported
+/// here: `depth`, the frame's iterator, the registers. A richer return value
+/// would be a second way of saying what the frame already says, and keeping
+/// those two agreeing is exactly the bookkeeping
+/// [I7](../../../website/content/invariants.md#i7) exists to avoid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transition {
+    /// The machine moved. Whether it descended, backtracked or filled a register
+    /// is written in `depth` and the registers, which is where it already was.
+    Stepped,
+    /// There is nothing left to do: every level is drained and backed out of.
+    Done,
 }
 
 /// Evaluate a derived bind.
@@ -1688,7 +1971,9 @@ mod tests {
     use ::proptest::prelude::*;
     use fjord_encoding::tuple::{MARK_NULL, Value, decode_probe};
     use fjord_schema::schema::{PredicateId, PredicateTy};
-    use fjord_store::{fact_store::Entity, mem_store::MemStore, store::FjallDb};
+    use fjord_store::fact_store::Entity;
+    use fjord_store_fjall::store::FjallDb;
+    use fjord_store_mem::MemStore;
     use std::{collections::BTreeSet, sync::atomic::Ordering};
     use tempfile::TempDir;
 

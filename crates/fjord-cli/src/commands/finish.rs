@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use fjord_store::catalog::Finished;
+use fjord_store_fjall::catalog::Finished;
 
 use crate::{
     CliError,
@@ -42,7 +42,7 @@ pub fn run(root: &Path, target: &Target, allow_zero_facts: bool) -> Result<Finis
             // that position and records an `ops-I4` identity over the result —
             // silently. `Catalog::finish` reads the embedded copy itself, the only
             // statement of it either door can reach.
-            let selector = fjord_store::catalog::Selector::parse(&target.database)?;
+            let selector = fjord_store_fjall::catalog::Selector::parse(&target.database)?;
             Ok(catalog.finish(&selector, allow_zero_facts)?)
         }
     }

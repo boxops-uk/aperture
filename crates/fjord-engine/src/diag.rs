@@ -19,7 +19,7 @@
 
 use std::ops::Range;
 
-use codespan_reporting::diagnostic::{Label, Severity};
+use codespan_reporting::diagnostic::{Label, LabelStyle, Severity};
 
 use super::syntax::{NodeSpan, source_range};
 
@@ -374,6 +374,41 @@ impl Diagnostics {
     pub fn into_inner(self) -> Vec<Diagnostic> {
         self.inner
     }
+
+    /// The diagnostics in the order a reader wants them: by where they point.
+    ///
+    /// The sink itself keeps **arrival** order, which is phase order — every
+    /// lowering fault precedes every typecheck fault, whatever part of the query
+    /// each is about. That is right for a log, and what [`since`](Self::since)
+    /// slices by phase. It is wrong for a person, who reads the query top to
+    /// bottom: a fault at the head reported *after* one in the body reads as
+    /// though the head were fine.
+    ///
+    /// So presentation sorts and the log does not. Stably, so two diagnostics
+    /// about the same span stay in the order the phases found them, and by the
+    /// earliest primary label — a diagnostic with no label (the parse refusals,
+    /// which have nothing to point at) sorts first, and is the only diagnostic
+    /// there is in those cases.
+    ///
+    /// Here rather than on the compilation because every presentation owes the
+    /// same order, and a second caller re-deriving this sort is a second caller
+    /// that can disagree with the terminal about it.
+    #[must_use]
+    pub fn in_source_order(&self) -> Vec<&Diagnostic> {
+        let mut ordered: Vec<&Diagnostic> = self.inner.iter().collect();
+
+        ordered.sort_by_key(|diagnostic| {
+            diagnostic
+                .labels
+                .iter()
+                .filter(|label| label.style == LabelStyle::Primary)
+                .map(|label| label.range.start)
+                .min()
+                .unwrap_or(0)
+        });
+
+        ordered
+    }
 }
 
 impl<'a> IntoIterator for &'a Diagnostics {
@@ -529,6 +564,80 @@ mod tests {
         assert_eq!(
             diagnostics.codes().collect::<Vec<_>>(),
             vec!["reject/unknown-predicate", "nyi/subquery"]
+        );
+    }
+
+    /// **A reader reads top to bottom; the sink records phase by phase.**
+    ///
+    /// The sort is stable and by the earliest *primary* label, so two faults
+    /// about one span keep the order the phases found them — and a diagnostic
+    /// with nothing to point at (a parse refusal) comes first. Every
+    /// presentation goes through here, which is what stops a view and the
+    /// terminal disagreeing about the order they show.
+    #[test]
+    fn diagnostics_are_presented_in_source_order() {
+        let mut diagnostics = Diagnostics::new();
+
+        // Reported in phase order, which is deliberately not source order.
+        diagnostics.error(Code::NyiSubquery, "late in the query", 40usize..44);
+        diagnostics.error(Code::RejectUnknownField, "early in the query", 4usize..9);
+        diagnostics.error(Code::RejectTypeMismatch, "also at four", 4usize..9);
+        diagnostics.push(Diagnostic::error().with_message("nothing to point at"));
+
+        let messages: Vec<_> = diagnostics
+            .in_source_order()
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+
+        assert_eq!(
+            messages,
+            vec![
+                "nothing to point at",
+                "early in the query",
+                "also at four",
+                "late in the query",
+            ],
+            "diagnostics are not presented in the order a reader meets them"
+        );
+
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "late in the query",
+                "early in the query",
+                "also at four",
+                "nothing to point at",
+            ],
+            "the sink itself must keep arrival order — `since` slices it by phase"
+        );
+    }
+
+    /// A **secondary** label is context, not the thing being reported, so it
+    /// must not decide where a diagnostic sorts. Without the filter, a fault
+    /// pointing at the head and mentioning the body would sort into the body.
+    #[test]
+    fn a_secondary_label_does_not_decide_the_order() {
+        let mut diagnostics = Diagnostics::new();
+
+        diagnostics.push(
+            Diagnostic::error()
+                .with_message("about the head")
+                .with_label(Label::primary((), 30usize..34))
+                .with_label(Label::secondary((), 2usize..6)),
+        );
+        diagnostics.error(Code::NyiNegation, "about the body", 10usize..14);
+
+        assert_eq!(
+            diagnostics
+                .in_source_order()
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            vec!["about the body", "about the head"]
         );
     }
 }

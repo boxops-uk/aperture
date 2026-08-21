@@ -1,0 +1,15 @@
+schema code {
+  type What = { data : string = 5 | func : int = 2 }
+
+  predicate File : string
+
+  predicate Decl : { file : File, name : string, line : int } -> string
+
+  predicate Ref : { from : Decl, to : Decl }
+
+  predicate Span : { decl : Decl, at : { line : int, col : int } }
+
+  predicate Kind : { decl : Decl, what : What }
+
+  predicate KindOf : { what : What, decl : Decl }
+}

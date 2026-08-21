@@ -27,6 +27,20 @@ schema demo {
 }
 ```
 
+Here is one, live: the engine reads it, lowers it, and lists what it declares. Break it —
+rename a type, drop a brace, give two alternatives the same tag — and the diagnostic is the
+one the compiler emits, with the code a test asserts on.
+
+:::demo schema
+schema code {
+  type What = { data : string = 5 | func : int = 2 }
+
+  predicate File : string
+  predicate Decl : { file : File, name : string, line : int } -> string
+  predicate Kind : { decl : Decl, what : What }
+}
+:::
+
 ## Grammar
 
 ```text

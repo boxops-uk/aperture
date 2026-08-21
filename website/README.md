@@ -3,9 +3,12 @@
 A static documentation site for Fjord DB, plus a small server to preview it. Standard
 library Python only — no toolchain, no dependencies, no network access at build time.
 
-The published copy lives at <https://boxops-uk.github.io/fjord/> — deployed by CI on every
-push to main, after the tests and the docs drift gate. Each GitHub release also carries the
-site as `fjord-docs-site.tar.gz`, attested, for serving anywhere else.
+**This is not what publishes.** <https://boxops-uk.github.io/fjord/> is the interactive site
+in [`web/`](../web/README.md) — the same pages, with the engine running in them — and
+`fjord-docs-site.tar.gz` on a release is that bundle. What this generator is: the copy that
+reads with **no toolchain and no network**, and the second renderer the interactive site's
+smoke check compares itself against page for page. A dialect that drifts is a page that reads
+differently depending on which copy you found, so it still builds strictly in CI.
 
 ```bash
 python3 serve.py            # build, then serve on http://127.0.0.1:8000
@@ -22,6 +25,7 @@ Other flags: `--port N`, `--host 0.0.0.0` (to reach it from another machine), `-
 ```text
 website/
 ├── build.py        the generator: content/*.md → site/*.html + search-index.json
+├── nav.json        the reading order — read by build.py and by web/
 ├── serve.py        the preview server (static, no-cache, optional --watch)
 ├── content/        one Markdown file per page — this is what you edit
 ├── assets/         style.css, app.js, favicon.svg — copied through verbatim
@@ -39,9 +43,10 @@ description: One sentence, shown as the standfirst and used for the search index
 ---
 ```
 
-**The navigation is the reading order**, and it lives in `NAV` at the top of `build.py`. A page
-is built only if its slug is in `NAV`; a slug in `NAV` with no file, or a file with no `NAV`
-entry, is reported as a warning at build time.
+**The navigation is the reading order**, and it lives in [`nav.json`](nav.json) — read by this
+generator *and* by the interactive site in [`web/`](../web/README.md), so the two cannot
+publish the pages in different orders. A page is built only if its slug is in `nav.json`; a
+slug there with no file, or a file with no entry, is reported as a warning at build time.
 
 ### The Markdown dialect
 
@@ -56,6 +61,19 @@ A callout. Kinds: note · warn · invariant · gap.
 
 ### A heading with an explicit anchor {#i5}
 ```
+
+And one that only the interactive site can honour:
+
+```markdown
+:::demo plan
+N where code.Decl {file = F, name = N, line = _}; F = code.File P; P = "src/u"..
+:::
+```
+
+A **demo** is the engine itself, running in the page — kinds `lex`, `parse`, `types`, `plan`,
+`run`, `store` and `schema`, with an optional schema above a `---` line. This generator has no
+engine to run, so it renders the source and says where it comes alive; `web/` renders the
+engine. Either way the page has no typed-out answer in it to go stale.
 
 A block starting with `<` at the beginning of a line is passed through as raw HTML until the
 next blank line — which is how the home page's card grid and the status pills are written.

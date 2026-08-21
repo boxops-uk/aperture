@@ -62,7 +62,7 @@ use fjord_schema::{
     fingerprint::Identity,
     schema::{LocalInterner, PredicateId, PredicateTy, Schema},
 };
-use fjord_store::{catalog::Listing, meta::Status, store::FjallDb};
+use fjord_store_fjall::{catalog::Listing, meta::Status, store::FjallDb};
 use fjord_wire::{
     FrameHeader, FrameKind, StreamId, encode_desc, encode_frame, frame,
     protocol::{self, ErrorCode, Mode, ProfileStep, QueryProfile, Ready, Startup, kinds},

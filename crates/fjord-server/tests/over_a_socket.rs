@@ -16,7 +16,7 @@ use std::{
 
 use fjord_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use fjord_server::{Registry, registry::Schemas, server::Listener};
-use fjord_store::catalog::Catalog;
+use fjord_store_fjall::catalog::Catalog;
 use fjord_wire::{
     Desc, ErrorCode, FrameHeader, FrameKind, Mode, Startup, StreamId, WireFact, WireRef, WireValue,
     decode_desc, encode_block, encode_frame, frame,

@@ -69,7 +69,8 @@ use fjord_engine::{
     plan::{Plan, SeekKey, Source, Step, Test},
 };
 use fjord_schema::schema::{LocalInterner, PredicateId, Schema};
-use fjord_store::{fact_store::FactStore, store::FjallDb};
+use fjord_store::fact_store::FactStore;
+use fjord_store_fjall::store::FjallDb;
 
 /// What the server pages at (`session.rs`), and therefore the interval this file
 /// suspends at when it is measuring what paging costs. Stated as its own constant

@@ -67,13 +67,27 @@ use fjord_schema::{
     schema::{PREDICATE_ID_SIZE, PredicateId, Schema},
 };
 use fjord_store::{
-    catalog::Listing,
     error::StoreError,
     fact::{self, Fact, ToValue, record},
     fact_store::{Entity, FactStore},
 };
+use fjord_store_fjall::catalog::Listing;
 
 use crate::stats;
+
+/// A virtual predicate that does not agree with the schema declaring it.
+///
+/// Reached through [`StoreError::Backend`]: from the seam's side of the trait
+/// this *is* the backend failing, and the reserved namespace is virtual
+/// precisely so the rest of the system cannot tell this store from a stored one.
+/// A build in which it fires is one where the declaration above and the rows
+/// below have drifted apart.
+#[derive(Debug, thiserror::Error)]
+#[error("the virtual predicate `{predicate}` {detail}")]
+struct Mismatch {
+    predicate: &'static str,
+    detail: String,
+}
 
 /// **The catalogue, as text** — the virtual predicates this server answers, declared in
 /// the same language as everything else.
@@ -302,11 +316,12 @@ impl Table {
         let mut encoded: Vec<(ByteView, FactId)> = Vec::new();
 
         for (sequence, row) in rows.into_iter().enumerate() {
-            let (id, key, _value) =
-                fact::encode(schema, &row).map_err(|source| StoreError::Meta {
-                    path: std::path::PathBuf::from(F::PREDICATE),
-                    detail: format!("the catalogue does not match its declaration: {source}"),
-                })?;
+            let (id, key, _value) = fact::encode(schema, &row).map_err(|source| {
+                StoreError::backend(Mismatch {
+                    predicate: F::PREDICATE,
+                    detail: format!("does not match its declaration: {source}"),
+                })
+            })?;
 
             debug_assert_eq!(id, predicate, "find_position and encode agree on the id");
 
@@ -316,11 +331,12 @@ impl Table {
 
             // Sequences from 1, as a real allocator hands them out, so nothing
             // downstream meets a fact id shaped differently from every other.
-            let fact_id =
-                FactId::new(predicate, sequence as u64 + 1).map_err(|source| StoreError::Meta {
-                    path: std::path::PathBuf::from(F::PREDICATE),
-                    detail: format!("the catalogue cannot be given fact ids: {source}"),
-                })?;
+            let fact_id = FactId::new(predicate, sequence as u64 + 1).map_err(|source| {
+                StoreError::backend(Mismatch {
+                    predicate: F::PREDICATE,
+                    detail: format!("cannot be given fact ids: {source}"),
+                })
+            })?;
 
             encoded.push((ByteView::from(bytes), fact_id));
         }
@@ -436,7 +452,7 @@ pub fn reads(plan: &fjord_engine::plan::Plan, predicate: PredicateId) -> bool {
 #[cfg(test)]
 mod tests {
     use fjord_schema::schema::{Predicate, PredicateTy};
-    use fjord_store::{catalog::Entry, meta::Meta};
+    use fjord_store_fjall::{catalog::Entry, meta::Meta};
     use lasso::Rodeo;
 
     use super::*;

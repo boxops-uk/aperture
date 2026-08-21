@@ -43,7 +43,7 @@
 //! ids inside it and finds none.
 //!
 //! The scratch directory is removed on every failure path by
-//! [`Scratch`](crate::meta::Scratch). A hard kill can leave one behind; it starts with
+//! `Scratch`. A hard kill can leave one behind; it starts with
 //! a dot, so the scan skips it, and it is inert rather than misleading.
 
 use std::{
@@ -57,7 +57,7 @@ use fjord_schema::{
 };
 
 use crate::{
-    error::StoreError,
+    error::CatalogError,
     identity,
     meta::{Meta, Scratch, Status, sync_dir},
     schema_doc,
@@ -122,12 +122,12 @@ impl Selector {
     ///
     /// # Errors
     ///
-    /// [`StoreError::BadDatabaseName`] for an empty half or a second separator. The
+    /// [`CatalogError::BadDatabaseName`] for an empty half or a second separator. The
     /// error carries the whole text rather than the piece at fault, because the whole
     /// text is what somebody typed.
-    pub fn parse(text: &str) -> Result<Selector, StoreError> {
+    pub fn parse(text: &str) -> Result<Selector, CatalogError> {
         let bad = |detail| {
-            Err(StoreError::BadDatabaseName {
+            Err(CatalogError::BadDatabaseName {
                 name: text.to_owned(),
                 detail,
             })
@@ -246,7 +246,7 @@ pub struct Finished {
 #[derive(Debug, Default)]
 pub struct Listing {
     pub entries: Vec<Entry>,
-    pub problems: Vec<StoreError>,
+    pub problems: Vec<CatalogError>,
 }
 
 /// A store root.
@@ -264,17 +264,17 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::Meta`] if the directory cannot be created or is not a directory.
-    pub fn open(root: impl AsRef<Path>) -> Result<Catalog, StoreError> {
+    /// [`CatalogError::Meta`] if the directory cannot be created or is not a directory.
+    pub fn open(root: impl AsRef<Path>) -> Result<Catalog, CatalogError> {
         let root = root.as_ref().to_path_buf();
 
-        fs::create_dir_all(&root).map_err(|source| StoreError::Meta {
+        fs::create_dir_all(&root).map_err(|source| CatalogError::Meta {
             path: root.clone(),
             detail: format!("cannot create the store root: {source}"),
         })?;
 
         if !root.is_dir() {
-            return Err(StoreError::Meta {
+            return Err(CatalogError::Meta {
                 path: root,
                 detail: "the store root is not a directory".to_owned(),
             });
@@ -292,10 +292,10 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::RootHeld`] if another process holds it. Deliberately not a wait:
+    /// [`CatalogError::RootHeld`] if another process holds it. Deliberately not a wait:
     /// the design refuses a lock fight, because the alternative to failing here is
     /// two servers writing one directory.
-    pub fn lock(&self) -> Result<RootLock, StoreError> {
+    pub fn lock(&self) -> Result<RootLock, CatalogError> {
         RootLock::acquire(&self.root)
     }
 
@@ -303,9 +303,9 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::Meta`] only if the root itself cannot be read; a database that
+    /// [`CatalogError::Meta`] only if the root itself cannot be read; a database that
     /// cannot be understood lands in [`Listing::problems`].
-    pub fn list(&self) -> Result<Listing, StoreError> {
+    pub fn list(&self) -> Result<Listing, CatalogError> {
         let mut listing = Listing::default();
 
         for name_entry in self.read_dir(&self.root)? {
@@ -364,8 +364,8 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::Meta`] if the root cannot be read.
-    pub fn candidates(&self, name: &str) -> Result<Vec<Entry>, StoreError> {
+    /// [`CatalogError::Meta`] if the root cannot be read.
+    pub fn candidates(&self, name: &str) -> Result<Vec<Entry>, CatalogError> {
         Ok(self
             .list()?
             .entries
@@ -383,8 +383,8 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::Meta`] if the root cannot be read.
-    pub fn find(&self, name: &str) -> Result<Option<Entry>, StoreError> {
+    /// [`CatalogError::Meta`] if the root cannot be read.
+    pub fn find(&self, name: &str) -> Result<Option<Entry>, CatalogError> {
         Ok(self.candidates(name)?.into_iter().next())
     }
 
@@ -392,22 +392,22 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::NoSuchDatabase`] when the name holds nothing;
-    /// [`StoreError::NoSuchInstance`] when a named instance matches nothing;
-    /// [`StoreError::AmbiguousDatabase`] when the choice is the caller's to make;
-    /// [`StoreError::NotWritable`] when [`Intent::Write`] finds only sealed instances.
+    /// [`CatalogError::NoSuchDatabase`] when the name holds nothing;
+    /// [`CatalogError::NoSuchInstance`] when a named instance matches nothing;
+    /// [`CatalogError::AmbiguousDatabase`] when the choice is the caller's to make;
+    /// [`CatalogError::NotWritable`] when [`Intent::Write`] finds only sealed instances.
     ///
     /// Note what this does *not* check: a named instance is returned whatever its
     /// status, even under [`Intent::Write`]. `finish` has to be able to tell an
     /// already-sealed database from an unwritable one, and that is a distinction only
     /// the caller holding the entry can draw.
-    pub fn resolve(&self, selector: &Selector, intent: Intent) -> Result<Entry, StoreError> {
+    pub fn resolve(&self, selector: &Selector, intent: Intent) -> Result<Entry, CatalogError> {
         let candidates = self.candidates(selector.name())?;
         if candidates.is_empty() {
-            return Err(StoreError::NoSuchDatabase(selector.name().to_owned()));
+            return Err(CatalogError::NoSuchDatabase(selector.name().to_owned()));
         }
 
-        let ambiguous = |among: &[Entry]| StoreError::AmbiguousDatabase {
+        let ambiguous = |among: &[Entry]| CatalogError::AmbiguousDatabase {
             name: selector.name().to_owned(),
             instances: among
                 .iter()
@@ -437,7 +437,7 @@ impl Catalog {
                 .collect();
 
             return match matched.len() {
-                0 => Err(StoreError::NoSuchInstance {
+                0 => Err(CatalogError::NoSuchInstance {
                     name: selector.name().to_owned(),
                     instance: prefix.to_owned(),
                 }),
@@ -484,9 +484,9 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::BadDatabaseName`], or whatever
+    /// [`CatalogError::BadDatabaseName`], or whatever
     /// the store or the sidecar reports. On any of them nothing is left behind.
-    pub fn create(&self, name: &str, schema: &Schema) -> Result<Entry, StoreError> {
+    pub fn create(&self, name: &str, schema: &Schema) -> Result<Entry, CatalogError> {
         check_name(name)?;
 
         // **Derived here rather than passed in.** A caller handing over both a schema
@@ -503,7 +503,7 @@ impl Catalog {
         // which reads every stored row through the wrong type. Checking here costs one
         // parse of a file that is about to be written anyway, and turns a silent
         // corruption into a refusal with nothing left behind.
-        recoverable(schema).map_err(|detail| StoreError::UnwritableSchema {
+        recoverable(schema).map_err(|detail| CatalogError::UnwritableSchema {
             name: name.to_owned(),
             detail,
         })?;
@@ -512,7 +512,7 @@ impl Catalog {
         let scratch = Scratch::new(self.root.join(format!("{SCRATCH_PREFIX}{instance}")));
         let built = scratch.path().join(&instance);
 
-        fs::create_dir_all(&built).map_err(|source| StoreError::Meta {
+        fs::create_dir_all(&built).map_err(|source| CatalogError::Meta {
             path: built.clone(),
             detail: format!("cannot create: {source}"),
         })?;
@@ -543,7 +543,7 @@ impl Catalog {
         // contents have not reached the disk.
         sync_dir(&built)
             .and_then(|()| sync_dir(scratch.path()))
-            .map_err(|source| StoreError::Meta {
+            .map_err(|source| CatalogError::Meta {
                 path: built.clone(),
                 detail: format!("cannot sync: {source}"),
             })?;
@@ -553,7 +553,7 @@ impl Catalog {
         // instance to it is the ordinary case rather than a conflict. If something that
         // is not a directory is already at that path, this is where it is reported.
         let home = self.root.join(name);
-        fs::create_dir_all(&home).map_err(|source| StoreError::Meta {
+        fs::create_dir_all(&home).map_err(|source| CatalogError::Meta {
             path: home.clone(),
             detail: format!("cannot create the name directory: {source}"),
         })?;
@@ -564,7 +564,7 @@ impl Catalog {
         // an empty name directory is invisible to [`list`](Catalog::list) because it
         // holds nothing that parses as an instance id.
         let destination = home.join(&instance);
-        fs::rename(&built, &destination).map_err(|source| StoreError::Meta {
+        fs::rename(&built, &destination).map_err(|source| CatalogError::Meta {
             path: destination.clone(),
             detail: format!("cannot move into place: {source}"),
         })?;
@@ -576,7 +576,7 @@ impl Catalog {
 
         sync_dir(&home)
             .and_then(|()| sync_dir(&self.root))
-            .map_err(|source| StoreError::Meta {
+            .map_err(|source| CatalogError::Meta {
                 path: self.root.clone(),
                 detail: format!("cannot sync the store root: {source}"),
             })?;
@@ -591,14 +591,14 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::NotWritable`] unless the database is
+    /// [`CatalogError::NotWritable`] unless the database is
     /// [`Writable`](Status::Writable) — `ops-I2` refuses at establishment, so that
     /// immutability is the absence of a handle rather than a check on every write.
-    pub fn open_write(&self, selector: &Selector) -> Result<(Entry, FjallDb), StoreError> {
+    pub fn open_write(&self, selector: &Selector) -> Result<(Entry, FjallDb), CatalogError> {
         let entry = self.resolve(selector, Intent::Write)?;
 
         if !entry.status().is_writable() {
-            return Err(StoreError::NotWritable {
+            return Err(CatalogError::NotWritable {
                 name: entry.name().to_owned(),
                 status: entry.status(),
             });
@@ -612,8 +612,8 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::NoSuchDatabase`], or whatever opening the store reports.
-    pub fn open_read(&self, selector: &Selector) -> Result<(Entry, FjallDb), StoreError> {
+    /// [`CatalogError::NoSuchDatabase`], or whatever opening the store reports.
+    pub fn open_read(&self, selector: &Selector) -> Result<(Entry, FjallDb), CatalogError> {
         let entry = self.resolve(selector, Intent::Read)?;
         let db = FjallDb::open(&entry.path)?;
         Ok((entry, db))
@@ -656,15 +656,15 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::NoSuchDatabase`]; [`StoreError::NotWritable`] if it is `Broken`;
-    /// [`StoreError::Meta`] if it embeds no schema copy, or one that no longer lowers;
-    /// [`StoreError::EmptyDatabase`] for a database with no facts unless
+    /// [`CatalogError::NoSuchDatabase`]; [`CatalogError::NotWritable`] if it is `Broken`;
+    /// [`CatalogError::Meta`] if it embeds no schema copy, or one that no longer lowers;
+    /// [`CatalogError::EmptyDatabase`] for a database with no facts unless
     /// `allow_zero_facts`; and whatever the store or the identity walk reports.
     pub fn finish(
         &self,
         selector: &Selector,
         allow_zero_facts: bool,
-    ) -> Result<Finished, StoreError> {
+    ) -> Result<Finished, CatalogError> {
         let entry = self.resolve(selector, Intent::Write)?;
         let name = entry.name().to_owned();
 
@@ -672,7 +672,7 @@ impl Catalog {
             return Ok(already);
         }
 
-        let schema = schema_doc::read(&entry.path)?.ok_or_else(|| StoreError::Meta {
+        let schema = schema_doc::read(&entry.path)?.ok_or_else(|| CatalogError::Meta {
             path: entry
                 .path
                 .join(schema_doc::SCHEMA_DIR)
@@ -718,7 +718,7 @@ impl Catalog {
         db: &FjallDb,
         schema: &Schema,
         allow_zero_facts: bool,
-    ) -> Result<Finished, StoreError> {
+    ) -> Result<Finished, CatalogError> {
         let entry = self.resolve(selector, Intent::Write)?;
         let name = entry.name().to_owned();
 
@@ -738,20 +738,20 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`StoreError::NoSuchDatabase`], or [`StoreError::Meta`] if the removal fails.
-    pub fn remove(&self, selector: &Selector) -> Result<(), StoreError> {
+    /// [`CatalogError::NoSuchDatabase`], or [`CatalogError::Meta`] if the removal fails.
+    pub fn remove(&self, selector: &Selector) -> Result<(), CatalogError> {
         let entry = self.resolve(selector, Intent::Sole)?;
 
         let trash = self
             .root
             .join(format!("{TRASH_PREFIX}{}", entry.meta.instance));
 
-        fs::rename(&entry.path, &trash).map_err(|source| StoreError::Meta {
+        fs::rename(&entry.path, &trash).map_err(|source| CatalogError::Meta {
             path: entry.path.clone(),
             detail: format!("cannot remove: {source}"),
         })?;
 
-        fs::remove_dir_all(&trash).map_err(|source| StoreError::Meta {
+        fs::remove_dir_all(&trash).map_err(|source| CatalogError::Meta {
             path: trash,
             detail: format!("cannot delete: {source}"),
         })?;
@@ -764,7 +764,7 @@ impl Catalog {
         // and an empty name directory is invisible to `list`.
         let _ = fs::remove_dir(self.root.join(entry.name()));
 
-        sync_dir(&self.root).map_err(|source| StoreError::Meta {
+        sync_dir(&self.root).map_err(|source| CatalogError::Meta {
             path: self.root.clone(),
             detail: format!("cannot sync the store root: {source}"),
         })?;
@@ -772,15 +772,15 @@ impl Catalog {
         Ok(())
     }
 
-    fn read_dir(&self, path: &Path) -> Result<Vec<fs::DirEntry>, StoreError> {
-        let listing = fs::read_dir(path).map_err(|source| StoreError::Meta {
+    fn read_dir(&self, path: &Path) -> Result<Vec<fs::DirEntry>, CatalogError> {
+        let listing = fs::read_dir(path).map_err(|source| CatalogError::Meta {
             path: path.to_path_buf(),
             detail: format!("cannot list: {source}"),
         })?;
 
         listing
             .map(|entry| {
-                entry.map_err(|source| StoreError::Meta {
+                entry.map_err(|source| CatalogError::Meta {
                     path: path.to_path_buf(),
                     detail: format!("cannot read an entry: {source}"),
                 })
@@ -792,7 +792,7 @@ impl Catalog {
 /// The status gate both sealing paths share.
 ///
 /// `Ok(None)` means go ahead; `Ok(Some(_))` is the already-Complete no-op.
-fn sealable(name: &str, entry: &Entry) -> Result<Option<Finished>, StoreError> {
+fn sealable(name: &str, entry: &Entry) -> Result<Option<Finished>, CatalogError> {
     match entry.status() {
         Status::Complete => Ok(Some(Finished {
             fingerprint: entry.meta.content_fingerprint.unwrap_or(0),
@@ -800,7 +800,7 @@ fn sealable(name: &str, entry: &Entry) -> Result<Option<Finished>, StoreError> {
             bytes: entry.meta.bytes.unwrap_or(0),
             already_complete: true,
         })),
-        Status::Broken => Err(StoreError::NotWritable {
+        Status::Broken => Err(CatalogError::NotWritable {
             name: name.to_owned(),
             status: Status::Broken,
         }),
@@ -818,7 +818,7 @@ fn seal(
     db: &FjallDb,
     schema: &Schema,
     allow_zero_facts: bool,
-) -> Result<identity::Identity, StoreError> {
+) -> Result<identity::Identity, CatalogError> {
     // Durable first. Everything after this reads what is already on the disk, so an
     // identity computed here describes bytes that survive a power loss.
     db.persist()?;
@@ -837,9 +837,9 @@ fn seal(
 
     let identity = identity::compute(db, schema, entry.meta.schema_fingerprint)?;
 
-    // Sealing an empty database takes a flag — `StoreError::EmptyDatabase` says why.
+    // Sealing an empty database takes a flag — `CatalogError::EmptyDatabase` says why.
     if identity.facts == 0 && !allow_zero_facts {
-        return Err(StoreError::EmptyDatabase(name.to_owned()));
+        return Err(CatalogError::EmptyDatabase(name.to_owned()));
     }
 
     Ok(identity)
@@ -847,7 +847,7 @@ fn seal(
 
 /// Step 3 of `ops-I3`: **one** atomic sidecar write, carrying the identity, the counts
 /// and the flip — and the last durable act either path performs.
-fn record(entry: &Entry, identity: identity::Identity) -> Result<Finished, StoreError> {
+fn record(entry: &Entry, identity: identity::Identity) -> Result<Finished, CatalogError> {
     // Measured after the sync, so it counts what is actually there.
     let bytes = identity::directory_size(&entry.path);
 
@@ -917,9 +917,9 @@ fn resolution_order(a: &Entry, b: &Entry) -> std::cmp::Ordering {
         .then_with(|| b.meta.instance.cmp(&a.meta.instance))
 }
 
-fn check_name(name: &str) -> Result<(), StoreError> {
+fn check_name(name: &str) -> Result<(), CatalogError> {
     let bad = |detail| {
-        Err(StoreError::BadDatabaseName {
+        Err(CatalogError::BadDatabaseName {
             name: name.to_owned(),
             detail,
         })
@@ -959,7 +959,7 @@ pub struct RootLock {
 }
 
 impl RootLock {
-    fn acquire(root: &Path) -> Result<RootLock, StoreError> {
+    fn acquire(root: &Path) -> Result<RootLock, CatalogError> {
         let path = root.join(LOCK_FILE);
 
         let file = fs::OpenOptions::new()
@@ -968,7 +968,7 @@ impl RootLock {
             .write(true)
             .truncate(false)
             .open(&path)
-            .map_err(|source| StoreError::Meta {
+            .map_err(|source| CatalogError::Meta {
                 path: path.clone(),
                 detail: format!("cannot open the lock file: {source}"),
             })?;
@@ -986,11 +986,11 @@ impl RootLock {
             // for. Anything else is a real I/O fault and should not be reported as
             // contention.
             return if error.kind() == std::io::ErrorKind::WouldBlock {
-                Err(StoreError::RootHeld {
+                Err(CatalogError::RootHeld {
                     root: root.to_path_buf(),
                 })
             } else {
-                Err(StoreError::Meta {
+                Err(CatalogError::Meta {
                     path,
                     detail: format!("cannot lock: {error}"),
                 })

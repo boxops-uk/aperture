@@ -12,10 +12,8 @@
 //! in the store where `ops-I5` says they belong.
 
 use fjord_schema::schema::PredicateId;
-use fjord_store::{
-    error::StoreError,
-    store::{FjallDb, Interned, Staged},
-};
+use fjord_store::error::StoreError;
+use fjord_store_fjall::store::{FjallDb, Interned, Staged};
 
 use crate::error::IngestError;
 
@@ -69,7 +67,7 @@ impl FactSink for FjallDb {
 /// which of the two this trait is implemented for — the rules, the dedup and the reject
 /// are the pipeline's, unchanged, which is `ops-I5` being about a pipeline rather than a
 /// schedule. What differs is durability, and that is stated on
-/// [`Staged`](fjord_store::store::Staged) rather than restated here.
+/// [`Staged`](fjord_store_fjall::store::Staged) rather than restated here.
 impl FactSink for Staged<'_> {
     fn resolve_or_create(
         &self,

@@ -125,6 +125,14 @@ serving every other connection.
 | flatten | Collect statements; fold constants; collect constraints and denials; check range restriction; **hoist nested generators**; then decide sargeability per key field |
 | reorder | Choose the loop order — the greedy *runnable frontier* |
 
+The tree the first two phases build is lossless and grammar-shaped — one node per rule, one
+leaf per token, spans throughout. That is what lets an editor light up the source from a
+node, and what lets a recovered parse point at the byte that went wrong:
+
+:::demo parse
+N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
+:::
+
 Two things are worth pulling out.
 
 **`reorder` is load-bearing for acceptance, not just speed.** It works over a graph of
@@ -161,6 +169,13 @@ Read it as two nested loops. The outer one scans `src.Decl` and filters on `name
 `src.Decl`'s key is `{module, name, line}` and the leading field is open, so the name cannot
 narrow the scan. The inner one **seeks**: `src.Ref`'s key leads with `to`, so the
 declaration's fact id is spliced into the seek key and only its references are read.
+
+The same compilation, over the demo schema, with the plan the engine actually emits — its
+levels, its registers, and the access each step uses:
+
+:::demo plan
+N where code.Decl {file = F, name = N, line = _}; F = code.File P; P = "src/u"..
+:::
 
 ## 8. The row descriptor, once
 
@@ -205,6 +220,14 @@ Three properties of that loop are invariants rather than implementation details:
   possible ([I7](invariants.html#i7)).
 
 Full detail: [Executor & resume](executor.html).
+
+The driver, one transition at a time — the registers as the machine fills them, the rows as
+they are yielded, and the rows a residual read and dropped, which are invisible in the answer
+and are most of what a query costs:
+
+:::demo run
+N where code.Decl {file = _, name = N, line = L}; L > 15
+:::
 
 ## 10. Encoding a row
 

@@ -1,0 +1,112 @@
+/* **What the design system does not own.**
+
+   Two class names, and they come from the book rather than from here: the home
+   page's card grid and the status page's pills are authored HTML, which the
+   dialect allows and both renderers pass through. Everything else on a page is
+   a component now, so this file is the whole of the site's custom CSS —
+   written in design tokens, because a hex code here is a colour that stops
+   following the theme.
+
+   Every rule is scoped under `.authored`. The names are the book's and they are
+   ordinary words: an unscoped `.card` here restyled the design system's own
+   `card` variant, and a code block came out looking like a note. */
+
+.authored { display: contents; }
+
+.authored .cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--spacing-4);
+  margin: var(--spacing-2) 0 var(--spacing-4);
+}
+
+.authored .card {
+  display: block;
+  padding: var(--spacing-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+.authored .card:hover { border-color: var(--color-accent); }
+.authored .card b { display: block; margin-bottom: var(--spacing-1); font-weight: var(--font-weight-semibold); }
+.authored .card span { color: var(--color-text-secondary); font-size: var(--font-size-sm); }
+
+.authored .pill {
+  display: inline-block;
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-sm);
+  padding: var(--spacing-1) var(--spacing-2);
+  border-radius: var(--radius-full);
+  border: var(--border-width) solid var(--color-border);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  margin: 0 var(--spacing-1) var(--spacing-1) 0;
+}
+
+.authored .pill.ok { color: var(--color-success); border-color: var(--color-success-muted); }
+.authored .pill.todo { color: var(--color-text-disabled); }
+
+/* ------------------------------------------------------------- the rhythm --
+
+   A page is components, and they space themselves evenly — which is right for
+   an application and wrong for prose, where the gap above a heading is what
+   tells a reader a section ended. This is the only typography left here, and it
+   is margins in spacing tokens: a stack gap cannot say "more before a heading
+   than after it". */
+
+/* A flex item's automatic minimum size is its content, and a code block or a
+   wide table is wider than the measure: without this the column refuses to
+   shrink and the page scrolls sideways under the navigation instead. */
+[data-testid='prose'],
+.astryx-center { min-width: 0; }
+
+[data-testid='prose'] h2 {
+  margin-block-start: var(--spacing-8);
+  padding-block-end: var(--spacing-2);
+  border-block-end: var(--border-width) solid var(--color-border);
+}
+
+[data-testid='prose'] h3 { margin-block-start: var(--spacing-6); }
+[data-testid='prose'] h4 { margin-block-start: var(--spacing-4); }
+
+/* The first heading on a page follows the standfirst, which already spaced it. */
+[data-testid='prose'] h2:first-of-type { margin-block-start: var(--spacing-4); }
+
+/* Prose is read at a line length, not at a component's line-height. */
+[data-testid='prose'] p,
+[data-testid='prose'] li { line-height: 1.65; }
+
+[data-testid='prose'] ul,
+[data-testid='prose'] ol { padding-inline-start: var(--spacing-5); }
+
+/* --------------------------------------------------------------- demos ----
+
+   A demo is a Card, so the panels inside it do not draw their own boxes: the
+   engine's views are edge to edge in it, divided rather than framed. */
+
+.demo .editor,
+.demo .scroller {
+  border-inline: 0;
+  border-block-start: 0;
+  border-radius: 0;
+}
+
+.demo .editor .paint,
+.demo .editor .input { min-height: 2.75rem; }
+
+.demo .data { padding: var(--spacing-3); }
+.demo .data .scroll { max-height: 26rem; }
+.demo .scroller { max-height: 22rem; }
+
+/* --------------------------------------------------------------- search ---
+
+   A flex item's automatic minimum size is its content, and a line of prose is
+   wider than the palette: without this the list scrolls sideways instead of the
+   hit wrapping inside it. */
+
+.astryx-command-palette-item,
+.astryx-command-palette-item > *,
+.astryx-command-palette-group { min-width: 0; }

@@ -15,7 +15,7 @@ use std::{path::PathBuf, sync::Arc, thread};
 
 use fjord_client::{Connection, Mode};
 use fjord_server::{Registry, registry::Schemas, server::Listener};
-use fjord_store::catalog::Catalog;
+use fjord_store_fjall::catalog::Catalog;
 use fjord_wire::{WireFact, WireRef, WireValue};
 
 use crate::sample_schema;

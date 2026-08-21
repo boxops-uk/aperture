@@ -2,11 +2,13 @@
 
 What is not built, what building each piece requires, and the record of decisions already
 taken so they are not re-litigated. The design of record is the
-[design book](website/README.md) — **published** at <https://boxops-uk.github.io/fjord/> on
-every push to main, and shipped with each release as an attested `fjord-docs-site.tar.gz`
-beside the binaries; the working contract is [`AGENTS.md`](AGENTS.md); what has been
-measured is [`bench/FINDINGS.md`](bench/FINDINGS.md). The history of how the system was
-built lives in git, where it can be cited by commit.
+[design book](website/README.md) — **published** as the interactive site
+([`web/`](web/README.md), the pages with the engine running in them) at
+<https://boxops-uk.github.io/fjord/> on every push to main, and shipped with each release as
+an attested `fjord-docs-site.tar.gz` beside the binaries; the working contract is
+[`AGENTS.md`](AGENTS.md); what has been measured is
+[`bench/FINDINGS.md`](bench/FINDINGS.md). The history of how the system was built lives in
+git, where it can be cited by commit.
 
 **Definition of done, everywhere:** a task ends in a green test (prefer a property), and
 every invariant a piece of work touches has its guard un-ignored and passing before the work
@@ -21,6 +23,7 @@ decomposition is always wrong — each ending green, ordered by dependency and d
 | [Stored derivation](#stored-derivation) | designed; two rules banked | the [re-derivation decision](#the-open-decision-re-derivation-vs-i11) |
 | [The read-path benchmark](#the-read-path-benchmark-against-glean) | planned, with predictions | a quiet machine and the indexed corpus |
 | [Authentication](#authentication) | design of record below; nothing built | wanting it |
+| [The engine in a browser](#the-engine-in-a-browser--webassembly) | **the store split, `fjord-inspect`, `wasm/` and the lexer segment are built**; the remaining views are not | nothing |
 | [Operational gaps](#operational-gaps) | each named with the seam that keeps it cheap | — |
 | [Language backlog](#language-backlog) | additive; none reshapes the machine | — |
 
@@ -229,6 +232,472 @@ API (rotate in place at half TTL) → connection lifetime. Guards to write up fr
 `the_dotnet_client_still_connects_at_protocol_version_2`.
 
 ---
+
+## The engine in a browser — WebAssembly
+
+**Built, end to end through compilation.** The store split is done,
+`fjord-inspect` holds the token, parse-tree, lowered and plan views, `wasm/`
+builds a 280 KB module (117 KB over the wire), and `web/` is a React site that
+lexes, parses, lowers, typechecks, flattens and reorders on every keystroke
+against a schema the reader can edit — ending in the plan the executor would
+run. What is left is *running* it.
+
+**The goal, unchanged.** The design book's interactive segments run the real
+lexer, parser, typechecker, planner, executor and transport codec, compiled to
+`wasm32-unknown-unknown` — not a JavaScript imitation of them. The boundary
+carries **JSON of the constructs, not a rendered string**, because a page that
+receives structure can lay it out and a page that receives text can only print
+it.
+
+### Movement 1 — the seam becomes a crate, and each implementation its own ✅
+
+Three crates replace `fjord-store`. It keeps its name and becomes **the
+abstraction**; each implementation has its own crate, which is what makes a
+third backend additive rather than a refactor.
+
+| Crate | Holds |
+|---|---|
+| `fjord-store` | the seam: `fact_store`, `error`, `fact`, `format`, `keys`, and the shared test support (`fixture`, `fixtures`) |
+| `fjord-store-mem` | `MemStore`, no longer test-gated |
+| `fjord-store-fjall` | `FjallDb`, `FjallStore`, `Staged`, `FjallScan`, `lookup_cache`, and the lifecycle: `catalog`, `meta`, `schema_doc`, `identity`, `ulid` |
+
+**The error split went as designed, with one addition.** Eleven variants stayed
+on the seam and ten moved to `CatalogError` in `fjord-store-fjall`, which
+carries `Store(#[from] StoreError)` so a seam fault still bubbles through one
+`?`. `StoreError::Backend` is now `Box<dyn Error + Send + Sync>`, constructed
+through `StoreError::backend` — `#[from]` cannot do that job, because a blanket
+`From<E: Error>` would swallow every other error in the crate. The addition:
+two sites that used `StoreError::Meta` for something that was never a sidecar —
+a malformed id reservation in the `meta` keyspace, and a virtual catalogue
+predicate that disagrees with its declaration — now box a **local** error
+through `Backend`. That is the seam-correct reading: from the trait's side,
+this backend failing to be what it wrote *is* the backend failing.
+
+**What the ripple actually cost**, against the estimate of seventy-five
+references: about that, and nothing surprising in them. `ServerError` and
+`CliError` each gained a `Catalog` arm, and the server's `code()` — the one
+place the split is visible on the wire — routes lifecycle refusals from
+`CatalogError` and delegates `CatalogError::Store` to the same function the
+seam's own arm uses, so no client is told anything different.
+
+**The trap the extraction found, exactly where AGENTS.md says it lives:**
+`fjord-store`'s own unit tests could no longer use `MemStore`, because a
+dev-dependency on `fjord-store-mem` links a *second copy* of `fjord-store` and
+the two `FactStore`s are then different types. Those tests moved with `store.rs`
+into `fjord-store-fjall`, where both implementations are ordinary dependencies.
+One consequence to remember: `fjord-store-fjall` dev-depends on **itself** with
+`features = ["proptest"]`, because the witnesses its guards need
+(`open_snapshots`, `table_counts`, `flush_to_tables`) are feature-gated and an
+integration test is a separate crate. While those guards lived in `fjord-store`
+the feature arrived by unification from the engine's dev-dependency.
+
+### Movement 2 — `fjord-inspect`: a JSON view of every construct ◐
+
+The crate exists, with `Tokens` built and the rest to come.
+
+| View | Built from | State |
+|---|---|---|
+| `Tokens` — `{kind, class, span, text}` + diagnostics | `lexer::tokenize` | ✅ |
+| `Tree` — a dense `{id, kind, token, label, span, children}` | the **CST**, through `cst::CstNode` | ✅ |
+| `Lowered` — `{id, kind, label, ty, span, children}` plus the statement list | `Ast`, walked from the head and the body, with `Typed::ty` beside it | ✅ |
+| `SchemaView` — predicates and their declared types | `syntax::{parse, lower}`, typed by `print::signature` | ✅ enough for the page; canonical form and compatibility are not shown |
+| `Tokens`, for the **schema** language | `fjord_schema::syntax::lexer` — a second lexer, not a second reading of the first | ✅ |
+| `Types` — per node, and the head | `Typed::ty`, `Compilation::head_ty` | ✅ folded into `Lowered` — a type is an annotation *on* a node, and a second panel would make a reader align two lists by hand |
+| `Diagnostics` — code, message, labels | the sink, through `Diagnostics::in_source_order` | ✅ for every phase that reports without a schema |
+| `PlanView` — steps, levels, seek keys, residuals, projections, fingerprint | `print::steps` and `print::head`, with structure around the engine's own text | ✅ |
+| `Rows` and `ProfileView` | `fixtures::collect_rows` and `iter::enumerate_profiled` over a `MemStore` from `fixture::facts()` | to build |
+| `WireView` — frames, blocks, and a hex dump annotated by offset | `fjord_wire::{frame, block, value, protocol}` | to build |
+| `SchemaView` — predicates, canonical form, identity, compatibility | `fjord_schema::{syntax, print, fingerprint}` | to build |
+
+**The schema is text, and the page holds it.** `syntax::read` builds a schema
+from a string with no filesystem in reach, so the second editor was all it
+took. Two consequences worth keeping: the module stays **stateless** — two
+strings in, JSON out, no handle to a compiled schema that a page would have to
+free — and a reader can *break* the schema and watch the query stop
+typechecking, which is the clearest statement that these are the same phases
+the server runs.
+
+**The samples moved into the crate.** `fjord_inspect::SAMPLES` and `SCHEMA`
+(the repository's own `schemas/code.sigla`, embedded) are what the page opens
+with, and `every_sample_compiles_clean` is what makes them claims rather than
+decoration. The page invented its own examples once; all of them were missing
+the head a query requires.
+
+**The lowered view runs the whole front end, not just typecheck.** Several
+refusals a reader meets first are flatten's (`nyi/value-field`,
+`reject/not-a-generator`), and a page that showed "no errors" for a query
+`flatten` would refuse would be lying. The plan it produces is now shown beside
+it, and **a plan exists exactly when the sink is clean** — the same rule the
+server runs under, asserted rather than assumed.
+
+**The plan view does not render the plan.** `print::plan` was split into
+`print::steps` (one string per step) and `print::head`, with `plan` becoming the
+join of them — so the text a page shows is byte for byte what
+`fjord query --plan` shows, and `the_view_is_the_printer_rendered_apart`
+reassembles one from the other to prove it. What the view adds is *structure*
+around that text: the step's kind, the register it fills, whether each source
+scans or seeks, how many residuals filter it. A second renderer would decode
+stored bytes a second way, and the places it would differ — a constant's type, a
+union alternative's name, which field a path names — are exactly the ones worth
+reading.
+
+**Levels are not steps, and the view says both.** A resume cursor holds one row
+per *level*; a derive and a test bind nothing and take no cursor entry. Carrying
+one number would make the other wrong somewhere a reader could not see.
+
+**The split between the two trees is the thing to keep straight.** The parse
+view is the *concrete* tree — the "lossless, untyped, grammar-shaped tree with
+spans and text" the book's phase table promises — and it needs **no schema**,
+which is why it could ship now: lowering resolves names against one, parsing
+does not. So a browser can show it for any text at all, including the
+half-typed text an interactive view spends most of its time on. The lowered
+tree, the types and the plan all wait on the same thing: a schema in the page.
+
+**Two properties, and the second was a surprise.** A node's span contains every
+child's — a view that widened one by a byte would still look plausible and
+would highlight the wrong text. And the leaves *do* reassemble the source: the
+grammar's `skip Whitespace` keeps trivia out of what the parser matches on, not
+out of the tree, so the same view drives both panes.
+
+**One decision made while building the first view, worth keeping.** A token
+carries a `class` (keyword, predicate, variable, field, …) as well as its
+`kind`, and the class is decided in Rust. It paid off when the schema pane
+needed highlighting: the schema language is a *second* lexer with tokens sigla
+does not have (comments, namespaces), and what the page needed was two more
+arms on one shared vocabulary — one stylesheet, one set of classes, and a
+reader meeting one idea rather than two. A page styles what the language says a
+token *is* and never re-decides it — which is what stops the highlighter growing
+back in TypeScript. Both mappings are exhaustive `match`es with no wildcard, so
+a token added to sigla does not compile until somebody says what it is called
+and what it is.
+
+**`tokens_json` lives in `fjord-inspect`, not in the shell.** The JSON a browser
+receives is then the string the host suite asserts on, and
+`a_view_is_the_same_json_on_the_host_and_in_wasm` is a consequence of there
+being one encoder rather than a claim needing a test.
+
+### Movement 3 — `fjord-wasm`: the shell, and nothing else ✅
+
+`wasm/` at the repository root with its own `[workspace]` table, a `cdylib`
+whose every export takes a `&str` and returns a `String` of JSON, and no logic —
+`tokens` is one forwarding call. `scripts/build-wasm.sh` runs cargo, then
+`wasm-bindgen --target web`, then `wasm-opt -Oz` if binaryen is installed, and
+prints the byte size. It refuses to run if the `wasm-bindgen` CLI and crate
+versions differ, because that mismatch fails with a message about a section
+rather than about versions.
+
+**How the artifact reaches the site, decided:** built, not committed.
+`web/src/wasm/` is gitignored, the page says so when the module is absent, and
+it does **not** degrade to a JavaScript highlighter — the highlighter is the
+thing being replaced, and a fallback would hide exactly the failure that
+matters.
+
+### Movement 4 — stepping the executor: a query debugger ✅
+
+**Built.** The site runs queries against a database in the page and steps
+through the run one transition at a time: registers as they fill, the row each
+`yield` answers, and the rows a residual read and dropped. What follows is the
+design as it was argued before it was built, amended where building it found
+something.
+
+**Goal.** Not "run a query in the page" but *step* one: see the registers as
+they fill, where the machine is in the plan, what it has yielded so far, and
+what it has read to get there. A reader who has watched a nested loop backtrack
+understands the executor in a way no amount of prose achieves.
+
+**It needed no new machine, which was the bet.** `iter.rs` is a
+**defunctionalised state machine** ([I7](website/content/invariants.md#i7)):
+`depth`, a stack of frames, and one loop whose every iteration is exactly one
+transition. Stepping is therefore *exposing one iteration at a time* — not a
+second interpreter in the view crate, which would be the very thing this whole
+exercise exists to avoid. The nine transitions are already there to be named:
+**open** a source, **produce** a row into a register, **drain** an alternative,
+**close** a level, **yield** a row, **compute** a derived bind, **pass** a test,
+**fail** a test, **done**.
+
+**Rows dropped by a residual are the point, not a detail.** They never reach the
+loop — `frame.next` filters them inside the scan — and they are exactly what
+makes a scan cost more than a seek, so the debugger shows each one and *which
+residual rejected it* (`check_residuals` knows). The scan loop is where
+[I6](website/content/invariants.md#i6) and
+[I9](website/content/invariants.md#i9) live, so this is paid for the way this
+repository already pays for instrumentation: `FieldOffsets::witness_row` has a
+real implementation under `cfg(debug_assertions)` and an empty `#[inline]` one
+otherwise.
+
+**A Cargo feature, `fjord-engine/trace`, off by default** — not
+`debug_assertions`, which is on for every dev build and off in release, and the
+browser wants a *release* build with tracing in it. The hook goes exactly where
+`Profile.examined` is already incremented, because that increment is why skipped
+rows are counted at all: the trace point and the counter are the same site. It
+rides on the `Deadline`, which is already the per-run instrumentation carrier
+threaded into the row loop — and which will want a better name once it carries
+two things.
+
+**Plus a runtime `Option`, even in the traced build.** That is what keeps
+[I9](website/content/invariants.md#i9) honest: the allocation guard runs with
+the sink switched off and must still count zero per row. Compile-time gating
+alone would leave the guard measuring code that no longer resembles what ships.
+
+**Both configurations are tested, which is the part that matters.**
+`fjord-inspect` enables the feature, so `cargo test --workspace` builds the
+engine *traced* and every existing guard — alloc-free per row, no value fetch in
+the scan, resume equals uninterrupted — runs against the traced build.
+`cargo test -p fjord-engine` has no `fjord-inspect` in its graph and builds it
+*untraced*. CI runs both. A feature nobody tests is an aspiration.
+
+#### The database in the page
+
+`MemStore` is wasm-clean already; what is missing is facts — and, it turns out,
+a schema. `schemas/code.sigla` has **no union and no nested record**, so a
+select (`.what.func?`), a union pattern, a discriminant residual and a nested
+record key have nothing to bind against. A union in a *leading* key field is a
+seek and behind another field is a residual — the same query shape, two costs —
+which is one of the sharpest things the plan view can show, so a database that
+cannot demonstrate it is not a demonstration of the language.
+
+**So the site gets a schema of its own: `schemas/demo.sigla`.** Code-search
+shaped, because that is what Fjord is for, but small enough to read in one
+screen and chosen so every shape the language has appears exactly once:
+
+| Predicate | Shape it is there for |
+|---|---|
+| `code.File : string` | a **scalar** key — and a prefix constraint (`"src/"..`) that excludes something |
+| `code.Decl { file : File, name : string, line : int } -> string` | a **record** key with a **leading reference**, a three-field prefix a seek can pin part of, an `int` for comparisons and arithmetic, and a **value side** |
+| `code.Ref { from : Decl, to : Decl }` | a reference that is **not** leading (a fact-id compare as a residual rather than a seek), and a **two-hop chain** through `from.file` |
+| `code.Span { decl : Decl, at : { line : int, col : int } }` | a **nested record** inside a key |
+| `code.Kind { decl : Decl, what : kind }` | a **union behind** another field — matched by a residual on the discriminant |
+| `code.KindOf { what : kind, decl : Decl }` | the same fact in the other key order, so the union **leads** and the tag is a seek. The pattern `code.sigla` already uses for `Attribute`/`AttributeOf`, and for the same reason: the leading run is what a query narrows on |
+
+with `kind` declared as `{ type : string = 5 | func : int = 2 }` — two
+alternatives, tags **neither contiguous, nor starting at zero, nor in
+declaration order**, so nothing that read a discriminant as a position can pass
+([I10](website/content/invariants.md#i10)).
+
+A real file rather than a string in a crate, so the same database can be built
+outside the browser — `fjord create demo --schema schemas/demo.sigla` — and the
+queries a reader tried in the page can be run against a real one.
+
+**The facts: around fifteen, and each one earns its place.** Three files (one
+outside `src/`, so a prefix excludes it); three declarations, two of them in one
+file, so a join returns two rows for one outer row and **none** for another —
+backtracking a reader can watch; two reference edges forming a chain, with one
+declaration referenced by nothing, so a negation has something to be true about;
+one span; and a kind per declaration in both key orders.
+
+They are authored through `fjord_store::fact::encode` — the path the .NET golden
+and the server's catalogue take — so there is one encoder, with name resolution
+and field reordering included, and references are written as the fixture writes
+them: sequences chosen up front so `Decl`'s `file` names a `File` that exists.
+**Hand-encoding a key is the anti-pattern `AGENTS.md` names**, and its three
+silent preconditions apply here exactly.
+
+Guard: `every_sample_answers_what_it_says` — each sample query's rows asserted
+in the host suite, which is the corpus's discipline applied to the demo. A
+sample that answers nothing is a sample that demonstrates nothing, so the guard
+also refuses an empty answer unless the sample says it expects one.
+
+#### `Executor::advance`
+
+The loop body of `enumerate_profiled` becomes
+
+```rust
+fn advance(&mut self, deadline: &mut Deadline<'_>) -> Result<Transition, FjordError>
+```
+
+with `enumerate_profiled` looping over it. **The yield policy stays where it
+is**: what to do with a row — `Stream::Continue` or `Stream::Suspend`, and the
+`depth -= 1` after — is the streaming caller's business, so `advance` reports
+`Yielded` and leaves the machine standing on the head. Accessors follow for what
+a debugger reads between transitions: `depth`, `state` (already public types),
+and a `row` that is `Some` exactly when the machine is standing on the head.
+
+**The trap to name up front:** `advance` must not become the place where
+*policy* lives. Descending or backtracking is read off the frame rather than
+carried as a variable, which is what keeps the machine defunctionalised, and a
+`Transition` return value must not become a second way of saying the same thing.
+
+The safety net for the extraction is the strongest battery in the repository:
+resume-equals-uninterrupted on both stores, the corpus suspending at every cut
+point from 1 to 64, alloc-free per row under a counting allocator, no value
+fetch in the scan, and the I8 drop probe. New guard:
+`stepping_yields_what_running_yields` — drive `advance` to completion over every
+corpus entry and compare the rows with `enumerate`'s.
+
+#### `fjord_inspect::trace`
+
+**The whole trace in one call.** `trace(schema, query)` runs the query to
+completion and answers the entire run as a list of steps, each carrying only
+what *changed*: the transition, the depth, the register written, the row
+examined or rejected and by which residual, the row yielded. The page folds that
+into cumulative state and scrubs a local array — instant in both directions, one
+round trip, no state on the boundary, nothing for JavaScript to free, and no
+O(n²) from replaying a prefix per step. "Step over" is then a client-side search
+for the next `Yielded` entry, and costs nothing.
+
+A run over a fifteen-fact database is tens of transitions; a deliberately silly
+one is thousands. **The cap is stated rather than silent**: past a bound the
+trace stops and says it stopped, because a truncated run rendered as a whole one
+is the exact failure this repository keeps guarding against.
+
+The escape hatch, if the browser database ever stops being a toy, is a
+`#[wasm_bindgen]` struct owning a live `Executor` — O(1) per step, at the cost
+of state on the boundary and a `free()` for JavaScript to forget.
+
+The view, per step: the transition and the plan step it happened at, the depth,
+every register (empty, a decoded row, or a computed value), the rows yielded so
+far, and `Profile.examined` as it stands. **A register is decoded against
+`fact_id.predicate()`** — the predicate of the row actually bound, not the
+level's — because a level with alternatives can bind rows of different
+predicates, and decoding against the wrong one reads plausible bytes.
+
+#### The page
+
+A **run** tab: transport controls (start, back a row, back one transition, one
+transition, on to the next row, play, end), a scrub bar over the whole run, the
+register panel, and the rows yielded so far. Stepping back is free, because the
+trace is already in hand.
+
+**Under it, the database as a table** — every stored row, in key order, as bytes
+*and* as a fact, with the range the current scan is walking **shaded across
+it**. That is the panel the plan's numbers are about: a seek is a byte prefix
+and a scan is a range over the same order, so `[lo, hi)` means nothing against
+decoded values and everything against stored keys. The pinned bytes are marked
+off from the ones the scan walks, which is the cost model in one place —
+everything left of the boundary the seek jumped to, everything right of it the
+scan reads.
+
+Four states a row can be in, and between them they are the whole story of a
+query: outside the range and never read; inside it and not yet reached; **read
+and dropped** by a residual; and **held**, which is where a register is
+standing.
+
+The bounds come from `open`, which is where they are computed — recorded on the
+frame under the feature and reported by the caller that holds the deadline, so
+no signature changes for a feature that is off. `Trace` grew `scanning` and
+`fetching` beside `rejected` for it. The hex is unseparated because the page
+compares it as a string: `"0000000104"` starts with `"00000001"` and
+`"00 00 00 01 04"` does not.
+
+#### What building it found
+
+**A silently wrong answer, in `flatten`.** A constraint written inside a
+subquery — `X = (Y where code.File Y; Y = "src/"..)` — was *dropped*, so the
+query answered rows the constraint excludes; and a generator bind inside one
+(`X = (Y where Y = test.Foo _)`) declined to plan at all, tripping flatten's own
+"no plan without a reason" assertion in a debug build and refusing with an empty
+sink in a release one. The cause was two paths for one thing: the subquery
+inliner carried its own copy of the bind walk that handled only the *alias*
+case. Both now go through one `Flattener::bind`, and four corpus entries pin the
+combinations that were missing — which is why it survived: the corpus is how the
+language surface is specified, and nothing had written these down.
+
+**A reference reads as the fact it names.** `Value`'s serialiser writes a
+`FactRef` as the `u64` it is, which is right for a wire and unreadable in a
+panel, so the view renders one as `code.File#2`. Not a second codec: nothing
+there decodes bytes.
+
+### Movement 5 — the book itself, with the engine in it ✅
+
+`web/` renders **the design book**, not a demo beside it. The pages are
+`website/content/`, imported raw and parsed by a TypeScript port of the same
+dialect `build.py` renders; the reading order moved to `website/nav.json`, which
+both read. Nothing was copied, because two copies of a page is one page that goes
+stale.
+
+**The demos are the argument.** A `:::demo <kind>` block in the content is the
+engine running where the paragraph that needs it is — `lex`, `parse`, `types`,
+`plan`, `run`, `store`, `schema` — editable, so the reader's next question is
+answerable by typing it. `build.py` understands the same block and renders the
+source with a pointer rather than a typed-out answer, so the generated site stays
+true while it is still the published one.
+
+Three things fell out of doing it this way:
+
+- **The module is demanded, not assumed.** A demo triggers the load; everything
+  else observes. A page of prose costs no WebAssembly, and a page with a demo
+  re-paints its static `sigla` and `schema` blocks with the *lexer* once the
+  module lands — which is the beginning of retiring `website/assets/app.js`.
+- **A page is a path**, not a fragment: the book is full of `#anchor` links and a
+  hash router would have had to own that character. The served copy needs a
+  fallback document, which `dist/404.html` is.
+- **The two renderers are compared.** The smoke check walks every page in both
+  and compares headings, tables, code blocks, callouts and demos — a dialect that
+  drifts between Python and TypeScript is a page that reads differently depending
+  on which copy you found.
+
+**The publish is switched over.** CI's `site` job builds the module, drives the
+bundle in a real Chrome, and then builds it twice — base `/` for the tarball a
+release carries, and the repository's own name for the copy Pages serves, since
+`SITE_BASE` is compiled into every asset URL and every route. `website/` still
+builds strictly: it is the copy that reads with no toolchain, and the renderer
+this one is held to.
+
+### Movement 6 — a design system under it ✅
+
+The site was hand-rolled CSS: a stylesheet ported from the generated book, a
+split pane, an accordion, a drawer, a search modal and a transport, all written
+here. It worked and it looked like it — so the components are now **Astryx**
+(`@astryxdesign/core`), Meta's design system, and what is left hand-written is
+only what is about *this engine*.
+
+The shell is `AppShell` + `TopNav` + `SideNav`; the on-page contents is
+`Outline`, search is a `CommandPalette` over the same index, and a page's blocks
+are components: `Heading`, `Text`, `Table`, `Banner`, `Blockquote`, `Divider`,
+`CodeBlock`. The workbench is `Layout` + `LayoutPanel` with a `ResizeHandle` on the
+database, its sections are `Collapsible`, its transport is a `Toolbar` of
+`Button`s and a `Slider`, and the schema is a `Dialog`. The markdown renderer stopped emitting
+HTML strings and emits a **tree**, because every block on a page is now a
+component rather than a string.
+
+The palette did not change: `src/theme.ts` seeds `defineTheme` with the book's
+warm paper and rust accent, and a syntax theme whose colours are the ones
+`fjord_inspect::tokens` already decides. `CodeBlock`'s `tokenizer` prop is where
+the two systems meet — a `sigla` block on a page that has the module is
+tokenized by the engine's own lexer, and the block says which painter it got.
+
+Three things this turned up:
+
+- **A class name is a shared namespace.** The book's authored HTML uses `card`
+  and `pill`; the design system's `CodeBlock` carries a `card` variant class. An
+  unscoped rule restyled every code block on the site until the book's names went
+  under `.authored`.
+- **The database table folded around the wrong query.** Re-folding was keyed on
+  the step number, and a new query starts at step 0 like the last one did. It is
+  keyed on *which predicates matter* now, as well as on the step.
+- **The smoke check was testing a phone.** Puppeteer's default window is 800×600,
+  and the shell overlays its panels below 1024px — which had been invisible while
+  the layout was hand-rolled and unresponsive.
+- **A flex column will not shrink past its content.** A code block is wider than
+  the measure, so without `min-width: 0` the page scrolled sideways under the
+  navigation at tablet widths rather than letting the block scroll inside itself.
+
+### What is left
+
+- **The `WireView`** — frames, blocks and a hex dump annotated by offset — which
+  is the one view in the original list nothing has needed yet.
+- **A schema handle, if a bigger schema ever makes it hurt.** `compile` re-reads
+  the schema on every keystroke, because the module holds no state — two strings
+  in, JSON out, and no handle a page has to free. Measured on
+  `schemas/code.sigla`: 700–800 µs warm for the whole round trip, which is a
+  tenth of a frame, so the statelessness is worth keeping until it is not.
+- **Size.** 258 KB is the whole front end plus the schema language; `wasm-opt
+  -Oz` takes 34 KB off it and `web/`'s dev-dependencies now carry binaryen so
+  the build script finds one. If it matters more later, the lever is splitting
+  the module per segment rather than shrinking this one.
+- **Retire the hand-written highlighter** in `website/assets/app.js`. `web/`
+  paints `sigla` and `schema` blocks with the real lexer once a demo has brought
+  the module in, and carries the fallback rules for the languages the engine has
+  no opinion about. The generated site keeps its own copy for as long as it is
+  the copy that reads with no toolchain — which is what publishing the bundle
+  changed about this item, rather than closing it.
+- **A virtual import resolver**, so browser schemas are not single-file:
+  `syntax::resolve` reads files, and everything else in `fjord-schema` is clean.
+- **`ts-rs` behind a feature**, so `web/src/wasm.ts`'s types are generated from
+  the view structs instead of stated a second time.
+- **Ingest stays impossible in a browser**, and that is not a gap: interning
+  needs a real backend and durable id claims.
+
 
 ## Operational gaps
 

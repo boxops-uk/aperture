@@ -16,7 +16,7 @@ use std::{path::PathBuf, sync::Arc, thread};
 use fjord_client::{ClientError, Connection, ErrorCode, Mode, WireFact, WireValue};
 use fjord_schema::{fingerprint, schema::PredicateId, syntax};
 use fjord_server::{Registry, registry::Schemas, server::Listener};
-use fjord_store::catalog::Catalog;
+use fjord_store_fjall::catalog::Catalog;
 
 /// A schema with one predicate a query can name.
 const LOGS: &str = "schema log { predicate Line : string }";

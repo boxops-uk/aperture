@@ -1,0 +1,39 @@
+# **Its own workspace, and that is deliberate.**
+#
+# A `cdylib` that only builds for `wasm32-unknown-unknown` cannot be built or
+# tested on the host, so a member of the root workspace would break
+# `cargo build` and quietly narrow `cargo test -- --ignored --list` — the
+# coverage ledger `default-members` is spelled out to protect. It sits outside
+# for the same reason `clients/dotnet` does: it is a *consumer* of the tree,
+# built by its own toolchain, and the tree stays buildable without it.
+[workspace]
+
+[package]
+name = "fjord-wasm"
+# Stated rather than inherited: this is not a member of the root workspace, so
+# there is no `workspace.package` to inherit from. It tracks the root version.
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/boxops-uk/fjord"
+rust-version = "1.85"
+description = "The WebAssembly shell: sigla's front end in a browser, JSON in and JSON out"
+publish = false
+
+[lib]
+# `cdylib` for the artifact `wasm-bindgen` post-processes; `rlib` so `cargo
+# check` on the host still typechecks this crate without a wasm target.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fjord-inspect = { path = "../crates/fjord-inspect" }
+wasm-bindgen = "0.2.127"
+
+[profile.release]
+# Size is the whole cost model here: the artifact is downloaded before a reader
+# sees anything, and nothing in this crate is hot.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

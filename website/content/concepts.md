@@ -1,24 +1,19 @@
 ---
 title: Concepts
-description: Facts, predicates, keys and values; the Writable → Complete lifecycle; and the two halves of the system that meet at one data structure.
+description: Facts, predicates, keys and values — the model in one page, with the lifecycle that makes a database an artifact.
 ---
 
 Two names to keep straight:
 
 - **Fjord DB** — the database. Embedded, immutable, fact-shaped.
-- **sigla** — its query *and* schema language, and the crate that implements the engine
-  behind it. "A sigla query" is a query written in sigla and run by Fjord.
+- **sigla** — its query *and* schema language. "A sigla query" is a query written in sigla
+  and run by Fjord.
 
-## The data model
+## Facts and predicates
 
-A **fact** is a typed record. Every fact belongs to a **predicate** — the analogue of a
-table or a relation — which fixes the fact's type. Every fact has a **`FactId`**, a `u64`
-that is its identity within the database.
-
-A predicate's type has two parts:
-
-- a **key** — the part that identifies the fact, and the part that is *indexed*;
-- an optional **value** — extra data carried by the fact, read only when a query asks.
+A **fact** is a typed record — one thing that is true. Every fact belongs to a
+**predicate**, which is Fjord's word for a table: it fixes what the facts in it look like.
+And every fact has a **`FactId`**, its identity inside the database.
 
 ```schema
 predicate File : string
@@ -26,61 +21,57 @@ predicate Module : { file : File, name : string }
 predicate Decl : { module : Module, name : string, line : int } -> string
 ```
 
-`File`'s key is a bare string. `Module`'s is a record of two fields, the first of which is
-a **reference** to a `File` fact. `Decl` has a value side — the declaration's kind — which
-is fetched on demand and can never be matched on.
+Three predicates, and each one holds a different shape. A `File` fact is just a string — a
+path. A `Module` fact is a record of two fields, and its first field is a **reference** to
+a `File` fact rather than a copy of it. A `Decl` fact is a record of three, and the
+`-> string` on the end is extra data it carries: the declaration's kind.
 
-:::note Why split key from value?
-Queries seek and filter on keys without ever touching values, so the value can live
-somewhere else and stay out of the hot path. That is [invariant I6](invariants.html#i6),
-and it shapes the whole storage and execution design. The practical consequence for schema
-design: **if a query needs to match on it, it belongs in the key.**
+## Keys and values
+
+Everything in a fact before the `->` is its **key**. That is the part that identifies the
+fact, and the part that is indexed. Everything after the `->` is the **value** — extra
+data, read only when a query actually asks for it.
+
+The rule that follows is short and worth memorising:
+
+:::note If a query needs to match on it, it belongs in the key
+Queries seek and filter on keys and never touch values, so a value can live somewhere else
+and stay out of the hot path — which is [invariant I6](invariants.html#i6), and shapes the
+whole storage and execution design. A field you put on the value side is a field you can
+read but not search.
 :::
 
-### The type model is deliberately narrow
+### The types you can use
 
-Four constructors, and that is all of it:
+Four building blocks, and that is all of them:
 
-| Type | Written | Notes |
+| Type | Written | What it is |
 |---|---|---|
-| `Int` | `int` | A signed `i64`, with its own negative marker band in the codec |
-| `Str` | `string` | UTF-8 |
+| `Int` | `int` | A signed 64-bit integer |
+| `Str` | `string` | UTF-8 text |
 | `Fact(p)` | the predicate's name | A reference to a fact of predicate `p` |
-| `Record` | `{ a : t, b : u }` | An **ordered** list of named fields; nesting allowed |
-| `Union` | `{ a : t = 0 \| b : u = 1 }` | One of several alternatives, tagged by an explicit, append-only discriminant ([I10](invariants.html#i10)) |
+| `Record` | `{ a : t, b : u }` | An **ordered** list of named fields; records may nest |
+| `Union` | `{ a : t = 0 \| b : u = 1 }` | One of several alternatives, each tagged with a number |
 
-No arrays, no sets, no booleans, no optionals. `maybe` and `enum` are sugar over a union and
-wait on a naming decision, since what they desugar to enters the fingerprint. The codec
-reserves marker bands for arrays, so the room is physically there; whether they are wanted
-is an open question rather than a missing feature.
+No arrays, no sets, no booleans, no optionals. A one-to-many is one fact per element. This
+is deliberate — [Schema language](schema-language.html) has the reasoning, and
+[Status](status.html) has the list of what is still an open question rather than a missing
+feature.
 
-### Predicates are the unit of storage
+### Every fact has an id
 
-Facts are grouped by predicate on disk, and a predicate id is the prefix of every one of
-its keys. A query over a predicate is therefore a **prefix scan over sorted bytes** — which
-works only because the key encoding is order-preserving ([I1](invariants.html#i1)).
+Ids print as `#23:60`, which reads as "predicate 23, fact 60". They are **stable, unique
+and never reused** within a database ([I11](invariants.html#i11)), which is what lets one
+fact refer to another by number.
 
-Each predicate also gets its own pair of storage trees, which buys physical isolation
-between predicates, fearless parallel ingest, and an O(1) wholesale drop.
+They are *physical* ids, though, not a name you can rely on across databases: two
+databases built from the same input agree on their content, not on their numbering. The
+bit layout, and why it is shaped that way, is in
+[Storage](storage.html#fact-ids-are-snowflakes-i11).
 
-### A `FactId` is a snowflake
+## Built once, then frozen
 
-```text
-  63                    40 39                        0
-  ┌──────────────────────┬───────────────────────────┐
-  │  predicate id (24b)  │  per-predicate seq (40b)  │
-  └──────────────────────┴───────────────────────────┘
-```
-
-Sequences are per predicate and 1-based, so `#23:1` is "predicate 23, first fact". The tag
-is what lets the identity map be split per predicate and a point read still be one lookup.
-Ids are **stable, unique and never reused within a database** ([I11](invariants.html#i11))
-— and they are *physical* ids, not cross-database identity. Two databases built from the
-same inputs agree on content, not on numbering.
-
-## Immutable, by design
-
-A database moves through a lifecycle and stops:
+A database moves through a short lifecycle and then stops:
 
 ```text
    create ──▶ Writable ──▶ finish ──▶ Complete   (and Broken, for a failed one)
@@ -88,21 +79,22 @@ A database moves through a lifecycle and stops:
               ingest, derive          read only, forever
 ```
 
-Once **Complete**, every open-for-write is refused at session establishment — structurally,
-not per write. Because a Complete database never changes:
+Once it is **Complete**, a client asking to write is refused when it connects, rather than
+per fact. And because a Complete database can never change:
 
-- a query's view of the world is a stable snapshot for free;
-- a suspended query resumes from a few saved **bytes** rather than a pinned iterator;
-- ingestion parallelises, because facts with different keys cannot interfere;
-- the artifact is a directory you can archive, copy and serve from N processes.
+- a query sees a stable snapshot of the world without doing anything to get one;
+- a paused query resumes from a few saved **bytes** rather than a held-open iterator;
+- writing parallelises freely, because facts with different keys cannot interfere;
+- the database is a directory you can archive, copy and serve from as many processes as
+  you like.
 
-Immutability is the assumption almost every invariant leans on. The workflow it implies is
-"a fresh sealed artifact per build" rather than "update the index in place".
+The workflow this implies is "a fresh sealed database per build", rather than "update the
+index in place". Almost every invariant in the design leans on it.
 
 ## The two halves of the system
 
-There is a clean seam in the middle: a **front end** that compiles sigla text into a plan,
-and a **back end** that runs plans. They meet at one data structure and otherwise evolve
+There is a clean seam down the middle. A **front end** turns sigla text into a plan; a
+**back end** runs plans. They meet at one data structure and otherwise evolve
 independently.
 
 ```text
@@ -115,85 +107,69 @@ independently.
    Plan IR  ◄──── the fixed contract between the halves
       │
       ▼   BACK END
-  executor (enumerate) ── scans ──▶ storage (fjall)
+  executor ── scans ──▶ storage
       │
       ▼
   projected rows ──▶ consumer (shell, wire, viewer)
 ```
 
-**The front end** produces a lossless untyped tree from the grammar, then runs typecheck,
-flatten and reorder over a typed, `NodeId`-indexed tree. `flatten` is the crux: it turns
-statements into a flat ordered list of loop levels and decides, per key field, whether it
-**seeks**, **splices** or **filters**. `reorder` then chooses the loop order greedily,
-emitting the *runnable frontier* — so a query that reads a variable the next statement binds
-is reordered rather than refused.
+**The plan** is an ordered list of steps, and the order *is* the loop nesting: the first
+step is the outer loop, the next one runs inside it, and so on. Deciding that order well
+is most of what makes a query fast.
 
-**The `Plan`** is `{ nvars, body: [Step], head }`. The body is ordered and the order *is*
-the loop nesting; the head says how to build each output row from the bound registers.
+**The executor** walks that nested loop one row at a time. It is written as an explicit
+state machine rather than as recursion, which is the thing that lets a query stop and
+resume exactly.
 
-**The executor** is a pull-based machine whose driver, `enumerate`, walks the nested loop
-one row at a time. It is written as an explicit state machine over a stack of frames rather
-than as recursion — because that is what lets a query suspend to bytes and resume exactly.
+[A query, step by step](query-lifecycle.html) follows one query through both halves;
+[Executor & resume](executor.html) is the machine in detail.
 
 ## Storage in one picture
 
-Two sorted key–value maps:
+Every fact is stored twice, in two sorted key–value maps:
 
 | Map | Shape | Job |
 |---|---|---|
-| `keys` | `predicate_id ++ encoded_key → fact_id` | The index. Prefix scans over it *are* predicate queries. The scan hot loop touches only this. |
-| `entities` | `fact_id → encoded_key + value` | Identity. A point lookup, for when a query needs a fact's value or a reference is followed to its target. |
+| `keys` | `predicate ++ key → fact id` | The index. A query over a predicate is a scan over a stretch of this map. |
+| `entities` | `fact id → key + value` | Identity. One lookup, for when a query needs a fact's value or follows a reference to its target. |
 
 The two are halves of one fact and are always written together, atomically
-([I12](invariants.html#i12)). Detail: [Storage model](storage.html).
+([I12](invariants.html#i12)). [Storage model](storage.html) is the full picture, including
+the codec and the on-disk layout.
 
-## Two codecs, and they are not the same
+Both halves of every fact, for a whole database, are worth seeing at once — the stored key
+as bytes, the same key decoded, and the value beside it:
 
-| | Storage codec | Transport codec |
-|---|---|---|
-| Where | On disk, in `keys` and `entities` | On the wire, in both directions |
-| Property that matters | **Order-preserving** and self-delimiting | Compact |
-| Ints | Marker byte, big-endian minimal magnitude | LEB128 varint over zigzag |
-| Field names / types | Never present — self-describing by marker | Never sent — both peers hold the schema |
-| A reference | Marker plus a fixed 8 bytes | An id, **or the whole target fact nested** |
+:::demo store
+N where code.Decl {file = _, name = N, line = _}
+:::
 
-Measured on the shapes a code index holds, the transport encoding is about 40% smaller than
-the storage one. They share no bytes and neither is a layer on the other.
+Step the run and the shaded band is the stretch of the map the scan is walking. It is a
+band rather than a scattering because the keys are sorted, and the encoding is built so
+that sorting the bytes sorts the values.
 
-## Where a reference comes from and goes
+## References, in and out
 
 This is the one asymmetry worth learning early.
 
-- **Inbound**, a reference may be an id or **the target fact written inline**, to any
-  depth. Ingest interns each nested fact bottom-up and substitutes the id. That is what
-  lets a producer keep no book of what it has already sent.
-- **Stored**, a reference is a `FactId` and nothing else.
-- **Outbound**, a row therefore carries a number. Asking what it names is a **protocol**
-  question (`fetch`), answered with the target's *key* — and the client expands it
-  recursively if you ask. sigla cannot ask, because a query names a fact by its key.
+- **Writing**, a reference may be an id *or* the whole target fact written inline, nested
+  as deep as you like. Fjord looks each nested fact up, writes it if it is new, and
+  substitutes its id. That is what lets a producer keep no book of what it has already
+  sent.
+- **Stored**, a reference is an id and nothing else.
+- **Reading**, a row therefore carries a number. Asking what that number names is a
+  question for the *client* — it asks the server to fetch it, and can expand references
+  recursively if you want. sigla itself cannot ask, because a query names a fact by its
+  key, never by its number.
 
-## Two invariant namespaces
+## Where to go from here
 
-Do not conflate them:
-
-- **Engine invariants `I1`–`I15`** — codec, executor, resume, storage, identity.
-- **Operational invariants `ops-I1`–`ops-I10`** — lifecycle, ownership, reproducibility,
-  the one write funnel. Always written `ops-Ix`.
-
-Both are listed with their guard tests on the [Invariants](invariants.html) page. They are
-not documentation of intent: each one names a test, and a phase is finished only when the
-ones it touches are green.
-
-## Relation to Glean
-
-Fjord is **inspired by [Glean](https://glean.software/), not a clone**. The two-map
-storage layout and the nested-loop execution shape are Glean's, down to the names of the
-column families. The machine that runs that shape is not: Glean compiles a query to
-bytecode for a VM; Fjord walks an ordered `[Step]` with one driver, because a bytecode
-VM's continuation cannot be made small and a small continuation is what makes stateless
-paging possible.
-
-Four invariants that look inherited are not — order-preserving keys, a self-delimiting
-encoding, values kept out of the scan loop, and stable union discriminants. Glean does the
-opposite, or nothing, in each case. The repository keeps a full ledger of what was taken,
-what was changed and what has not been decided (`docs/glean.md`).
+- [Schema language](schema-language.html) — designing predicates, and why field order is
+  the index design.
+- [sigla query language](query-language.html) — every construct, with the rows it returns.
+- [Invariants](invariants.html) — the rules the design is checked against, each with the
+  test that pins it. Two namespaces: `I1`–`I15` for the engine, `ops-I1`–`ops-I10` for
+  operations.
+- [Status & roadmap](status.html) — what is built, what is not, and
+  [where Fjord stands against Glean](status.html#relation-to-glean), which it is inspired
+  by and is not a clone of.

@@ -30,7 +30,7 @@ use lasso::Rodeo;
 use crate::{
     error::StoreError,
     fact_store::{Entity, FactStore},
-    store::predicate_of,
+    keys::predicate_of,
 };
 
 /// Encode a single i64 key field.
@@ -91,7 +91,7 @@ pub fn interner_with(names: &[&str]) -> LocalInterner {
 ///
 /// [`FjallStore`](fjord_store::store::FjallStore) satisfies this structurally —
 /// one keyspace per predicate, so there is nothing else in the tree to walk into.
-/// [`MemStore`](fjord_store::mem_store::MemStore) holds every predicate in one
+/// `MemStore` holds every predicate in one
 /// map and has to clamp explicitly; it did not, and an unbounded scan walked on
 /// into the next predicate's rows. That bug is why this assertion exists.
 ///
@@ -292,14 +292,13 @@ impl FrozenStore {
     /// all — a store holding one predicate cannot leak out of it.
     ///
     /// `sequence` is the fact's number *within its predicate*, not a raw
-    /// [`FactId`], for the same reason [`MemStore::insert_valued`] takes one: the
+    /// [`FactId`], for the same reason `MemStore::insert_valued` takes one: the
     /// real store composes a snowflake id from the two, so a fixture that took
     /// whole ids could hold a fact tagged for a different predicate — or, as this
     /// one did, sequence 0, which [I11] reserves precisely so that no valid id is
     /// `FactId(0)`.
     ///
     /// [I11]: ../../../website/content/invariants.md
-    /// [`MemStore::insert_valued`]: fjord_store::mem_store::MemStore::insert_valued
     pub fn from_facts(facts: impl IntoIterator<Item = (PredicateId, Vec<u8>, u64)>) -> Self {
         let mut rows: Vec<FrozenFact> = facts
             .into_iter()

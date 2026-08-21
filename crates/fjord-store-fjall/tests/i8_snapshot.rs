@@ -20,7 +20,7 @@ use fjord_engine::{
     },
 };
 use fjord_schema::schema::{PredicateId, PredicateTy};
-use fjord_store::store::FjallDb;
+use fjord_store_fjall::store::FjallDb;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 

@@ -1,0 +1,45 @@
+[package]
+name = "fjord-inspect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "A JSON view of every construct sigla compiles — what a page renders, and what a browser receives — an internal crate"
+# Not on crates.io. A package is the client library for a language and nothing
+# else — what it takes to construct facts, talk to a database and read rows back.
+# This is an internal of the implementation, and publishing it would make its
+# shape somebody's dependency.
+publish = false
+
+[dependencies]
+# **Never `fjord-store-fjall`.** The whole point of this crate is to be
+# compilable for `wasm32-unknown-unknown`, and `dependency_closure` asserts it.
+# The diagnostic type is `codespan_reporting`'s, and a label's style is what
+# says which span a reader is being pointed at.
+codespan-reporting = "0.13.1"
+# **With the trace hook on.** A workspace `cargo test` therefore builds the
+# engine traced, so every guard in it — alloc-free per row above all — runs
+# against the build the browser ships; `cargo test -p fjord-engine` builds the
+# other one.
+fjord-engine = { path = "../fjord-engine", features = ["trace"] }
+fjord-schema = { path = "../fjord-schema" }
+# The seam and the in-memory implementation: the site's database is a `MemStore`
+# holding facts written through the seam's one encoder. Never the fjall backend
+# — `dependency_closure` says so.
+fjord-encoding = { path = "../fjord-encoding" }
+fjord-store = { path = "../fjord-store" }
+fjord-store-mem = { path = "../fjord-store-mem" }
+serde = { workspace = true }
+# The cancellation token the executor takes. Nothing here cancels; a run over
+# the demo database is bounded by the database.
+tokio-util = "0.7.18"
+serde_json = "1.0.150"
+
+[dev-dependencies]
+# The corpus: real sigla, already classified, as the edge cases a generator
+# would not think to draw — and the fixture schema it is written against.
+fjord-engine = { path = "../fjord-engine", features = ["proptest"] }
+fjord-store = { path = "../fjord-store", features = ["proptest"] }
+proptest = "1.11.0"
+serde_json = "1.0.150"

@@ -53,7 +53,8 @@ use fjord_schema::{
     schema::{LocalInterner, PredicateTy, Schema},
 };
 
-use crate::{error::StoreError, fact_store::FactStore, store::FjallDb};
+use crate::{error::CatalogError, store::FjallDb};
+use fjord_store::{error::StoreError, fact_store::FactStore};
 
 /// How deep a chain of references may be expanded before it is called a fault.
 ///
@@ -93,14 +94,14 @@ pub struct Identity {
 ///
 /// # Errors
 ///
-/// [`StoreError`] if the store cannot be read, a key cannot be decoded, or a reference
+/// [`CatalogError`] if the store cannot be read, a key cannot be decoded, or a reference
 /// chain runs past [`MAX_REFERENCE_DEPTH`] — all of which mean a database that is not
 /// what it says it is, and none of which should be sealed over.
 pub fn compute(
     db: &FjallDb,
     schema: &Schema,
     schema_fingerprint: u64,
-) -> Result<Identity, StoreError> {
+) -> Result<Identity, CatalogError> {
     let reader = db.reader();
     let interner = LocalInterner::new(schema.interner().clone());
 
@@ -112,7 +113,7 @@ pub fn compute(
             // A predicate with trees but no declaration: the schema and the data
             // disagree, and sealing that would record an identity for content this
             // build cannot describe.
-            return Err(StoreError::Meta {
+            return Err(CatalogError::Meta {
                 path: std::path::PathBuf::from(format!("predicate {}", predicate.0)),
                 detail: "the database holds a predicate the schema does not declare".to_owned(),
             });
@@ -132,13 +133,14 @@ pub fn compute(
             // predicates is two facts.
             feed(&mut hash, &predicate.0.to_le_bytes());
 
-            let key = decode_key(&interner, &entity.key, &key_ty)?;
+            let key = decode_key(&interner, &entity.key, &key_ty).map_err(StoreError::Corrupt)?;
             feed_value(&mut hash, &reader, schema, &interner, &key, 0)?;
 
             match &value_ty {
                 Some(ty) => {
                     feed(&mut hash, &[TAG_VALUE_SIDE]);
-                    let value = fjord_encoding::tuple::decode_typed(&interner, &entity.value, ty)?;
+                    let value = fjord_encoding::tuple::decode_typed(&interner, &entity.value, ty)
+                        .map_err(StoreError::Corrupt)?;
                     feed_value(&mut hash, &reader, schema, &interner, &value, 0)?;
                 }
                 None => feed(&mut hash, &[TAG_NO_VALUE_SIDE]),
@@ -170,7 +172,7 @@ fn feed_value<S: FactStore>(
     interner: &LocalInterner,
     value: &Value,
     depth: usize,
-) -> Result<(), StoreError> {
+) -> Result<(), CatalogError> {
     match value {
         Value::Int(n) => {
             feed(hash, &[TAG_INT]);
@@ -229,9 +231,9 @@ fn feed_reference<S: FactStore>(
     interner: &LocalInterner,
     id: FactId,
     depth: usize,
-) -> Result<(), StoreError> {
+) -> Result<(), CatalogError> {
     if depth > MAX_REFERENCE_DEPTH {
-        return Err(StoreError::Meta {
+        return Err(CatalogError::Meta {
             path: std::path::PathBuf::from(format!("fact {id:?}")),
             detail: format!(
                 "a reference chain ran past {MAX_REFERENCE_DEPTH} hops, which a \
@@ -242,7 +244,7 @@ fn feed_reference<S: FactStore>(
 
     let predicate = id.predicate();
 
-    let declared = schema.get(predicate).ok_or_else(|| StoreError::Meta {
+    let declared = schema.get(predicate).ok_or_else(|| CatalogError::Meta {
         path: std::path::PathBuf::from(format!("predicate {}", predicate.0)),
         detail: "a reference names a predicate the schema does not declare".to_owned(),
     })?;
@@ -254,7 +256,7 @@ fn feed_reference<S: FactStore>(
     // the same key under different predicates are different targets.
     feed(hash, &predicate.0.to_le_bytes());
 
-    let key = decode_key(interner, &entity.key, &key_ty)?;
+    let key = decode_key(interner, &entity.key, &key_ty).map_err(StoreError::Corrupt)?;
     feed_value(hash, store, schema, interner, &key, depth)
 }
 

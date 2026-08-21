@@ -35,6 +35,8 @@ clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 
 [dev-dependencies]
+# A test that needs a real index builds one; the viewer is an ordinary client.
+fjord-store-fjall = { path = "../fjord-store-fjall" }
 fjord-server = { path = "../fjord-server" }
 fjord-store = { path = "../fjord-store" }
 tempfile = "3"

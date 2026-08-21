@@ -1,20 +1,29 @@
-//! In-memory `FactStore` for tests.
+//! The **in-memory implementation** of the [`fjord_store::fact_store::FactStore`]
+//! seam: a `BTreeMap` model of the two column families (`keys` and `entities`).
 //!
-//! A `BTreeMap` model of the two column families (`keys` and `entities`), used
-//! to exercise the codec and executor against the `FactStore` trait. This is
-//! test machinery, not a product backend.
+//! An implementation rather than test machinery, which is why it is a crate and
+//! not a `cfg(test)` module. It is the differential oracle the executor's
+//! batteries hold the fjall backend against, and it is the only store that
+//! links no filesystem — so it is what an engine compiled to WebAssembly runs
+//! on.
+//!
+//! **It is a model, not a database**: no durability, no ids of its own (a caller
+//! supplies the sequence), no lifecycle. What it does owe is the seam's
+//! contract, byte for byte — a bound it refused where fjall accepted, or a scan
+//! that ran a row further, would make every differential test agree about the
+//! wrong thing.
 
 use std::collections::BTreeMap;
 
 use byteview::ByteView;
 
-use crate::{
-    error::StoreError,
-    fact_store::{Entity, FactStore},
-    store::predicate_of,
-};
 use fjord_encoding::tuple::strinc;
 use fjord_schema::{id::FactId, schema::PredicateId};
+use fjord_store::{
+    error::StoreError,
+    fact_store::{Entity, FactStore},
+    keys::predicate_of,
+};
 
 #[derive(Default)]
 pub struct MemStore {

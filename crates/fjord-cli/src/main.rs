@@ -32,6 +32,11 @@ pub enum CliError {
     #[error("{0}")]
     Store(#[from] fjord_store::error::StoreError),
 
+    /// A lifecycle refusal from the store root: no such database, an ambiguous
+    /// name, a database that is Complete.
+    #[error("{0}")]
+    Catalog(#[from] fjord_store_fjall::error::CatalogError),
+
     /// Writing failed — usually a pipe the reader closed, which is how `| head` ends
     /// a query rather than a fault worth a stack trace.
     #[error("{0}")]

@@ -1,0 +1,34 @@
+{
+  "name": "fjord-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "smoke": "node smoke.mjs",
+    "wasm": "../scripts/build-wasm.sh"
+  },
+  "dependencies": {
+    "@astryxdesign/core": "^0.4.5",
+    "@astryxdesign/theme-neutral": "^0.4.5",
+    "@stylexjs/stylex": "^0.19.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@astryxdesign/cli": "^0.4.5",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "binaryen": "^132.0.0",
+    "oxlint": "^1.75.0",
+    "puppeteer-core": "^25.8.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0"
+  },
+  "description": "The interactive site: the design book with the engine itself running in it"
+}

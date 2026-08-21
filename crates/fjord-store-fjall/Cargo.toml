@@ -1,0 +1,59 @@
+[package]
+name = "fjord-store-fjall"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Fjord DB's fjall-backed FactStore and the database lifecycle: the store root, the sidecar and the format stamp — an internal crate"
+# Not on crates.io. A package is the client library for a language and nothing
+# else — what it takes to construct facts, talk to a database and read rows back.
+# This is an internal of the implementation, and publishing it would make its
+# shape somebody's dependency.
+publish = false
+
+[features]
+# Mirrors the seam's feature: the shared fixture database and the store-shaped
+# probes reach consumers outside this crate's own `cfg(test)`.
+proptest = ["dep:proptest", "fjord-store/proptest"]
+
+[dependencies]
+fjord-encoding = { path = "../fjord-encoding" }
+fjord-schema = { path = "../fjord-schema" }
+fjord-store = { path = "../fjord-store" }
+byteview = { workspace = true }
+fjall = { workspace = true }
+# Entropy for the instance ULID, and nothing else.
+getrandom = "0.3"
+lasso = { workspace = true }
+# The store-root lock (`ops-I1`) is `flock`, which std does not expose.
+libc = "0.2"
+proptest = { version = "1.11.0", optional = true }
+serde = { workspace = true }
+# The sidecar is a document a person reads; JSON is the format that assumes.
+serde_json = "1.0.150"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# **This crate, on itself.** The witnesses a guard needs — `open_snapshots`,
+# `table_counts`, `flush_to_tables` — are gated behind `proptest`, and an
+# integration test is a separate crate that would otherwise not see them. Naming
+# the feature here is what turns it on for the test build; while the store's
+# guards lived inside `fjord-store` they arrived by unification from the engine's
+# dev-dependency, which no longer reaches this crate.
+fjord-store-fjall = { path = ".", features = ["proptest"] }
+# The I9 allocation guard's counting allocator, and the engine — the latter only
+# for `tests/i8_snapshot.rs`, the one store guard that has to run a query. Cargo
+# permits that cycle because it is a dev-dependency, and keeping the test outside
+# `src/` is what stops it compiling a second copy of this crate: a unit test
+# reaching back through the engine would probe a `FactStore` that is a different
+# type from the one under test.
+allocation-counter = "0.8.1"
+fjord-engine = { path = "../fjord-engine", features = ["proptest"] }
+# The other implementation of the seam. This is the only crate that can see
+# both, which is what makes the differential a test here rather than anywhere.
+fjord-store = { path = "../fjord-store", features = ["proptest"] }
+fjord-store-mem = { path = "../fjord-store-mem" }
+proptest = "1.11.0"
+tempfile = "3"
+tokio-util = "0.7.18"

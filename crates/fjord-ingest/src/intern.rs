@@ -274,7 +274,7 @@ pub fn block_predicate(bytes: &[u8]) -> Result<&str, IngestError> {
 mod tests {
     use super::*;
     use fjord_schema::schema::PredicateId;
-    use fjord_store::store::Interned;
+    use fjord_store_fjall::store::Interned;
     use fjord_wire::value::proptest::arb_schema_and_fact;
     use proptest::prelude::*;
     use std::cell::RefCell;

@@ -1,0 +1,9 @@
+/* The palette moved into the theme (`src/theme.ts`), where the design system
+   generates the rest of the token set from it. What is left is the one thing a
+   theme cannot say: the application fills the window it is in. */
+
+html,
+body,
+#root {
+  height: 100%;
+}

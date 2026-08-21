@@ -33,9 +33,9 @@ use fjord_schema::{
     schema::{PredicateId, Schema},
     syntax,
 };
-use fjord_store::{
+use fjord_store_fjall::{
     catalog::{Catalog, Entry, Finished, Intent, Listing, Selector},
-    error::StoreError,
+    error::CatalogError,
     schema_doc,
     store::FjallDb,
 };
@@ -126,13 +126,13 @@ impl Schemas {
     ///
     /// # Errors
     ///
-    /// [`StoreError::Meta`] if the copy is **absent**, unreadable, does not lower, or is
+    /// [`CatalogError::Meta`] if the copy is **absent**, unreadable, does not lower, or is
     /// not the schema the sidecar says this database was created against. Each leaves the
     /// database **unserved** rather than served through a schema it does not hold: a
     /// schema that disagrees reads stored rows through the wrong types and reports
     /// nothing.
-    pub fn of(&self, path: &std::path::Path, recorded: u64) -> Result<Arc<Schema>, StoreError> {
-        let fault = |detail: String| StoreError::Meta {
+    pub fn of(&self, path: &std::path::Path, recorded: u64) -> Result<Arc<Schema>, CatalogError> {
+        let fault = |detail: String| CatalogError::Meta {
             path: path
                 .join(schema_doc::SCHEMA_DIR)
                 .join(schema_doc::SCHEMA_FILE),
@@ -175,7 +175,7 @@ impl Schemas {
     /// # Errors
     ///
     /// Whatever [`of`](Schemas::of) reports.
-    pub fn of_entry(&self, entry: &Entry) -> Result<Arc<Schema>, StoreError> {
+    pub fn of_entry(&self, entry: &Entry) -> Result<Arc<Schema>, CatalogError> {
         self.of(&entry.path, entry.meta.schema_fingerprint)
     }
 }
@@ -228,7 +228,7 @@ pub struct Registry {
     /// is a property of *this run of the server*, not of the artifact — two databases with
     /// identical content must not differ in their metadata because of how fast somebody
     /// wanted to write them — so it lives here and not in the sidecar. What it trades is
-    /// on [`Staged`](fjord_store::store::Staged): a crash during ingest may cost the
+    /// on [`Staged`](fjord_store_fjall::store::Staged): a crash during ingest may cost the
     /// index and can never cost its correctness.
     block_commits: bool,
 }
@@ -248,7 +248,7 @@ impl Registry {
     ///
     /// # Errors
     ///
-    /// [`ServerError::Store`] only if the root itself cannot be read.
+    /// [`ServerError::Catalog`] only if the root itself cannot be read.
     pub fn open(catalog: Catalog, schemas: Schemas) -> Result<(Registry, Listing), ServerError> {
         // Over the catalogue alone, which is all this server has of its own. A session
         // naming no database is handshaking about lifecycle, not about data.
@@ -258,16 +258,18 @@ impl Registry {
         let mut open = BTreeMap::new();
 
         for entry in &listing.entries {
-            let opened = FjallDb::open(&entry.path).and_then(|db| {
-                let schema = schemas.of(&entry.path, entry.meta.schema_fingerprint)?;
-                Ok(Database::new(
-                    entry.name(),
-                    &entry.meta.instance,
-                    db,
-                    schema,
-                    entry.status(),
-                ))
-            });
+            let opened = FjallDb::open(&entry.path)
+                .map_err(CatalogError::from)
+                .and_then(|db| {
+                    let schema = schemas.of(&entry.path, entry.meta.schema_fingerprint)?;
+                    Ok(Database::new(
+                        entry.name(),
+                        &entry.meta.instance,
+                        db,
+                        schema,
+                        entry.status(),
+                    ))
+                });
 
             match opened {
                 Ok(database) => {

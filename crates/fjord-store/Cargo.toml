@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Fjord DB's storage layer: the fjall backend, the store root and the database lifecycle — an internal crate"
+description = "Fjord DB's storage seam: what a fact is on disk, and the trait the engine reads it through — an internal crate"
 # Not on crates.io. A package is the client library for a language and nothing
 # else — what it takes to construct facts, talk to a database and read rows back.
 # This is an internal of the implementation, and publishing it would make its
@@ -13,35 +13,18 @@ description = "Fjord DB's storage layer: the fjall backend, the store root and t
 publish = false
 
 [features]
-# The in-memory model store and the shared fixture database, for consumers
-# outside this crate's own `cfg(test)` — the engine's batteries, above all.
-proptest = ["dep:proptest"]
+# The shared fixture database and the store-shaped probes, for consumers
+# outside this crate's own `cfg(test)` — both implementations, and the engine's
+# batteries above all.
+# A plain feature, with no dependency behind it: what it gates is the shared
+# fixture database and the store-shaped probes, and neither draws a value. The
+# strategies that do live above this crate.
+proptest = []
 
 [dependencies]
 fjord-encoding = { path = "../fjord-encoding" }
 fjord-schema = { path = "../fjord-schema" }
 byteview = { workspace = true }
-# Entropy for the instance ULID, and nothing else.
-getrandom = "0.3"
-fjall = { workspace = true }
 lasso = { workspace = true }
-# The store-root lock (`ops-I1`) is `flock`, which std does not expose.
-libc = "0.2"
-proptest = { version = "1.11.0", optional = true }
-serde = { workspace = true }
-# The sidecar is a document a person reads; JSON is the format that assumes.
-serde_json = "1.0.150"
 thiserror = { workspace = true }
 
-[dev-dependencies]
-# The I9 allocation guard's counting allocator, and the engine — the latter only
-# for `tests/i8_snapshot.rs`, the one store guard that has to run a query. Cargo
-# permits that cycle because it is a dev-dependency, and keeping the test outside
-# `src/` is what stops it compiling a second copy of this crate: a unit test
-# reaching back through the engine would probe a `FactStore` that is a different
-# type from the one under test.
-allocation-counter = "0.8.1"
-fjord-engine = { path = "../fjord-engine", features = ["proptest"] }
-proptest = "1.11.0"
-tempfile = "3"
-tokio-util = "0.7.18"

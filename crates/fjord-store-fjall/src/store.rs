@@ -15,7 +15,7 @@
 //!   O(1) wholesale drop when a derived predicate is recomputed, and per-predicate
 //!   size/cardinality for free. Splitting `entities` too is what the snowflake
 //!   [`FactId`] buys:
-//!   [`point`](crate::fact_store::FactStore::point) is handed a bare id, and the
+//!   [`point`](fjord_store::fact_store::FactStore::point) is handed a bare id, and the
 //!   id's tag names the tree, so identity lookup stays one lookup. Were `entities`
 //!   shared, dropping a derived predicate's `keys` tree would strand its values as
 //!   unreclaimable garbage.
@@ -27,7 +27,7 @@
 //! - **The predicate-id prefix stays on the stored `keys` row** even though the
 //!   per-predicate tree makes it redundant. It costs 4 highly-compressible bytes
 //!   and buys byte-identical rows across this store and
-//!   `MemStore` (`src/sigla/mem_store.rs`) — which is what lets the
+//!   `MemStore` (`fjord-store-mem`) — which is what lets the
 //!   resume battery ([I4](../../../website/content/invariants.md#i4)) transfer to fjall
 //!   unchanged, since the engine's `Cursor` is bytes-only and
 //!   re-seeks by exactly these bytes.
@@ -47,19 +47,29 @@ use std::{
 
 use byteview::ByteView;
 
-use crate::lookup_cache::{Hit, LookupCache};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
 
-use crate::{
-    error::{FormatError, StoreError},
-    fact::{self, Fact},
-    fact_store::{Entity, FactStore},
-    format::{FORMAT_KEY, FormatVersion, META_KEYSPACE},
-};
+use crate::lookup_cache::{Hit, LookupCache};
 use fjord_schema::{
     id::{FactId, FactIdError, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
     schema::{PREDICATE_ID_SIZE, PredicateId, Schema},
 };
+use fjord_store::{
+    error::{FormatError, StoreError},
+    fact::{self, Fact},
+    fact_store::{Entity, FactStore},
+    format::{FORMAT_KEY, FormatVersion, META_KEYSPACE},
+    keys::predicate_of,
+};
+
+/// A durable id claim in the `meta` keyspace that is not eight bytes.
+///
+/// Reached through [`StoreError::Backend`] rather than a seam variant: this is
+/// *this* backend's bookkeeping failing to be what it wrote, which is a backend
+/// fault from the seam's side of the trait.
+#[derive(Debug, thiserror::Error)]
+#[error("the id reservation for predicate {} is not eight bytes", .0.0)]
+struct BadReservation(PredicateId);
 
 /// Width of a stored `FactId`, as a `keys` value and as an `entities` key.
 const FACT_ID_LEN: usize = 8;
@@ -85,7 +95,7 @@ struct StoredFact {
     value: Vec<u8>,
 }
 
-/// What [`FjallDb::intern`](FjallStore::intern) answers: the fact's id, and whether
+/// What [`FjallDb::intern`] answers: the fact's id, and whether
 /// this call is what put it there.
 ///
 /// `created` is not bookkeeping. Interning is how a nested reference becomes an id
@@ -351,7 +361,7 @@ struct Staging {
 ///
 /// - `finish` walks every reference to compute identity, so a dangling one raises
 ///   `DanglingFactId` and the database cannot be sealed. It is never shipped.
-/// - The id it named is **never reissued**, because [`FjallDb::allocate`] claims ranges
+/// - The id it named is **never reissued**, because `FjallDb::allocate` claims ranges
 ///   durably ahead of use. Without that the allocator would resume below the lost id and
 ///   hand it to a different fact, and the reference would then resolve — to the wrong
 ///   target, silently, through a seal that cannot tell the difference.
@@ -397,7 +407,7 @@ impl Staged<'_> {
             .into_inner()
             .batch
             .commit()
-            .map_err(StoreError::Backend)
+            .map_err(StoreError::backend)
     }
 
     /// Facts staged and not yet committed.
@@ -447,7 +457,7 @@ impl FjallDb {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let db = Database::builder(path)
             .open()
-            .map_err(StoreError::Backend)?;
+            .map_err(StoreError::backend)?;
 
         // Recover the per-predicate handles a previous session created. Reads
         // route through this map, so a predicate missing from it reads as "no
@@ -469,7 +479,7 @@ impl FjallDb {
 
         let meta = db
             .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
-            .map_err(StoreError::Backend)?;
+            .map_err(StoreError::backend)?;
 
         let mut predicates = BTreeMap::new();
         for id in ids {
@@ -489,7 +499,7 @@ impl FjallDb {
         })
     }
 
-    /// Check the [format stamp](crate::format), or write it if this
+    /// Check the [format stamp](fjord_store::format), or write it if this
     /// database is new ([I15](../../../website/content/invariants.md#i15)).
     ///
     /// `holds_facts` is what separates the two cases, and it is asked of the
@@ -503,9 +513,9 @@ impl FjallDb {
     fn stamp_or_check_format(db: &Database, holds_facts: bool) -> Result<(), StoreError> {
         let meta = db
             .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
-            .map_err(StoreError::Backend)?;
+            .map_err(StoreError::backend)?;
 
-        if let Some(stamp) = meta.get(FORMAT_KEY).map_err(StoreError::Backend)? {
+        if let Some(stamp) = meta.get(FORMAT_KEY).map_err(StoreError::backend)? {
             FormatVersion::decode(&stamp)?.check_readable()?;
             return Ok(());
         }
@@ -520,7 +530,7 @@ impl FjallDb {
             FORMAT_KEY,
             FormatVersion::CURRENT.encode().as_slice(),
         );
-        batch.commit().map_err(StoreError::Backend)?;
+        batch.commit().map_err(StoreError::backend)?;
 
         Ok(())
     }
@@ -537,7 +547,7 @@ impl FjallDb {
     pub fn persist(&self) -> Result<(), StoreError> {
         self.db
             .persist(fjall::PersistMode::SyncAll)
-            .map_err(StoreError::Backend)
+            .map_err(StoreError::backend)
     }
 
     /// Merge every tree down to as few tables as the backend will make, discarding
@@ -577,12 +587,12 @@ impl FjallDb {
                 .trees
                 .keys
                 .major_compact()
-                .map_err(StoreError::Backend)?;
+                .map_err(StoreError::backend)?;
             predicate
                 .trees
                 .entities
                 .major_compact()
-                .map_err(StoreError::Backend)?;
+                .map_err(StoreError::backend)?;
         }
 
         Ok(())
@@ -631,13 +641,13 @@ impl FjallDb {
                     &format!("{KEYS_KEYSPACE_PREFIX}{}", predicate.0),
                     KeyspaceCreateOptions::default,
                 )
-                .map_err(StoreError::Backend)?,
+                .map_err(StoreError::backend)?,
             entities: db
                 .keyspace(
                     &format!("{ENTITIES_KEYSPACE_PREFIX}{}", predicate.0),
                     KeyspaceCreateOptions::default,
                 )
-                .map_err(StoreError::Backend)?,
+                .map_err(StoreError::backend)?,
         };
 
         // **The higher of what is stored and what was claimed**, and it needs both.
@@ -661,15 +671,15 @@ impl FjallDb {
     fn recover_reservation(meta: &Keyspace, predicate: PredicateId) -> Result<u64, StoreError> {
         let Some(bytes) = meta
             .get(reservation_key(predicate))
-            .map_err(StoreError::Backend)?
+            .map_err(StoreError::backend)?
         else {
             return Ok(0);
         };
 
-        let claimed: [u8; 8] = bytes.as_ref().try_into().map_err(|_| StoreError::Meta {
-            path: std::path::PathBuf::from(format!("predicate {}", predicate.0)),
-            detail: "the id reservation is not eight bytes".to_owned(),
-        })?;
+        let claimed: [u8; 8] = bytes
+            .as_ref()
+            .try_into()
+            .map_err(|_| StoreError::backend(BadReservation(predicate)))?;
 
         Ok(u64::from_be_bytes(claimed))
     }
@@ -695,7 +705,7 @@ impl FjallDb {
         };
 
         // Key only: an entity's value can be large and is not wanted here.
-        let key = row.key().map_err(StoreError::Backend)?;
+        let key = row.key().map_err(StoreError::backend)?;
         let fact_id = decode_fact_id(&key)?;
 
         if fact_id.predicate() != predicate {
@@ -755,7 +765,7 @@ impl FjallDb {
     /// Write a **well-typed value** as a fact, checked against the schema.
     ///
     /// The way to write a fact by hand: name the predicate and its fields, and let
-    /// [`fact`](crate::fact) resolve them — a field the predicate does not
+    /// [`fjord_store::fact`] resolve them — a field the predicate does not
     /// declare, one left out, one of the wrong shape, or a value side that should not
     /// be there is an error rather than bytes nobody can read back. See that module for
     /// why naming the fields is the point.
@@ -1032,7 +1042,7 @@ impl FjallDb {
 
         let mut batch = self.db.batch();
         batch.insert(&self.meta, reservation_key(predicate), claim.to_be_bytes());
-        batch.commit().map_err(StoreError::Backend)?;
+        batch.commit().map_err(StoreError::backend)?;
 
         handle.reserved_through.store(claim, Ordering::Release);
         Ok(sequence)
@@ -1089,7 +1099,7 @@ impl FjallDb {
             .trees
             .keys
             .get(index_key)
-            .map_err(StoreError::Backend)?
+            .map_err(StoreError::backend)?
         else {
             return Ok(None);
         };
@@ -1119,7 +1129,7 @@ impl FjallDb {
             .trees
             .entities
             .get(id.raw().to_be_bytes())
-            .map_err(StoreError::Backend)?
+            .map_err(StoreError::backend)?
             .ok_or(StoreError::DanglingFactId(id))?;
 
         // The row is `[key_len u32 BE][key][value]`; only the value is wanted, the
@@ -1181,7 +1191,7 @@ impl FjallDb {
                 .trees
                 .keys
                 .contains_key(&index_key)
-                .map_err(StoreError::Backend)?;
+                .map_err(StoreError::backend)?;
 
             assert!(
                 !already_written,
@@ -1194,7 +1204,7 @@ impl FjallDb {
 
         let mut batch = self.db.batch();
         stage_rows(&mut batch, &handle, fact_id, index_key, key_fields, value);
-        batch.commit().map_err(StoreError::Backend)?;
+        batch.commit().map_err(StoreError::backend)?;
 
         Ok(fact_id)
     }
@@ -1280,12 +1290,12 @@ impl FjallDb {
                 .trees
                 .keys
                 .rotate_memtable_and_wait()
-                .map_err(StoreError::Backend)?;
+                .map_err(StoreError::backend)?;
             predicate
                 .trees
                 .entities
                 .rotate_memtable_and_wait()
-                .map_err(StoreError::Backend)?;
+                .map_err(StoreError::backend)?;
         }
 
         Ok(())
@@ -1332,23 +1342,6 @@ impl Iterator for FjallScan {
     }
 }
 
-/// The predicate a scan bound names — its first four bytes.
-///
-/// Shared by every [`FactStore`], so the contract for a malformed bound is one
-/// behaviour rather than one per implementation.
-pub fn predicate_of(lo: &[u8]) -> Result<u32, StoreError> {
-    let prefix = lo
-        .get(..PREDICATE_ID_SIZE)
-        .ok_or(StoreError::ShortScanBound {
-            len: lo.len(),
-            expected: PREDICATE_ID_SIZE,
-        })?;
-
-    Ok(u32::from_be_bytes(
-        prefix.try_into().expect("checked four bytes above"),
-    ))
-}
-
 /// Decode a stored 8-byte big-endian fact id.
 ///
 /// This is the one place stored bytes become a [`FactId`], which is where the
@@ -1383,7 +1376,7 @@ fn decode_fact_id(bytes: &[u8]) -> Result<FactId, StoreError> {
 /// holds the whole row ([I5](../../../website/content/invariants.md#i5)) and the hot loop
 /// allocates nothing per row ([I9](../../../website/content/invariants.md#i9)).
 fn row_to_item(row: fjall::Guard) -> Result<(ByteView, FactId), StoreError> {
-    let (key, value) = row.into_inner().map_err(StoreError::Backend)?;
+    let (key, value) = row.into_inner().map_err(StoreError::backend)?;
     let fact_id = decode_fact_id(&value)?;
     Ok((ByteView::from(key), fact_id))
 }
@@ -1418,7 +1411,7 @@ impl FactStore for FjallStore {
         let Some(row) = self
             .snapshot
             .get(&handle.trees.entities, id.raw().to_be_bytes())
-            .map_err(StoreError::Backend)?
+            .map_err(StoreError::backend)?
         else {
             return Ok(None);
         };
@@ -1449,13 +1442,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{
-        fixtures::{
-            FrozenStore, assert_scan_stays_in_predicate, assert_short_bound_is_rejected, i64_field,
-        },
-        mem_store::MemStore,
-    };
     use fjord_encoding::tuple::strinc;
+    use fjord_store::fixtures::{
+        FrozenStore, assert_scan_stays_in_predicate, assert_short_bound_is_rejected, i64_field,
+    };
+    use fjord_store_mem::MemStore;
 
     /// One fact as drawn: predicate, key bytes, value bytes.
     type FactDraw = (u32, Vec<u8>, Vec<u8>);
@@ -2293,14 +2284,14 @@ mod tests {
     /// broken.
     #[test]
     fn put_is_write_once_and_says_so_in_release() {
-        use crate::{
+        use fjord_encoding::tuple::Value;
+        use fjord_store::{
             fact::{Fact as _, ToValue, record},
             fixture,
         };
-        use fjord_encoding::tuple::Value;
 
         struct Foo(&'static str);
-        impl crate::fact::Fact for Foo {
+        impl fjord_store::fact::Fact for Foo {
             const PREDICATE: &'static str = "test.Foo";
             fn key(&self) -> Value {
                 record([("id", 1.to_value()), ("name", "ann".to_value())])
@@ -2496,14 +2487,14 @@ mod tests {
     /// could be wrong, and the suite would be green.
     #[test]
     fn a_reopened_store_dedups_and_rejects_from_the_trees() {
-        use crate::{
+        use fjord_encoding::tuple::Value;
+        use fjord_store::{
             fact::{ToValue, record},
             fixture,
         };
-        use fjord_encoding::tuple::Value;
 
         struct Foo(&'static str);
-        impl crate::fact::Fact for Foo {
+        impl fjord_store::fact::Fact for Foo {
             const PREDICATE: &'static str = "test.Foo";
             fn key(&self) -> Value {
                 record([("id", 7.to_value()), ("name", "cold".to_value())])
@@ -2736,5 +2727,36 @@ mod tests {
             )
             .expect("put");
         }
+    }
+
+    /// **A backend fault reaches the engine without the engine knowing what a
+    /// backend is.** The seam carries it boxed, so this crate is the only one
+    /// that can say the word `fjall` — and the cost of that, a downcast to get
+    /// the concrete error back, is demonstrated here rather than asserted in a
+    /// comment.
+    #[test]
+    fn a_backend_error_crosses_the_seam_without_naming_a_backend() {
+        let refused = fjall::Error::Io(std::io::Error::other("the disk went away"));
+        let rendered = refused.to_string();
+
+        let crossed = StoreError::backend(refused);
+
+        assert!(
+            matches!(crossed, StoreError::Backend(_)),
+            "a backend fault must arrive as `Backend`, whatever raised it"
+        );
+        assert!(
+            crossed.to_string().contains(&rendered),
+            "the backend's own words were dropped on the way across: {crossed}"
+        );
+
+        // The stated cost of a boxed source, exercised: a caller that does need
+        // the concrete error can still reach it, and nothing above the seam has
+        // to in order to report the fault.
+        let source = std::error::Error::source(&crossed).expect("the fault is the source");
+        assert!(
+            source.downcast_ref::<fjall::Error>().is_some(),
+            "the fjall error did not survive being boxed, so `Backend` is lossy"
+        );
     }
 }

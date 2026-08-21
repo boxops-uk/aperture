@@ -84,12 +84,32 @@ pub fn print(ast: &Ast, schema: &Schema, interner: &LocalInterner) -> String {
 /// another schema, and there the bytes are the honest answer.
 #[must_use]
 pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
-    let mut out = String::new();
+    let mut out = steps(plan, schema, interner).join("\n");
+    out.push('\n');
+    let _ = write!(
+        out,
+        "  head {}",
+        projection(plan, &plan.head, schema, interner)
+    );
+    out
+}
+
+/// The same rendering, one string per step of the body.
+///
+/// [`plan`] is this joined by newlines, with the head after it. Split because a
+/// *view* of a plan wants each step addressable — a page numbers them, hovers
+/// them, and lines them up against the query they came from — and re-deriving
+/// the split by cutting the joined text apart would be a second parser of a
+/// format that has no reason to be parsed at all.
+#[must_use]
+pub fn steps(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> Vec<String> {
+    let mut steps = Vec::with_capacity(plan.body.len());
 
     // Numbered over *scan* steps: a level is a loop, and a derived bind is not one.
     let mut level = 0;
 
     for step in plan.body.iter() {
+        let mut out = String::new();
         // What the line is *for* differs — a level names the register it fills, a
         // test names nothing because it fills nothing — and what follows the arrow
         // is identical, because a probe and a scan are built the same way.
@@ -102,23 +122,25 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
             // A derived bind names the register it computes, and what it computes
             // it from, since it has no predicate to be about and no scan to narrow.
             Step::Derive(derived) => {
-                let _ = writeln!(
+                let _ = write!(
                     out,
                     "  {} = {}",
                     derived.bind,
                     computed(plan, schema, &derived.value)
                 );
+                steps.push(out);
                 continue;
             }
             // A comparison over computed values reads no predicate at all.
             Step::Test(Test::Compare { left, op, right }) => {
-                let _ = writeln!(
+                let _ = write!(
                     out,
                     "  where {} {} {}",
                     computed(plan, schema, left),
                     op.symbol(),
                     computed(plan, schema, right)
                 );
+                steps.push(out);
                 continue;
             }
             // No register and no arrow: a negation reads a predicate and answers
@@ -264,15 +286,19 @@ pub fn plan(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
             }
         }
 
-        out.push('\n');
+        steps.push(out);
     }
 
-    let _ = write!(
-        out,
-        "  head {}",
-        projection(plan, &plan.head, schema, interner)
-    );
-    out
+    steps
+}
+
+/// The head, rendered as [`plan`] renders it.
+///
+/// Public for the same reason [`steps`] is: a view shows the head apart from the
+/// body, because it is what the query *answers* rather than a step it takes.
+#[must_use]
+pub fn head(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> String {
+    projection(plan, &plan.head, schema, interner)
 }
 
 /// A derived bind's expression, as the source that produced it reads.

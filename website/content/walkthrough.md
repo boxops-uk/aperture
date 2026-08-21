@@ -1,13 +1,17 @@
 ---
-title: Walkthrough
-description: One session from an empty directory to a sealed artifact — with the plans, the profiles, the paging and the refusals that make the design visible.
+title: A guided tour
+description: One session from an empty directory to a sealed database — writing facts, asking questions, reading a plan, paging, and watching a finished database refuse a writer.
 ---
 
-This is the tour. Every command was run and every block of output is what it printed. The
-database is a **real code index of real code**: the repository's own .NET solution — the
-client library, the demo producer, and the indexer — indexed by that same indexer, through
-a real design-time build, with Roslyn answering what every name means. Three projects, so
-the build graph is in the data too.
+One session, start to finish: an empty directory in, a sealed database out, with a look at
+the interesting things along the way. It takes about ten minutes to follow, and it assumes
+you have read [Getting started](getting-started.html) — this is the same path with more of
+the corners in it.
+
+The data is a **real code index of real code**: the repository's own .NET solution — the
+client library, the demo producer, and the indexer — indexed by that same indexer, with
+Roslyn answering what every name means. Every command below was run, and every block of
+output is what it printed.
 
 Set up once (`FJ` is a Fjord checkout with `cargo build --release` done and the .NET SDK
 on the path):
@@ -263,60 +267,11 @@ The same names, keyed the other way round, so a name prefix is a **range** rathe
 filter. That is what a derived predicate is: data a query could compute, stored keyed the
 way the query wants to read it.
 
-## 7. The other plan shapes, in one place
+Every other shape the language compiles to — reading through a reference, arithmetic, a
+negation, a denial, a disjunction — is laid out side by side in
+[Executor & resume](executor.html#every-construct-as-a-plan).
 
-Each of these is `:plan` output, and each is a different piece of the machine.
-
-**Reading through a reference** — a fetch level, one point read per row above it:
-
-```text
-sigla> :plan N where src.Ref {to = D}; N = D.name
-  r0 <- src.Ref scan
-  r1 <- src.Decl fetch[r0.to]
-  head r1.name
-```
-
-**Arithmetic** — a derived bind, one value per row, in a register of its own. Not a loop
-level: the cursor stores nothing for it, because it is recomputed on resume.
-
-```text
-sigla> :plan Y where src.Decl {line = L}; Y = L + 1
-  r0 <- src.Decl scan
-  r1 = r0.line + 1
-  head r1=
-```
-
-**Negation** — a test, not a level. It binds nothing, takes no cursor entry, and each
-source is drained only to its first row, because the question is whether a witness exists:
-
-```text
-sigla> :plan F where F = src.File _; !src.Module {file = F, name = "Boxops.Fjord.Client"}
-  r0 <- src.File scan
-  absent src.Module seek[file = r0#, name = "Boxops.Fjord.Client"]
-  head r0#
-```
-
-**A denial** — a residual on the level that holds the field. Never a seek, however it is
-written: "does not start with X" is the two ranges either side of one, and a seek walks one.
-
-```text
-sigla> :plan N where src.Decl {name = N}; N != "Block"..
-  r0 <- src.Decl scan
-       where name does not start with "Block"
-  head r0.name
-```
-
-**A disjunction** — one level with an alternative per source, tried in order and
-concatenated. Never DNF-expanded across conjuncts:
-
-```text
-sigla> :plan X where src.Decl {module = M, name = X} | src.Module {file = _, name = X}
-  r0 <- src.Decl scan
-     | src.Module scan
-  head r0.1
-```
-
-## 8. Paging that holds a real cursor
+## 7. Paging that holds a real cursor
 
 ```text
 sigla> :limit 3
@@ -339,7 +294,7 @@ detached row per open loop level into a **bytes-only token**, and handed it over
 page resumes from those bytes. Nothing is held server-side between pages, which is what
 makes paging stateless — a web tier can page without holding a connection.
 
-## 9. A mistake is a caret, not a round trip
+## 8. A mistake is a caret, not a round trip
 
 ```bash
 $AP --data-dir ./db query code 'X where src.Nope X'
@@ -357,7 +312,7 @@ The client compiled it against the schema the server serves, so the diagnostic a
 without asking the server anything. Where the two compilers could disagree, the **server**
 decides what runs.
 
-## 10. Your own schema
+## 9. Your own schema
 
 A schema is a file, and creating a database against one freezes it there:
 
@@ -417,7 +372,7 @@ created people (01M0BN8AG2APYZB3B5YXGY58VW) against people.sigla
 The address is `[where//]name[@instance]`, and it is the same grammar every client takes —
 the CLI, the viewer, and the .NET indexer. See [CLI reference](cli.html#addressing).
 
-## 11. Seal it, and watch it refuse
+## 10. Seal it, and watch it refuse
 
 ```bash
 $AP --data-dir ./db finish code
@@ -450,7 +405,7 @@ Boxops.Fjord.Client.FjordServerException: ModeRefused: `code` is complete: it ta
 | 40,382 facts deduped | Interning **is** the dedup; a nested reference resolves to one row |
 | A name that filtered and an id that seeked | Field order is key order, and key order is the index design |
 | `#23:60` in a row, expanded on request | Stored, a reference is a `FactId`; expansion is a protocol question, not a query one |
-| `absent`, `r1 = …`, a second source on one level | Three step kinds and no more: a level, a test, a derive |
+| A scan, then a seek spliced with its id | A plan is a nested loop, and the order of its steps *is* the nesting |
 | `:more` returning the next three | A resume token is bytes, so paging holds nothing open |
 | A caret with no round trip | The client compiles; the server decides what runs |
 | `complete`, and a refused writer | `Writable → Complete` is one way, and enforced at session establishment |

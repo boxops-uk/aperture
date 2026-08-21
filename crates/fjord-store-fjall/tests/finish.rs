@@ -10,9 +10,12 @@ use std::sync::Arc;
 
 use fjord_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use fjord_store::{
-    catalog::{Catalog, Intent, Selector},
     error::StoreError,
     fact::{Fact, ToValue, record},
+};
+use fjord_store_fjall::{
+    catalog::{Catalog, Intent, Selector},
+    error::CatalogError,
     identity,
     meta::Status,
     store::FjallDb,
@@ -236,7 +239,7 @@ fn sealing_through_a_held_handle_is_the_same_artifact() {
     // the offline path says so; the server says it by sealing inside the writer lock.
     assert!(matches!(
         catalog.open_write(&Selector::of("held")).map(|_| ()),
-        Err(StoreError::NotWritable {
+        Err(CatalogError::NotWritable {
             status: Status::Complete,
             ..
         })
@@ -278,7 +281,7 @@ fn a_sealed_database_can_never_be_written_again() {
 
     assert!(matches!(
         catalog.open_write(&Selector::of("code")).map(|_| ()),
-        Err(StoreError::NotWritable {
+        Err(CatalogError::NotWritable {
             status: Status::Complete,
             ..
         })
@@ -307,7 +310,7 @@ fn finishing_twice_is_a_no_op() {
     );
 }
 
-/// Sealing an empty database takes saying so — `StoreError::EmptyDatabase` says why.
+/// Sealing an empty database takes saying so — `CatalogError::EmptyDatabase` says why.
 #[test]
 fn an_empty_database_will_not_seal_without_being_told_to() {
     let (_dir, catalog) = catalog();
@@ -316,7 +319,7 @@ fn an_empty_database_will_not_seal_without_being_told_to() {
 
     assert!(matches!(
         catalog.finish(&Selector::of("empty"), false),
-        Err(StoreError::EmptyDatabase(_))
+        Err(CatalogError::EmptyDatabase(_))
     ));
 
     // Still Writable: a refused seal changes nothing.
@@ -819,7 +822,7 @@ fn sealing_a_database_with_no_embedded_schema_is_refused() {
     write(&db, &schema, CONTENT);
     drop(db);
 
-    std::fs::remove_dir_all(entry.path.join(fjord_store::schema_doc::SCHEMA_DIR))
+    std::fs::remove_dir_all(entry.path.join(fjord_store_fjall::schema_doc::SCHEMA_DIR))
         .expect("the copy is there to remove");
 
     let refused = catalog
@@ -827,7 +830,7 @@ fn sealing_a_database_with_no_embedded_schema_is_refused() {
         .expect_err("it must not seal");
 
     assert!(
-        matches!(refused, StoreError::Meta { .. }),
+        matches!(refused, CatalogError::Meta { .. }),
         "a missing schema copy is a corrupt artifact: {refused:?}"
     );
 
@@ -854,7 +857,7 @@ fn a_row_that_does_not_decode_is_corrupt_not_a_panic() {
     assert!(
         matches!(
             identity::compute(&db, &schema(), entry.meta.schema_fingerprint),
-            Err(StoreError::Corrupt(_))
+            Err(CatalogError::Store(StoreError::Corrupt(_)))
         ),
         "an undecodable stored row must be reported as corruption"
     );

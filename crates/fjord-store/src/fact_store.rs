@@ -1,13 +1,12 @@
 //! The **storage seam**: what the engine is allowed to ask of a store.
 //!
-//! Its own module rather than a section of [`store`](crate::store), which
-//! is the fjall implementation, or of the engine's `plan`, where it used
-//! to live. A plan is a description; a store is a thing that answers. Keeping the
+//! Its own module rather than a section of either implementation, or of the
+//! engine's `plan`, where it used to live. A plan is a description; a store is a thing that answers. Keeping the
 //! trait where either implementation could be mistaken for the definition is what
 //! makes a seam quietly grow the shape of one side of it.
 //!
-//! Two implementations meet here: [`FjallDb`](crate::store::FjallStore) on
-//! disk and [`MemStore`](crate::mem_store::MemStore) in memory, held to
+//! Two implementations meet here: `FjallStore` (`fjord-store-fjall`) on disk
+//! and `MemStore` (`fjord-store-mem`) in memory, held to
 //! each other as a differential oracle
 //! ([testing](../../../website/content/testing.md)). The executor consumes a `(handle,
 //! snapshot)` and assumes nothing about a connection, which is the cut that lets

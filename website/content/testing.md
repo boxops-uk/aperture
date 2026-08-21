@@ -162,9 +162,20 @@ production path, as the witness rather than the implementation.
 - `fjord_store::fixture` (singular) is the shared **database**: one schema and one set of facts,
   so a plan shape asserted in one place and an answer asserted in another are about the same rows.
 
+- `fjord_store_mem::MemStore` is an **implementation**, not test machinery — which is why it is a
+  crate rather than a `cfg(test)` module. It is the model the fjall backend is held against, and the
+  store an engine compiled to WebAssembly runs on.
+
 One rule follows from the crate split: a test in a lower crate that needs to run a query belongs in
 that crate's `tests/` directory, not its `src/`. A unit test reaching back through the engine
-compiles a second copy of its own crate, and the two store types are then **different types**.
+compiles a second copy of its own crate, and the two store types are then **different types**. The
+same rule is what moved the storage guards into `fjord-store-fjall` when the seam became its own
+crate: `fjord-store`'s unit tests could no longer use `MemStore`, because reaching it through a
+dev-dependency links a second copy of the very crate under test.
+
+The differential itself — `fjall_scan_matches_memstore` and `fjall_point_matches_memstore` — lives
+in `fjord-store-fjall`, the one crate that can see both implementations. That is the general rule
+for where a test goes: **whichever crate can see everything the claim is about**.
 
 ## Regression examples pin, properties explore
 

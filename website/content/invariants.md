@@ -17,12 +17,14 @@ operational ones and are always written with the prefix.
 
 :::note Reading a guard name
 The prefix is the subsystem, not a Rust path: `codec::` is `fjord-encoding/src/tuple.rs`,
-`exec::` is `fjord-engine/src/iter.rs`, `store::` is `fjord-store/src/store.rs`,
+`exec::` is `fjord-engine/src/iter.rs`, `store::` is `fjord-store-fjall/src/store.rs`,
 `fingerprint::` is `fjord-schema/src/fingerprint.rs`, `flatten::` is
 `fjord-engine/src/flatten.rs`, and `i10_discriminants::` is
 `fjord-schema/src/schema.rs`. The part after `::` is a test function — every one is
-greppable. Guards named by a bare file (`i8_snapshot::`, `i13_embedded_schema::`) are
-integration tests in that crate's `tests/` directory.
+greppable. Guards named by a bare file (`i8_snapshot::`, `i13_embedded_schema::`,
+`dependency_closure::`) are integration tests in that crate's `tests/` directory —
+`i8_snapshot` in `fjord-store-fjall`, which since the storage seam became its own crate is
+the only one that can see both implementations of it.
 :::
 
 ## Engine invariants

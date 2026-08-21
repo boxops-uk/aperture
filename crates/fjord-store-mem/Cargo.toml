@@ -1,0 +1,19 @@
+[package]
+name = "fjord-store-mem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Fjord DB's in-memory FactStore: the differential oracle, and the store a browser runs on — an internal crate"
+# Not on crates.io. A package is the client library for a language and nothing
+# else — what it takes to construct facts, talk to a database and read rows back.
+# This is an internal of the implementation, and publishing it would make its
+# shape somebody's dependency.
+publish = false
+
+[dependencies]
+fjord-encoding = { path = "../fjord-encoding" }
+fjord-schema = { path = "../fjord-schema" }
+fjord-store = { path = "../fjord-store" }
+byteview = { workspace = true }

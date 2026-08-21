@@ -18,9 +18,9 @@ pub mod shell;
 use std::path::Path;
 
 use fjord_client::{Address, ClientError, Connection, Endpoint};
-use fjord_store::{
+use fjord_store_fjall::{
     catalog::{Catalog, RootLock},
-    error::StoreError,
+    error::CatalogError,
 };
 
 use crate::CliError;
@@ -208,7 +208,7 @@ pub fn exclusive(root: &Path, socket: &Path) -> Result<(Catalog, RootLock), CliE
 
     match catalog.lock() {
         Ok(lock) => Ok((catalog, lock)),
-        Err(StoreError::RootHeld { .. }) => Err(CliError::RootHeld {
+        Err(CatalogError::RootHeld { .. }) => Err(CliError::RootHeld {
             root: root.to_path_buf(),
             socket: socket.to_path_buf(),
         }),

@@ -51,12 +51,12 @@ const HEADER: &str = "\
 ///
 /// # Errors
 ///
-/// [`StoreError::Meta`](crate::error::StoreError::Meta) if it cannot be written.
-pub fn write(directory: &Path, schema: &Schema) -> Result<(), crate::error::StoreError> {
+/// [`CatalogError::Meta`](crate::error::CatalogError::Meta) if it cannot be written.
+pub fn write(directory: &Path, schema: &Schema) -> Result<(), crate::error::CatalogError> {
     let dir = directory.join(SCHEMA_DIR);
     let path = dir.join(SCHEMA_FILE);
 
-    let fail = |detail: String| crate::error::StoreError::Meta {
+    let fail = |detail: String| crate::error::CatalogError::Meta {
         path: path.clone(),
         detail,
     };
@@ -80,15 +80,15 @@ pub fn write(directory: &Path, schema: &Schema) -> Result<(), crate::error::Stor
 ///
 /// # Errors
 ///
-/// [`StoreError::Meta`](crate::error::StoreError::Meta) if the file is there and cannot
+/// [`CatalogError::Meta`](crate::error::CatalogError::Meta) if the file is there and cannot
 /// be read.
-pub fn source(directory: &Path) -> Result<Option<String>, crate::error::StoreError> {
+pub fn source(directory: &Path) -> Result<Option<String>, crate::error::CatalogError> {
     let path = directory.join(SCHEMA_DIR).join(SCHEMA_FILE);
 
     match fs::read_to_string(&path) {
         Ok(text) => Ok(Some(text)),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(crate::error::StoreError::Meta {
+        Err(source) => Err(crate::error::CatalogError::Meta {
             path,
             detail: format!("cannot read: {source}"),
         }),
@@ -99,17 +99,17 @@ pub fn source(directory: &Path) -> Result<Option<String>, crate::error::StoreErr
 ///
 /// # Errors
 ///
-/// [`StoreError::Meta`](crate::error::StoreError::Meta) if the copy is unreadable or no
+/// [`CatalogError::Meta`](crate::error::CatalogError::Meta) if the copy is unreadable or no
 /// longer a schema — which is a corrupt artifact, not a bad query, and says so with the
 /// diagnostics against the text it read.
-pub fn read(directory: &Path) -> Result<Option<Schema>, crate::error::StoreError> {
+pub fn read(directory: &Path) -> Result<Option<Schema>, crate::error::CatalogError> {
     let Some(text) = source(directory)? else {
         return Ok(None);
     };
 
     syntax::recover(SCHEMA_FILE, &text)
         .map(Some)
-        .map_err(|detail| crate::error::StoreError::Meta {
+        .map_err(|detail| crate::error::CatalogError::Meta {
             path: directory.join(SCHEMA_DIR).join(SCHEMA_FILE),
             detail,
         })

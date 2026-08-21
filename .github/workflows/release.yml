@@ -30,9 +30,15 @@
 #           *shipped profile* compiles — and because a release build and a debug
 #           test run share no cache.
 #
-#   site    always runs. What a *docs* consumer gets: the design book built strictly
-#           and bundled as a tarball any static file server can serve, attested like
-#           the binaries. The bundle is uploaded on every run and attached to releases.
+#   site    always runs. What a *docs* consumer gets: the interactive book — the
+#           React bundle in `web/`, with the engine compiled to WebAssembly inside
+#           it — driven in a real browser before it is bundled as a tarball any
+#           static file server can serve, attested like the binaries. The bundle is
+#           uploaded on every run and attached to releases.
+#
+#           The generated site (`website/build.py`) is still built here, because the
+#           smoke check compares the two renderers page for page; what publishes is
+#           the bundle.
 #
 #   pages   publishes main's site to GitHub Pages, and only main's: a pull request or
 #           a release branch never moves the public docs. Runs after `test`, so a red
@@ -94,7 +100,13 @@ jobs:
       # Installed second, so it is the default: the suite runs on whatever stable is
       # today, because that is what a consumer has. `build` floats too, so a compiler
       # that breaks the tree is still caught the day it lands — just not as a lint.
+      #
+      # The wasm target rides along because of the check below: it costs one
+      # component download and it is the only thing that can prove the browser
+      # build still exists.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -119,6 +131,21 @@ jobs:
       # edited by whoever un-ignores one, and the list is what a reviewer reads.
       - name: Invariant coverage ledger
         run: cargo test --locked -- --ignored --list
+      # **The other configuration.** `fjord-inspect` turns the engine's `trace`
+      # feature on, so the workspace run above builds the engine *traced* — which
+      # is what puts the alloc-free and no-value-fetch guards on the build the
+      # browser ships. This builds it without, since nothing in this graph asks
+      # for the feature, and a feature nobody tests is an aspiration.
+      - name: The engine without its trace hook
+        run: cargo test --locked -p fjord-engine
+      # **The claim `dependency_closure` cannot make on its own.** That guard reads
+      # the workspace manifests and fails if the engine grows an edge to a backend;
+      # only a compile can catch a *third-party* dependency that refuses the target
+      # — which is how this breaks in practice, since `getrandom` compile-errors on
+      # `wasm32-unknown-unknown` rather than failing to link. `wasm/` is its own
+      # workspace, so the crate that matters is named explicitly here.
+      - name: The engine still compiles for a browser
+        run: cargo check -p fjord-engine -p fjord-inspect --target wasm32-unknown-unknown --locked
       # The website is the design book. `--strict` turns the generator's own
       # warnings — a page missing from the nav, a nav entry with no page — into a
       # failure, so the book cannot silently lose a page.
@@ -205,10 +232,20 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --locked -p fjord-cli -p fjord-viewer --bins
 
-  # **The docs bundle.** The site is the design book, and this is the shape a release
-  # of it takes: `website/site/` as a tarball, buildable into a public site by any
-  # static file server, no toolchain at serve time. Attested like the binaries, because
-  # "verify anything it produced" should not have an exception for documentation.
+  # **The docs bundle.** The site is the design book, and the book is `web/` now: the
+  # React bundle with `fjord-engine` compiled to WebAssembly inside it, so a page that
+  # shows what the lexer does is asking the lexer. This is the shape a release of it
+  # takes — `web/dist/` as a tarball, no toolchain at serve time. Attested like the
+  # binaries, because "verify anything it produced" should not have an exception for
+  # documentation.
+  #
+  # **A page here is a path**, not a file and not a fragment, and that costs the bundle
+  # two things the tree of `.html` files did not. A host has to answer an unknown path
+  # with the application — `dist/404.html` is that answer where a host uses one, which
+  # is how Pages does it — and the base the assets and routes are written against is
+  # compiled in, so this builds twice and the two copies are **not** interchangeable:
+  # the tarball is for a site at a root, and Pages serves this one under the
+  # repository's name.
   site:
     name: site
     runs-on: ubuntu-latest
@@ -218,11 +255,83 @@ jobs:
       attestations: write # write the attestation back to the repository
     steps:
       - uses: actions/checkout@v4
-      - name: Build the site
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # `wasm/` is its own workspace, with its own lock and its own target directory,
+      # so it shares no cache with the jobs above — the key is deliberately different.
+      - name: Cache cargo registry and the wasm target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            wasm/target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('wasm/Cargo.lock') }}
+      # **The CLI's version has to equal the crate's exactly.** The CLI reads a schema
+      # the crate encodes into the module, and a mismatch fails with a message about a
+      # section rather than about versions — `build-wasm.sh` refuses to run at all
+      # unless they agree. So the version comes from the same place the script reads
+      # it, and the release binary is downloaded rather than compiled: `cargo install
+      # wasm-bindgen-cli` is minutes of build time for a tool that ships a binary.
+      - name: wasm-bindgen, at the version the crate encodes
+        run: |
+          version=$(cd wasm && cargo tree --locked -p wasm-bindgen --depth 0 |
+            sed -nE '1s/^wasm-bindgen v([0-9.]+).*/\1/p')
+          target=x86_64-unknown-linux-musl
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$version/wasm-bindgen-$version-$target.tar.gz" |
+            tar -xz --strip-components=1 -C "$HOME/.local/bin" "wasm-bindgen-$version-$target/wasm-bindgen"
+          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+          "$HOME/.local/bin/wasm-bindgen" --version
+      - name: Dependencies
+        run: npm ci
+        working-directory: web
+      # Before the site, and after `npm ci`: the script shrinks the module with the
+      # `wasm-opt` that `web/`'s dev-dependencies bring, and a module that skipped that
+      # step is the one thing a reader downloads before seeing anything.
+      - name: The engine, compiled for a browser
+        run: ./scripts/build-wasm.sh
+      - name: Lint
+        run: npm run lint
+        working-directory: web
+      # **The other renderer**, built here because the smoke check reads it: it compares
+      # the two page for page — headings, tables, code blocks, callouts and demos — and
+      # the two parsers are in different languages, so nothing but that check keeps the
+      # dialects together. `--strict` again for the same reason `test` uses it.
+      - name: The generated site, for the two-renderer comparison
         run: python3 website/build.py --strict
+      # **The bundle, driven in a real browser before it ships.** A unit test here would
+      # mock the one thing worth checking — that a module built from the engine loads
+      # under a browser's own loader and answers what the host suite says it answers —
+      # so `npm run smoke` builds, serves and drives the real bundle, and fails on any
+      # console error.
+      #
+      # The runner image ships a Chrome, and the check takes it from `$CHROME`. Found
+      # rather than written as a path, because `$CHROME` is not probed for existence:
+      # a stale literal would surface as three failed browser launches instead of as a
+      # missing browser. With none on the image, one is fetched into the cache the
+      # check looks in next.
+      - name: Drive the bundle in a browser
+        working-directory: web
+        run: |
+          chrome=$(command -v google-chrome || command -v chromium || true)
+          [[ -n "$chrome" ]] ||
+            npx -y @puppeteer/browsers install chrome@stable --path "$HOME/.cache/puppeteer"
+          CHROME="$chrome" npm run smoke
+      # `npm run build` is `tsc -b && vite build`, so this is also the typecheck: the
+      # smoke drives a bundle Vite built through its API, which does not typecheck.
+      - name: Build the site
+        run: npm run build
+        working-directory: web
       - name: Bundle
         run: |
-          tar -czf fjord-docs-site.tar.gz -C website/site .
+          tar -czf fjord-docs-site.tar.gz -C web/dist .
           sha256sum fjord-docs-site.tar.gz > fjord-docs-site.tar.gz.sha256
           cat fjord-docs-site.tar.gz.sha256
       # Step-level rather than job-level skip, unlike `attest`: a fork's pull request
@@ -243,17 +352,24 @@ jobs:
             fjord-docs-site.tar.gz
             fjord-docs-site.tar.gz.sha256
           if-no-files-found: error
-      # The same bytes again, in the artifact shape `deploy-pages` consumes. Uploaded
-      # from every run so the `pages` job needs no rebuild — what deploys is what was
-      # checked.
+      # **Not the same bytes as the tarball**, which is what changed when the site
+      # stopped being a tree of relative links: `SITE_BASE` is compiled in, so the copy
+      # Pages serves has to be built against the path Pages serves it from. Taken from
+      # the repository's name rather than written as a literal, so a rename cannot leave
+      # a published site fetching its assets from a path nothing answers on.
+      - name: Build the site Pages serves
+        run: SITE_BASE="/${GITHUB_REPOSITORY#*/}/" npm run build
+        working-directory: web
       - name: Upload for Pages
         uses: actions/upload-pages-artifact@v3
         with:
-          path: website/site
+          path: web/dist
 
   # **Publishing the book.** Push-to-main only: the public site is main's and nothing
   # else's, and it moves only after `test` — the suite, the strict site build and the
-  # drift gate — has said the book is true.
+  # drift gate — has said the book is true, and after `site` has driven the bundle it
+  # deploys in a browser. `site` builds that copy against the base Pages serves it
+  # from, so this job needs no build of its own.
   pages:
     name: pages
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -364,7 +480,10 @@ jobs:
           gh attestation verify ./fjord --repo ${GITHUB_REPOSITORY}
           \`\`\`
 
-          \`fjord-docs-site.tar.gz\` is the documentation site as built at this tag —
-          servable by any static file server, and attested the same way." \
+          \`fjord-docs-site.tar.gz\` is the design book as built at this tag — the
+          interactive site, with the engine compiled into the page, attested the same
+          way. A page in it is a path, so serve it from a root with unknown paths
+          answered by \`index.html\`; the \`404.html\` beside it is that answer for a
+          host that uses one." \
             dist/fjord dist/fjord-viewer dist/SHA256SUMS \
             dist/fjord-docs-site.tar.gz dist/fjord-docs-site.tar.gz.sha256

@@ -105,6 +105,18 @@ stated over encodings, and it holds only if one value has exactly one legal byte
 A string prefix becomes a **range** by encoding the prefix and dropping its terminator, which
 is what makes `"al"..` a byte range rather than a filter.
 
+Every stored key of a whole database, in the order a scan meets them, as bytes and decoded.
+The claim above is checkable here: read down the hex column and it ascends, and read down the
+decoded column beside it and the values ascend in the same order.
+
+:::demo store
+P where code.File P; P = "src/"..
+:::
+
+Step it and the range being walked is shaded across the rows. `"src/"..` is a prefix, so the
+band starts inside the predicate rather than at its first row — the range is bytes, and the
+bytes are these.
+
 ### 2. Self-delimiting ([I2](invariants.html#i2))
 
 The **marker byte** alone says how to advance past a value. `skip` needs no schema: a scan
@@ -319,6 +331,39 @@ re-taken on resume — which is sound precisely because the data cannot have cha
 The guard for that one cross-checks a drop probe against the storage engine's own count of
 open snapshots, because "we dropped our handle" and "the engine considers it closed" are two
 different claims.
+
+## The seam, and what is behind it
+
+Everything above is what a store *does*. What the engine sees is much smaller — two
+methods:
+
+```rust
+pub trait FactStore {
+    type Scan: Iterator<Item = Result<(ByteView, FactId), StoreError>>;
+
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, StoreError>;
+    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError>;
+}
+```
+
+A range of `keys`, and one row of `entities`. That is the whole of the storage interface,
+and it is why the executor can be described without saying the word *fjall*.
+
+The seam is a crate of its own, holding the trait, the tuple a fact is written as, the
+format stamp and the errors — **and linking no implementation of any of it**. Two crates
+implement it: a fjall-backed database on disk, and an in-memory model. The model is not test
+machinery. It is the oracle every executor battery is written against, and it is the store
+that runs when the engine is compiled to WebAssembly, because it is the one that touches no
+filesystem.
+
+One consequence is worth stating, because it is the thing that keeps the seam a seam: the
+error type carries a backend failure **without naming a backend**. `StoreError::Backend`
+holds a boxed source, so *the backend failed* is the trait's business and *which* backend is
+not. The cost is stated rather than hidden — recovering the concrete error takes a
+downcast — and it is what makes a third implementation additive rather than an edit to a
+shared enum. The lifecycle's own refusals (no such database, a held root lock, a database
+that is Complete) are not on the seam at all: they are facts about how one backend keeps
+databases in a filesystem, and they live with it.
 
 ## The format stamp ([I15](invariants.html#i15))
 

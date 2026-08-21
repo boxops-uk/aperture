@@ -26,7 +26,7 @@
 //! [chapter 7]: ../../../website/content/query-language.md
 //! [`PLAN.md`]: ../../../PLAN.md
 
-use codespan_reporting::{diagnostic::LabelStyle, files, files::SimpleFile, term};
+use codespan_reporting::{files, files::SimpleFile, term};
 
 use super::{
     cst::CstNode,
@@ -185,34 +185,25 @@ impl<'src> Compilation<'src> {
         self.source
     }
 
-    /// The diagnostics in the order a reader wants them: by where they point.
+    /// The types [`check`](Self::check) gave this query's nodes.
     ///
-    /// The sink itself keeps **arrival** order, which is phase order — every
-    /// lowering fault precedes every typecheck fault, whatever part of the query
-    /// each is about. That is right for the sink, which is a log, and what
-    /// [`Diagnostics::since`] slices by phase. It is wrong for a person, who reads
-    /// the query top to bottom: a fault at the head reported *after* one in the
-    /// body reads as though the head were fine.
+    /// Beside [`ast`](Self::ast) rather than only returned by `check`, because a
+    /// view needs the annotation table *and* the tree it indexes, and a borrow
+    /// handed back by `&mut self` cannot be held while the tree is read.
+    #[must_use]
+    pub fn typed(&self) -> Option<&Typed> {
+        self.typed.as_ref()
+    }
+
+    /// The diagnostics in the order a reader wants them — see
+    /// [`Diagnostics::in_source_order`], which is where the rule lives.
     ///
-    /// So presentation sorts and the log does not. Stably, so two diagnostics
-    /// about the same span stay in the order the phases found them, and by the
-    /// earliest primary label — a diagnostic with no label (the parse refusals,
-    /// which have nothing to point at) sorts first, and is the only diagnostic
-    /// there is in those cases.
-    fn in_source_order(&self) -> Vec<&Diagnostic> {
-        let mut ordered: Vec<&Diagnostic> = self.diagnostics.iter().collect();
-
-        ordered.sort_by_key(|diagnostic| {
-            diagnostic
-                .labels
-                .iter()
-                .filter(|label| label.style == LabelStyle::Primary)
-                .map(|label| label.range.start)
-                .min()
-                .unwrap_or(0)
-        });
-
-        ordered
+    /// Public because a view outside this crate presents them too, and the one
+    /// thing that must not happen is a second sort that disagrees with what the
+    /// terminal prints.
+    #[must_use]
+    pub fn in_source_order(&self) -> Vec<&Diagnostic> {
+        self.diagnostics.in_source_order()
     }
 
     /// Render every diagnostic against the source, styled, in source order.

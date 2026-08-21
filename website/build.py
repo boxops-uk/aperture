@@ -28,53 +28,12 @@ OUT = ROOT / "site"
 SITE_TITLE = "Fjord DB"
 SITE_TAGLINE = "An embedded, immutable fact database"
 
-# The navigation is the reading order. Each group is (label, [(slug, nav title)]).
+# The navigation is the reading order, and `nav.json` is the only copy of it —
+# the interactive site in `web/` renders its sidebar from the same file, and a
+# second list here would be a second reading order nobody edits twice.
 NAV: list[tuple[str, list[tuple[str, str]]]] = [
-    (
-        "Start here",
-        [
-            ("index", "Overview"),
-            ("getting-started", "Getting started"),
-            ("building", "Building from source"),
-            ("walkthrough", "Walkthrough"),
-        ],
-    ),
-    (
-        "The model",
-        [
-            ("concepts", "Concepts"),
-            ("schema-language", "Schema language"),
-            ("query-language", "sigla query language"),
-        ],
-    ),
-    (
-        "How it works",
-        [
-            ("query-lifecycle", "A query, step by step"),
-            ("storage", "Storage model"),
-            ("executor", "Executor & resume"),
-            ("wire-protocol", "Wire protocol"),
-        ],
-    ),
-    (
-        "Using it",
-        [
-            ("cli", "CLI reference"),
-            ("shell", "Shell reference"),
-            ("clients", "Clients & the viewer"),
-            ("operations", "Operations"),
-        ],
-    ),
-    (
-        "Reference",
-        [
-            ("invariants", "Invariants"),
-            ("performance", "Performance"),
-            ("testing", "Testing method"),
-            ("status", "Status & roadmap"),
-            ("glossary", "Glossary"),
-        ],
-    ),
+    (group["label"], [(page["slug"], page["title"]) for page in group["pages"]])
+    for group in json.loads((ROOT / "nav.json").read_text(encoding="utf-8"))["groups"]
 ]
 
 ORDER = [slug for _, pages in NAV for slug, _ in pages]
@@ -211,6 +170,21 @@ def render(source: str, page: Page) -> str:
             )
             continue
 
+        # a live demo: the interactive site runs it, this one shows what it runs
+        if stripped.startswith(":::demo"):
+            spec = stripped[len(":::demo") :].strip()
+            kind = spec.split()[0] if spec else "run"
+            index += 1
+            block = []
+            while index < len(lines) and not lines[index].strip().startswith(":::"):
+                block.append(lines[index])
+                index += 1
+            index += 1
+            schema, query = split_demo("\n".join(block))
+            out.append(demo_html(kind, schema, query))
+            prose.append(plain(query))
+            continue
+
         # callouts
         if stripped.startswith(":::"):
             head = stripped[3:].strip().split(None, 1)
@@ -328,6 +302,47 @@ def is_block_start(line: str) -> bool:
         or re.match(r"[-*]\s+", stripped)
         or re.match(r"\d+[.)]\s+", stripped)
         or stripped in ("---", "***")
+    )
+
+
+DEMO_TITLES = {
+    "lex": "the lexer, on this query",
+    "parse": "the parse tree, on this query",
+    "types": "what the typechecker makes of this query",
+    "plan": "the plan this query compiles to",
+    "run": "this query, one transition at a time",
+    "store": "the rows this query reads, as stored bytes",
+    "schema": "this schema, as the engine reads it",
+}
+
+
+def split_demo(body: str) -> tuple[str, str]:
+    """A demo is a query, optionally preceded by a schema and a `---` line."""
+    parts = re.split(r"^---\s*$", body, maxsplit=1, flags=re.M)
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip()
+    return "", body.strip()
+
+
+def demo_html(kind: str, schema: str, query: str) -> str:
+    """The static stand-in: the same source, and where it comes alive.
+
+    The interactive site runs these against the engine compiled to WebAssembly.
+    A generated page cannot, so it shows what would be run rather than a claim
+    about what the answer is — a screenshot of an answer is a thing that goes
+    stale silently.
+    """
+    lang = "schema" if kind == "schema" else "sigla"
+    source = f"{schema}\n\n{query}".strip() if schema else query
+    code = html.escape(source, quote=False)
+    said = DEMO_TITLES.get(kind, "this query, live")
+    return (
+        '<figure class="code demo">'
+        f'<figcaption><span class="lang">{html.escape(lang)}</span>'
+        f'<span class="demo-kind">{html.escape(said)}</span>'
+        '<button class="copy" type="button" aria-label="Copy code">copy</button></figcaption>'
+        f'<pre><code class="lang-{lang}">{code}</code></pre>'
+        '</figure>'
     )
 
 
