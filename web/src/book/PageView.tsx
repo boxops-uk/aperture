@@ -41,12 +41,12 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
   // A fragment names a heading that only exists once this page has rendered.
   useEffect(() => {
     if (hash) scrollTo(hash)
-    else window.scrollTo({ top: 0 })
+    else document.querySelector('.astryx-layout-content')?.scrollTo({ top: 0 })
   }, [slug, hash])
 
   if (!page || !content) {
     return (
-      <Section padding={6} maxWidth={780}>
+      <Section padding={6} paddingBlock={8} maxWidth={880}>
         <VStack gap={3}>
           <Heading level={1}>Not a page</Heading>
           <Text type="large" color="secondary">
@@ -61,7 +61,7 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
   const { previous, next } = neighbours(slug)
 
   return (
-    <Section padding={6} maxWidth={780} data-testid="prose">
+    <Section padding={6} paddingBlock={8} maxWidth={880} data-testid="prose">
       <VStack gap={4} align="stretch">
         {page.group && (
           <Text type="label" color="accent" weight="bold">

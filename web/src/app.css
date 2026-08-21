@@ -4,7 +4,14 @@
    off the bottom. */
 .page { min-height: 0; }
 
-.stack { display: flex; flex-direction: column; min-height: 0; }
+.stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--spacing-4);
+  padding: var(--spacing-4);
+}
+
 .stack > * { flex: none; }
 
 /* A pane's heading names the pane; the page's headings are the book's. */
@@ -17,16 +24,15 @@
   color: var(--color-text-disabled);
 }
 
-.pane { padding: var(--spacing-3) var(--spacing-3) 0; }
+.pane { display: flex; flex-direction: column; gap: var(--spacing-2); }
 
 /* ---- the editor: a textarea over its own tokens ---- */
 
 .editor {
   position: relative;
-  border: 1px solid var(--color-border);
-  border-radius: .6rem;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
   background: var(--color-syntax-background);
-  box-shadow: var(--shadow-med);
   overflow: hidden;
 }
 
@@ -125,10 +131,9 @@
 /* ---- the panes that scroll: the token table and the tree ---- */
 
 .scroller {
-  border: 1px solid var(--color-border);
-  border-radius: .6rem;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
   background: var(--color-background-surface);
-  box-shadow: var(--shadow-med);
   max-height: 34rem;
   overflow: auto;
 }
@@ -151,7 +156,7 @@
 
 .scroller td { padding: .3rem .75rem; border-bottom: 1px solid var(--color-border); vertical-align: baseline; }
 .scroller tr:last-child td { border-bottom: 0; }
-.scroller tr.on td { background: var(--color-accent-muted); }
+.scroller tr.on td { background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent); }
 .scroller .num { font-family: var(--font-family-code); color: var(--color-text-disabled); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .scroller .kind { font-family: var(--font-family-code); color: var(--color-text-primary); }
 .scroller .text { font-family: var(--font-family-code); color: var(--color-text-primary); word-break: break-all; }
@@ -183,7 +188,7 @@
   border-left: 2px solid transparent;
 }
 
-.tree li.on, .lowered li.on { background: var(--color-accent-muted); border-left-color: var(--color-accent); }
+.tree li.on, .lowered li.on { background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent); border-left-color: var(--color-accent); }
 .tree .kind, .lowered .kind { font-family: var(--font-family-code); color: var(--color-syntax-function); }
 .tree .kind.leaf, .lowered .kind.leaf { color: var(--color-text-secondary); font-weight: 400; }
 .tree .text, .lowered .text { font-family: var(--font-family-code); color: var(--color-text-primary); }
@@ -195,7 +200,7 @@
   border-radius: 999px;
   background: var(--color-background-muted);
   font-size: .75rem;
-  border: 1px solid var(--color-border);
+  border: var(--border-width) solid var(--color-border);
 }
 
 .empty { margin: 0; padding: 1rem; color: var(--color-text-disabled); font-size: .88rem; }
@@ -210,8 +215,8 @@
   gap: .5rem;
   width: 100%;
   padding: .45rem .6rem;
-  border: 1px solid var(--color-border);
-  border-radius: .5rem;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-element);
   background: var(--color-background-surface);
   font: inherit;
   font-size: .82rem;
@@ -233,8 +238,8 @@
   padding: 0;
   max-height: 14rem;
   overflow: auto;
-  border: 1px solid var(--color-border);
-  border-radius: .5rem;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-element);
 }
 
 .predicates li {
@@ -283,7 +288,7 @@
   font-size: .75rem;
   color: var(--color-syntax-string);
   background: color-mix(in srgb, var(--color-syntax-string) 12%, transparent);
-  border-radius: .3rem;
+  border-radius: var(--radius-inner);
   padding: 0 .35rem;
 }
 
@@ -324,7 +329,10 @@
 .plan .steps li.head-row { background: var(--color-background-muted); }
 
 /* Where the machine is standing, while a run is being stepped. */
-.plan .steps li.on { background: var(--color-accent-muted); box-shadow: inset 3px 0 0 var(--color-accent); }
+.plan .steps li.on {
+  background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
 .plan .badge.examined { color: var(--color-text-secondary); border-style: dashed; }
 
 .plan .head { display: flex; gap: .4rem; align-items: center; margin-bottom: .25rem; }
@@ -342,7 +350,7 @@
   text-transform: uppercase;
   letter-spacing: .05em;
   padding: .05rem .4rem;
-  border-radius: .3rem;
+  border-radius: var(--radius-inner);
   border: 1px solid var(--color-border-emphasized);
   color: var(--color-text-secondary);
 }
@@ -386,7 +394,7 @@
   text-transform: uppercase;
   letter-spacing: .05em;
   padding: .05rem .4rem;
-  border-radius: .3rem;
+  border-radius: var(--radius-inner);
   border: 1px solid var(--color-border-emphasized);
   color: var(--color-text-secondary);
 }
@@ -425,17 +433,17 @@
   gap: .5rem;
   align-items: baseline;
   padding: .15rem .35rem;
-  border-radius: .3rem;
+  border-radius: var(--radius-inner);
   font-size: .82rem;
 }
 
 /* The register this transition wrote — the one thing a reader is looking for. */
-.run .registers li.written { background: var(--color-accent-muted); }
+.run .registers li.written { background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent); }
 .run .registers .address { font-family: var(--font-family-code); color: var(--color-text-disabled); }
 .run .registers .fact { font-family: var(--font-family-code); color: var(--color-syntax-function); }
 .run .registers .value { font-family: var(--font-family-code); color: var(--color-text-primary); word-break: break-all; }
 
-.run .yielded li { padding: .15rem .35rem; border-radius: .3rem; font-family: var(--font-family-code); font-size: .82rem; }
+.run .yielded li { padding: .15rem .35rem; border-radius: var(--radius-inner); font-family: var(--font-family-code); font-size: .82rem; }
 .run .yielded li.fresh { background: color-mix(in srgb, var(--color-syntax-string) 16%, transparent); }
 
 .run .capped {
@@ -450,8 +458,8 @@
 /* ---- the database: one sectioned table ---- */
 
 .data {
-  padding-left: .75rem;
-  padding-bottom: 1rem;
+  padding: var(--spacing-4);
+  gap: var(--spacing-3);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -476,14 +484,14 @@
 
 /* The pane scrolls, not the page: the table is the tall thing here, and a
    reader stepping a run should not lose the transport off the top. */
+/* The panel around it is the frame — a card inside a card is a box a reader has
+   to look past to read the bytes. */
 .data .scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  border: 1px solid var(--color-border);
-  border-radius: .6rem;
+  border-block-start: var(--border-width) solid var(--color-border);
   background: var(--color-background-surface);
-  box-shadow: var(--shadow-med);
 }
 
 /* The table is the pane: resizing a column divides what there is rather than
@@ -594,7 +602,7 @@
 
 /* The four states a row can be in, which are the whole story of a query. */
 .data tr.within td { background: color-mix(in srgb, var(--color-accent) 9%, transparent); }
-.data tr.held td { background: var(--color-accent-muted); }
+.data tr.held td { background: color-mix(in srgb, var(--color-accent-muted) 55%, transparent); }
 .data tr.held .fact { color: var(--color-text-accent); font-weight: 600; }
 .data tr.seen td { opacity: .5; }
 .data tr.dropped td { background: var(--color-error-muted); opacity: 1; }

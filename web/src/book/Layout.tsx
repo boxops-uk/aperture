@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AppShell } from '@astryxdesign/core/AppShell'
 import { TopNav, TopNavHeading } from '@astryxdesign/core/TopNav'
 import { SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav'
 import { Layout as Panes, LayoutContent, LayoutPanel } from '@astryxdesign/core/Layout'
+import { Center } from '@astryxdesign/core/Center'
+import { useMediaQuery } from '@astryxdesign/core/hooks'
 import { Outline } from '@astryxdesign/core/Outline'
 import { Button } from '@astryxdesign/core/Button'
 import { IconButton } from '@astryxdesign/core/IconButton'
@@ -19,8 +21,8 @@ import { ContrastIcon } from './ContrastIcon'
  * The shell: a bar, the reading order, the page, and where you are in it.
  *
  * Responsive contract, at the frame root:
- *   > 1180px  nav 260 | prose | outline 240
- *   <= 1180px the outline drops; the prose keeps the measure
+ *   > 1200px  nav 260 | prose (centred, 880) | outline 300
+ *   <= 1200px the outline drops rather than squeezing the measure
  *   <= 768px  the side nav collapses into AppShell's mobile drawer
  *
  * Two shapes, one shell. A page of the book scrolls between the nav and its own
@@ -43,6 +45,10 @@ export function Layout({
   children: ReactNode
 }) {
   const [searching, setSearching] = useState(false)
+  // The outline is the first thing to go: below this the three regions cannot
+  // all have their width, and the one a reader can do without is the one that
+  // only says where they are.
+  const roomForTheOutline = useMediaQuery('(min-width: 1200px)')
 
   // `/` and ⌘K open search from anywhere that is not already taking the key.
   useEffect(() => {
@@ -80,6 +86,11 @@ export function Layout({
     return () => document.removeEventListener('click', onClick)
   }, [])
 
+  // The page scrolls inside the shell, so the outline has to be told which box
+  // moves: left to find one itself it tracks the window, which never scrolls
+  // here, and every heading reads as "above the line".
+  const column = useRef<HTMLDivElement>(null)
+
   const items = useMemo(
     () => toc.map(({ anchor, text, level }) => ({ id: anchor, label: text, level })),
     [toc],
@@ -87,8 +98,11 @@ export function Layout({
 
   return (
     <>
+      {/* `fill` for both shapes: the shell owns the viewport and the content
+          column scrolls inside it, which is what keeps the reading order and
+          the outline in place while a page moves under them. */}
       <AppShell
-        height={fills ? 'fill' : 'auto'}
+        height="fill"
         contentPadding={0}
         variant="section"
         topNav={
@@ -123,8 +137,10 @@ export function Layout({
             }
           />
         }
+        // Collapsible, not resizable: the reading order is a fixed list of
+        // twenty-one names, so the only width worth choosing is none at all.
         sideNav={
-          <SideNav resizable={{ defaultWidth: 260, autoSaveId: 'fjord-nav' }}>
+          <SideNav collapsible>
             {GROUPS.map((group) => (
               <SideNavSection key={group.label} title={group.label}>
                 {group.pages.map((page) => (
@@ -144,15 +160,23 @@ export function Layout({
           children
         ) : (
           <Panes
-            height="auto"
-            content={<LayoutContent>{children}</LayoutContent>}
+            content={
+              <LayoutContent padding={0} ref={column}>
+                <Center axis="horizontal">{children}</Center>
+              </LayoutContent>
+            }
             end={
-              items.length > 1 ? (
-                <LayoutPanel width={280} label="On this page" padding={4}>
+              items.length > 1 && roomForTheOutline ? (
+                <LayoutPanel width={300} label="On this page" padding={4}>
                   {/* The bar overlays the top of the scroll root, so the
                       outline has to land headings below it rather than under
                       it. */}
-                  <Outline items={items} density="compact" offset={72} />
+                  <Outline
+                  items={items}
+                  density="compact"
+                  offset={24}
+                  scrollContainerRef={column}
+                />
                 </LayoutPanel>
               ) : undefined
             }

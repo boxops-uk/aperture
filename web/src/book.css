@@ -48,3 +48,55 @@
 
 .authored .pill.ok { color: var(--color-success); border-color: var(--color-success-muted); }
 .authored .pill.todo { color: var(--color-text-disabled); }
+
+/* ------------------------------------------------------------- the rhythm --
+
+   A page is components, and they space themselves evenly — which is right for
+   an application and wrong for prose, where the gap above a heading is what
+   tells a reader a section ended. This is the only typography left here, and it
+   is margins in spacing tokens: a stack gap cannot say "more before a heading
+   than after it". */
+
+/* A flex item's automatic minimum size is its content, and a code block or a
+   wide table is wider than the measure: without this the column refuses to
+   shrink and the page scrolls sideways under the navigation instead. */
+[data-testid='prose'],
+.astryx-center { min-width: 0; }
+
+[data-testid='prose'] h2 {
+  margin-block-start: var(--spacing-8);
+  padding-block-end: var(--spacing-2);
+  border-block-end: var(--border-width) solid var(--color-border);
+}
+
+[data-testid='prose'] h3 { margin-block-start: var(--spacing-6); }
+[data-testid='prose'] h4 { margin-block-start: var(--spacing-4); }
+
+/* The first heading on a page follows the standfirst, which already spaced it. */
+[data-testid='prose'] h2:first-of-type { margin-block-start: var(--spacing-4); }
+
+/* Prose is read at a line length, not at a component's line-height. */
+[data-testid='prose'] p,
+[data-testid='prose'] li { line-height: 1.65; }
+
+[data-testid='prose'] ul,
+[data-testid='prose'] ol { padding-inline-start: var(--spacing-5); }
+
+/* --------------------------------------------------------------- demos ----
+
+   A demo is a Card, so the panels inside it do not draw their own boxes: the
+   engine's views are edge to edge in it, divided rather than framed. */
+
+.demo .editor,
+.demo .scroller {
+  border-inline: 0;
+  border-block-start: 0;
+  border-radius: 0;
+}
+
+.demo .editor .paint,
+.demo .editor .input { min-height: 2.75rem; }
+
+.demo .data { padding: var(--spacing-3); }
+.demo .data .scroll { max-height: 26rem; }
+.demo .scroller { max-height: 22rem; }

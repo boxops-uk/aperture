@@ -25,7 +25,9 @@ import { Text } from '@astryxdesign/core/Text'
 import { Spinner } from '@astryxdesign/core/Spinner'
 import { VStack, HStack } from '@astryxdesign/core/Stack'
 import { Layout as Panes, LayoutContent, LayoutPanel } from '@astryxdesign/core/Layout'
-import { useResizable } from '@astryxdesign/core/Resizable'
+import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable'
+import { OverflowList } from '@astryxdesign/core/OverflowList'
+import { MoreMenu } from '@astryxdesign/core/MoreMenu'
 import { fold } from './run'
 import { usePlayback } from './playback'
 import { SchemaPane } from './SchemaPane'
@@ -181,7 +183,26 @@ export function Playground() {
         label="Playground"
         size="sm"
         startContent={
-          <HStack gap={1} wrap="wrap">
+          <OverflowList
+            gap={1}
+            maxRows={2}
+            overflowRenderer={(hidden) => (
+              <MoreMenu
+                variant="secondary"
+                size="sm"
+                label={`${hidden.length} more samples`}
+                alignment="end"
+                items={hidden.map((item) => {
+                  const sample = (engine?.samples ?? [])[item.index]
+                  return {
+                    id: sample.label,
+                    label: sample.label,
+                    onClick: () => show(schema, sample.source),
+                  }
+                })}
+              />
+            )}
+          >
             {(engine?.samples ?? []).map((sample) => (
               <ToggleButton
                 key={sample.label}
@@ -191,7 +212,7 @@ export function Playground() {
                 onPressedChange={() => show(schema, sample.source)}
               />
             ))}
-          </HStack>
+          </OverflowList>
         }
         endContent={
           <HStack gap={4} align="center">
@@ -305,15 +326,26 @@ export function Playground() {
           </LayoutContent>
         }
         end={
-          <LayoutPanel
-            label="Database"
-            hasDivider
-            isScrollable
-            padding={0}
-            resizable={database.props}
-          >
-            <DataTable database={schemaView?.database ?? null} moment={moment} at={at} />
-          </LayoutPanel>
+          <>
+            {/* The handle is a component beside the panel rather than a prop on
+                it: the panel takes the width the hook holds, and the handle is
+                what changes it. */}
+            <ResizeHandle
+              direction="horizontal"
+              isReversed
+              hasDivider
+              resizable={database.props}
+              label="Resize the database"
+            />
+            <LayoutPanel
+              label="Database"
+              width={database.size}
+              isScrollable
+              padding={0}
+            >
+              <DataTable database={schemaView?.database ?? null} moment={moment} at={at} />
+            </LayoutPanel>
+          </>
         }
       />
 

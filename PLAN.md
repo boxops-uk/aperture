@@ -638,9 +638,9 @@ only what is about *this engine*.
 The shell is `AppShell` + `TopNav` + `SideNav`; the on-page contents is
 `Outline`, search is a `CommandPalette` over the same index, and a page's blocks
 are components: `Heading`, `Text`, `Table`, `Banner`, `Blockquote`, `Divider`,
-`CodeBlock`. The workbench is `Layout` + `LayoutPanel` with `useResizable`, its
-sections are `Collapsible`, its transport is a `Toolbar` of `Button`s and a
-`Slider`, and the schema is a `Dialog`. The markdown renderer stopped emitting
+`CodeBlock`. The workbench is `Layout` + `LayoutPanel` with a `ResizeHandle` on the
+database, its sections are `Collapsible`, its transport is a `Toolbar` of
+`Button`s and a `Slider`, and the schema is a `Dialog`. The markdown renderer stopped emitting
 HTML strings and emits a **tree**, because every block on a page is now a
 component rather than a string.
 
@@ -662,6 +662,9 @@ Three things this turned up:
 - **The smoke check was testing a phone.** Puppeteer's default window is 800×600,
   and the shell overlays its panels below 1024px — which had been invisible while
   the layout was hand-rolled and unresponsive.
+- **A flex column will not shrink past its content.** A code block is wider than
+  the measure, so without `min-width: 0` the page scrolled sideways under the
+  navigation at tablet widths rather than letting the block scroll inside itself.
 
 ### What is left
 

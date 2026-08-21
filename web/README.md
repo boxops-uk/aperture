@@ -33,6 +33,14 @@ same colours. The rules the design system asks of a consumer are in
 [`ASTRYX.md`](ASTRYX.md); the short version is *components first, tokens second,
 raw CSS never*.
 
+The frame fills the viewport and the regions scroll independently, which is what
+keeps the reading order and the on-page outline in place while a page moves under
+them. The nav **collapses** rather than resizing — twenty-one names is not a
+width worth choosing — and the outline drops below 1200px rather than squeezing
+the measure. The workbench's database panel is the one region that *is*
+resizable, because which side deserves the width depends on what a reader is
+doing.
+
 What stays custom is what the design system has no opinion about, because it is
 about this engine: the editor that paints a textarea with the lexer's own tokens,
 the parse and lowered trees, the plan, the register file, and the database table
