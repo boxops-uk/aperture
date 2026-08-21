@@ -98,6 +98,32 @@ re-argued forever.
 | **Predicate ids** | They belong to the **database**, not to the schema text — which is why a fact block names its predicate rather than numbering it |
 | **The `FactRef` marker** | Its own marker, not shared with the integer encoding |
 
+## Relation to Glean
+
+Fjord is **inspired by [Glean](https://glean.software/), not a clone**, and the line between
+the two is worth stating once so it is not re-argued.
+
+**Taken.** The two-map storage layout and the nested-loop execution shape are Glean's, down
+to the names of the column families.
+
+**Changed.** The machine that runs that shape is not Glean's. Glean compiles a query to
+bytecode for a VM; Fjord walks an ordered `[Step]` with one driver — because a bytecode VM's
+continuation cannot be made small, and a small continuation is what makes stateless paging
+possible.
+
+Four rules that look inherited are not. Glean does the opposite, or nothing, in each case:
+
+| Rule | Where it is stated |
+|---|---|
+| Key encoding is order-preserving | [I1](invariants.html#i1) |
+| The encoding is self-delimiting | [I2](invariants.html#i2) |
+| Values never enter the scan hot loop | [I6](invariants.html#i6) |
+| Union discriminants are stable and append-only | [I10](invariants.html#i10) |
+
+The repository keeps the full ledger — what was taken, what was changed, and what has not
+been decided — in `docs/glean.md`. It is the file to read before proposing a feature Glean
+already has.
+
 ## Two rules about what may change
 
 These are the guardrails that keep the machine reviewable, and they are worth knowing before

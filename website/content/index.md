@@ -1,66 +1,109 @@
 ---
 title: Fjord DB
-description: An embedded, immutable fact database with a typed, Datalog-flavoured query language — and a query engine that can suspend to a handful of bytes and resume exactly.
+description: A database of facts about code. Index once, seal the result, then ask it questions in a small typed query language — from a file you can copy anywhere.
 ---
 
-Fjord stores **facts**: typed records, grouped by **predicate**, each with a stable
-identity. You give it a schema, write facts into a database, seal the database, and from
-then on only read it. Queries are written in **sigla** — a small, typed, Datalog-flavoured
-language — compiled to a nested-loop plan and run by a pull-based machine that can stop
-mid-result, hand you a few bytes, and pick up exactly where it left off.
+Fjord DB stores **facts**: small typed records, like *`Crc32` is declared in `Crc32.cs`, at
+line 7*. You describe the shape of your facts once, write them in, and then seal the
+database — after which it never changes again. What you are left with is a directory you
+can archive, copy, and serve to as many readers as you like.
 
-The canonical use is a **code index**: files, modules, declarations, references, the build
-graph, the declaration graph. That is what the sample schema describes and what every
-number in these docs was measured against.
+You ask it questions in **sigla**, a small typed language of its own. The job it was built
+for is a **code index** — files, declarations, references, the build graph: everything
+behind *go to definition* and *find all references*. That is what the sample schema
+describes, and what every number in this book was measured against.
 
 <div class="cards">
   <a class="card" href="getting-started.html"><b>Getting started →</b>
     <span>Build the binaries, create a database, serve it, ask it something.</span></a>
-  <a class="card" href="walkthrough.html"><b>Walkthrough →</b>
+  <a class="card" href="walkthrough.html"><b>A guided tour →</b>
     <span>A real session, end to end, with the output it actually printed.</span></a>
+  <a class="card" href="concepts.html"><b>Concepts →</b>
+    <span>Facts, predicates, keys and values — the model, in one page.</span></a>
   <a class="card" href="query-language.html"><b>sigla reference →</b>
     <span>Every construct the language has, with the rows each one returns.</span></a>
-  <a class="card" href="query-lifecycle.html"><b>A query, step by step →</b>
-    <span>From the text you type to the rows that come back — every layer it crosses.</span></a>
 </div>
 
-## What it is, in six sentences
+## The idea, in three parts
 
-1. A **fact** is a typed record. It belongs to a **predicate**, which fixes its type, and
-   it has a `FactId` — a `u64` that is unique within the database and never reused.
-2. A predicate's type is a **key** (indexed, identifies the fact) and an optional
-   **value** (extra data, read only when a query asks). Keys are what queries seek on;
-   values never enter the scan loop.
-3. A database is **built once and sealed**. `Writable → Complete`, and a Complete database
-   is frozen forever: no updates, no deletes, no schema change.
-4. The **schema travels with the data**. It is written in a small DSL, embedded in the
-   database at `create`, and served back from that copy — so an artifact is
-   self-describing and a client can ask what it may ask about.
-5. A query compiles `lex → parse → typecheck → flatten → reorder` into a **`Plan`** — an
-   ordered list of steps — and the executor runs it as a nested loop over two sorted
-   key–value maps.
-6. Everything is **client/server over one socket**: the CLI, the shell, the viewer and the
-   .NET indexer all speak the same framed, multiplexed wire protocol.
+**Facts, grouped by predicate.** A *predicate* is Fjord's word for a table: `File`, `Decl`,
+`Ref`. It fixes what its facts look like. Part of each fact is the **key** — the part that
+is indexed, and the part queries look things up by — and a fact may carry extra data
+alongside it that is only read when a query asks. Everything you can search on lives in
+the key, which is why designing a schema is mostly deciding what the keys are.
 
-## Why immutability is the keystone
+**Built once, then frozen.** You create a database against a schema, write facts into it,
+and then `finish` it. From that moment it is read-only: no updates, no deletes, no schema
+change. The workflow is "a fresh database per build", the way you would rebuild an artifact
+rather than patch it.
 
-It is not a limitation that was bolted on; it is the decision the rest of the design
-leans on.
+**Queries that can pause.** A query is compiled to a small plan and run one row at a time,
+and it can stop in the middle, hand you a few bytes, and carry on from exactly there
+later. That is what makes paging cheap: nothing is held open between pages, so the bytes
+can go in a URL and the next page can be answered by a different process.
 
-- A query's view of the world is a stable **snapshot** for free.
-- A suspended query can be resumed from a few **bytes** rather than a pinned iterator —
-  which is what makes stateless paging possible.
-- Ingestion parallelises without a conflict rule, because facts with different keys can
-  never interfere.
-- An artifact is a directory you can `tar`, copy, and hand to another process.
+## Why read-only is the point
+
+Freezing the data is not a limitation that got bolted on. It is the decision everything
+else leans on.
+
+- **Every query sees a stable world.** No locking, no versions to reconcile — there is only
+  one version.
+- **A paused query costs a handful of bytes**, not a held-open connection.
+- **Writing goes as wide as you like.** Facts cannot conflict, so there is no rule to
+  arbitrate between writers.
+- **The database is just a directory.** `tar` it, copy it, serve it from ten processes.
+
+## A schema, a query, and the rows
+
+A schema is a file. It names your predicates and says what each one holds:
+
+```schema
+schema demo {
+  predicate Person : string
+  predicate Knows  : { from : Person, to : Person }
+  predicate Age    : { person : Person } -> int
+}
+```
+
+A query is the shape you want back, the word `where`, and what to match:
+
+```sigla
+{a = X, b = Y} where demo.Knows {from = X, to = Y}
+```
+
+Rows come back as JSON, one per line, in the shape the query asked for:
+
+```json
+{"a": "#0:1", "b": "#0:2"}
+```
+
+`#0:1` is an id, because `Knows` points *at* two `Person` facts rather than containing
+them. Ask for those references to be expanded and you get the people themselves:
+
+```json
+{"a": "ada", "b": "grace"}
+```
+
+## Try it, on this page
+
+The engine that answers a query like that is compiled to WebAssembly and running here, over
+a small code index: four files, seven declarations, and the references between them.
+
+:::demo run
+N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
+:::
+
+Every demo in this book is that engine — not a recording, and not a JavaScript imitation.
+Edit the query and everything below it is recomputed by the same code the server runs.
 
 ## What is built
 
 :::note Status
-The engine spine, the storage layer, the language front end, the wire protocol, the
-server, the client, the CLI, the shell and a code-search viewer are **built and
-guarded** — union types included. Ingestion from **files** and **stored derivation** are
-not. See [Status & roadmap](status.html) for the honest list.
+The engine, the storage layer, the language, the wire protocol, the server, the client,
+the CLI, the shell and a code-search viewer are **built and guarded**. Ingestion from
+**files** and **stored derivation** are not. [Status & roadmap](status.html) has the
+honest list.
 :::
 
 <p>
@@ -79,54 +122,10 @@ not. See [Status & roadmap](status.html) for the honest list.
 <span class="pill todo">stored derivation</span>
 </p>
 
-## A schema, a query, and the rows
-
-A schema is a file. Field order is key order, and key order is the index design:
-
-```schema
-schema demo {
-  predicate Person : string
-  predicate Knows  : { from : Person, to : Person }
-  predicate Age    : { person : Person } -> int
-}
-```
-
-A query is a head pattern, `where`, and a list of statements:
-
-```sigla
-{a = X, b = Y} where demo.Knows {from = X, to = Y}
-```
-
-Rows come back as JSON, one per line, shaped by the query's head:
-
-```json
-{"a": "#0:1", "b": "#0:2"}
-```
-
-A reference is a fact id on the way out, because that is what a reference *is* once
-stored. Ask the client to expand it and you get the fact it names — the same nested shape
-a producer writes:
-
-```json
-{"a": "ada", "b": "grace"}
-```
-
-The engine that answers a query like that is **on this page**. The whole front end and the
-executor are compiled to WebAssembly and run in the browser, over a small code index: four
-files, seven declarations, and the references between them.
-
-:::demo run
-N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
-:::
-
-Every demo in this book is that engine — not a recording of it, and not a JavaScript
-imitation of it. Edit the query and everything below it is recomputed by the same code the
-server runs.
-
 ## Where to go next
 
 - **New here?** [Getting started](getting-started.html), then the
-  [Walkthrough](walkthrough.html).
+  [guided tour](walkthrough.html).
 - **Writing queries?** [sigla query language](query-language.html) and the
   [Shell reference](shell.html).
 - **Designing a schema?** [Schema language](schema-language.html) — read the part about
@@ -142,7 +141,5 @@ server runs.
 :::note About these docs
 This site **is** the Fjord design book — the design of record, including the invariant
 registry. Where it says something is built, the repository has a test that says so; where
-something is not built, it is listed as not built rather than described as if it were. The
-roadmap and the record of settled decisions live in the repository's `PLAN.md`; the
-measured findings in `bench/FINDINGS.md`.
+something is not built, it is listed as not built rather than described as if it were.
 :::

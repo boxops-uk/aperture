@@ -6,8 +6,7 @@
       "pages": [
         { "slug": "index", "title": "Overview" },
         { "slug": "getting-started", "title": "Getting started" },
-        { "slug": "building", "title": "Building from source" },
-        { "slug": "walkthrough", "title": "Walkthrough" }
+        { "slug": "walkthrough", "title": "A guided tour" }
       ]
     },
     {
@@ -42,6 +41,7 @@
         { "slug": "invariants", "title": "Invariants" },
         { "slug": "performance", "title": "Performance" },
         { "slug": "testing", "title": "Testing method" },
+        { "slug": "building", "title": "Building from source" },
         { "slug": "status", "title": "Status & roadmap" },
         { "slug": "glossary", "title": "Glossary" }
       ]
