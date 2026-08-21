@@ -20,11 +20,14 @@ const AS: Record<TokenClass, string> = {
   keyword: 'keyword',
   predicate: 'function',
   namespace: 'type',
-  variable: 'variable',
+  // `constant`, not `variable`: the design system paints *unhighlighted* code
+  // with `variable`, so that slot is the plain ink and a sigla variable takes
+  // the next one along. The colours are the theme's; only the slots are here.
+  variable: 'constant',
   field: 'property',
   number: 'number',
   string: 'string',
-  wildcard: 'constant',
+  wildcard: 'punctuation',
   comment: 'comment',
   punctuation: 'punctuation',
   whitespace: '',

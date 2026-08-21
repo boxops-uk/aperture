@@ -29,7 +29,16 @@ application injects the theme.
 warm paper and rust accent the generated site publishes, and a syntax theme whose
 colours are the ones `fjord_inspect::tokens` has been deciding all along — so a
 block painted by the real lexer and a block painted by the fallback rules are the
-same colours. The rules the design system asks of a consumer are in
+same colours.
+
+The light scheme is **designed in OKLCH and written as hex**, and what is chosen
+is the *distance* between the steps rather than the values: one hue and one small
+chroma for the neutrals, surfaces at 96.2 / 98.2 / 100 so a card lifts off the
+page and a toolbar sits into it, inks at 22 / 46 / 66, and every syntax colour
+at 44–48% lightness so a keyword and a string differ in hue rather than in
+weight. Hand-picked hexes drift; distances do not. (The method is the one
+`boxops`' own token set documents, and the reason the accent is a hex rather than
+an `oklch()` string is that the theme *reads* it to derive the accent inks.) The rules the design system asks of a consumer are in
 [`ASTRYX.md`](ASTRYX.md); the short version is *components first, tokens second,
 raw CSS never*.
 
