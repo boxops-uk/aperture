@@ -379,6 +379,19 @@
 
 /* ---- the debugger ---- */
 
+/* The glyphs are the labels here, so the size of the control is the size of the
+   type in it: a step forward should not be as loud as the query it steps. */
+.transport .astryx-button {
+  font-size: var(--font-size-sm);
+  padding-inline: var(--spacing-2);
+}
+
+.transport .astryx-slider-thumb {
+  width: var(--spacing-4);
+  height: var(--spacing-4);
+}
+
+
 .run .event {
   display: flex;
   gap: .5rem;

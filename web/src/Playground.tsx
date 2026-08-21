@@ -20,14 +20,12 @@ import { Section } from './Accordion'
 import { Drawer } from './Drawer'
 import { Toolbar } from '@astryxdesign/core/Toolbar'
 import { Button } from '@astryxdesign/core/Button'
-import { ToggleButton } from '@astryxdesign/core/ToggleButton'
+import { Selector } from '@astryxdesign/core/Selector'
 import { Text } from '@astryxdesign/core/Text'
 import { Spinner } from '@astryxdesign/core/Spinner'
 import { VStack, HStack } from '@astryxdesign/core/Stack'
 import { Layout as Panes, LayoutContent, LayoutPanel } from '@astryxdesign/core/Layout'
 import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable'
-import { OverflowList } from '@astryxdesign/core/OverflowList'
-import { MoreMenu } from '@astryxdesign/core/MoreMenu'
 import { fold } from './run'
 import { usePlayback } from './playback'
 import { SchemaPane } from './SchemaPane'
@@ -182,37 +180,26 @@ export function Playground() {
       <Toolbar
         label="Playground"
         size="sm"
+        // A select rather than fourteen buttons: the samples are a list to pick
+        // from, and a list that does not fit on two rows is a list.
         startContent={
-          <OverflowList
-            gap={1}
-            maxRows={2}
-            overflowRenderer={(hidden) => (
-              <MoreMenu
-                variant="secondary"
-                size="sm"
-                label={`${hidden.length} more samples`}
-                alignment="end"
-                items={hidden.map((item) => {
-                  const sample = (engine?.samples ?? [])[item.index]
-                  return {
-                    id: sample.label,
-                    label: sample.label,
-                    onClick: () => show(schema, sample.source),
-                  }
-                })}
-              />
-            )}
-          >
-            {(engine?.samples ?? []).map((sample) => (
-              <ToggleButton
-                key={sample.label}
-                size="sm"
-                label={sample.label}
-                isPressed={sample.source === source}
-                onPressedChange={() => show(schema, sample.source)}
-              />
-            ))}
-          </OverflowList>
+          <Selector
+            label="Sample query"
+            isLabelHidden
+            size="sm"
+            width={240}
+            variant="ghost"
+            placeholder="samples"
+            value={engine?.samples.find((sample) => sample.source === source)?.label}
+            options={(engine?.samples ?? []).map((sample) => ({
+              value: sample.label,
+              label: sample.label,
+            }))}
+            onChange={(label) => {
+              const sample = engine?.samples.find((entry) => entry.label === label)
+              if (sample) show(schema, sample.source)
+            }}
+          />
         }
         endContent={
           <HStack gap={4} align="center">
