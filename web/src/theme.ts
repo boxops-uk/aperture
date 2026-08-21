@@ -129,5 +129,32 @@ export const fjordTheme = defineTheme({
     // The same again for the pill with no hue: `--color-neutral` ships as an
     // alpha grey, which muddies for the same reason.
     '--color-neutral': ['#e6e8ea', '#27292c'],
+
+    // **A status is the palette's, not the design system's.** A callout, a
+    // diagnostic banner, a refused byte, a dropped row and a status pill all
+    // draw from `--color-{status}`, and shipped those are a crimson, an amber
+    // and a bright green that appear nowhere else here — so a warning in the
+    // book and an error in the workbench belonged to different palettes. Each
+    // is now the hue this page already uses for that idea, over the badge
+    // ground at the same lightness, and the grounds are **opaque** for the
+    // reason the badges' are: a banner sits on the body, on a card and inside
+    // a demo, and a tint is a different colour on each.
+    '--color-error': ['#b30018', '#ff8179'], // `tag` — what the lexer refused
+    '--color-error-muted': ['#ffd8d7', '#472021'],
+    '--color-success': ['#1d6835', '#95d7a2'], // the literal green
+    '--color-success-muted': ['#d0eed5', '#17351f'],
+
+    // A warning is the one thing the three code hues cannot say: it must read
+    // as neither an error nor a note, and both of those are already the
+    // accent's red. So it is a fourth hue and the only one on the page that is
+    // not a code colour — built on the same ladder as the rest, 50% .11 75 and
+    // 80% .12 75, over grounds at 92% and 30%. The ink is a deep bronze rather
+    // than a yellow because 50% lightness is where the other inks are, and a
+    // yellow at that lightness does not exist.
+    '--color-warning': ['#865900', '#ebb25f'],
+    '--color-warning-muted': ['#f7e1c4', '#3e2909'],
+    // Ships dark for both, which was legible on a yellow fill and is not on a
+    // bronze one.
+    '--color-on-warning': ['#ffffff', '#0b0d10'],
   },
 })
