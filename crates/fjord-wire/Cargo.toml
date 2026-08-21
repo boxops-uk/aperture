@@ -28,7 +28,7 @@ proptest = ["dep:proptest"]
 # The schema, and nothing else. The transport codec is driven by `PredicateTy`
 # and shares no code with the storage codec — see the module docs for why that
 # is the point rather than an omission.
-fjord-schema = { path = "../fjord-schema", version = "0.0.1" }
+fjord-schema = { path = "../fjord-schema", version = "0.1.0" }
 lasso = { workspace = true }
 # The block splitter's marker scan — operations §8's "SIMD memchr-style scan".
 memchr = { workspace = true }

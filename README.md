@@ -12,7 +12,7 @@ sealed, and thereafter only read. That single decision is what makes the rest of
 tractable — snapshots are trivial, resume tokens can be plain bytes, and parallel ingestion
 is "fearless."
 
-> **Status: `0.0.1`, a pre-release.** Built and guarded: the storage codec and the fjall
+> **Status: `0.1.0`, a pre-release.** Built and guarded: the storage codec and the fjall
 > store, a suspendable executor that resumes exactly, the sigla front end end to end — text
 > to `Plan` to rows, joins *through fact references* included — the schema language, union
 > types and schema identity, the wire protocol with a second implementation in another

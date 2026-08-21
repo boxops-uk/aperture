@@ -12,7 +12,7 @@
 name = "fjord-wasm"
 # Stated rather than inherited: this is not a member of the root workspace, so
 # there is no `workspace.package` to inherit from. It tracks the root version.
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/boxops-uk/fjord"
