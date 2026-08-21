@@ -74,9 +74,9 @@ same facts twice writes nothing, which is what makes retrying a dropped connecti
 ## Status
 
 `0.1.0`, and honest about it: no authentication (the transport is the trust boundary), no
-stored derivation, no ingestion from files. See
-[the status page](https://github.com/boxops-uk/fjord/blob/main/website/content/status.md)
-for the full inventory.
+stored derivation, no ingestion from files. The [status
+page](https://boxops-uk.github.io/fjord/status) has the full inventory, and the [design
+book](https://boxops-uk.github.io/fjord/) it belongs to runs the engine in the page.
 
 ## Licence
 
