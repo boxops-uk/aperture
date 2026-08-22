@@ -17,6 +17,10 @@ frames.
 | `Boxops.Fjord.Demo` | A console program that writes a small code index and queries it back |
 | `Boxops.Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is |
 
+```bash
+dotnet add package Boxops.Fjord.Client
+```
+
 It exists to answer a question the Rust tests cannot: **is the protocol implementable from
 outside?** A client written in the same repository, against the same types, can agree with the
 server by accident — sharing a constant, sharing an enum, sharing an assumption nobody wrote
@@ -174,8 +178,14 @@ and `W` → `d`* → `c` instead of `Q`.
 
 ### Writing facts from Rust
 
-The client crate is the shortest path. A fact is a predicate, a key and an optional value, and a
-reference is either an id or **the whole target fact**:
+The client crate is the shortest path:
+
+```bash
+cargo add fjord-db
+```
+
+A fact is a predicate, a key and an optional value, and a reference is either an id or **the
+whole target fact**:
 
 ```rust
 use std::sync::Arc;

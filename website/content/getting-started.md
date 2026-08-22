@@ -283,6 +283,48 @@ A code-search site — browse, file view with line-level cross-references, prefi
 symbol pages — built entirely out of ordinary queries through the ordinary client. See
 [Clients & the viewer](clients.html#the-viewer).
 
+## 9. From your own program
+
+Everything above is a client of the same protocol, and so is your program. One dependency,
+either language:
+
+```bash
+cargo add fjord-db                              # Rust
+dotnet add package Boxops.Fjord.Client          # .NET — net8.0 or net10.0, no dependencies
+```
+
+`fjord-db` is a façade over the three crates that do the work — `fjord-client`, `fjord-schema`
+and `fjord-wire` — so reading the database this tour just built is:
+
+```rust
+use std::{path::Path, sync::Arc};
+use fjord_db::{Connection, Mode, Schema};
+
+let mut connection = Connection::connect(
+    Path::new("./db/fjord.sock"),
+    "code",
+    Arc::new(Schema::empty()),   // a reader has no claim to make
+    Mode::ReadOnly,
+    false,
+)?;
+
+let schema = Arc::new(connection.served_schema()?);   // the only way to be right about it
+
+let mut rows = connection.query("F where src.File F")?;
+for row in connection.take(&mut rows, 20)? {
+    println!("{row:?}");
+}
+```
+
+`take` reads *n* rows and leaves the stream open, because the server suspends holding a
+bytes-only cursor and has already released its snapshot: a pause of an hour costs it what a
+pause of a millisecond does.
+
+The client must supply the schema — the value codec sends no field names and no type markers,
+since both ends already have them — which is why a reader asks the database for its own.
+[Clients & the viewer](clients.html) has the .NET half and what it takes to write a third
+client; the crate documentation is on [docs.rs](https://docs.rs/fjord-db).
+
 ## What to read next
 
 - [A guided tour](walkthrough.html) — the same path, with more of the interesting corners.
